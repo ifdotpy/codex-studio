@@ -5,6 +5,7 @@ vi.mock("../api", async (original) => ({
   post,
 }));
 import { ApiError } from "../api";
+import { errorDetails } from "../errorPresentation";
 import { createSidebarRpcClient, executeSidebarRequest } from "./sidebarRpc";
 import { navigationSnapshot } from "./navigation";
 
@@ -65,7 +66,7 @@ it("accepts only the exact frame, origin, owner and correlation used for a reque
   rpc.dispose();
 });
 
-it("preserves definitive API errors and uncertain timeouts without a retry", async () => {
+it("reconstructs the previous error wire shape and keeps uncertain timeouts without a retry", async () => {
   vi.useFakeTimers();
   const { rpc, child, reply } = surface();
   const request = rpc.request("remote", {
@@ -85,12 +86,20 @@ it("preserves definitive API errors and uncertain timeouts without a retry", asy
       status: 409,
       location: ["body", "revision"],
       outcome: "not_applied",
+      catalogPending: false,
     },
   });
   expect(await rejected).toMatchObject({
     status: 409,
     location: ["body", "revision"],
     outcome: "not_applied",
+    catalogPending: false,
+    response: {
+      error: "Conflict",
+      location: ["body", "revision"],
+      outcome: "not_applied",
+      catalogPending: false,
+    },
   });
   expect(await rejected).toBeInstanceOf(ApiError);
   const unknown = rpc
@@ -104,6 +113,61 @@ it("preserves definitive API errors and uncertain timeouts without a retry", asy
   expect(await unknown).toBeInstanceOf(Error);
   expect(((await unknown) as Error).message).toContain("unknown");
   expect(child.postMessage).toHaveBeenCalledTimes(2);
+  rpc.dispose();
+});
+
+it("reconstructs documented API diagnostics for the same error presentation as HTTP", async () => {
+  const { rpc, child, reply } = surface();
+  const request = rpc.request("remote", { action: "refresh" });
+  const rejected = request.catch((error: unknown) => error);
+  await Promise.resolve();
+  const sent = child.postMessage.mock.calls[0][0];
+  const payload = {
+    message: "Conflict",
+    status: 409,
+    code: "request_conflict",
+    metadata: { attempt: 2 },
+    outcome: "not_applied",
+    catalogPending: true,
+    protocolVersion: 3,
+    supportedVersions: [2, 3],
+    extra: "must not be reconstructed",
+  };
+  reply({
+    kind: "studio-sidebar-result",
+    serverId: "remote",
+    correlation: sent.correlation,
+    error: payload,
+  });
+  const error = await rejected;
+  expect(error).toBeInstanceOf(ApiError);
+  expect(error).toMatchObject({
+    message: "Conflict",
+    status: 409,
+    response: {
+      error: "Conflict",
+      code: "request_conflict",
+      metadata: { attempt: 2 },
+      outcome: "not_applied",
+      catalogPending: true,
+      protocolVersion: 3,
+      supportedVersions: [2, 3],
+    },
+  });
+  expect(error).not.toHaveProperty("response.extra");
+  expect(errorDetails(error)).toBe(
+    errorDetails(
+      new ApiError("Conflict", 409, {
+        error: "Conflict",
+        code: "request_conflict",
+        metadata: { attempt: 2 },
+        outcome: "not_applied",
+        catalogPending: true,
+        protocolVersion: 3,
+        supportedVersions: [2, 3],
+      }),
+    ),
+  );
   rpc.dispose();
 });
 

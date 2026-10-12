@@ -1,11 +1,66 @@
 import { sidebarAgent } from "./sidebarSnapshot";
 import type { Agent } from "../types";
-import { ApiError, post, type PostBody, type PostOptions } from "../api";
+import {
+  ApiError,
+  errorText,
+  post,
+  type PostBody,
+  type PostOptions,
+} from "../api";
+import type { components } from "../generated/api";
 import {
   isServerCommand,
   type ServerCommand,
   type ServerNavigation,
 } from "./navigation";
+
+type ErrorResponse = components["schemas"]["ErrorResponse"];
+type SidebarError = {
+  message: string;
+  status?: number;
+} & Pick<
+  ErrorResponse,
+  | "location"
+  | "code"
+  | "metadata"
+  | "outcome"
+  | "catalogPending"
+  | "protocolVersion"
+  | "supportedVersions"
+> & { status?: number };
+const sidebarErrorFields = [
+  "location",
+  "code",
+  "metadata",
+  "outcome",
+  "catalogPending",
+  "protocolVersion",
+  "supportedVersions",
+] as const satisfies readonly (keyof ErrorResponse)[];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function copySidebarErrorFields(value: unknown): Partial<SidebarError> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    sidebarErrorFields
+      .filter((field) => field in value)
+      .map((field) => [field, value[field]]),
+  ) as Partial<SidebarError>;
+}
+
+/** Serialize only the documented API diagnostics that the sidebar can display. */
+export function serializeSidebarError(failure: unknown): SidebarError {
+  const error: SidebarError = { message: errorText(failure) };
+  if (!(failure instanceof ApiError)) return error;
+  error.status = failure.status;
+  Object.assign(error, copySidebarErrorFields(failure.response));
+  if (failure.location && !("location" in error))
+    error.location = failure.location;
+  return error;
+}
 
 const sidebarPaths = [
   "/api/projects",
@@ -65,8 +120,8 @@ export function createSidebarRpcClient(
     pending.delete(event.data.correlation);
     clearTimeout(request.timer);
     if (event.data.error) {
-      const { message, status, location, outcome, catalogPending } =
-        event.data.error;
+      const { message, status, ...responseFields } = event.data.error;
+      const diagnostics = copySidebarErrorFields(responseFields);
       request.reject(
         typeof status === "number"
           ? new ApiError(
@@ -74,13 +129,11 @@ export function createSidebarRpcClient(
               status,
               {
                 error: message,
-                ...(Array.isArray(location) ? { location } : {}),
-                ...(typeof outcome === "string" ? { outcome } : {}),
-                ...(typeof catalogPending === "boolean"
-                  ? { catalogPending }
-                  : {}),
+                ...diagnostics,
               },
-              Array.isArray(location) ? location : undefined,
+              Array.isArray(diagnostics.location)
+                ? diagnostics.location
+                : undefined,
             )
           : new Error(message),
       );
