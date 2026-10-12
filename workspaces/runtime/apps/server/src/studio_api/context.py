@@ -68,17 +68,21 @@ CONTENT_SECURITY_POLICY = (
 )
 API_SCHEMA_CACHE_DIRECTORY = "codex-studio-api-schema"
 API_SCHEMA_CACHE_FILE = "hash-v1.json"
-API_SCHEMA_CANONICALIZER_VERSION = "2"
+API_SCHEMA_CANONICALIZER_VERSION = "3"
 API_SCHEMA_CACHE_VERIFY_DELAY_SECONDS = 60.0
 
 
 def api_schema_cache_key(backend_build: str | None = None) -> dict[str, str]:
     """Key the persistent hash cache by every runtime input to OpenAPI."""
+    from codex_python import requirements_digest
+
     if backend_build is None:
         backend_build = BACKEND_BUILD
     return {
         "backendBuild": backend_build,
         "canonicalizer": API_SCHEMA_CANONICALIZER_VERSION,
+        # BACKEND_BUILD covers server source files, not the root dependency lock.
+        "requirements": requirements_digest(SERVER_SOURCE_ROOT),
         "python": platform.python_version(),
         "fastapi": importlib.metadata.version("fastapi"),
         "pydantic": importlib.metadata.version("pydantic"),
