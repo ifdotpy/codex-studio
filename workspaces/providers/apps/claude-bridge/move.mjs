@@ -42,6 +42,15 @@ export function exactList(sorted, text, what) {
     throw new Error(`The exact ${what} differ from the moved copy`);
   return exact;
 }
+/** The server keeps records with sorted keys, so later turns of a moved session bring its
+ * tools in another key order, and a schema compiled from them lists `required` in another
+ * order. Equal content keeps the exact moved order; changed content stays as sent. */
+export function exactTurnTools(session, tools) {
+  if (typeof session?.dynamicToolsJson !== "string" || !Array.isArray(tools))
+    return tools;
+  const exact = JSON.parse(session.dynamicToolsJson);
+  return canonicalJson(exact) === canonicalJson(tools) ? exact : tools;
+}
 export function exactSession(session) {
   if (typeof session?.dynamicToolsJson !== "string") return session;
   return {

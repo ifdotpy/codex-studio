@@ -47,6 +47,7 @@ import {
   savedPromptProof,
   verifyToolProof,
   studioToolCatalog,
+  exactTurnTools,
 } from "./move.mjs";
 
 import {
@@ -1978,7 +1979,13 @@ async function handle(method, p) {
         active?.q?.close();
         queries.delete(s.id);
         catalogCache.activityChanged();
-        Object.assign(s, p);
+        Object.assign(
+          s,
+          p,
+          p.dynamicTools
+            ? { dynamicTools: exactTurnTools(s, p.dynamicTools) }
+            : {},
+        );
         await persist(s);
       } else reattached = true;
     }
@@ -2115,7 +2122,8 @@ async function handle(method, p) {
         phase,
         startedAt,
       );
-    const requestedTools = p.dynamicTools || s.dynamicTools || [];
+    const requestedTools =
+      exactTurnTools(s, p.dynamicTools) || s.dynamicTools || [];
     const toolsIdentity = JSON.stringify(requestedTools);
     const toolsChanged = active && active.toolsIdentity !== toolsIdentity;
     s.dynamicTools = requestedTools;
