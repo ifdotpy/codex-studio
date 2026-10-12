@@ -32,6 +32,9 @@ in hosted CI for now. Each heavy run has a Just command. A test that needs
 repeated runs to be trusted is defective and must be rewritten or moved to the
 heavy tier. New tests must fit the fast tier. See [docs/testing.md](docs/testing.md)
 for the tier commands and suite lists.
+A direct push to `main` must be preceded by `just test-server-opt-in` (about 20
+seconds). `just test-fast` runs in hosted CI on every pull request and push to
+`main`.
 
 ## Load testing
 
