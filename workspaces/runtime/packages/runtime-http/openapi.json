@@ -73231,8 +73231,11 @@
           {
             "in": "query",
             "name": "q",
-            "required": false,
+            "required": true,
             "schema": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Q",
               "type": "string"
             }
           },
