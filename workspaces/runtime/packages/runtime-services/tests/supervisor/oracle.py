@@ -65,6 +65,24 @@ child.lock = threading.RLock()
 child.process = SimpleNamespace(supervisor=supervisor, stdin=io.StringIO(), poll=lambda: None)
 child.paused = threading.Event()
 supervisor.children["fixture"] = child
+if "--request-cwd" in sys.argv:
+    child.process.pid = 123
+    requests = []
+    for kind in ("missing", "null", "value"):
+        request = {"action":"open", "handle":"fixture", "command":["fixture"], "env":{}}
+        if kind != "missing":
+            request["cwd"] = None if kind == "null" else "/fixture"
+        with patch.object(supervisor, "open_handle", return_value=(child, False)) as opened:
+            try:
+                supervisor.handle(request)
+                accepted = True
+            except KeyError as error:
+                assert str(error) == "'cwd'"
+                accepted = False
+            assert opened.called == accepted
+        requests.append({"request":request,"accepted":accepted})
+    (root / "requests.json").write_text(json.dumps(requests))
+    raise SystemExit(0)
 cases = []
 messages = [
     {"method": "echo", "params": {}},

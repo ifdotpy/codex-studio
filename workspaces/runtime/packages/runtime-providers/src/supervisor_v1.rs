@@ -77,6 +77,7 @@ pub enum Command {
         handle: String,
         command: Vec<String>,
         env: BTreeMap<String, String>,
+        #[serde(deserialize_with = "Option::<String>::deserialize")]
         cwd: Option<String>,
     },
     #[serde(rename = "write")]
@@ -317,4 +318,30 @@ pub enum WriteDecision {
         rpc_sequence: u64,
         outbound: Value,
     },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartMatch {
+    Gone,
+    Exact,
+    Legacy,
+    Different,
+}
+
+/// Legacy equality permits one durable upgrade; only kernel identity authorizes signals.
+pub fn compare_start(expected: &str, actual: Option<&str>, legacy: Option<&str>) -> StartMatch {
+    let Some(actual) = actual else {
+        return StartMatch::Gone;
+    };
+    if expected.starts_with("linux:") {
+        if expected == actual {
+            StartMatch::Exact
+        } else {
+            StartMatch::Different
+        }
+    } else if legacy == Some(expected) {
+        StartMatch::Legacy
+    } else {
+        StartMatch::Different
+    }
 }

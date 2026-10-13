@@ -324,6 +324,7 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
         ("opened", "child_identities", "INSERT"),
         ("opened", "degraded_handles", "DELETE"),
         ("close", "handles", "UPDATE"),
+        ("upgrade", "child_identities", "UPDATE"),
         ("close-unknown", "handles", "UPDATE"),
         ("close-unknown", "supervisor_state", "INSERT"),
         ("recover", "recovery_events", "INSERT"),
@@ -360,6 +361,9 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
             "reserve-existing" => journal.reserve(handle, "new", 100.0).is_err(),
             "opened" => journal.opened(handle, "new", 456, "new-start").is_err(),
             "close" => journal.close(handle, "closed", 100.0).is_err(),
+            "upgrade" => journal
+                .upgrade_identity(&journal.handle(handle).unwrap().unwrap(), "linux:boot:101")
+                .is_err(),
             "close-unknown" => journal
                 .close_unknown(
                     &journal.handle(handle).unwrap().unwrap(),
@@ -560,6 +564,88 @@ fn supervisor_uncertain_recovery_remains_visible_after_each_restart() {
                 .handles(true)
                 .unwrap()
                 .is_empty()
+        );
+    }
+}
+
+#[test]
+fn supervisor_kernel_identity_rejects_same_second_collision() {
+    use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start};
+    // The same PID reused one clock tick later within one lstart second must not match.
+    let boot = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    let old = format!("linux:{boot}:123400");
+    let new = format!("linux:{boot}:123401");
+    let second = "Tue Oct 13 12:00:00 2026";
+    assert_eq!(
+        compare_start(&old, Some(&new), Some(second)),
+        StartMatch::Different
+    );
+    assert_eq!(compare_start(&old, Some(&old), None), StartMatch::Exact);
+    assert_eq!(
+        compare_start(
+            &old,
+            Some("linux:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:123400"),
+            None
+        ),
+        StartMatch::Different
+    );
+    assert_eq!(
+        compare_start(second, Some(&new), Some(second)),
+        StartMatch::Legacy
+    );
+    assert_eq!(
+        compare_start("Tue Oct 13 11:59:59 2026", Some(&new), Some(second)),
+        StartMatch::Different
+    );
+    assert_eq!(compare_start(&old, None, None), StartMatch::Gone);
+}
+
+#[test]
+fn supervisor_legacy_upgrade_is_durable_and_rejects_stale_identity() {
+    let root = template(false);
+    let journal = SupervisorJournal::open(root.path()).unwrap();
+    let saved = journal.handle("fixture").unwrap().unwrap();
+    let kernel = "linux:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:123400";
+    journal.upgrade_identity(&saved, kernel).unwrap();
+    drop(journal);
+    let journal = SupervisorJournal::open(root.path()).unwrap();
+    assert_eq!(
+        journal
+            .handle("fixture")
+            .unwrap()
+            .unwrap()
+            .start_time
+            .as_deref(),
+        Some(kernel)
+    );
+    assert!(
+        journal
+            .upgrade_identity(&saved, "linux:other:123401")
+            .is_err()
+    );
+    assert_eq!(
+        journal
+            .handle("fixture")
+            .unwrap()
+            .unwrap()
+            .start_time
+            .as_deref(),
+        Some(kernel)
+    );
+}
+
+#[test]
+fn supervisor_open_requires_cwd_but_accepts_null() {
+    use studio_runtime_providers::supervisor_v1::Request;
+    let root = template_mode("--request-cwd");
+    let cases: Vec<Value> =
+        serde_json::from_slice(&fs::read(root.path().join("requests.json")).unwrap()).unwrap();
+    assert_eq!(cases.len(), 3);
+    for case in cases {
+        assert_eq!(
+            serde_json::from_value::<Request>(case["request"].clone()).is_ok(),
+            case["accepted"].as_bool().unwrap(),
+            "{case}"
         );
     }
 }

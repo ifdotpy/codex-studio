@@ -1,4 +1,4 @@
-//! Linux identity proof compatible with Python's journal. No signal without a match.
+//! Linux kernel identity, with legacy comparison only for durable journal upgrades.
 use super::supervisor_daemon::{Error, Result};
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
 use std::{
@@ -9,6 +9,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start};
 
 pub(super) const RETRY: Duration = Duration::from_millis(20);
 pub(super) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
@@ -32,8 +33,35 @@ pub(super) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
     if !allow_zombie && tail.trim_start().starts_with('Z') {
         return Ok(None);
     }
-    // ps's lstart is the existing Linux v1 identity representation. Its output is tiny;
-    // bound both execution and retained output instead of trusting an inherited PATH.
+    let ticks = tail
+        .split_whitespace()
+        .nth(19)
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or(Error::Refused("Cannot read kernel process start ticks"))?;
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(Some(format!("linux:{}:{ticks}", boot.trim())))
+}
+
+pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Option<String>)> {
+    let actual = start_time(pid, false)?;
+    let legacy = if actual.is_some() && !expected.starts_with("linux:") {
+        let value = legacy_start(pid)?;
+        // A PID replaced while ps ran cannot authorize an upgrade.
+        if start_time(pid, false)? != actual {
+            return Ok((StartMatch::Different, actual));
+        }
+        value
+    } else {
+        None
+    };
+    Ok((
+        compare_start(expected, actual.as_deref(), legacy.as_deref()),
+        actual,
+    ))
+}
+
+fn legacy_start(pid: u32) -> Result<Option<String>> {
+    // Read the historical Python token only during adoption, never before a signal.
     let mut child = Command::new("/bin/ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .env("LC_ALL", "C")
@@ -75,9 +103,11 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     Ok(())
 }
 pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
-    let process = Pid::from_raw(pid as i32).ok_or(Error::Refused("Invalid child PID"))?;
-    if pid != pgid || getpgid(Some(process)).map_err(std::io::Error::from)? != process {
-        return Err(Error::Refused("Child process group identity changed"));
+    let process = verify_group(pid, pgid)?;
+    if !expected.starts_with("linux:") {
+        return Err(Error::Refused(
+            "Legacy child identity requires durable upgrade before signal",
+        ));
     }
     for (signal, timeout, outcome) in [
         (Signal::TERM, Duration::from_millis(1500), "terminated"),
@@ -104,8 +134,23 @@ pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'sta
     ))
 }
 
+pub(super) fn verify_group(pid: u32, pgid: u32) -> Result<Pid> {
+    let raw = i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?;
+    let process = Pid::from_raw(raw).ok_or(Error::Refused("Invalid child PID"))?;
+    if pid != pgid || getpgid(Some(process)).map_err(std::io::Error::from)? != process {
+        return Err(Error::Refused("Child process group identity changed"));
+    }
+    Ok(process)
+}
+
 pub(super) fn valid_start(value: &str) -> bool {
-    chrono::NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").is_ok()
+    value.strip_prefix("linux:").is_some_and(|rest| {
+        rest.split_once(':').is_some_and(|(boot, ticks)| {
+            boot.len() == 36
+                && boot.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+                && ticks.parse::<u64>().is_ok()
+        })
+    }) || chrono::NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").is_ok()
         || value.split_once('.').is_some_and(|(seconds, micros)| {
             seconds.parse::<u64>().is_ok_and(|seconds| seconds > 0)
                 && micros.len() == 6
