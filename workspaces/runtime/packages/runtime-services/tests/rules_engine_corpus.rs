@@ -184,6 +184,14 @@ fn sampled_configuration_and_exact_completion_identity_are_checked() {
     let snapshot = RuleSnapshot::from_records(due["rule"].clone(), due["owner"].clone())
         .expect("checked Python record");
     assert!(snapshot.current(&due["rule"], &due["owner"]));
+    let mut unrelated_path = due["rule"].clone();
+    unrelated_path["path"] = json!("/disposable/unused");
+    let interval =
+        RuleSnapshot::from_records(unrelated_path, due["owner"].clone()).expect("open record");
+    assert_eq!(
+        interval.fingerprint_path(due["now"].as_f64().expect("clock")),
+        None
+    );
     assert!(!snapshot.current(&find("interval-boundary-1")["rule"], &due["owner"]));
     for name in [
         "interval-stopped-autoWake",
