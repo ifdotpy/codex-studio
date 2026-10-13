@@ -448,11 +448,50 @@ class PersistedWorkItemRecord(_OpenPersistedRecord):
 
 
 class PersistedRuleRecord(_OpenPersistedRecord):
-    kind: StrictStr | None = None
-    agent: StrictStr | None = None
+    """Open rule records; only fields consumed by the rule engine are constrained."""
+
+    kind: Literal["interval", "once", "file", "event", "low_workers"] = Field(default=None)
+    agent: StrictStr = Field(default=None)
+    rootId: StrictStr = Field(default=None)
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = Field(default=None)
+    name: Annotated[StrictStr, Field(max_length=120)] = Field(default=None)
+    status: Literal["active", "paused", "completed"] = Field(default=None)
+    intervalSeconds: Annotated[StrictInt, Field(ge=10, le=31536000)] = Field(default=None)
+    nextAt: StrictFloat | StrictInt = Field(default=None)
+    created: StrictFloat | StrictInt = Field(default=None)
+    at: StrictFloat | StrictInt = Field(default=None)
+    path: StrictStr | None = None
+    event: StrictStr = Field(default=None)
+    command: Annotated[StrictStr, Field(max_length=12000)] = Field(default=None)
+    text: StrictStr = Field(default=None)
+    inFlight: StrictBool = Field(default=None)
+    checks: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = Field(default=None)
+    wakes: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = Field(default=None)
+    fingerprint: tuple[StrictInt, Annotated[StrictInt, Field(ge=0)], Annotated[StrictInt, Field(ge=0)]] | None = None
+    fileActivityAt: StrictFloat | StrictInt = Field(default=None)
+    fileGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = Field(default=None)
+    stallWakeGeneration: Annotated[StrictInt, Field(ge=-1, le=MAX_SAFE_INTEGER)] = Field(default=None)
+    stallTimeoutSeconds: Annotated[StrictInt, Field(ge=0, le=31536000)] = Field(default=None)
+    livenessCommand: Annotated[StrictStr, Field(max_length=12000)] = Field(default=None)
+    stallProbe: StrictBool = Field(default=None)
+    stallEventKey: StrictStr = Field(default=None)
+    stallText: StrictStr = Field(default=None)
+    minimumWorkers: Annotated[StrictInt, Field(ge=1, le=255)] = Field(default=None)
+    durationMinutes: Annotated[StrictInt, Field(ge=1, le=525600)] = Field(default=None)
+    activeWorkers: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = Field(default=None)
     restartCheck: dict[StrictStr, JsonValue] | None = None
-    alerted: StrictBool | None = None
+    alerted: StrictBool = Field(default=None)
     lowSince: StrictFloat | StrictInt | None = None
+    lastEvent: StrictStr = Field(default=None)
+    eventText: Annotated[StrictStr, Field(max_length=12000)] = Field(default=None)
+    lastOutput: Annotated[StrictStr, Field(max_length=12000)] = Field(default=None)
+    lastAt: StrictFloat | StrictInt = Field(default=None)
+    lastFinished: StrictFloat | StrictInt = Field(default=None)
+    lastStallFinished: StrictFloat | StrictInt = Field(default=None)
+    lastExitCode: StrictInt | None = None
+    lastStallExitCode: StrictInt | None = None
+    lastStallError: StrictStr | None = None
+    error: StrictStr | None = None
 
 
 class PersistedTranscriptInput(ContractModel):

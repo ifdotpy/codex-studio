@@ -1,0 +1,167 @@
+[
+  {
+    "id": "R01",
+    "witness": "in-flight duplicate tick",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if r.status != Status::Active || r.in_flight {",
+        "after": "if r.status != Status::Active {"
+      }
+    ]
+  },
+  {
+    "id": "R02",
+    "witness": "stopped owner epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch",
+        "after": "self.owner.deleted() || !self.owner.auto_wake"
+      }
+    ]
+  },
+  {
+    "id": "R03",
+    "witness": "native recovery hold",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "&& self.owner.recovery_pending(r.epoch)",
+        "after": "&& false"
+      }
+    ]
+  },
+  {
+    "id": "R04",
+    "witness": "schedule equality",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if r.next_at > now {",
+        "after": "if r.next_at >= now {"
+      }
+    ]
+  },
+  {
+    "id": "R05",
+    "witness": "stall equality",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": ">= r.stall_timeout_seconds as f64",
+        "after": "> r.stall_timeout_seconds as f64"
+      }
+    ]
+  },
+  {
+    "id": "R06",
+    "witness": "stall generation latch",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "r.file_generation as i64 > r.stall_wake_generation",
+        "after": "r.file_generation as i64 >= r.stall_wake_generation"
+      }
+    ]
+  },
+  {
+    "id": "R07",
+    "witness": "changed file at stall",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if fingerprint != r.fingerprint {",
+        "after": "if fingerprint == r.fingerprint {"
+      }
+    ]
+  },
+  {
+    "id": "R08",
+    "witness": "worker threshold",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if count >= minimum {",
+        "after": "if count > minimum {"
+      }
+    ]
+  },
+  {
+    "id": "R09",
+    "witness": "worker duration strict edge",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "elapsed > (duration * 60) as f64",
+        "after": "elapsed >= (duration * 60) as f64"
+      }
+    ]
+  },
+  {
+    "id": "R10",
+    "witness": "script wake suppression",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "payload.get(\"wakeAgent\") == Some(&Value::Bool(false))",
+        "after": "payload.get(\"wakeAgent\") == Some(&Value::Bool(true))"
+      }
+    ]
+  },
+  {
+    "id": "R11",
+    "witness": "one-shot completion",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if r.kind == Kind::Once && r.status == Status::Active {",
+        "after": "if false && r.kind == Kind::Once && r.status == Status::Active {"
+      }
+    ]
+  },
+  {
+    "id": "R12",
+    "witness": "event duplicate identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "|| r.last_event.as_deref() == Some(key)",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "R13",
+    "witness": "cancelled commands inactive",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "monitor.status == \"running\" && !monitor.cancel_requested",
+        "after": "monitor.status == \"running\""
+      }
+    ]
+  },
+  {
+    "id": "R14",
+    "witness": "restart no resend",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "next[\"status\"] = json!(\"paused\");\n            next[\"error\"] = json!(RESTARTED);",
+        "after": "next[\"status\"] = json!(\"active\");\n            next[\"error\"] = json!(RESTARTED);"
+      }
+    ]
+  },
+  {
+    "id": "R15",
+    "witness": "exact completion identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "if &self.check() != check || self.owner.epoch != check.epoch {",
+        "after": "if false {"
+      }
+    ]
+  }
+]
