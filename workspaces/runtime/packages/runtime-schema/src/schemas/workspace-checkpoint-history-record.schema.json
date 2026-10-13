@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "created": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Created"
+    },
+    "historyDelta": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Historydelta",
+      "type": "array"
+    },
+    "historyParent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Historyparent"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "required": ["id", "agent"],
+  "title": "WorkspaceCheckpointHistoryRecord",
+  "type": "object"
+}
