@@ -96,6 +96,10 @@ class Fixture(UsageResumeMixin, CapacityRetryMixin):
         self.observation=limits or dict(accountKey="default")
         self.marker=marker
         self.holds=[]
+        self.starts=[]
+        self.loaded=set()
+        # Capture the post-commit submission intent; never invoke its callback.
+        self.pool=SimpleNamespace(submit=lambda callback,key,attempt:self.starts.append([key,copy.deepcopy(attempt)]))
         self.settings={}
         self.accounts=SimpleNamespace(lock=contextlib.nullcontext(),_row=lambda _: self.pin)
         self.pin={}
@@ -108,6 +112,10 @@ class Fixture(UsageResumeMixin, CapacityRetryMixin):
     def rate_limits_for(self,*a): return self.observation
     def usage_resume_auth_marker(self,*a): return self.marker
     def preparation_settings(self,a): return self.settings
+    def records(self,db,table): return [json.loads(r[0]) for r in db.execute(f"SELECT record FROM runtime_{table}")]
+    def assert_workspace_available(self,db,a): pass
+    def team_agents(self,db,root_id,**kwargs): return [self.agent(root_id,db)]
+    def dispatch_active_slots(self,db): return []
     def permanent_worker_hold(self,db,a,operation,transition,reason): self.holds.append([operation,transition,reason])
     def enqueue(self,db,a,kind,text,identity):
         db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",(identity,a["id"],kind,text,"pending",NOW,a["epoch"],None,None))
@@ -116,7 +124,7 @@ class Fixture(UsageResumeMixin, CapacityRetryMixin):
         row=self.connection.execute(f"SELECT record FROM runtime_{table} ORDER BY id LIMIT 1").fetchone()
         return dict(agent=self.agent("a"),record=json.loads(row[0]) if row else None,
                     events=[dict(r) for r in self.connection.execute("SELECT * FROM runtime_events ORDER BY created,rowid")],
-                    metadata={r[0]:json.loads(r[1]) for r in self.connection.execute("SELECT id,record FROM runtime_event_meta ORDER BY id")},holds=self.holds,batch=batch or [])
+                    metadata={r[0]:json.loads(r[1]) for r in self.connection.execute("SELECT id,record FROM runtime_event_meta ORDER BY id")},holds=self.holds,batch=batch or [],starts=self.starts)
 
 
 def corpus():
@@ -139,7 +147,11 @@ def corpus():
                 f.put(f.connection,"agents",a)
             elif family=="capacity":
                 action=args["action"]
-                if action=="restart":f.capacity_restart(f.connection,a)
+                if action=="claim":
+                    f.capacity_retry("a",r["id"],"retry")
+                    a=f.agent("a")
+                elif action=="error":f.capacity_error(f.connection,a,args["attempt"],ValueError(args["reason"]),args["unknown"])
+                elif action=="restart":f.capacity_restart(f.connection,a)
                 elif action=="reset":f.capacity_reset(f.connection,a,args["reason"])
                 elif action=="wait":f.capacity_wait(f.connection,a,r,args["reason"])
                 elif action=="accepted":f.capacity_started(f.connection,a,args["attempt"],args["turn"])
@@ -157,13 +169,13 @@ def corpus():
         cases.append(dict(name=name,family=family,input=data,args=args,expected=expected))
         f.connection.close()
     inputs=json.loads((Path(__file__).parent.parent/"continuation/cases.json").read_text())
-    witnesses={"usage-observation-stale-True","create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False","claude-proof-readyaccount","claude-proof-readyforeign","claude-input-text","claude-account-pin-changed","claude-wrong-credential"}
+    witnesses={"capacity-claim-success","capacity-error-known","capacity-error-unknown","usage-observation-stale-True","create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False","claude-proof-readyaccount","claude-proof-readyforeign","claude-input-text","claude-account-pin-changed","claude-wrong-credential"}
     if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL")!="1":inputs=[case for case in inputs if case["name"] in witnesses or case["name"] in {"capacity-create-server-0","capacity-create-network-7"}]
     for case in inputs:add(case["name"],case["family"],case["input"],**case["args"])
     return cases
 
 
-def template(path, wake_fixture=False):
+def template(path, kind="usage"):
     path.mkdir(parents=True,exist_ok=True)
     schema=json.loads((ROOT/"workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json").read_text())
     for name in ("canvas.sqlite3","analytics.sqlite3"):
@@ -182,8 +194,10 @@ def template(path, wake_fixture=False):
         if name=="canvas.sqlite3":
             a=agent();r=resume()
             with patch("time.time",return_value=800.0):UsageResumeMixin.usage_resume_save(None,db,a,r)
+            if kind=="capacity":
+                with patch("time.time",return_value=800.0):CapacityRetryMixin.capacity_save(None,db,a,retry())
             db.execute("INSERT INTO runtime_agents VALUES (?,?)",("a",json.dumps(a)))
-            if wake_fixture:
+            if kind=="wake":
                 cases=json.loads((Path(__file__).parent.parent/"continuation/cases.json").read_text())
                 data=next(c["input"] for c in cases if c["name"]=="progress-(1, 2)")
                 fixture=Fixture(data)
@@ -195,5 +209,5 @@ def template(path, wake_fixture=False):
 
 
 if __name__=="__main__":
-    if len(sys.argv)>1 and sys.argv[1]=="template":template(Path(sys.argv[2]), len(sys.argv)>3 and sys.argv[3]=="wake")
+    if len(sys.argv)>1 and sys.argv[1]=="template":template(Path(sys.argv[2]), sys.argv[3] if len(sys.argv)>3 else "usage")
     else:print(json.dumps(corpus(),allow_nan=False))

@@ -9439,5 +9439,266 @@
         }
       }
     }
+  },
+  {
+    "name": "capacity-claim-success",
+    "family": "capacity",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetry": {
+          "id": "retry",
+          "accountKey": "default",
+          "threadId": "thread",
+          "epoch": 1,
+          "turnId": "turn",
+          "cause": "serverOverloaded",
+          "status": "scheduled",
+          "dueAt": 990.0,
+          "attempt": 1,
+          "maxAttempts": 4,
+          "cwd": "/fixture",
+          "settings": {},
+          "taskClaims": []
+        },
+        "inFlight": false
+      },
+      "record": {
+        "id": "retry",
+        "accountKey": "default",
+        "threadId": "thread",
+        "epoch": 1,
+        "turnId": "turn",
+        "cause": "serverOverloaded",
+        "status": "scheduled",
+        "dueAt": 990.0,
+        "attempt": 1,
+        "maxAttempts": 4,
+        "cwd": "/fixture",
+        "settings": {},
+        "taskClaims": []
+      },
+      "ancestors": [],
+      "claims": [],
+      "events": [
+        {
+          "id": "prior-event",
+          "agent": "a",
+          "epoch": 1,
+          "kind": "user",
+          "text": "The retained instruction",
+          "status": "delivered",
+          "created": 700.0,
+          "turn_id": "turn",
+          "error": null
+        }
+      ],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "action": "claim",
+      "settings": {}
+    }
+  },
+  {
+    "name": "capacity-error-known",
+    "family": "capacity",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "starting",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetry": {
+          "id": "retry",
+          "accountKey": "default",
+          "threadId": "thread",
+          "epoch": 1,
+          "turnId": "turn",
+          "cause": "serverOverloaded",
+          "status": "starting",
+          "dueAt": 990.0,
+          "attempt": 1,
+          "maxAttempts": 4,
+          "cwd": "/fixture",
+          "settings": {},
+          "taskClaims": [],
+          "claimedAt": 990.0
+        },
+        "startAttempt": {
+          "id": "capacity:retry",
+          "epoch": 1,
+          "action": "capacity",
+          "capacityRetryId": "retry",
+          "accountKey": "default",
+          "submitted": true,
+          "events": []
+        },
+        "inFlight": true
+      },
+      "record": {
+        "id": "retry",
+        "accountKey": "default",
+        "threadId": "thread",
+        "epoch": 1,
+        "turnId": "turn",
+        "cause": "serverOverloaded",
+        "status": "starting",
+        "dueAt": 990.0,
+        "attempt": 1,
+        "maxAttempts": 4,
+        "cwd": "/fixture",
+        "settings": {},
+        "taskClaims": [],
+        "claimedAt": 990.0
+      },
+      "ancestors": [],
+      "claims": [],
+      "events": [
+        {
+          "id": "prior-event",
+          "agent": "a",
+          "epoch": 1,
+          "kind": "user",
+          "text": "The retained instruction",
+          "status": "delivered",
+          "created": 700.0,
+          "turn_id": "turn",
+          "error": null
+        }
+      ],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "action": "error",
+      "attempt": {
+        "id": "capacity:retry",
+        "epoch": 1,
+        "action": "capacity",
+        "capacityRetryId": "retry",
+        "accountKey": "default",
+        "submitted": true,
+        "events": []
+      },
+      "reason": "Injected capacity failure",
+      "unknown": false
+    }
+  },
+  {
+    "name": "capacity-error-unknown",
+    "family": "capacity",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "starting",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetry": {
+          "id": "retry",
+          "accountKey": "default",
+          "threadId": "thread",
+          "epoch": 1,
+          "turnId": "turn",
+          "cause": "serverOverloaded",
+          "status": "starting",
+          "dueAt": 990.0,
+          "attempt": 1,
+          "maxAttempts": 4,
+          "cwd": "/fixture",
+          "settings": {},
+          "taskClaims": [],
+          "claimedAt": 990.0
+        },
+        "startAttempt": {
+          "id": "capacity:retry",
+          "epoch": 1,
+          "action": "capacity",
+          "capacityRetryId": "retry",
+          "accountKey": "default",
+          "submitted": true,
+          "events": []
+        },
+        "inFlight": true
+      },
+      "record": {
+        "id": "retry",
+        "accountKey": "default",
+        "threadId": "thread",
+        "epoch": 1,
+        "turnId": "turn",
+        "cause": "serverOverloaded",
+        "status": "starting",
+        "dueAt": 990.0,
+        "attempt": 1,
+        "maxAttempts": 4,
+        "cwd": "/fixture",
+        "settings": {},
+        "taskClaims": [],
+        "claimedAt": 990.0
+      },
+      "ancestors": [],
+      "claims": [],
+      "events": [
+        {
+          "id": "prior-event",
+          "agent": "a",
+          "epoch": 1,
+          "kind": "user",
+          "text": "The retained instruction",
+          "status": "delivered",
+          "created": 700.0,
+          "turn_id": "turn",
+          "error": null
+        }
+      ],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "action": "error",
+      "attempt": {
+        "id": "capacity:retry",
+        "epoch": 1,
+        "action": "capacity",
+        "capacityRetryId": "retry",
+        "accountKey": "default",
+        "submitted": true,
+        "events": []
+      },
+      "reason": "Injected capacity failure",
+      "unknown": true
+    }
   }
 ]

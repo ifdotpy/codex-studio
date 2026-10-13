@@ -95,12 +95,11 @@ impl ContinuationRepository {
                     |r| r.get::<_, String>(0),
                 )
                 .optional()?;
-            Some(serde_json::from_str::<Value>(&row.ok_or_else(|| {
-                StoreError::InvalidStoredObject {
-                    table: table.name(),
-                    id: id.into(),
-                }
-            })?)?)
+            let invalid = || StoreError::InvalidStoredObject {
+                table: table.name(),
+                id: id.into(),
+            };
+            Some(serde_json::from_str::<Value>(&row.ok_or_else(invalid)?).map_err(|_| invalid())?)
         } else {
             None
         };

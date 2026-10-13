@@ -72,6 +72,14 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
         }
         "capacity" => {
             let action = match args["action"].as_str().expect("action") {
+                "claim" => capacity_retry::Action::Claim {
+                    settings: &args["settings"],
+                },
+                "error" => capacity_retry::Action::Error {
+                    attempt: &args["attempt"],
+                    reason: args["reason"].as_str().expect("reason"),
+                    unknown: args["unknown"].as_bool().expect("unknown"),
+                },
                 "restart" => capacity_retry::Action::Restart,
                 "reset" => capacity_retry::Action::Reset(args["reason"].as_str().expect("reason")),
                 "wait" => capacity_retry::Action::Wait(args["reason"].as_str().expect("reason")),
@@ -110,7 +118,7 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
     }
 }
 fn apply(input: &Value, d: Decision) -> Value {
-    let mut result = json!({"agent":input["agent"],"record":input["record"],"events":input["events"],"metadata":input["metadata"],"holds":[],"batch":d.batch});
+    let mut result = json!({"agent":input["agent"],"record":input["record"],"events":input["events"],"metadata":input["metadata"],"holds":[],"batch":d.batch,"starts":[]});
     if let Some(a) = d.agent {
         result["agent"] = a;
     }
@@ -133,7 +141,7 @@ fn apply(input: &Value, d: Decision) -> Value {
         match effect{
         Effect::Followup{id,text}=>result["events"].as_array_mut().expect("events").push(json!({"id":id,"agent":input["agent"]["id"],"epoch":input["agent"]["epoch"],"kind":"followup","text":text,"status":"pending","created":1000.0,"turn_id":null,"error":null})),
         Effect::WorkerHold{operation,transition,reason}=>result["holds"].as_array_mut().expect("holds").push(json!([operation,transition,reason])),
-        Effect::CapacityStart{..}=>panic!("no sends in oracle"),
+        Effect::CapacityStart{attempt}=>result["starts"].as_array_mut().expect("starts").push(json!([input["agent"]["id"],attempt])),
     }
     }
     result
@@ -346,5 +354,53 @@ fn exact_unsent_receipt_is_retained_and_profile_probe_slots_are_bounded() {
     assert_eq!(
         plan.writes[0].1.record.as_ref().expect("deadline")["dueAt"],
         1180.0
+    );
+}
+
+#[test]
+fn probe_plan_selects_only_the_earliest_sixteen_due_rows() {
+    let cases = oracle(&[]);
+    let raw = cases
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "claude-proof-readyaccount")
+        .expect("auth fixture")["input"]
+        .clone();
+    let mut snapshots = Vec::new();
+    let mut settings = std::collections::BTreeMap::new();
+    let pins =
+        std::collections::BTreeMap::from([("default".into(), raw["record"]["accountPin"].clone())]);
+    for index in (0..40).rev() {
+        let mut row = raw.clone();
+        let id = format!("a-{index}");
+        row["agent"]["id"] = json!(id);
+        row["agent"]["rootId"] = json!(id);
+        row["record"]["agent"] = json!(id);
+        row["record"]["id"] = json!(format!("receipt-{index}"));
+        row["record"]["dueAt"] = json!(900.0 + index as f64);
+        // These are valid stored rows whose original source changed; each selected row cancels.
+        for event in row["events"].as_array_mut().expect("events") {
+            event["agent"] = json!(id);
+        }
+        settings.insert(id, json!({}));
+        snapshots.push(Snapshot::from_records(row).expect("checked input"));
+    }
+    let plan = claude_auth_wait::plan_probes(
+        &snapshots,
+        &std::collections::BTreeSet::new(),
+        &settings,
+        &pins,
+        1000.0,
+    )
+    .expect("plan");
+    assert!(plan.jobs.is_empty());
+    assert_eq!(plan.writes.len(), 16);
+    assert_eq!(
+        plan.writes
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        (0..16).map(|i| format!("a-{i}")).collect::<Vec<_>>()
     );
 }
