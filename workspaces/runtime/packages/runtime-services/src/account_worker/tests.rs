@@ -224,6 +224,7 @@ impl Peer {
             }
             TaskExit {
                 result: Ok(()),
+                cleanup_error: None,
                 recovery_needed: None,
             }
         });

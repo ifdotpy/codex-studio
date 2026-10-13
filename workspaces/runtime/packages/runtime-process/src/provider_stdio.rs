@@ -133,9 +133,11 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                     })
                     .and(reaped.map(|_| ()))
                     .map_err(process_error);
+                let cleanup_error = cleanup.as_ref().err().map(ToString::to_string);
                 drop(state);
                 TaskExit {
                     result: cleanup.and(result),
+                    cleanup_error,
                     recovery_needed: None,
                 }
             });

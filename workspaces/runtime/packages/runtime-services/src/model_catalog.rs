@@ -647,6 +647,7 @@ mod tests {
                     drop(state);
                     TaskExit {
                         result: Ok(()),
+                        cleanup_error: None,
                         recovery_needed: None,
                     }
                 });

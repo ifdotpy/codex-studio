@@ -218,6 +218,7 @@ impl AdapterTask {
         let recovery_needed = self.status.borrow().initialization_recovery();
         TaskExit {
             result,
+            cleanup_error: None,
             recovery_needed,
         }
     }
