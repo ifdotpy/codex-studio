@@ -20,6 +20,7 @@ isolate_supervisor_environment()
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
+from codex_session_names import identity as native_name_identity
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -73,6 +74,8 @@ def update_agent(backend, agent_id: str, changes: dict[str, object], remove=()) 
             )
         for key in remove:
             record.pop(key, None)
+        if "threadId" in changes:
+            record["nativeNameSynced"] = native_name_identity(record)
         database.execute(
             "UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id),
         )
@@ -446,6 +449,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
             ).fetchone()[0])
             agent["threadId"] = "same-managed-thread"
+            agent["nativeNameSynced"] = native_name_identity(agent)
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
             database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
                 "registered-child", json.dumps({"id": "registered-child", "parentId": self.agent_id}),
@@ -620,6 +624,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "id": message_id, "room": agent_id, "text": text,
             }, headers=self.headers())
             self.assertEqual(response.status, 200, response.body[:1000])
+            self.backend.wait_for_agent_preparation(agent_id)
             self.assertEqual(
                 managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
             )
@@ -631,6 +636,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": message_id, "room": agent_id, "text": "Busy input",
         }, headers=self.headers())
         self.assertEqual(response.status, 200, response.body[:1000])
+        self.backend.wait_for_agent_preparation(agent_id)
         self.assertEqual(
             managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
         )
@@ -645,6 +651,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": message_id, "room": agent_id, "text": "Replace retry",
         }, headers=self.headers())
         self.assertEqual(response.status, 200, response.body[:1000])
+        self.backend.wait_for_agent_preparation(agent_id)
         self.assertEqual(
             managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
         )

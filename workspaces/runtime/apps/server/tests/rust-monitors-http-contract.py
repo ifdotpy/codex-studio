@@ -18,7 +18,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_state(backend) -> None:
@@ -301,11 +301,26 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertNotEqual(resumed.json()["fingerprint"], fingerprint)
         self.assertEqual(resumed.json()["fileGeneration"], generation + 1)
 
+    def start_quiescent_backend(self) -> None:
+        # Lifecycle tests resume periodic rules and cancel pending monitors.
+        # Exact no-write proofs need their own owner with no timers or active
+        # monitors; terminal monitors remain available for the input/cancel API.
+        backend = BackendProcess(Path(os.environ["TMPDIR"]))
+        self.addCleanup(backend.close)
+        backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+        seed_state(backend)
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            database.execute("DELETE FROM runtime_rules")
+            database.execute("DELETE FROM runtime_monitors WHERE json_extract(record,'$.status') != 'completed'")
+        backend.start()
+        self.backend = backend
+
     def test_low_worker_idempotence_and_fresh_save_field_set(self) -> None:
+        self.start_quiescent_backend()
         backend = self.backend
         blank_liveness = backend.request("POST", "/api/rules", headers=self.headers(), body={
             "action": "save", "id": "blank-live", "agent": "monitor-contract-agent",
-            "name": "Blank liveness", "kind": "interval", "livenessCommand": "   ",
+            "name": "Blank liveness", "kind": "event", "event": "worker_completed", "livenessCommand": "   ",
         })
         self.assertEqual(blank_liveness.status, 200, blank_liveness.body[:1000])
         self.assertEqual(blank_liveness.json()["livenessCommand"], "")
@@ -409,6 +424,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_null_resize_fields_are_refused_without_writes(self) -> None:
+        self.start_quiescent_backend()
         before = no_write_snapshot(self.backend.state)
         for name in ("rows", "cols"):
             response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id": "contract-monitor", name: None})
@@ -418,6 +434,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive(self) -> None:
+        self.start_quiescent_backend()
         before = no_write_snapshot(self.backend.state)
         for _ in range(2):
             response = self.backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})

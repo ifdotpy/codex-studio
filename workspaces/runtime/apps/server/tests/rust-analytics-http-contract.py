@@ -24,6 +24,7 @@ import json, os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
+from codex_session_names import identity as native_name_identity
 runtime = Runtime(Path(os.environ['CODEX_AGENTS_STATE_DIR']))
 try:
     agent = {{'id':'analytics-contract-agent','rootId':'analytics-contract-agent','epoch':0,
@@ -32,6 +33,9 @@ try:
         'turnId':'analytics-turn','accountKey':'default','accountHistory':[],'model':'fixture-model'}}
     teammate = {{**agent,'id':'analytics-contract-teammate','parentId':agent['id'],
         'rootId':agent['id'],'isLead':False,'name':'Analytics teammate'}}
+    # Idle agents with threads still participate in background name sync.
+    for stored_agent in (agent, teammate):
+        stored_agent['nativeNameSynced'] = native_name_identity(stored_agent)
     with runtime.lock, runtime.db(analytics=True) as db:
         runtime.put(db, 'agents', agent, sync_rooms=False)
         runtime.analytics_agent(db, agent)
