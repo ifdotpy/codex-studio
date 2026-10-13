@@ -322,10 +322,13 @@ mod tests {
     #[test]
     fn legacy_context_over_200k_boundary_is_strict() {
         let catalog = PricingCatalog::from_value(&json!({
-            "providers": {"openai": {"models": {"gpt-legacy": {"cost": {
-                "input": 1, "output": 2,
-                "context_over_200k": {"input": 10, "output": 20}
-            }}}}}
+            "providers": {
+                "openai": {"models": {"gpt-legacy": {"cost": {
+                    "input": 1, "output": 2,
+                    "context_over_200k": {"input": 10, "output": 20}
+                }}}},
+                "anthropic": {"models": {"claude-test": {"cost": {"input": 1, "output": 1}}}}
+            }
         }))
         .expect("legacy catalog");
         let usage = json!({"inputTokens":100,"outputTokens":10});

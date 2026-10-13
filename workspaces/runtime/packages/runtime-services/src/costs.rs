@@ -72,7 +72,8 @@ pub fn session_cost_with_accounts(
                 .map(String::as_str)
                 .filter(|value| !value.is_empty())
         });
-        has_claude_history |= resolved_provider == Some("claude");
+        has_claude_history |=
+            crate::analytics::current_account_is_claude(record, account_providers);
         if let Some(resolved) = resolved_provider.and_then(pricing_provider) {
             providers_by_account.insert(account_key.to_owned(), resolved.to_owned());
         }

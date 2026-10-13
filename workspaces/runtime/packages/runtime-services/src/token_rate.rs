@@ -194,4 +194,25 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn maximum_agent_bound_is_enforced_for_rates_and_team_members() {
+        let value = json!({"turnId":"t","active":true,"estimated":false,"rate":0,"outputTokens":0});
+        let rates = (0..=1024)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        assert!(
+            TokenRateHub::new()
+                .publish(json!({"rates":rates,"teams":{}}))
+                .is_err()
+        );
+        let team = (0..=1024)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        assert!(
+            TokenRateHub::new()
+                .publish(json!({"rates":{},"teams":{"root":team}}))
+                .is_err()
+        );
+    }
 }
