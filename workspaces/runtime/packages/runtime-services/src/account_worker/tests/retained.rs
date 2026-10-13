@@ -160,11 +160,16 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
         )
     });
     let first_wire = peer.write("thread/read").await;
-    peer.reply(
-        &first_wire,
-        json!({"thread":{"id":"fake-thread-0","revision":1}}),
-    )
+    let first_cursor = peer
+        .frame(json!({
+            "id":first_wire["id"],
+            "result":{"thread":{"id":"fake-thread-0","revision":1}}
+        }))
         .await;
+    tokio::select! {
+        _ = peer.acknowledged(first_cursor) => {},
+        result = worker.completion() => panic!("worker exited before first history ACK: {result:?}"),
+    }
     let first_result: HistoryReceipt = first.await.unwrap().unwrap();
 
     let second_scope = scope.clone();
@@ -195,11 +200,16 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     };
     assert_eq!(second_wire["method"], "thread/read");
     assert_ne!(first_wire["id"], second_wire["id"]);
-    peer.reply(
-        &second_wire,
-        json!({"thread":{"id":"fake-thread-0","revision":2}}),
-    )
+    let second_cursor = peer
+        .frame(json!({
+            "id":second_wire["id"],
+            "result":{"thread":{"id":"fake-thread-0","revision":2}}
+        }))
         .await;
+    tokio::select! {
+        _ = peer.acknowledged(second_cursor) => {},
+        result = worker.completion() => panic!("worker exited before second history ACK: {result:?}"),
+    }
     let second_result = second.await.unwrap().unwrap();
     assert_eq!(first_result.body["thread"]["revision"], 1);
     assert_eq!(second_result.body["thread"]["revision"], 2);

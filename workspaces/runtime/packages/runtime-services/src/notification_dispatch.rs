@@ -1000,6 +1000,10 @@ fn write_text_notification(
                     &stream_base_id(&existing),
                     Some(&previous),
                 )?;
+            } else {
+                // An unflushed provider snapshot supersedes the buffered text
+                // that preceded it; later deltas append to the snapshot.
+                streams.replace_unflushed_with_snapshot(&existing);
             }
         }
     }
