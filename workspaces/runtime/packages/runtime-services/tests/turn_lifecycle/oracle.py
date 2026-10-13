@@ -4,68 +4,15 @@ The JSONL protocol accepts seed/transition/snapshot commands. A seed is written
 with Runtime.create/put/enqueue and codex_execution's production writers, then
 SQLite backup copies that *pre-transition* database for the Rust caller.
 """
-# Install before importing any application code, using the account database rather
-# than HOME (which is deliberately replaced by the HTTP harness below).
+# Install the shared guard before importing any application code.
 import os
 import pathlib
-import pwd
 import sys
+from oracle_guard import install_guard
 
-_REAL_HOME = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-_FORBIDDEN = tuple((_REAL_HOME / name).resolve() for name in (".codex", ".claude"))
-
-class IsolationViolation(BaseException):
-    pass
-
-
-def guard(event, args):
-    global _CHECKING_PATH
-    if event in {"open", "os.listdir", "os.scandir", "os.stat", "os.lstat", "os.fstatat"}:
-        path = args[0] if args else None
-        if isinstance(path, (str, bytes, os.PathLike)):
-            checking = globals().get("_CHECKING_PATH", False)
-            _CHECKING_PATH = True
-            try:
-                resolved = pathlib.Path(os.fsdecode(path)).resolve()
-            finally:
-                _CHECKING_PATH = checking
-            if any(resolved == forbidden or forbidden in resolved.parents for forbidden in _FORBIDDEN):
-                raise IsolationViolation("oracle refused access to a real provider home")
-    if event == "socket.connect":
-        raise IsolationViolation("network is forbidden in lifecycle oracle")
-
-
-sys.addaudithook(guard)
-# CPython emits no audit event for stat/lstat; enforce the same boundary there.
-_ORIGINAL_STAT, _ORIGINAL_LSTAT = os.stat, os.lstat
-_CHECKING_PATH = False
-def guarded_stat(original, path, *args, **kwargs):
-    global _CHECKING_PATH
-    if not _CHECKING_PATH:
-        _CHECKING_PATH = True
-        try:
-            guard("os.stat", (path,))
-        finally:
-            _CHECKING_PATH = False
-    return original(path, *args, **kwargs)
-os.stat = lambda path, *a, **kw: guarded_stat(_ORIGINAL_STAT, path, *a, **kw)
-os.lstat = lambda path, *a, **kw: guarded_stat(_ORIGINAL_LSTAT, path, *a, **kw)
+_GUARD = install_guard()
 if "--guard-test" in sys.argv:
-    for forbidden in _FORBIDDEN:
-        try:
-            open(forbidden / "oracle-guard-must-not-open", "rb")
-        except IsolationViolation:
-            pass
-        else:
-            raise AssertionError("real provider home was not blocked")
-        for operation in (os.stat, os.lstat, os.listdir, os.scandir):
-            try:
-                operation(forbidden / "oracle-guard-must-not-open")
-            except IsolationViolation:
-                pass
-            else:
-                raise AssertionError("provider-home metadata access was not blocked")
-    print("guard refused both real provider homes")
+    _GUARD.self_test()
     sys.exit(0)
 
 SERVER = pathlib.Path(__file__).resolve().parents[4] / "apps/server"
