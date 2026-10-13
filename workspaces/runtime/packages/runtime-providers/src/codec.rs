@@ -237,6 +237,26 @@ pub enum Frame {
     },
 }
 
+/// The decoded contents of one supervisor stdout journal entry.
+#[derive(Debug, PartialEq)]
+pub enum DecodedJournalPayload {
+    Frame(Frame),
+    /// The payload was not a protocol frame. Its bytes and decoding error stay
+    /// attached to the journal cursor so a caller can settle or expose it.
+    RawStdout {
+        bytes: Vec<u8>,
+        error: CodecError,
+    },
+}
+
+/// A decoded stdout record, retaining the journal identity on both paths.
+#[derive(Debug, PartialEq)]
+pub struct DecodedJournalEntry {
+    pub cursor: u64,
+    pub generation: u64,
+    pub payload: DecodedJournalPayload,
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum CodecError {
     #[error("invalid JSON frame: {0}")]
@@ -356,6 +376,34 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
     }))
 }
 
+/// Decode a complete supervisor stdout journal record without losing its
+/// cursor when its payload is not valid protocol JSON.
+pub fn decode_journal_entry(cursor: u64, generation: u64, bytes: Vec<u8>) -> DecodedJournalEntry {
+    let mut line = bytes.as_slice();
+    if let Some(without_newline) = line.strip_suffix(b"\n") {
+        line = without_newline;
+        if let Some(without_carriage_return) = line.strip_suffix(b"\r") {
+            line = without_carriage_return;
+        }
+    }
+    let decoded = if line.len() > MAX_FRAME_BYTES {
+        Err(CodecError::FrameTooLarge {
+            limit: MAX_FRAME_BYTES,
+        })
+    } else {
+        decode_frame(line)
+    };
+    let payload = match decoded {
+        Ok(frame) => DecodedJournalPayload::Frame(frame),
+        Err(error) => DecodedJournalPayload::RawStdout { bytes, error },
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload,
+    }
+}
+
 fn serialize_error(error: serde_json::Error) -> CodecError {
     CodecError::Serialization(error.to_string())
 }
@@ -415,4 +463,17 @@ pub fn encode_line(frame: &Frame) -> Result<Vec<u8>, CodecError> {
     }
     output.push(b'\n');
     Ok(output)
+}
+
+/// Validate provider initialization parameters before opening a child process.
+/// The request ID used here is the shortest wire-valid ID; `SessionState`
+/// validates the final generated ID again before it emits the initialize write.
+pub fn validate_initialize_params(params: &Value) -> Result<(), CodecError> {
+    encode_line(&Frame::Request(RequestFrame {
+        id: RequestId::Number(1),
+        method: Method::Initialize,
+        params: Some(params.clone()),
+        fields: Map::new(),
+    }))
+    .map(|_| ())
 }

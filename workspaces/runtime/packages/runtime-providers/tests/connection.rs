@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 use studio_runtime_providers::{
-    Action, Frame, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame, RequestId, RequestOutcome,
-    RequestTicket, ResponseBody, SessionState, encode_line,
+    Action, Frame, InitializationStatus, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame,
+    RequestId, RequestOutcome, RequestTicket, ResponseBody, SessionState, encode_line,
+    validate_initialize_params,
 };
 
 const INIT: &str = r#"{"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}"#;
@@ -91,6 +92,15 @@ fn recovered_requests_keep_a_finite_configured_deadline() {
     )
     .expect("recovered request should register");
     assert!(state.expire(14).1.is_empty());
+    assert_eq!(state.next_deadline_ms(), Some(15));
+    state
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    assert_eq!(state.next_deadline_ms(), Some(15));
     let (_, actions) = state.expire(15);
     assert!(actions.iter().any(|action| matches!(
         action,
@@ -99,6 +109,104 @@ fn recovered_requests_keep_a_finite_configured_deadline() {
             outcome: RequestOutcome::Unknown,
         } if id == &recovered_id
     )));
+}
+
+#[test]
+fn initialization_validation_is_a_pure_refusal_before_session_creation() {
+    assert!(validate_initialize_params(&json!({"capabilities":{}})).is_ok());
+    let invalid = json!({"payload":"x".repeat(MAX_FRAME_BYTES)});
+    assert!(matches!(
+        validate_initialize_params(&invalid),
+        Err(studio_runtime_providers::CodecError::FrameTooLarge { .. })
+    ));
+    assert!(matches!(
+        SessionState::new(1, false, 0, 10, invalid),
+        Err(studio_runtime_providers::SessionError::Codec(
+            studio_runtime_providers::CodecError::FrameTooLarge { .. }
+        ))
+    ));
+}
+
+#[test]
+fn readiness_waits_for_the_initialized_write_receipt() {
+    let (mut session, _) =
+        SessionState::new(77, false, 0, 10, json!({})).expect("session creation");
+    assert_eq!(
+        session.initialization_status(),
+        InitializationStatus::AwaitingReply
+    );
+    assert!(matches!(
+        session.mark_initialized_notification_written(),
+        Err(studio_runtime_providers::SessionError::InitializationNotReady)
+    ));
+
+    let actions = session
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::Write(bytes) if serde_json::from_slice::<Value>(bytes.strip_suffix(b"\n").unwrap_or(bytes))
+            .is_ok_and(|value| value.get("method").and_then(Value::as_str) == Some("initialized"))
+    )));
+    assert_eq!(session.lifecycle(), Lifecycle::Ready);
+    assert_eq!(
+        session.initialization_status(),
+        InitializationStatus::InitializedWritePending
+    );
+    session
+        .mark_initialized_notification_written()
+        .expect("write receipt completes initialization");
+    assert_eq!(session.initialization_status(), InitializationStatus::Ready);
+    session
+        .mark_initialized_notification_written()
+        .expect("duplicate completion receipt is idempotent");
+}
+
+#[test]
+fn initialization_refusal_and_unanswered_transport_have_distinct_readiness() {
+    let (mut refused, _) =
+        SessionState::new(78, false, 0, 10, json!({})).expect("session creation");
+    refused
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Error(json!({"code":-1})),
+            fields: Default::default(),
+        })
+        .expect("initialize refusal");
+    assert_eq!(
+        refused.initialization_status(),
+        InitializationStatus::Refused
+    );
+
+    let (mut lost, _) = SessionState::new(79, false, 0, 10, json!({})).expect("session creation");
+    lost.transport_lost();
+    assert_eq!(lost.initialization_status(), InitializationStatus::Unknown);
+
+    let (mut write_lost, _) =
+        SessionState::new(80, false, 0, 10, json!({})).expect("session creation");
+    write_lost
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    write_lost.transport_lost();
+    assert_eq!(
+        write_lost.initialization_status(),
+        InitializationStatus::InitializedWritePending
+    );
+    write_lost
+        .mark_initialized_notification_written()
+        .expect("a late positive write receipt completes initialization");
+    assert_eq!(
+        write_lost.initialization_status(),
+        InitializationStatus::Ready
+    );
 }
 
 #[test]
