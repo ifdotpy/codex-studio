@@ -107,6 +107,16 @@ def validate_missing_service_exclusions(
 # override query/header values and top-level body fields. A value prefixed with
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
+    ("POST", "/api/agents/account"): {
+        "primary": {"body": {"id": "$agent", "account_key": "default"}, "replace_body": True,
+                    "expected": "2xx", "assert_no_write": True},
+    },
+    ("POST", "/api/agents/account-transfer"): {
+        "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
+                             "request_id": "60606060-6060-4060-8060-606060606060"}, "replace_body": True,
+                    "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
+                    "assert_no_write": True},
+    },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
@@ -234,14 +244,17 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "2xx"},
+        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "501",
+                    "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
+                    "reason": "The Python cache lacks the merged registry provider signature and no pricing artifact is seeded.",
+                    "assert_no_write": True},
         "additional": [{
             "name": "stale cost cache requires refresh",
             "query": {"agent": "$analyticsAgent"},
             "fixture_mutations": {"stale_session_cost_cache": True},
             "restore": ["session_cost_cache"],
             "expected": "501",
-            "expected_error": "Not implemented: requires costs/pricing-refresh",
+            "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
             "assert_no_write": True,
         }],
     },
@@ -341,7 +354,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/costs"): {
-        "primary": {"query": {"account_key": "default"}},
+        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/desktop"): {
         "primary": {"query": {"account_key": "default"}},
@@ -543,8 +556,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
-    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
+    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
     ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "501", "assert_no_write": True}},
