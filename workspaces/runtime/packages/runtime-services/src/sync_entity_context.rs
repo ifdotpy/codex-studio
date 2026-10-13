@@ -226,6 +226,7 @@ impl RoomDirectory {
             peers,
         })
     }
+    /// Recheck persisted inputs in the consumer's snapshot without resolving paths again.
     pub(crate) fn matches(&self, connection: &Connection) -> StoreResult<bool> {
         Ok(self.agents == records::all(connection, "runtime_agents")?
             && self.projects == records::all(connection, "runtime_projects")?)
