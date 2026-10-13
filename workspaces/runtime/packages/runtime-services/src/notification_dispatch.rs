@@ -746,88 +746,18 @@ pub(crate) fn prune_inactive_streams(
             rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
         ).map_err(StoreError::from)?;
         if recovering && active && !streams.has_pending(&key) && streams.has_base(&key) {
-            let owner = if key.agent_id.is_empty() {
-                transaction
-                    .query_row(
-                        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
-                        rusqlite::params![key.account, key.thread],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()
-            } else {
-                transaction
-                    .query_row(
-                        "SELECT id,record FROM runtime_agents WHERE id=?1",
-                        [&key.agent_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()
-            }
-            .map_err(StoreError::from)?;
-            if let Some((id, raw)) = owner {
-                let mut projection: Value =
-                    serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
-                projection["turnId"] = json!(key.turn);
-                projection["deletedAt"] = Value::Null;
-                flush_selected(
-                    transaction,
-                    &id,
-                    &mut projection,
-                    streams,
-                    Some(&key),
-                    observed_at,
-                    StreamFlushOptions {
-                        allow_reassigned_owner: true,
-                        close_stream: false,
-                    },
-                )?;
-            }
+            flush_reassigned_stream(transaction, streams, &key, observed_at, false)?;
             continue;
         }
         if !active {
             // Cursor acknowledgement already made this text durable. Retiring a
             // stream must materialize it even after its turn/agent becomes inactive.
-            let owner = if key.agent_id.is_empty() {
-                transaction
-                    .query_row(
-                        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
-                        rusqlite::params![key.account, key.thread],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()
-            } else {
-                transaction
-                    .query_row(
-                        "SELECT id,record FROM runtime_agents WHERE id=?1",
-                        [&key.agent_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .optional()
-            }
-            .map_err(StoreError::from)?;
-            let Some((id, raw)) = owner else {
+            if !flush_reassigned_stream(transaction, streams, &key, observed_at, true)? {
                 // The owner may have been deleted or have legacy identity that
                 // cannot be recovered. Keep the durable stream, but do not make
                 // account startup fail permanently.
                 continue;
-            };
-            let mut projection: Value =
-                serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
-            // Only the transcript is written. Never restore an obsolete lifecycle.
-            projection["turnId"] = json!(key.turn);
-            projection["deletedAt"] = Value::Null;
-            flush_selected(
-                transaction,
-                &id,
-                &mut projection,
-                streams,
-                Some(&key),
-                observed_at,
-                StreamFlushOptions {
-                    allow_reassigned_owner: true,
-                    close_stream: true,
-                },
-            )?;
+            }
             NotificationDispatchRepository::put_stream_base(
                 transaction,
                 &stream_base_id(&key),
@@ -837,6 +767,65 @@ pub(crate) fn prune_inactive_streams(
         }
     }
     Ok(())
+}
+
+fn flush_reassigned_stream(
+    transaction: &Transaction<'_>,
+    streams: &mut NotificationStreamBuffer,
+    key: &StreamKey,
+    observed_at: f64,
+    close_stream: bool,
+) -> Result<bool, NotificationDispatchError> {
+    let Some((id, mut projection)) = stream_owner(transaction, key)? else {
+        return Ok(false);
+    };
+    // Recovery may materialize transcript text without restoring stale lifecycle fields.
+    projection["turnId"] = json!(key.turn);
+    projection["deletedAt"] = Value::Null;
+    flush_selected(
+        transaction,
+        &id,
+        &mut projection,
+        streams,
+        Some(key),
+        observed_at,
+        StreamFlushOptions {
+            allow_reassigned_owner: true,
+            close_stream,
+        },
+    )?;
+    Ok(true)
+}
+
+fn stream_owner(
+    transaction: &Transaction<'_>,
+    key: &StreamKey,
+) -> Result<Option<(String, Value)>, NotificationDispatchError> {
+    let owner = if key.agent_id.is_empty() {
+        transaction
+            .query_row(
+                "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
+                rusqlite::params![key.account, key.thread],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+    } else {
+        transaction
+            .query_row(
+                "SELECT id,record FROM runtime_agents WHERE id=?1",
+                [&key.agent_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+    }
+    .map_err(StoreError::from)?;
+    owner
+        .map(|(id, raw)| {
+            serde_json::from_str(&raw)
+                .map(|record| (id.clone(), record))
+                .map_err(|_| stored("runtime_agents", &id))
+        })
+        .transpose()
 }
 
 fn stream_base_id(key: &StreamKey) -> String {
@@ -936,6 +925,26 @@ fn flush_selected(
         }
         let id = format!("{agent_id}:{}", key.item);
         let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
+        if reassigned
+            && options.allow_reassigned_owner
+            && old
+                .as_ref()
+                .is_some_and(|(record, _)| record["streaming"] == false)
+        {
+            // A destination owner has already closed this transcript item. An
+            // older transferred batch may retire, but must not replace the
+            // destination's completed snapshot with stale stream text.
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(&key),
+                None,
+            )?;
+            streams.discard(&key);
+            if options.close_stream {
+                streams.close(&key);
+            }
+            continue;
+        }
         let previous = old
             .as_ref()
             .map(|(record, _)| saved_text(transaction, &id, record))
@@ -1598,6 +1607,195 @@ mod tests {
         super::prune_inactive_streams(&transaction, &mut streams, 11.0, true)
             .expect("ownerless stream does not block account recovery");
         assert_eq!(streams.pending_bytes(), "still durable".len());
+    }
+
+    #[tokio::test]
+    async fn old_and_new_stream_owners_flush_in_both_gated_orders() {
+        async fn run(destination_first: bool) {
+            struct Delivery<'a> {
+                agent: &'a str,
+                account: &'a str,
+                generation: u64,
+                cursor: u64,
+                notification: &'a Value,
+                flush: bool,
+            }
+
+            fn deliver(
+                connection: &mut Connection,
+                streams: &mut NotificationStreamBuffer,
+                delivery: Delivery<'_>,
+            ) {
+                let identity = ProviderDeliveryIdentity {
+                    provider_handle: format!("account:{}", delivery.account),
+                    generation: delivery.generation,
+                    cursor: delivery.cursor,
+                };
+                let transaction = connection.transaction().expect("delivery transaction");
+                let result = super::dispatch_notification(
+                    &transaction,
+                    delivery.agent,
+                    ".",
+                    streams,
+                    &identity,
+                    &frame(delivery.notification),
+                    delivery.cursor as f64,
+                )
+                .expect("delivery succeeds");
+                if let Some(update) = result.stream_update {
+                    *streams = update;
+                }
+                if delivery.flush
+                    && let Some(update) = super::flush_notification_streams(
+                        &transaction,
+                        delivery.agent,
+                        ".",
+                        streams,
+                        delivery.cursor as f64,
+                    )
+                    .expect("stream flush succeeds")
+                {
+                    *streams = update;
+                }
+                transaction.commit().expect("delivery commits");
+            }
+
+            let mut connection = database();
+            let mut old_streams = NotificationStreamBuffer::default();
+            let base = "b".repeat(64 * 1024);
+            deliver(
+                &mut connection,
+                &mut old_streams,
+                Delivery {
+                    agent: "agent",
+                    account: "default",
+                    generation: 7,
+                    cursor: 1,
+                    notification: &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"handoff","delta":base}}),
+                    flush: true,
+                },
+            );
+            deliver(
+                &mut connection,
+                &mut old_streams,
+                Delivery {
+                    agent: "agent",
+                    account: "default",
+                    generation: 7,
+                    cursor: 2,
+                    notification: &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"handoff","type":"agentMessage","text":"old snapshot"}}}),
+                    flush: true,
+                },
+            );
+            deliver(
+                &mut connection,
+                &mut old_streams,
+                Delivery {
+                    agent: "agent",
+                    account: "default",
+                    generation: 7,
+                    cursor: 3,
+                    notification: &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"handoff","delta":"old tail"}}),
+                    flush: false,
+                },
+            );
+
+            // Each owner stays live behind an explicit gate. Releasing the gates
+            // chooses the transaction order without sleeps or scheduler timing.
+            let connection = std::sync::Arc::new(std::sync::Mutex::new(connection));
+            let old_connection = connection.clone();
+            let new_connection = connection.clone();
+            let (old_ready_tx, old_ready_rx) = tokio::sync::oneshot::channel();
+            let (new_ready_tx, new_ready_rx) = tokio::sync::oneshot::channel();
+            let (old_gate_tx, old_gate_rx) = tokio::sync::oneshot::channel();
+            let (new_gate_tx, new_gate_rx) = tokio::sync::oneshot::channel();
+            let old_owner = tokio::spawn(async move {
+                old_ready_tx.send(()).expect("old owner readiness receiver");
+                old_gate_rx.await.expect("old owner gate opens");
+                let mut connection = old_connection.lock().expect("old connection lock");
+                let transaction = connection.transaction().expect("old flush transaction");
+                let update = super::flush_notification_streams(
+                    &transaction,
+                    "agent",
+                    ".",
+                    &old_streams,
+                    4.0,
+                )
+                .expect("old owner flushes or defers");
+                if let Some(update) = update {
+                    old_streams = update;
+                }
+                if destination_first {
+                    super::prune_inactive_streams(&transaction, &mut old_streams, 5.0, true)
+                        .expect("recovery settles transferred stream");
+                }
+                transaction.commit().expect("old flush commits");
+                old_streams
+            });
+            let new_owner = tokio::spawn(async move {
+                new_ready_tx.send(()).expect("new owner readiness receiver");
+                new_gate_rx.await.expect("new owner gate opens");
+                let mut connection = new_connection.lock().expect("new connection lock");
+                connection
+                    .execute(
+                        "UPDATE runtime_agents SET record=json_set(record,'$.accountKey','destination') WHERE id='agent'",
+                        [],
+                    )
+                    .expect("transfer stream owner");
+                let mut streams = NotificationStreamBuffer::default();
+                deliver(
+                    &mut connection,
+                    &mut streams,
+                    Delivery {
+                        agent: "agent",
+                        account: "destination",
+                        generation: 9,
+                        cursor: 1,
+                        notification: &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"handoff","type":"agentMessage","text":"destination snapshot"}}}),
+                        flush: true,
+                    },
+                );
+                deliver(
+                    &mut connection,
+                    &mut streams,
+                    Delivery {
+                        agent: "agent",
+                        account: "destination",
+                        generation: 9,
+                        cursor: 2,
+                        notification: &json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"handoff","type":"agentMessage","text":"destination snapshot","phase":"completed"}}}),
+                        flush: true,
+                    },
+                );
+            });
+            old_ready_rx.await.expect("old account worker is live");
+            new_ready_rx.await.expect("new account worker is live");
+            let old_streams = if destination_first {
+                new_gate_tx.send(()).expect("release destination owner");
+                new_owner.await.expect("destination owner completes");
+                old_gate_tx.send(()).expect("release old owner");
+                old_owner.await.expect("old owner completes")
+            } else {
+                old_gate_tx.send(()).expect("release old owner");
+                let old = old_owner.await.expect("old owner completes");
+                assert_eq!(old.pending_bytes(), 0);
+                new_gate_tx.send(()).expect("release destination owner");
+                new_owner.await.expect("destination owner completes");
+                old
+            };
+            assert_eq!(old_streams.pending_bytes(), 0);
+            let connection = connection.lock().expect("final connection lock");
+            let item = TranscriptRepository::item(&connection, "agent", "agent:handoff")
+                .expect("transcript reads")
+                .expect("destination item exists");
+            assert_eq!(item.record["text"], "destination snapshot");
+            assert_eq!(item.record["phase"], "completed");
+            assert_eq!(item.record["streaming"], false);
+            assert_eq!(old_streams.pending_bytes(), 0);
+        }
+
+        run(true).await;
+        run(false).await;
     }
 
     #[test]

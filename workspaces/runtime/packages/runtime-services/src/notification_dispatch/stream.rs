@@ -52,6 +52,26 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
+    pub(crate) fn boundary_identity(&self) -> String {
+        let mut keys = self
+            .entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    entry.key.account,
+                    entry.key.generation,
+                    entry.key.thread,
+                    entry.key.turn.as_deref().unwrap_or(""),
+                    entry.key.item,
+                    entry.key.method,
+                )
+            })
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.join("|")
+    }
+
     pub(crate) fn pending_bytes(&self) -> usize {
         self.entries.iter().map(|entry| entry.pending.len()).sum()
     }

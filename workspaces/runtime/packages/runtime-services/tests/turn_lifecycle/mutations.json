@@ -785,7 +785,7 @@
     "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
     "edits": [
       {
-        "before": "            flush_selected(\n                transaction,\n                &id,\n                &mut projection,\n                streams,\n                Some(&key),\n                observed_at,\n                true,\n            )?;",
+        "before": "            flush_selected(\n                transaction,\n                &id,\n                &mut projection,\n                streams,\n                Some(&key),\n                observed_at,\n                StreamFlushOptions {\n                    allow_reassigned_owner: true,\n                    close_stream: true,\n                },\n            )?;",
         "after": "            // MUTATION: close without materializing acknowledged text."
       }
     ],
