@@ -124,11 +124,11 @@ impl SafetySnapshot {
             .get("epoch")
             .and_then(Value::as_i64)
             .ok_or(SafetyBufferingError::InvalidStoredState)?;
-        let account_key = agent
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .to_owned();
+        let account_key = match agent.get("accountKey") {
+            None => "default".to_owned(),
+            Some(Value::String(value)) => value.clone(),
+            Some(_) => return Err(SafetyBufferingError::InvalidStoredState),
+        };
         let buffering = agent.get("nativeSafetyBuffering").unwrap_or(&Value::Null);
         Ok(Self {
             agent_id: string("id")?,
@@ -219,6 +219,8 @@ pub fn decide_action(
         if receipt.get("accountKey").and_then(Value::as_str) != Some(&snapshot.account_key)
             || receipt.get("epoch").and_then(Value::as_i64) != Some(snapshot.epoch)
             || receipt.get("agent").and_then(Value::as_str) != Some(&snapshot.agent_id)
+            || receipt.get("id").and_then(Value::as_str) != Some(identity)
+            || receipt.get("turnId").and_then(Value::as_str) != Some(requested_turn)
         {
             return Err(SafetyBufferingError::StaleRetry);
         }
@@ -235,8 +237,9 @@ pub fn decide_action(
                 Value::String(SafetyRetryStage::Cancelled.as_str().into()),
             );
             updated.insert("error".into(), Value::Null);
+            updated.insert("updated".into(), json!(created));
             return Ok(SafetyDecision::Cancelled {
-                receipt: Value::Object(updated),
+                receipt: public_receipt(&Value::Object(updated))?,
             });
         }
         return Ok(SafetyDecision::Replay {
@@ -287,6 +290,7 @@ pub fn decide_action(
     );
     receipt.insert("attemptId".into(), Value::String(attempt_id.to_owned()));
     receipt.insert("created".into(), json!(created));
+    receipt.insert("updated".into(), json!(created));
     Ok(SafetyDecision::BeginRetry {
         receipt: Value::Object(receipt),
     })
@@ -418,10 +422,13 @@ fn public_receipt(receipt: &Value) -> Result<Value, SafetyBufferingError> {
         "rpcMethod",
     ];
     Ok(Value::Object(
-        object
-            .iter()
-            .filter(|(key, _)| keys.contains(&key.as_str()))
-            .map(|(key, value)| (key.clone(), value.clone()))
+        keys.into_iter()
+            .map(|key| {
+                (
+                    key.to_owned(),
+                    object.get(key).cloned().unwrap_or(Value::Null),
+                )
+            })
             .collect(),
     ))
 }
@@ -470,13 +477,29 @@ mod tests {
     fn already_started_rpc_cannot_be_cancelled_or_replayed_as_a_new_retry() {
         let agent = agent();
         let snapshot = SafetySnapshot::from_agent(&agent, true, true).expect("snapshot");
-        let receipt = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"stage":"start","rpcMethod":"turn/start"});
+        let receipt = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"turnId":"turn","stage":"start","rpcMethod":"turn/start"});
         assert_eq!(
-            decide_action(&snapshot, "cancel", "turn", Some(&receipt), "", "", 2.0),
+            decide_action(
+                &snapshot,
+                "cancel",
+                "turn",
+                Some(&receipt),
+                "agent:turn",
+                "",
+                2.0
+            ),
             Err(SafetyBufferingError::StartAlreadySubmitted)
         );
         assert!(matches!(
-            decide_action(&snapshot, "retry", "turn", Some(&receipt), "", "", 2.0),
+            decide_action(
+                &snapshot,
+                "retry",
+                "turn",
+                Some(&receipt),
+                "agent:turn",
+                "",
+                2.0
+            ),
             Ok(SafetyDecision::Replay { .. })
         ));
     }
@@ -599,40 +622,99 @@ mod tests {
     }
 
     #[test]
+    fn absent_account_key_defaults_but_present_invalid_values_are_rejected() {
+        let mut missing = agent();
+        missing.as_object_mut().expect("agent").remove("accountKey");
+        let snapshot = SafetySnapshot::from_agent(&missing, true, true).expect("default account");
+        assert_eq!(snapshot.account_key, "default");
+
+        for value in [serde_json::Value::Null, json!(7), json!(false)] {
+            let mut malformed = agent();
+            malformed["accountKey"] = value;
+            assert_eq!(
+                SafetySnapshot::from_agent(&malformed, true, true),
+                Err(SafetyBufferingError::InvalidStoredState)
+            );
+        }
+    }
+
+    #[test]
     fn existing_receipts_require_matching_identity_and_cancel_only_unsent_active_stages() {
         let stored = agent();
         let snapshot = SafetySnapshot::from_agent(&stored, true, true).expect("snapshot");
-        let receipt = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"stage":"fork","private":"keep","model":"fast"});
+        let receipt = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"turnId":"turn","stage":"fork","private":"keep","model":"fast"});
         for stale in [
-            json!({"id":"agent:turn","agent":"other","accountKey":"acct","epoch":4,"stage":"fork"}),
-            json!({"id":"agent:turn","agent":"agent","accountKey":"other","epoch":4,"stage":"fork"}),
-            json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":3,"stage":"fork"}),
+            json!({"id":"agent:turn","agent":"other","accountKey":"acct","epoch":4,"turnId":"turn","stage":"fork"}),
+            json!({"id":"agent:turn","agent":"agent","accountKey":"other","epoch":4,"turnId":"turn","stage":"fork"}),
+            json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":3,"turnId":"turn","stage":"fork"}),
+            json!({"id":"agent:other","agent":"agent","accountKey":"acct","epoch":4,"turnId":"turn","stage":"fork"}),
+            json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"turnId":"other","stage":"fork"}),
         ] {
             assert_eq!(
-                decide_action(&snapshot, "retry", "turn", Some(&stale), "", "", 1.0),
+                decide_action(
+                    &snapshot,
+                    "retry",
+                    "turn",
+                    Some(&stale),
+                    "agent:turn",
+                    "",
+                    1.0
+                ),
+                Err(SafetyBufferingError::StaleRetry)
+            );
+            assert_eq!(
+                decide_action(
+                    &snapshot,
+                    "cancel",
+                    "turn",
+                    Some(&stale),
+                    "agent:turn",
+                    "",
+                    1.0
+                ),
                 Err(SafetyBufferingError::StaleRetry)
             );
         }
-        let SafetyDecision::Cancelled { receipt: cancelled } =
-            decide_action(&snapshot, "cancel", "turn", Some(&receipt), "", "", 1.0)
-                .expect("cancel unsent active retry")
-        else {
+        let SafetyDecision::Cancelled { receipt: cancelled } = decide_action(
+            &snapshot,
+            "cancel",
+            "turn",
+            Some(&receipt),
+            "agent:turn",
+            "",
+            1.0,
+        )
+        .expect("cancel unsent active retry") else {
             panic!("expected cancellation");
         };
         assert_eq!(cancelled["stage"], "cancelled");
         assert_eq!(cancelled["error"], serde_json::Value::Null);
-        assert_eq!(cancelled["private"], "keep");
-        let SafetyDecision::Replay { receipt: public } =
-            decide_action(&snapshot, "retry", "turn", Some(&receipt), "", "", 1.0)
-                .expect("replay existing receipt")
-        else {
+        assert!(cancelled.get("private").is_none());
+        let SafetyDecision::Replay { receipt: public } = decide_action(
+            &snapshot,
+            "retry",
+            "turn",
+            Some(&receipt),
+            "agent:turn",
+            "",
+            1.0,
+        )
+        .expect("replay existing receipt") else {
             panic!("expected receipt replay");
         };
         assert_eq!(public["model"], "fast");
         assert!(public.get("private").is_none());
-        let terminal = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"stage":"failed"});
+        let terminal = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"turnId":"turn","stage":"failed"});
         assert!(matches!(
-            decide_action(&snapshot, "cancel", "turn", Some(&terminal), "", "", 1.0),
+            decide_action(
+                &snapshot,
+                "cancel",
+                "turn",
+                Some(&terminal),
+                "agent:turn",
+                "",
+                1.0
+            ),
             Ok(SafetyDecision::Replay { .. })
         ));
     }

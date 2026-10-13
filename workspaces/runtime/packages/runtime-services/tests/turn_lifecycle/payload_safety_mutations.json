@@ -54,8 +54,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
     "edits": [
       {
-        "before": "            Value::Array(items) => {\n                small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)\n            }",
-        "after": "            Value::Array(items) => {\n                small_preview(&Value::Array(items.iter().take(0).cloned().collect()), 0)\n            }"
+        "before": "        OrderedValue::Array(items) => OrderedValue::Array(\n            items\n                .iter()\n                .take(1)\n                .map(|item| small_preview(item, 0))",
+        "after": "        OrderedValue::Array(items) => OrderedValue::Array(\n            items\n                .iter()\n                .take(0)\n                .map(|item| small_preview(item, 0))"
       }
     ]
   },
@@ -356,6 +356,66 @@
       {
         "before": "operation.get(\"agent\").and_then(Value::as_str) != agent.get(\"id\").and_then(Value::as_str)",
         "after": "operation.get(\"agent\").and_then(Value::as_str) == agent.get(\"id\").and_then(Value::as_str)"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-id-binding",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            || receipt.get(\"id\").and_then(Value::as_str) != Some(identity)",
+        "after": "            || false"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-turn-binding",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            || receipt.get(\"turnId\").and_then(Value::as_str) != Some(requested_turn)",
+        "after": "            || false"
+      }
+    ]
+  },
+  {
+    "id": "safety-present-invalid-account-defaults",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            Some(_) => return Err(SafetyBufferingError::InvalidStoredState),",
+        "after": "            Some(_) => \"default\".to_owned(),"
+      }
+    ]
+  },
+  {
+    "id": "payload-object-preview-first-eight",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": ".take(8)\n                .map(|(key, item)| (key.clone(), small_preview(item, depth + 1)))",
+        "after": ".take(9)\n                .map(|(key, item)| (key.clone(), small_preview(item, depth + 1)))"
+      }
+    ]
+  },
+  {
+    "id": "payload-load-symlink-parents",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW;",
+        "after": "let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY;"
+      }
+    ]
+  },
+  {
+    "id": "payload-load-symlink-target",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "        OFlags::RDONLY | OFlags::NOFOLLOW,",
+        "after": "        OFlags::RDONLY,"
       }
     ]
   }
