@@ -5,6 +5,10 @@ import type {
   SidebarOrder,
   SidebarSource,
 } from "./mergedSidebar";
+import {
+  mergePreferenceFields,
+  type PreferenceFields,
+} from "../sync/uiPreferenceMerge";
 
 const compactPrefix = "codex-project-compact:";
 const treePrefix = "codex-project-tree:";
@@ -74,19 +78,21 @@ function wireOrderItem(
   }
 }
 
-// This window's own visual edits, kept per server backend for a short time. A model rebuilt
-// before the network round trip, or from a late echo of an earlier edit, would otherwise show
-// an old value for a moment ("jerky" collapse). After that time the snapshot rules again.
-const pendingVisual = new WeakMap<
-  SidebarBackend,
-  Map<string, { value: boolean | undefined; at: number }>
->();
-const PENDING_VISUAL_MS = 10_000;
-const pendingFor = (backend: SidebarBackend) => {
-  let pending = pendingVisual.get(backend);
-  if (!pending) pendingVisual.set(backend, (pending = new Map()));
-  return pending;
-};
+// The combined sidebar has two copies of each server's compact and collapse fields: the
+// server frame's copy in its snapshot, and this window's copy, which also holds this
+// window's edits. Each field shows the value with the latest edit time from both copies.
+// Edit times only grow, so a late or slow copy cannot bring back an older value.
+function fieldsOfKey(fields: PreferenceFields | undefined, key: string) {
+  const result: PreferenceFields = {};
+  for (const [name, field] of Object.entries(fields || {})) {
+    try {
+      if (JSON.parse(name)[0] === key) result[name] = field;
+    } catch {
+      /* A field name that is not JSON is not a sidebar value. */
+    }
+  }
+  return result;
+}
 
 /** Read original server keys. Write only fields changed by a visible control. */
 export function mergedSidebarPreferences(
@@ -113,21 +119,23 @@ export function mergedSidebarPreferences(
   const orderKey = orderPrefix + scope;
   let order: SidebarOrder = model.order;
   const explicitEdits = new Map<string, Record<string, unknown>>();
-  const visualEdits = new Map<string, Record<string, boolean>>();
   const prefixFor = (key: string) =>
     key === compactKey
       ? compactPrefix
       : key === treeKey
         ? treePrefix
         : undefined;
+  const latestFields = (source: SidebarSource, key: string) =>
+    mergePreferenceFields(
+      fieldsOfKey(source.sidebar.visualFields, key),
+      fieldsOfKey(backendFor(source.id).preferenceFields?.(), key),
+    );
   const readVisual = (kind: "compact" | "collapsed") => {
     const prefix = kind === "compact" ? compactPrefix : treePrefix;
     return new Map(
       model.sources.map((source) => {
         const key = originalKey(prefix, source);
-        const values = {
-          ...(visualEdits.get(source.id + ":" + key) || source.sidebar[kind]),
-        };
+        const values: Record<string, boolean> = { ...source.sidebar[kind] };
         if (kind === "compact") {
           try {
             const backend = backendFor(source.id);
@@ -146,16 +154,11 @@ export function mergedSidebarPreferences(
             return [source.id, values];
           }
         }
-        const pending = pendingFor(backendFor(source.id));
-        for (const [field, edit] of pending) {
-          const [editKey, name] = JSON.parse(field) as [string, string];
-          if (editKey !== key) continue;
-          if (Date.now() - edit.at > PENDING_VISUAL_MS) {
-            pending.delete(field);
-            continue;
-          }
-          if (edit.value === undefined) delete values[name];
-          else values[name] = edit.value;
+        for (const [name, field] of Object.entries(latestFields(source, key))) {
+          const entry = (JSON.parse(name) as unknown[])[1];
+          if (typeof entry !== "string") continue;
+          if (typeof field.value === "boolean") values[entry] = field.value;
+          else if (field.value === null) delete values[entry];
         }
         return [source.id, values];
       }),
@@ -249,25 +252,12 @@ export function mergedSidebarPreferences(
     if (updates.some(({ source }) => !source.online))
       throw new Error("The sidebar server is offline.");
     for (const update of updates) {
-      const accepted = backendFor(update.source.id).editPreference(
-        originalKey(prefix, update.source),
-        update.previous,
-        update.next,
-      );
-      const pending = pendingFor(backendFor(update.source.id));
-      for (const name of new Set([
-        ...Object.keys(update.previous),
-        ...Object.keys(update.next),
-      ]))
-        if (update.previous[name] !== update.next[name])
-          pending.set(
-            JSON.stringify([originalKey(prefix, update.source), name]),
-            { value: update.next[name], at: Date.now() },
-          );
-      visualEdits.set(
-        update.source.id + ":" + originalKey(prefix, update.source),
-        accepted,
-      );
+      const backend = backendFor(update.source.id);
+      const sourceKey = originalKey(prefix, update.source);
+      // This window's copy takes the newer fields of the frame first. The edit then gets a
+      // later edit time than the value that the user saw.
+      backend.adoptPreferenceFields?.(latestFields(update.source, sourceKey));
+      backend.editPreference(sourceKey, update.previous, update.next);
     }
     const choices = explicitEdits.get(key) || {};
     for (const field of changed) {
@@ -302,17 +292,7 @@ export function mergedSidebarPreferences(
       const stops = model.sources.map((source) =>
         backendFor(source.id).subscribePreference(
           originalKey(prefix, source),
-          () => {
-            const kind = prefix === compactPrefix ? "compact" : "collapsed";
-            visualEdits.set(
-              source.id + ":" + originalKey(prefix, source),
-              backendFor(source.id).saved(
-                originalKey(prefix, source),
-                source.sidebar[kind],
-              ),
-            );
-            update();
-          },
+          update,
         ),
       );
       return () => stops.forEach((stop) => stop());
