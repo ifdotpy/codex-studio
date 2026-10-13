@@ -351,7 +351,7 @@ async fn recovered_deadline_emits_without_any_further_input() {
     let mut cfg = config();
     cfg.timeout_ms = 100;
     cfg.recovered
-        .push((RequestId::Number(42), Method::ModelList, None));
+        .push(recovered(RequestId::Number(42), Method::ModelList, 10));
     let mut session =
         SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
             .await
@@ -431,11 +431,15 @@ async fn constructor_validates_recovered_and_initialize_before_factory_open() {
         if case == 0 {
             cfg.initialize_params = json!({"large":"x".repeat(1024*1024)});
         } else if case == 1 {
-            cfg.recovered = vec![(RequestId::Number(8), Method::ModelList, None); 2];
+            cfg.recovered = vec![recovered(RequestId::Number(8), Method::ModelList, 10); 2];
         } else if case == 2 {
-            cfg.recovered = vec![(RequestId::Number(8), Method::Initialize, None)];
+            cfg.recovered = vec![recovered(RequestId::Number(8), Method::Initialize, 10)];
         } else if case == 3 {
-            cfg.recovered = vec![(RequestId::String("x".repeat(1025)), Method::ModelList, None)];
+            cfg.recovered = vec![recovered(
+                RequestId::String("x".repeat(1025)),
+                Method::ModelList,
+                10,
+            )];
         } else {
             opts.expected_generation = Some(Generation(2));
         }
@@ -482,7 +486,7 @@ async fn bounded_startup_replay_can_initialize_and_stop_with_full_consumer() {
     ));
     let exit = session.shutdown().await;
     peer.gone.await.unwrap();
-    assert_eq!(exit.undelivered.len(), 1);
+    assert_eq!(exit.undelivered.len(), 17);
     assert_eq!(
         exit.undelivered[0].journal.as_ref().unwrap().cursor,
         EventCursor(17)
@@ -702,7 +706,7 @@ for line in sys.stdin:
   print(json.dumps({'method':'observed/initialized'}),flush=True)
  elif m.get('method')=='model/list': print(json.dumps({'id':m['id'],'result':{'models':[]}}),flush=True)
 "#;
-        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], BTreeMap::from([("PYTHONUNBUFFERED".into(), "1".into())]), root.0.clone());
+        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], support::child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options();
         opts.launch = launch.clone();
@@ -999,5 +1003,433 @@ async fn unresolved_request_limit_includes_unknown_until_positive_reply() {
         .unwrap();
     session.events.recv().await.unwrap();
     assert!(session.control.prepare(spec(100, 100)).await.is_ok());
+    session.shutdown().await;
+}
+
+fn recovered(id: RequestId, method: Method, deadline_ms: u64) -> RecoveredRequest {
+    RecoveredRequest {
+        ticket: studio_runtime_providers::RequestTicket {
+            generation: 1,
+            id,
+            method,
+        },
+        operation_id: OperationId("recovered".into()),
+        thread_id: None,
+        deadline_ms,
+        unknown: false,
+        remote_id: None,
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn review_shutdown_retains_adapter_buffered_journal() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    for cursor in 1..=16 {
+        peer.events
+            .try_send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .unwrap();
+    }
+    let exit = session.shutdown().await;
+    let returned = exit
+        .undelivered
+        .iter()
+        .filter(|event| event.journal.is_some())
+        .count();
+    let mut delivered = 0;
+    while let Ok(event) = session.events.try_recv() {
+        delivered += usize::from(event.journal.is_some());
+    }
+    assert_eq!(
+        returned + delivered,
+        16,
+        "shutdown discarded buffered journal envelopes"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn review_dropped_buffered_submission_fences_session() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let ctl = session.control.clone();
+    let prepared = ctl.prepare(spec(2, 100)).await.unwrap();
+    let mut submit = Box::pin(ctl.submit(prepared));
+    pending(submit.as_mut()).await;
+    let first = write(&mut peer).await; // admission reply has been buffered
+    drop(submit);
+    written(first);
+    let prepared = ctl.prepare(spec(3, 100)).await;
+    let admitted_after_abandonment = prepared.is_ok();
+    let exit = session.shutdown().await;
+    let mut outcomes = exit.outcomes;
+    for event in exit.undelivered {
+        outcomes.extend(event.outcomes);
+    }
+    while let Ok(event) = session.events.try_recv() {
+        outcomes.extend(event.outcomes);
+    }
+    assert!(outcomes.iter().any(|o| matches!(o, SessionOutcome::Write { ticket: Some(t), .. } if t.id == RequestId::Number(2))));
+    assert!(
+        !admitted_after_abandonment,
+        "dropping an unobserved submit result leaves admission live"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn review_full_callback_queue_retains_taken_response_and_resolution() {
+    let (mut session, mut peer) = claude_ready().await;
+    let ctl = session.control.clone();
+    let first = ctl
+        .submit(ctl.prepare(serialized(2, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.events.recv().await.unwrap();
+    ctl.submit(ctl.prepare(serialized(3, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    let frame = reply(RequestId::String("callback".into()));
+    ctl.submit_frame(
+        ctl.prepare_frame(OperationId("callback:0".into()), &frame)
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let blocked = write(&mut peer).await;
+    for i in 1..=34 {
+        ctl.submit_frame(
+            ctl.prepare_frame(OperationId(format!("callback:{i}")), &frame)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+    peer.events
+        .send(entry(1, 0, JournalPayload::Frame(reply(first.id.clone()))))
+        .await
+        .unwrap();
+    let event = session.events.recv().await.unwrap();
+    assert!(event.outcomes.iter().any(|o| matches!(o, SessionOutcome::Resolved { ticket, outcome: RequestOutcome::Reply { .. } } if *ticket == first)));
+    assert!(
+        event
+            .journal
+            .as_ref()
+            .is_some_and(|j| j.cursor == EventCursor(1))
+    );
+    let exit = session.shutdown().await;
+    drop(blocked);
+    let mut preserved = event.journal.is_some()
+        || exit.undelivered.iter().any(|e| {
+            e.journal
+                .as_ref()
+                .is_some_and(|j| j.cursor == EventCursor(1))
+        });
+    while let Ok(e) = session.events.try_recv() {
+        preserved |= e
+            .journal
+            .as_ref()
+            .is_some_and(|j| j.cursor == EventCursor(1));
+    }
+    assert!(
+        preserved,
+        "reply removed from journal then discarded when releasing successor hits full callback queue; exit={:?}",
+        exit.result
+    );
+}
+
+#[tokio::test]
+async fn review_numeric_request_recovery_needs_hidden_receipt_mapping() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        use support::*;
+        let root = DisposableState::new();
+        let python = python_executable();
+        let mut supervisor = SupervisorProcess::start(&root, &python);
+        let script = r#"
+import json,sys
+saved=None
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='model/list': saved=m
+ elif m.get('method')=='thread/unsubscribe' and saved:
+  print(json.dumps({'id':saved['id'],'result':{'models':[]}}),flush=True)
+"#;
+        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
+        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
+        let mut opts = options(); opts.launch=launch.clone();
+        let mut cfg=config(); cfg.timeout_ms=10000;
+        let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
+        status(&mut first, InitializationStatus::Ready).await;
+        supervisor.own_child(first.status.borrow().attachment.info.as_ref().unwrap().pid);
+        let initial = first.events.recv().await.unwrap().journal.unwrap();
+        first.control.settled(initial.cursor).await.unwrap();
+        loop { if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; } first.status.changed().await.unwrap(); }
+        let ticket = first.control.submit(first.control.prepare(spec(77,10000)).await.unwrap()).await.unwrap();
+        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
+        assert!(recovery.remote_id.is_some());
+        first.shutdown().await;
+        let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
+        let mut cfg=config(); cfg.timeout_ms=10000; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![recovery];
+        let mut second=SessionHandle::open(factory,ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
+        status(&mut second,InitializationStatus::Ready).await;
+        let release=Frame::Notification(studio_runtime_providers::NotificationFrame { method: Method::ThreadUnsubscribe,params:None,fields:Default::default() });
+        second.control.submit_frame(second.control.prepare_frame(OperationId("release".into()), &release).unwrap()).await.unwrap();
+        let event=loop { let e=second.events.recv().await.unwrap(); if e.journal.is_some() {break e;} };
+        let resolved=event.outcomes.iter().any(|o|matches!(o, SessionOutcome::Resolved { ticket:t,outcome:RequestOutcome::Reply {..} } if *t==ticket));
+        second.shutdown().await;
+        assert!(resolved,"retained local request 77 replayed as orphan: no public session receipt exposes remote mapping");
+    }).await.expect("disposable recovery probe watchdog");
+}
+
+#[tokio::test(start_paused = true)]
+async fn review_backlogged_on_time_reply_must_not_send_expired_successor() {
+    let (mut session, mut peer) = claude_ready().await;
+    let ctl = session.control.clone();
+    let first = ctl
+        .submit(ctl.prepare(serialized(2, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.events.recv().await.unwrap();
+    let second = ctl
+        .submit(ctl.prepare(serialized(3, 10)).await.unwrap())
+        .await
+        .unwrap();
+    for cursor in 1..=32 {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    peer.events
+        .send(entry(33, 0, JournalPayload::Frame(reply(first.id))))
+        .await
+        .unwrap();
+    pending(
+        peer.events
+            .send(entry(34, 0, JournalPayload::Stderr(json!({})))),
+    )
+    .await;
+    tokio::time::advance(Duration::from_millis(20)).await;
+    loop {
+        let e = session.events.recv().await.unwrap();
+        if e.journal
+            .as_ref()
+            .is_some_and(|j| j.cursor == EventCursor(33))
+        {
+            break;
+        }
+    }
+    let sent = matches!(peer.commands.try_recv(), Ok(Observed::Write(_)));
+    let exit = session.shutdown().await;
+    assert!(
+        !sent,
+        "expired serialized successor {:?} sent after backlog release, shutdown={:?}",
+        second, exit.result
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn callback_admission_drop_fences_but_retained_future_survives_select() {
+    for abandon in [false, true] {
+        let (mut session, mut peer) = open().await;
+        ready(&mut session, &mut peer).await;
+        let control = session.control.clone();
+        let prepared = control
+            .prepare_frame(
+                OperationId("callback".into()),
+                &reply(RequestId::String("callback".into())),
+            )
+            .unwrap();
+        let mut future = Box::pin(control.submit_frame(prepared));
+        pending(future.as_mut()).await;
+        let receipt = write(&mut peer).await;
+        // An unrelated select winner only borrows the retained admission future.
+        tokio::select! { biased; _ = std::future::ready(()) => {}, _ = &mut future => panic!("biased barrier") }
+        if abandon {
+            drop(future);
+        } else {
+            future.await.unwrap();
+        }
+        written(receipt);
+        let prepared = control.prepare(spec(3, 100)).await;
+        assert_eq!(prepared.is_err(), abandon);
+        let exit = session.shutdown().await;
+        let mut all = exit.outcomes;
+        for e in exit.undelivered {
+            all.extend(e.outcomes);
+        }
+        while let Ok(e) = session.events.try_recv() {
+            all.extend(e.outcomes);
+        }
+        assert_eq!(all.iter().filter(|o| matches!(o, SessionOutcome::Write { operation_id, .. } if operation_id.0 == "callback")).count(), 1);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_and_lost_ack_return_locally_settled_unacknowledged_prefix() {
+    for lost_receipt in [false, true] {
+        let (mut session, mut peer) = open().await;
+        ready(&mut session, &mut peer).await;
+        let control = session.control.clone();
+        let blocked = if !lost_receipt {
+            control
+                .submit_frame(
+                    control
+                        .prepare_frame(
+                            OperationId("blocked".into()),
+                            &reply(RequestId::String("callback".into())),
+                        )
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            Some(write(&mut peer).await)
+        } else {
+            None
+        };
+        peer.events
+            .send(entry(1, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+        session.events.recv().await.unwrap();
+        control.settled(EventCursor(1)).await.unwrap();
+        let exit = if lost_receipt {
+            let Observed::Ack(cursor, reply) = peer.commands.recv().await.unwrap() else {
+                panic!("ack expected");
+            };
+            assert_eq!(cursor, EventCursor(1));
+            drop(reply);
+            session.completion().await
+        } else {
+            let exit = session.shutdown().await;
+            assert!(exit.result.is_ok());
+            exit
+        };
+        assert_eq!(exit.pending_acknowledgement, Some(EventCursor(1)));
+        drop(blocked);
+        peer.gone.await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovered_unknown_does_not_reset_deadline_or_repeat_uncertainty() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    let mut r = recovered(RequestId::Number(42), Method::ModelList, 5);
+    r.unknown = true;
+    cfg.recovered.push(r);
+    let mut session =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
+            .await
+            .unwrap();
+    ready(&mut session, &mut peer).await;
+    tokio::time::advance(Duration::from_millis(20)).await;
+    pending(session.events.recv()).await;
+    peer.events
+        .send(entry(
+            1,
+            4,
+            JournalPayload::Frame(reply(RequestId::Number(42))),
+        ))
+        .await
+        .unwrap();
+    let event = session.events.recv().await.unwrap();
+    assert!(event.outcomes.iter().any(|o| matches!(
+        o,
+        SessionOutcome::Resolved {
+            outcome: RequestOutcome::Reply { late: false, .. },
+            ..
+        }
+    )));
+    session.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let control = session.control.clone();
+    let events = peer.events.clone();
+    let (stop, mut stopping) = watch::channel(false);
+    let producer = tokio::spawn(async move {
+        for cursor in 1.. {
+            tokio::select! {
+                _ = stopping.changed() => break,
+                _ = events.send(entry(cursor, 0, JournalPayload::Stderr(json!({})))) => {}
+            }
+        }
+    });
+    // The producer stays live until both admission and the real receipt finish.
+    let operation = async {
+        let prepared = control.prepare(spec(2, 10000)).await.unwrap();
+        control.submit(prepared).await.unwrap()
+    };
+    tokio::pin!(operation);
+    let mut admitted = false;
+    let mut written = false;
+    let mut deliveries = 0;
+    while !admitted || !written || deliveries < 32 {
+        tokio::select! {
+            _ = &mut operation, if !admitted => admitted = true,
+            observed = peer.commands.recv() => match observed.unwrap() {
+                Observed::Write(reply) => { reply.send(CommandReceipt::Written { remote_id: Some(10), duplicate: false }).ok().unwrap(); }
+                Observed::Ack(cursor, reply) => { reply.send(CommandReceipt::Acknowledged(cursor)).ok().unwrap(); }
+            },
+            event = session.events.recv() => {
+                let event = event.unwrap();
+                written |= event.outcomes.iter().any(|o| matches!(o, SessionOutcome::Write { outcome: WriteOutcome::Written, .. }));
+                if let Some(journal) = event.journal {
+                    deliveries += 1;
+                    assert!(deliveries < 4096, "command starved by replenished lanes");
+                    control.settled(journal.cursor).await.unwrap();
+                }
+            }
+        }
+    }
+    stop.send(true).unwrap();
+    producer.await.unwrap();
+    session.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn written_correlation_survives_reply_resolving_before_receipt() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let ticket = session
+        .control
+        .submit(session.control.prepare(spec(2, 100)).await.unwrap())
+        .await
+        .unwrap();
+    let receipt = write(&mut peer).await;
+    peer.events
+        .send(entry(1, 1, JournalPayload::Frame(reply(ticket.id.clone()))))
+        .await
+        .unwrap();
+    let reply = session.events.recv().await.unwrap();
+    assert!(
+        reply
+            .outcomes
+            .iter()
+            .any(|o| matches!(o, SessionOutcome::Resolved { .. }))
+    );
+    receipt
+        .send(CommandReceipt::Written {
+            remote_id: Some(99),
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    let event = session.events.recv().await.unwrap();
+    let recovery = event
+        .outcomes
+        .into_iter()
+        .find_map(|o| match o {
+            SessionOutcome::Write { recovery, .. } => recovery,
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(recovery.ticket, ticket);
+    assert_eq!(recovery.remote_id, Some(99));
+    assert_eq!(recovery.deadline_ms, 100);
     session.shutdown().await;
 }

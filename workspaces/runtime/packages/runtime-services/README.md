@@ -236,6 +236,22 @@ The account supplies durable, unique request/operation identities, prepares befo
 committing Submitted, then submits once. `AdmissionUnknown` means the admission
 receipt was lost; never resubmit. Other admission errors mean no write was admitted.
 Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
+Keep each admission future pinned/owned across unrelated select outcomes. Dropping
+its owner before observing the result fences the session, including a buffered
+result; ordinary polling by mutable reference does not fence it.
+
+Written request outcomes include `recovery: Some(RecoveredRequest)` containing
+`ticket`, `operation_id`, `thread_id`, `deadline_ms`, `unknown`, and `remote_id`.
+Persist this correlation record with the write outcome; numeric requests need the
+remote-to-local ID mapping after reattach. Supply these records through
+`SessionTaskConfig.recovered`; the session installs the adapter mappings before
+opening. Preserve the original deadline and update `unknown` when durable Unknown
+is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
+Deadlines and journal timestamps use the supplied `SessionClock` epoch. Preserve
+that epoch across reattachment in a running process; across runtime restart the
+account/store layer must translate its durable deadline into the new clock epoch.
+A missing remote ID after an uncertain write is still uncertainty, not evidence
+of NotSent or permission to resend.
 Replies and deadlines are pure `RequestOutcome` decisions. The shared clock in
 OpenOptions timestamps arrival before the session consumes a journal entry;
 `receive_at` keeps lateness independent of timer/consumer scheduling.
@@ -245,7 +261,11 @@ stdout, stderr, exit, initialization and orphan replies) plus bounded outcomes.
 Never settle a cursor just because it was read. Only a contiguous prefix of
 consumer-settled entries is ACKed. Control.settled success records that intent;
 it does not claim the supervisor already accepted the ACK. The settlement window
-is 64 entries, unresolved requests 32, each external lane 16, and pending writes 34. There are two retained event slots; no startup deferral collection exists.
+is 64 entries, unresolved requests 32, each external lane 16, and pending callbacks 34. Each admitted request reserves its prepared write in its bounded record; callback
+capacity cannot prevent a serialized successor from being released. There are two
+retained event slots and one bounded pure transition batch. Non-shutdown select
+arms are unbiased; ACKs and writes alternate when both are ready, as do request
+and callback writes.
 
 Readiness is AwaitingReply, then InitializedWritePending, then Ready only after
 the initialized write receipt. The initialized operation is scoped to the actual
@@ -254,7 +274,20 @@ child generation. The session owns the one SessionState and its deadline source.
 `shutdown().await` on the handle signals stop and joins the adapter before returning
 `SessionExit`. `completion().await` joins without initiating stop; cancelling either
 wait retains the join owner. Persist `exit.adapter.recovery_needed`, final outcomes,
-and the at-most-two `undelivered` transition batches; also drain buffered events.
-Shutdown never ACKs or waits for room in the consumer lane. The adapter's documented
-blocking-job cleanup limitation still applies. Dropping a handle only signals
+and `undelivered`; also drain buffered consumer events. After joining the adapter,
+the session drains its journal lane into this handoff: at most 17 envelopes (one
+retained transition plus 16 buffered entries). Retained control outcomes go in
+`exit.outcomes`. Evidence stays task-owned before fallible processing, including
+across an injected panic; terminal cleanup does not execute more protocol writes.
+Shutdown never ACKs or waits for room in the consumer lane.
+
+A consumer can commit durable settlement and receive `settled` success, then shut
+down before the ACK is sent or its receipt is observed. Shutdown can succeed with
+this prefix still unacknowledged. `SessionExit.pending_acknowledgement` returns the
+highest contiguous locally settled cursor without a confirmed ACK (also after a
+lost ACK receipt). Reconcile redelivery against durable settlement on the next
+attachment, then authorize that prefix again. Neither local settlement nor a
+successful shutdown proves supervisor ACK completion; worker/store crash-window
+and durable replay reconciliation tests belong to the account-worker stage.
+The adapter's documented blocking-job cleanup limitation still applies. Dropping a handle only signals
 cancellation; explicit shutdown/completion is required for the join barrier.
