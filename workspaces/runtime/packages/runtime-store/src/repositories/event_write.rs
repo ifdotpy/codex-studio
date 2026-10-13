@@ -241,8 +241,13 @@ impl EventWriteRepository {
                     "agent sync projection identity is invalid".to_owned(),
                 ));
             }
-            if let Some(status) = status { value.insert("status".to_owned(), Value::String(status.to_owned())); }
-            if let Some(name) = name { value.insert("name".into(), Value::String(name.into())); value.insert("manualName".into(), Value::Bool(true)); }
+            if let Some(status) = status {
+                value.insert("status".to_owned(), Value::String(status.to_owned()));
+            }
+            if let Some(name) = name {
+                value.insert("name".into(), Value::String(name.into()));
+                value.insert("manualName".into(), Value::Bool(true));
+            }
             if let Some((in_flight, turn_id)) = lifecycle {
                 value.insert("inFlight".to_owned(), Value::Bool(in_flight));
                 if let Some(turn_id) = turn_id {
