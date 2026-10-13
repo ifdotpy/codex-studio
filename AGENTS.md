@@ -16,6 +16,11 @@ privileges belong to the isolated Electron main process. Preserve permission che
 exact request identities, and uncertainty after lost responses. A retry must not
 repeat a command, user message, or reset-credit charge.
 
+Each product limit must have one named owner. Runtime validators must reference
+that owner; other languages, schemas, and UI must consume a generated or shared
+contract. Where generation is unavailable, add a fast parity check that identifies
+the owner and checks every consumer.
+
 Use hidden windows for automated desktop checks. Do not activate applications or
 inject operating-system input during tests. A successful fixture does not prove a
 live model request or a real reset-credit redemption.
