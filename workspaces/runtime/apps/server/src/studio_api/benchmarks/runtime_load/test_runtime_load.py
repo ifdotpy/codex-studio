@@ -18,6 +18,36 @@ spec.loader.exec_module(module)
 
 
 class RuntimeLoadHelpersTests(unittest.TestCase):
+    def test_benchmark_resource_scheduler_publishes_without_dispatch(self):
+        class Changed:
+            def wait(self):
+                return True
+
+            def clear(self):
+                return None
+
+        class Fixture:
+            closed = False
+            changed = Changed()
+            published = 0
+
+            def _publish_committed_resource_changes(self):
+                self.published += 1
+                self.closed = True
+
+            def dispatch(self, **_kwargs):
+                self.fail("benchmark resource publisher must not dispatch")
+
+            def fail(self, message):
+                raise AssertionError(message)
+
+        fixture = Fixture()
+        with mock.patch.dict(
+            "os.environ", {"BENCH_PUBLISH_RESOURCE_INVALIDATIONS": "1"}
+        ):
+            module.BenchmarkRuntimeMixin.schedule(fixture)
+        self.assertEqual(fixture.published, 1)
+
     def test_runtime_db_timing_forwards_supported_keywords(self):
         observed = []
 

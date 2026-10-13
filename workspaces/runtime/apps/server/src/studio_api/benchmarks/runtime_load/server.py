@@ -138,6 +138,12 @@ class BenchmarkRuntimeMixin:
     def schedule(self):
         # Workload identities stand in for already-running native turns. Never
         # launch native sessions or consume provider capacity in this fixture.
+        if os.environ.get("BENCH_PUBLISH_RESOURCE_INVALIDATIONS") == "1":
+            while not self.closed:
+                self.changed.wait()
+                self.changed.clear()
+                if not self.closed:
+                    self._publish_committed_resource_changes()
         return
 
     @contextmanager
