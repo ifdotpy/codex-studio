@@ -14,7 +14,7 @@ fn template(root: &Path) {
     .expect("schema fixture");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
         let db = Connection::open(root.join(database)).expect("fixture db");
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
             .expect("fixture durability");
         let mut objects = schema[database]["sqlite_master"]
             .as_array()
@@ -45,6 +45,8 @@ fn template(root: &Path) {
             db.execute_batch(object["sql"].as_str().expect("ddl"))
                 .expect("fixture ddl");
         }
+        db.execute_batch("COMMIT")
+            .expect("fixture schema commits once");
     }
 }
 fn cases() -> Vec<Value> {
@@ -246,4 +248,30 @@ fn deleted_team_broadcast_projection_survives_repeated_delete() {
     assert_eq!(before["members"], json!(["lead"]));
     execute(&store, &action, 200.0).expect("repeated deletion");
     assert_eq!(room(&store), before);
+}
+
+#[test]
+fn cancellation_keeps_reserved_uncertain_and_foreign_events() {
+    let mut connection = Connection::open_in_memory().expect("memory database");
+    connection.execute_batch("CREATE TABLE runtime_events(id TEXT, agent TEXT, status TEXT);
+        INSERT INTO runtime_events VALUES ('pending','worker','pending'),('reserved','worker','reserved'),('uncertain','worker','uncertain'),('foreign','other','pending');").expect("delivery states");
+    let transaction = connection.transaction().expect("transaction");
+    agent_management::cancel_pending(&transaction, "worker").expect("cancellation");
+    transaction.commit().expect("commit");
+    let rows: Vec<(String, String)> = connection
+        .prepare("SELECT id,status FROM runtime_events ORDER BY id")
+        .expect("query")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("rows")
+        .collect::<Result<_, _>>()
+        .expect("states");
+    assert_eq!(
+        rows,
+        vec![
+            ("foreign".into(), "pending".into()),
+            ("pending".into(), "cancelled".into()),
+            ("reserved".into(), "reserved".into()),
+            ("uncertain".into(), "uncertain".into())
+        ]
+    );
 }
