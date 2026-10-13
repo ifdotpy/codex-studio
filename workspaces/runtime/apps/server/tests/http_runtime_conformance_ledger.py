@@ -202,6 +202,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/directories"): {
         "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
     },
+    ("GET", "/api/import"): {
+        "primary": {
+            "query": {"account_key": "default"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
+    ("POST", "/api/import"): {
+        "primary": {
+            "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
     ("GET", "/api/messages"): {
         "primary": {"query": {"room": "$room"}},
     },
