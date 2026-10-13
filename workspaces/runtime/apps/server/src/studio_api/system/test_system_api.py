@@ -286,7 +286,7 @@ class SystemApiTests(unittest.TestCase):
 
         provider_monitor = ProviderVersionMonitor()
         ticked: list[object] = []
-        provider_monitor.tick = lambda runtime: ticked.append(runtime)
+        setattr(provider_monitor, "tick", lambda runtime: ticked.append(runtime))
         provider_monitor.providers = [{
             "id": "provider-version:default", "accountKey": "default",
             "provider": "codex", "status": "current", "runningVersion": "1.0.0",
