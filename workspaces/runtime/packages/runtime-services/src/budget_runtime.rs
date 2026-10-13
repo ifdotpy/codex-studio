@@ -2,10 +2,14 @@
 //!
 //! Native history is captured before the caller opens its write transaction.
 //! Admission, defer, claim and usage capture then reuse that caller's transaction.
-//! AdmissionHistoryPreReadWindow: the file proof cannot detect provider appends
-//! after pre-read; the next live or history capture accounts for them before a
-//! later admission. Python's Runtime.lock protects its stat/read/stat sequence
-//! and excludes concurrent Studio writers, not provider writes.
+//! AdmissionHistoryPreReadWindow: Python's `Runtime.lock` (codex_budget.py:1)
+//! encloses the stat/read/stat checks (codex_budget.py:190-211), excluding
+//! concurrent Studio writers but not provider appends. Rust's window spans the
+//! pre-read to commit, so a provider append after pre-read is not detected; the
+//! next live or history capture accounts for it before a later admission.
+//! ResponseReplayContentConflict is a deliberate compatibility tightening:
+//! Python records `conflictingResponseUsage` and saves the changed replay
+//! (codex_budget.py:101-108,147-151); Rust refuses it without writes.
 
 use crate::budget::{
     AdmissionDecision, AdmissionDenial, BudgetError, CaptureSource, HistoryFileObservation,
@@ -26,6 +30,7 @@ use studio_runtime_store::{
 use thiserror::Error;
 
 const MAX_HISTORY_TAIL: u64 = 65_536;
+const MAX_HISTORY_READ_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum BudgetRuntimeError {
@@ -114,7 +119,10 @@ pub fn read_histories(
             .as_deref()
             .map(serde_json::from_str::<Value>)
             .transpose()?;
-        let file = history.as_ref().and_then(read_history_file);
+        let file = match history.as_ref() {
+            Some(history) => read_history_file(history)?,
+            None => None,
+        };
         let mut observation =
             HistoryObservation::from_records(&agent, history.as_ref(), file.as_ref())?;
         observation.bind_runtime(HistoryRuntimeBinding {
@@ -129,13 +137,28 @@ pub fn read_histories(
     Ok(observations)
 }
 
-fn read_history_file(history: &Value) -> Option<HistoryFileObservation> {
-    read_history_file_with(history, || {})
+fn read_history_file(history: &Value) -> Result<Option<HistoryFileObservation>, BudgetError> {
+    read_history_file_bounded_with(history, || {})
+}
+
+fn read_history_file_bounded_with(
+    history: &Value,
+    mut after_read: impl FnMut(),
+) -> Result<Option<HistoryFileObservation>, BudgetError> {
+    for _ in 0..MAX_HISTORY_READ_ATTEMPTS {
+        let mut changed = false;
+        let observation = read_history_file_with(history, &mut after_read, &mut changed);
+        if !changed {
+            return Ok(observation);
+        }
+    }
+    Err(BudgetError::StaleHistory)
 }
 
 fn read_history_file_with(
     history: &Value,
-    after_read: impl FnOnce(),
+    after_read: &mut impl FnMut(),
+    changed: &mut bool,
 ) -> Option<HistoryFileObservation> {
     let path = Path::new(history.get("path")?.as_str()?);
     let offset = history
@@ -144,30 +167,53 @@ fn read_history_file_with(
         .unwrap_or_default();
     let mut file = File::open(path).ok()?;
     let opened = file.metadata().ok()?;
-    let named = fs::metadata(path).ok()?;
+    let named = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            *changed = true;
+            return None;
+        }
+    };
     let identity = file_identity(&opened)?;
     let named_identity = file_identity(&named)?;
     let size = opened.len();
     let modified = opened.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     let named_modified = named.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
     if named_identity != identity || named.len() != size || named_modified != modified {
+        *changed = true;
         return None;
     }
     let remaining = size.saturating_sub(offset);
     let bytes = if offset <= size && remaining <= MAX_HISTORY_TAIL {
         let mut bytes = Vec::with_capacity(remaining as usize);
         file.seek(SeekFrom::Start(offset)).ok()?;
-        (&mut file)
+        if (&mut file)
             .take(MAX_HISTORY_TAIL + 1)
             .read_to_end(&mut bytes)
-            .ok()?;
+            .is_err()
+        {
+            *changed = true;
+            return None;
+        }
         bytes
     } else {
         Vec::new()
     };
     after_read();
-    let final_opened = file.metadata().ok()?;
-    let final_named = fs::metadata(path).ok()?;
+    let final_opened = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            *changed = true;
+            return None;
+        }
+    };
+    let final_named = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            *changed = true;
+            return None;
+        }
+    };
     let final_identity = file_identity(&final_opened)?;
     let final_named_identity = file_identity(&final_named)?;
     let final_modified = final_opened
@@ -181,6 +227,7 @@ fn read_history_file_with(
         || final_named.len() != size
         || final_modified != modified
     {
+        *changed = true;
         return None;
     }
     Some(HistoryFileObservation {
@@ -384,11 +431,14 @@ pub fn claim_wait(
 
 #[cfg(test)]
 mod tests {
-    use super::{admission_with_analytics_path, read_history_file, read_history_file_with};
+    use super::{
+        MAX_HISTORY_READ_ATTEMPTS, admission_with_analytics_path, read_history_file,
+        read_history_file_bounded_with,
+    };
     use crate::budget::{HistoryObservation, HistoryRuntimeBinding};
     use rusqlite::Connection;
     use serde_json::{Value, json};
-    use std::{collections::BTreeMap, fs, io::Write};
+    use std::{cell::Cell, collections::BTreeMap, fs, io::Write};
 
     #[test]
     fn reads_bounded_history_tail_from_checkpoint_offset() {
@@ -408,6 +458,7 @@ mod tests {
             "offset": 3,
             "identity": identity,
         }))
+        .expect("stable history")
         .expect("read bounded tail");
         assert_eq!(observation.tail, "{}");
         assert_eq!(observation.size, observation.final_size);
@@ -427,16 +478,24 @@ mod tests {
         };
         #[cfg(not(unix))]
         let identity = json!([0, 0]);
-        let result =
-            read_history_file_with(&json!({"path":path,"offset":0,"identity":identity}), || {
+        let attempts = Cell::new(0);
+        let result = read_history_file_bounded_with(
+            &json!({"path":path,"offset":0,"identity":identity}),
+            || {
+                attempts.set(attempts.get() + 1);
                 fs::OpenOptions::new()
                     .append(true)
                     .open(&path)
                     .expect("open append")
                     .write_all(b"{}\n")
                     .expect("append during read")
-            });
-        assert!(result.is_none(), "changed pre-read must fail closed");
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::budget::BudgetError::StaleHistory)
+        ));
+        assert_eq!(attempts.get(), MAX_HISTORY_READ_ATTEMPTS);
     }
 
     fn admission_fixture() -> (
@@ -513,11 +572,78 @@ mod tests {
                 ],
             )
             .expect("move checkpoint");
+        let before = state_snapshot(&db, &path);
         let tx = db.transaction().expect("transaction");
         let result = admission_with_analytics_path(&path, &tx, &agent, &agent, &histories, 100.);
         assert!(matches!(
             result,
             Err(crate::budget::BudgetError::StaleHistory)
         ));
+        tx.commit().expect("commit refused transaction");
+        assert_eq!(
+            state_snapshot(&db, &path),
+            before,
+            "stale refusal writes nothing"
+        );
+    }
+
+    fn state_snapshot(db: &Connection, analytics_path: &std::path::Path) -> Value {
+        let mut agents = db
+            .prepare("SELECT id,record FROM runtime_agents ORDER BY id")
+            .expect("agent snapshot query");
+        let agents = agents
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("agent snapshot rows")
+            .map(|row| {
+                let (id, raw) = row.expect("agent snapshot row");
+                (
+                    id,
+                    serde_json::from_str::<Value>(&raw).expect("agent record"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut budgets = db
+            .prepare("SELECT id,record FROM runtime_budget ORDER BY id")
+            .expect("budget snapshot query");
+        let budgets = budgets
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("budget snapshot rows")
+            .map(|row| {
+                let (id, raw) = row.expect("budget snapshot row");
+                (
+                    id,
+                    serde_json::from_str::<Value>(&raw).expect("budget record"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut usage = db
+            .prepare("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage ORDER BY id")
+            .expect("usage snapshot query");
+        let usage = usage
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, f64>(4)?,
+                ))
+            })
+            .expect("usage snapshot rows")
+            .map(|row| row.expect("usage snapshot row"))
+            .collect::<Vec<_>>();
+        let analytics = Connection::open(analytics_path).expect("analytics snapshot db");
+        let checkpoint: String = analytics
+            .query_row(
+                "SELECT record FROM analytics_history WHERE id='a:account:thread'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("checkpoint snapshot");
+        json!({"agents":agents,"budgets":budgets,"usage":usage,"checkpoint":checkpoint})
     }
 }
