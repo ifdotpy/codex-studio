@@ -356,6 +356,7 @@
   {
     "id": "M22",
     "description": "mislocate stored errors",
+    "filter": "test(malformed_stored_agent_and_item_shapes_are_named_without_content_leaks)",
     "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
     "witnesses": ["malformed-runtime_agents-epoch"],
     "edits": [
