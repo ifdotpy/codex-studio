@@ -13,10 +13,6 @@ use crate::router::HttpState;
 
 const SIGNING_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("federation-credentials/private-key")];
-const INVITE_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/tailscale-identity"),
-    Dependency::new("federation-credentials/key-generation"),
-];
 const ACCEPT_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("federation-credentials/invitation"),
     Dependency::new("remote-transport/signed-federation-exchange"),
