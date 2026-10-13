@@ -173,6 +173,80 @@ class PersistedChatMessage(_OpenPersistedRecord):
     deliveries: dict[StrictStr, StrictStr]
 
 
+class PersistedReadState(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    read: StrictBool | None = None
+
+
+class PersistedSummaryQuestion(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    question: StrictStr | None = None
+
+
+class PersistedSummaryParams(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    questions: list[PersistedSummaryQuestion] | None = None
+
+
+class PersistedSummaryValue(_OpenPersistedRecord):
+    """Fields consumed from the durable sidebar projection, not an HTTP DTO."""
+
+    name: StrictStr | None = None
+    path: StrictStr | None = None
+    source: StrictStr | None = None
+    status: StrictStr | None = None
+    hostProjectPath: StrictStr | None = None
+    cwd: StrictStr | None = None
+    isLead: StrictBool | None = None
+    inFlight: StrictBool | None = None
+    archived: StrictBool | None = None
+    pinned: StrictBool | None = None
+    userHidden: StrictBool | None = None
+    needsUserResponse: StrictBool | None = None
+    deferred: StrictBool | None = None
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    lastCompletedTurn: StrictStr | None = None
+    lastCompletedTurnStatus: StrictStr | None = None
+    readState: PersistedReadState | None = None
+    members: list[StrictStr] | None = None
+    peerTeams: list[PersistedPeerTeam] | None = None
+    locations: list[dict[StrictStr, JsonValue]] | None = None
+    projectAliases: list[dict[StrictStr, JsonValue]] | None = None
+    serverId: StrictStr | None = None
+    projectId: StrictStr | None = None
+    projectServerId: StrictStr | None = None
+    homeServerId: StrictStr | None = None
+    projectPath: StrictStr | None = None
+    sharedRoomId: StrictStr | None = None
+    provider: StrictStr | None = None
+    agent: StrictStr | None = None
+    leadId: StrictStr | None = None
+    tail: StrictStr | None = None
+    title: StrictStr | None = None
+    created: float | None = None
+    updated: float | None = None
+    version: SafeInt | None = None
+    params: PersistedSummaryParams | None = None
+
+
+class PersistedSyncEntity(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    value: PersistedSummaryValue
+
+
+class PersistedAccessRecord(_OpenPersistedRecord):
+    kind: StrictStr | None = None
+    status: StrictStr | None = None
+    revoked: float | None = None
+
+
 class PersistedTaskRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     status: StrictStr | None = None
@@ -365,6 +439,8 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
+    "persisted-access-record.schema.json": PersistedAccessRecord,
+    "persisted-sync-entity.schema.json": PersistedSyncEntity,
     "persisted-chat-message.schema.json": PersistedChatMessage,
     "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
     "persisted-project-record.schema.json": PersistedProjectRecord,
