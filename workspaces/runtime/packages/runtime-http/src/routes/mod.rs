@@ -3,19 +3,26 @@ mod catalog;
 pub(crate) mod compose;
 mod desktop;
 pub(crate) mod extractors;
+mod federation;
 pub(crate) mod manifest;
 mod messages;
+mod models;
 mod monitors;
+mod multi_server;
 mod panels;
+mod projects;
 mod questions_reads;
+mod questions_write;
 mod queue_read;
 mod queue_write;
 mod rules;
 mod session;
 mod sync;
+mod sync_delta;
 mod sync_documents;
 mod terminals;
 mod transcript;
+mod usage;
 mod work_items;
 mod work_write;
 mod workspace_files;
@@ -124,13 +131,13 @@ mod registration_tests {
             .collect::<Vec<_>>();
         route_groups.sort_unstable();
         assert_eq!(route_groups, route_files);
-        assert_eq!(route_groups.len(), 17);
+        assert_eq!(route_groups.len(), 23);
     }
 
     #[test]
     fn dependency_manifest_is_registered_in_stable_order() {
         let dependencies = super::manifest::registered_dependencies();
-        assert_eq!(dependencies.len(), 34);
+        assert_eq!(dependencies.len(), 63);
         assert!(dependencies.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(
             inventory::iter::<RouteModuleRegistration>
@@ -143,7 +150,7 @@ mod registration_tests {
     #[test]
     fn route_groups_are_returned_in_stable_order() {
         let groups = super::registered_route_groups();
-        assert_eq!(groups.len(), 17);
+        assert_eq!(groups.len(), 23);
         assert!(groups.windows(2).all(|pair| pair[0].0 < pair[1].0));
         assert_eq!(super::groups().len(), groups.len());
     }

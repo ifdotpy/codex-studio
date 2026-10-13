@@ -53,7 +53,7 @@ pub fn rename(
             object: "runtime_agents",
         });
     }
-    if truthy(agent.extra.get("deletedAt")) {
+    if crate::event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(RenameError::Deleted);
     }
     let Some(name) = name else {
@@ -84,15 +84,4 @@ pub fn rename(
         EventWriteRepository::put_receipt(transaction, request_id, signature, &result_text)?;
     }
     Ok(result)
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-        Some(Value::Bool(true)) => true,
-    }
 }

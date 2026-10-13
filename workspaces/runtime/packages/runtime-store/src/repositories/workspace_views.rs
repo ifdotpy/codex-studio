@@ -2,7 +2,73 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as 
 use serde_json::Value;
 
 use crate::StoreResult;
+use crate::StoredRecord;
 use crate::records::get_json_record;
+use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+
+const BOOTSTRAP_TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_annotations",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_checkpoints",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_plans",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_rules",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_work",
+        columns: &["id", "record"],
+    },
+];
+const CONDITIONAL_TABLES: &[ConditionalTableRequirement] = &[
+    ConditionalTableRequirement {
+        table_exists: "runtime_agents",
+        tables: &[TableRequirement {
+            name: "runtime_agents",
+            columns: &["id", "record"],
+        }],
+    },
+    ConditionalTableRequirement {
+        table_exists: "runtime_complaints",
+        tables: &[TableRequirement {
+            name: "runtime_complaints",
+            columns: &["id", "record"],
+        }],
+    },
+    ConditionalTableRequirement {
+        table_exists: "runtime_requests",
+        tables: &[TableRequirement {
+            name: "runtime_requests",
+            columns: &["id", "record"],
+        }],
+    },
+    ConditionalTableRequirement {
+        table_exists: "runtime_tasks",
+        tables: &[TableRequirement {
+            name: "runtime_tasks",
+            columns: &["id", "record"],
+        }],
+    },
+];
+
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+    tables: &[],
+    conditional_tables: CONDITIONAL_TABLES,
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: BOOTSTRAP_TABLES,
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTaskRow {
@@ -13,6 +79,119 @@ pub struct WorkspaceTaskRow {
 pub struct WorkspaceViewsRepository;
 
 impl WorkspaceViewsRepository {
+    pub fn records(connection: &Connection, table: &str) -> StoreResult<Vec<StoredRecord>> {
+        if !workspace_table(table) || !table_exists(connection, table)? {
+            return Ok(Vec::new());
+        }
+        read_records(connection, table)
+    }
+
+    pub fn records_for_agents(
+        connection: &Connection,
+        table: &str,
+        field: &str,
+        agent_ids: &[String],
+    ) -> StoreResult<Vec<StoredRecord>> {
+        if !workspace_table(table) || !matches!(field, "agent" | "id" | "leadId") {
+            return Ok(Vec::new());
+        }
+        if agent_ids.is_empty() || !table_exists(connection, table)? {
+            return Ok(Vec::new());
+        }
+        let field = match field {
+            "id" => "id",
+            "leadId" => "json_extract(record,'$.leadId')",
+            _ => "json_extract(record,'$.agent')",
+        };
+        let placeholders = vec!["?"; agent_ids.len()].join(",");
+        let sql = format!(
+            "SELECT id,record FROM {table} WHERE {field} IN ({placeholders}) ORDER BY rowid"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(agent_ids.iter()), |row| {
+            Ok(StoredRecord {
+                id: row.get(0)?,
+                record: Some(row.get(1)?),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn agents(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
+        read_records(connection, "runtime_agents")
+    }
+
+    pub fn snapshot_tasks(
+        connection: &Connection,
+        root: Option<&str>,
+    ) -> StoreResult<Vec<StoredRecord>> {
+        let root_filter = root
+            .map(|_| " AND json_extract(a.record,'$.rootId')=?")
+            .unwrap_or("");
+        let sql = format!(
+            "SELECT t.id,t.record FROM runtime_tasks t JOIN runtime_agents a \
+             ON json_extract(t.record,'$.agent')=a.id \
+             WHERE json_extract(a.record,'$.deletedAt') IS NULL {root_filter} \
+             AND json_extract(t.record,'$.status')='running' \
+             UNION ALL SELECT id,record FROM (SELECT t.id,t.record FROM runtime_tasks t \
+             JOIN runtime_agents a ON json_extract(t.record,'$.agent')=a.id \
+             WHERE json_extract(a.record,'$.deletedAt') IS NULL {root_filter} \
+             AND json_extract(t.record,'$.status')!='running' \
+             ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let args = root
+            .map(|root| {
+                vec![
+                    SqlValue::Text(root.to_owned()),
+                    SqlValue::Text(root.to_owned()),
+                ]
+            })
+            .unwrap_or_default();
+        let rows = statement.query_map(params_from_iter(args.iter()), |row| {
+            Ok(StoredRecord {
+                id: row.get(0)?,
+                record: Some(row.get(1)?),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn snapshot_monitors(
+        connection: &Connection,
+        root: Option<&str>,
+    ) -> StoreResult<Vec<StoredRecord>> {
+        if !table_exists(connection, "runtime_monitors")? {
+            return Ok(Vec::new());
+        }
+        let agent_scope = root
+            .map(|_| " AND json_extract(record,'$.agent') IN (SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? AND json_extract(record,'$.deletedAt') IS NULL)")
+            .unwrap_or("");
+        let terminal = ["completed", "failed", "cancelled", "lost"]
+            .iter()
+            .map(|status| format!(
+                "SELECT * FROM (SELECT id,record,json_extract(record,'$.created') AS created FROM runtime_monitors WHERE json_extract(record,'$.status')='{status}' {agent_scope} ORDER BY json_extract(record,'$.created') DESC LIMIT 100)"
+            ))
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+        let sql = format!(
+            "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {agent_scope} \
+             UNION ALL SELECT id,record FROM (SELECT id,record,created FROM ({terminal}) ORDER BY created DESC LIMIT 100)"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let count = if root.is_some() { 5 } else { 0 };
+        let args = std::iter::repeat_n(root.unwrap_or_default().to_owned(), count)
+            .map(SqlValue::Text)
+            .collect::<Vec<_>>();
+        let rows = statement.query_map(params_from_iter(args.iter()), |row| {
+            Ok(StoredRecord {
+                id: row.get(0)?,
+                record: Some(row.get(1)?),
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
         get_json_record(connection, "runtime_tasks", id)
     }
@@ -104,5 +283,47 @@ impl WorkspaceViewsRepository {
             .map(|row| row.map(|id| WorkspaceTaskRow { id }))
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+}
+
+fn workspace_table(table: &str) -> bool {
+    matches!(
+        table,
+        "runtime_agents"
+            | "runtime_annotations"
+            | "runtime_checkpoints"
+            | "runtime_complaints"
+            | "runtime_plans"
+            | "runtime_requests"
+            | "runtime_rules"
+            | "runtime_tasks"
+            | "runtime_work"
+    )
+}
+
+fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<StoredRecord>> {
+    let mut statement =
+        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+    let rows = statement.query_map([], |row| {
+        Ok(StoredRecord {
+            id: row.get(0)?,
+            record: Some(row.get(1)?),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "workspace_views",
+        requirements: &REQUIREMENTS,
     }
 }
