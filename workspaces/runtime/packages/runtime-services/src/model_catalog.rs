@@ -364,7 +364,7 @@ fn spawn_provider(command: Command) -> io::Result<ManagedChildProcess> {
     let mut command = CommandWrap::from(command);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
-    ChildPriority::from_environment().apply_before_spawn(&mut command);
+    ChildPriority::Normal.apply_before_spawn(&mut command);
     command.spawn()
 }
 
@@ -683,5 +683,41 @@ mod tests {
             .stop()
             .expect("provider group should be killed and reaped");
         assert!(process.child.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn model_catalog_probe_preserves_inherited_priority() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "read -r ready; ps -o ni= -p $$; ionice -p $$"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = spawn_provider(command).expect("catalog caller");
+        child
+            .stdin()
+            .take()
+            .expect("stdin")
+            .write_all(b"ready\n")
+            .expect("release probe");
+        let output = child.wait_with_output().expect("catalog child completes");
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).expect("catalog output");
+        let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            rustix::process::getpriority_process(None)
+                .expect("parent nice")
+                .to_string()
+        );
+        let inherited_io = Command::new("ionice")
+            .args(["-p", &std::process::id().to_string()])
+            .output()
+            .expect("parent I/O priority");
+        assert!(inherited_io.status.success());
+        assert_eq!(
+            lines[1],
+            String::from_utf8_lossy(&inherited_io.stdout).trim()
+        );
     }
 }
