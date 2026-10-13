@@ -9,7 +9,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Instant;
 use studio_runtime_services::analytics::{self, AnalyticsOptions};
-use studio_runtime_services::costs::{self, CostsError};
+use studio_runtime_services::budget_runtime;
+use studio_runtime_services::costs::CostsError;
 
 use super::extractors::QueryParams;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
@@ -125,7 +126,7 @@ async fn session_cost(
         })
         .unwrap_or_default();
     let value = tokio::task::spawn_blocking(move || {
-        costs::session_cost_with_accounts(&store, &agent, &account_providers)
+        budget_runtime::session_cost(&store, &agent, &account_providers)
     })
     .await
     .map_err(|_| ApiError::internal())?
