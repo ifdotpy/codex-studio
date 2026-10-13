@@ -155,7 +155,14 @@ fn python_submission_compiler_corpus() {
                 value["clock_segments"] = fixture["clock_segments"].clone();
                 value
             }
-            Err(error) => json!({"ok":false,"error":json!(error)["kind"]}),
+            Err(error) => {
+                let encoded = json!(error);
+                let mut result = json!({"ok":false,"error":encoded["kind"]});
+                if encoded["kind"] == "InvalidJsonEvidence" {
+                    result["location"] = encoded["artifacts"]["location"].clone();
+                }
+                result
+            }
         };
         assert!(
             json!(snapshot) == original,

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "apps/server/src"))
 import copy
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -121,11 +122,10 @@ def event_segments(rows, projections):
         if not bypass and row["id"] not in projections: continue
         if result: result.append(literal("\n\n"))
         if row["kind"] != "user": result.append(literal("[Orchestration event: "+row["kind"]+"]\n"))
-        text=row["text"] if bypass else projections[row["id"]]
-        generated=json.loads(text) if text != row["text"] else None
-        # Rewritten producer payloads now compare byte for byte, even after edits.
-        summary=isinstance(generated,dict) and generated.get("truncated") is True and "textBytes" in generated and "read" in generated
-        result.append({"json":generated} if summary else literal(text))
+        text,summary=(row["text"],False) if bypass else projections[row["id"]]
+        # This flag is observed from bounded_event's actual return frame, never
+        # inferred from fields a producer can supply.
+        result.append({"json":json.loads(text)} if summary else literal(text))
     return result
 
 
@@ -282,6 +282,28 @@ class Host(EfficiencyMixin):
         db.execute("INSERT OR REPLACE INTO runtime_context_manifests VALUES (?,?,?,?,?,?)",(self.actor["id"],manifest["epoch"][0] or "",manifest["epoch"][1],manifest["sequence"],event_id,json.dumps(manifest)))
 
 
+class IntegerToken(str): pass
+
+
+def invalid_json_evidence(row):
+    if row["kind"] in {"user","followup","work_decision","radio_turn"}: return False
+    text=row["text"].strip()
+    def nonfinite(_): raise ValueError("non-finite")
+    try: value=json.loads(text,parse_int=IntegerToken,parse_constant=nonfinite)
+    except (ValueError,RecursionError): return text.startswith(("{","[")) or text in {"NaN","Infinity","-Infinity"}
+    def invalid(value,depth=0,progress=False):
+        if isinstance(value,IntegerToken):
+            unsupported=value=="-0" or not -(2**63)<=int(value)<=2**64-1
+            return unsupported and not (progress and (value=="-0" or not value.startswith("-")))
+        if isinstance(value,float): return not math.isfinite(value)
+        if isinstance(value,(dict,list)):
+            if depth>=64: return True
+            pairs=value.items() if isinstance(value,dict) else enumerate(value)
+            return any(invalid(v,depth+1,depth==0 and row["kind"]=="agent_message" and k=="progress_version") for k,v in pairs)
+        return False
+    return invalid(value)
+
+
 def run(case, root):
     TOKENS.clear()
     case=expand(case)
@@ -332,7 +354,9 @@ def run(case, root):
             except (ValueError, OverflowError, OSError):
                 return dict(snapshot=convert_tokens(s),events=rows,expected=dict(ok=False,error="InvalidClock"),tokens=TOKENS)
             for p,r in zip(pyrows,rows): p["assets"]=[host.asset_view(host.asset_record(i)) for i in r["metadata"]["assets"]]
-            for row in rows:
+            for index,row in enumerate(rows):
+                if invalid_json_evidence(row):
+                    return dict(snapshot=convert_tokens(s),events=rows,expected=dict(ok=False,error="InvalidJsonEvidence",location=f"events[{index}].text"),tokens=TOKENS,segments=[])
                 try: value=json.loads(row["text"])
                 except ValueError: continue
                 if not isinstance(value,dict): continue
@@ -343,7 +367,17 @@ def run(case, root):
             projections={}
             bounded=EfficiencyMixin.bounded_event
             def observe(row,text,limit):
-                value=bounded(row,text,limit);projections[row["id"]]=value;return value
+                emitted=False
+                def returned(frame,event,arg):
+                    nonlocal emitted
+                    if frame.f_code is bounded.__code__ and event=="return":
+                        emitted="summary" in frame.f_locals
+                previous=sys.getprofile()
+                sys.setprofile(returned)
+                try: value=bounded(row,text,limit)
+                finally: sys.setprofile(previous)
+                projections[row["id"]]=(value,emitted)
+                return value
             projected_rows=copy.deepcopy(pyrows)
             if case.get("revisionDeviation"):
                 # Approved u64 boundary: record Python's different coalescing result,
@@ -357,6 +391,13 @@ def run(case, root):
                 text=host.model_event_text(projected_rows)
             segments=event_segments(rows,projections)
             normalize_text(text,segments)
+            if case.get("normalizationProbe"):
+                produced=projections[rows[0]["id"]][0]
+                changed=text.replace(produced,json.dumps(json.loads(produced),sort_keys=True),1)
+                assert changed != text
+                try: normalize_text(changed,segments)
+                except AssertionError: pass
+                else: raise AssertionError("producer-shaped summary was normalized")
 
             artifacts=[]
             for p in pyrows:

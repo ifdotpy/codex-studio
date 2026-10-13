@@ -65,7 +65,9 @@ and acceptance transitions. Failures identify the case and first differing path.
 Only the four approved changes in [deviations.json](deviations.json) relax comparison.
 The normalizer walks recorded literal and generated-object spans. It preserves
 caller text, follow-up text, guidance, embedded JSON strings, and excerpts exactly;
-it parses only newly generated context/summary objects. Every rewritten producer
+it parses only newly generated context/summary objects. Summary provenance is
+recorded at the actual Python `bounded_event` return, not inferred from producer
+fields. A producer-shaped-summary probe must reject byte changes. Every rewritten producer
 payload compares byte for byte, including nested key order, duplicate-key position,
 and exponent-form floats. Manifest values use a one-to-one token mapping. The
 original parent excerpt must equal the first 20,000 characters of fulltext before
@@ -80,7 +82,18 @@ accepted in both orders, followed by a fresh preparation and late replay.
 Malformed non-string work-review checks/files members and array/object child IDs
 or names are explicitly refused with `InvalidEvidence`; scalar child identities
 use Python spelling. This authorized boundary is tested independently of Python's
-more permissive stringification. There is no hard total prompt-byte ceiling:
+more permissive stringification. Non-bypass structured event JSON has an explicit
+`InvalidJsonEvidence` refusal contract at `events[index].text`: at most 64 nested
+containers, finite floats, and integers in the combined i64/u64 range. Negative
+integer zero is refused except for the registered progress-revision exception.
+Malformed structured JSON, non-finite numbers, and greater depths are refused
+before archiving; caller and bypass text stays literal. These checks share the
+private ordered parse, using serde RawValue tokens rather than a custom lexer.
+The boundary oracle verifies this authorized refusal policy, not Python parity
+outside that domain. Other error diagnostics and adapter identities remain
+outside the comparison claim.
+
+There is no hard total prompt-byte ceiling:
 synthetic budgets are soft when their reference floor exceeds the assigned share,
 and context and bypass events are unbounded. An independent assertion preserves a
 23,000-byte reference while enforcing the transcript's hard character ceiling.
@@ -109,7 +122,7 @@ and a system/Cargo-only `PATH`, and leave `CODEX_BIN` unset.
 ```sh
 cargo nextest run -p studio-runtime-services --test turn_prepare_corpus
 just test-rust-runtime-corpora
-just test-rust-runtime-corpora-mutations --only TP1,TP2,TP3,TP4,TP5,TP6,TP7,TP8,TP9,TP10,TP11,TP12,TP13,TP14,TP15,TP16,TP17,TP18,TP19,TP20,TP21,TP22,TP23,TP24,TP25,TP26,TP27,TP28,TP29,TP30,TP31,TP32,TP33 --full
+just test-rust-runtime-corpora-mutations --only TP1,TP2,TP3,TP4,TP5,TP6,TP7,TP8,TP9,TP10,TP11,TP12,TP13,TP14,TP15,TP16,TP17,TP18,TP19,TP20,TP21,TP22,TP23,TP24,TP25,TP26,TP27,TP28,TP29,TP30,TP31,TP32,TP33,TP34,TP35,TP36,TP37,TP38,TP39,TP40,TP41,TP42,TP43,TP44,TP45,TP46,TP47,TP48,TP49,TP50,TP51,TP52,TP53,TP54 --full
 ```
 
 Announce the last two as manual heavy runs. The mutation command copies sources,

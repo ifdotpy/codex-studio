@@ -57,8 +57,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
     "edits": [
       {
-        "before": "\"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"",
-        "after": "\"followup\" | \"work_decision\" | \"radio_turn\""
+        "before": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"\n        )",
+        "after": "if !matches!(\n            row.kind.as_str(),\n            \"followup\" | \"work_decision\" | \"radio_turn\"\n        )"
       }
     ],
     "witnesses": ["unbounded-user"],
@@ -358,8 +358,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
     "edits": [
       {
-        "before": "fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {",
-        "after": "fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {\n    if value.get(\"resultTruncated\") == Some(&json!(true)) && packed(value).len() > EVENT_BYTES { return packed(value); }"
+        "before": "serde_json::to_string(&ordered).unwrap_or_else(|_| text.into())",
+        "after": "serde_json::to_value(&ordered).map(|v| v.to_string()).unwrap_or_else(|_| text.into())"
       }
     ],
     "witnesses": ["producer-order-summary-evidence"],
@@ -428,6 +428,279 @@
       }
     ],
     "witnesses": ["child-existing-read-order"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP34",
+    "description": "normalize-producer-shaped-summary",
+    "file": "workspaces/runtime/packages/runtime-services/tests/turn_prepare/oracle.py",
+    "edits": [
+      {
+        "before": "if summary else literal(text)",
+        "after": "if summary or (text.startswith(\"{\") and json.loads(text).get(\"truncated\") and \"textBytes\" in json.loads(text) and \"read\" in json.loads(text)) else literal(text)"
+      }
+    ],
+    "witnesses": ["producer-summary-shape"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP35",
+    "description": "select-oldest-manifest",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": ".max_by_key(|m| (m.sequence, Reverse(&m.epoch.0), Reverse(m.epoch.1)))",
+        "after": ".min_by_key(|m| (m.sequence, Reverse(&m.epoch.0), Reverse(m.epoch.1)))"
+      }
+    ],
+    "witnesses": ["competing-delivered-manifests"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP36",
+    "description": "ignore-plan-change",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if known.get(\"plan\") != Some(&version) {",
+        "after": "if !known.contains_key(\"plan\") {"
+      }
+    ],
+    "witnesses": ["plan-changed"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP37",
+    "description": "ignore-plan-clearing",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if plan.is_some() || known.contains_key(\"plan\") {",
+        "after": "if plan.is_some() {"
+      }
+    ],
+    "witnesses": ["plan-cleared"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP38",
+    "description": "include-resolved-complaints",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "ComplaintStatus::Resolved | ComplaintStatus::Declined",
+        "after": "ComplaintStatus::Declined"
+      }
+    ],
+    "witnesses": ["complaint-resolved"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP39",
+    "description": "ignore-complaint-version",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "json!([c.text, c.status, c.version])",
+        "after": "json!([c.text, c.status])"
+      }
+    ],
+    "witnesses": ["complaint-change-version"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP40",
+    "description": "raise-cleanup-threshold",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "waiting.len() >= CLEANUP_COUNT",
+        "after": "waiting.len() > CLEANUP_COUNT"
+      }
+    ],
+    "witnesses": ["worktrees-3"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP41",
+    "description": "include-deleted-workers",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "&& !w.deleted",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": ["worktrees-deleted"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP42",
+    "description": "drop-independent-reminder-promotion",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "reminder_insert: prepared.manifest.versions.get(\"worktreeReminder\").cloned(),",
+        "after": "reminder_insert: None,"
+      }
+    ],
+    "witnesses": ["receipt-accepted"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP43",
+    "description": "reverse-batch-member-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "Ok((parts.join(\"\\n\\n\"), artifacts))",
+        "after": "parts.reverse();\n    Ok((parts.join(\"\\n\\n\"), artifacts))"
+      }
+    ],
+    "witnesses": ["mixed-attachments-clocks-events"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP44",
+    "description": "ignore-progress-room-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "field(\"room\")?",
+        "after": "String::from(\"room\")"
+      }
+    ],
+    "witnesses": ["progress-key-room-other"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP45",
+    "description": "retain-oldest-progress",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if *version >= group.2.0 {",
+        "after": "if group.1 == 1 {"
+      }
+    ],
+    "witnesses": ["progress-increasing"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP46",
+    "description": "clip-followup",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"\n        )",
+        "after": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"work_decision\" | \"radio_turn\"\n        )"
+      }
+    ],
+    "witnesses": ["unbounded-followup"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP47",
+    "description": "clip-work_decision",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"\n        )",
+        "after": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"radio_turn\"\n        )"
+      }
+    ],
+    "witnesses": ["unbounded-work_decision"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP48",
+    "description": "clip-radio_turn",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"\n        )",
+        "after": "if !matches!(\n            row.kind.as_str(),\n            \"user\" | \"followup\" | \"work_decision\"\n        )"
+      }
+    ],
+    "witnesses": ["unbounded-radio_turn"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP49",
+    "description": "count-characters-for-byte-prefix",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "let mut end = limit.min(text.len());",
+        "after": "let mut end = text.char_indices().nth(limit).map_or(text.len(), |(i, _)| i);"
+      }
+    ],
+    "witnesses": ["utf8-byte-edge-7334"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP50",
+    "description": "drop-parent-fulltext",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "let fulltext = truncated.then(|| text.clone());",
+        "after": "let fulltext = None;"
+      }
+    ],
+    "witnesses": ["unbounded-user"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP51",
+    "description": "clear-parent-truncation-flag",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "text: transcript_text,\n        truncated,",
+        "after": "text: transcript_text,\n        truncated: false,"
+      }
+    ],
+    "witnesses": ["unbounded-user"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP52",
+    "description": "allow-depth-65",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if depth >= 64 {",
+        "after": "if depth > 64 {"
+      }
+    ],
+    "witnesses": ["json-depth-65"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP53",
+    "description": "accept-unsupported-integer",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if value.is_number()",
+        "after": "if false && value.is_number()"
+      }
+    ],
+    "witnesses": ["json-boundary-18446744073709551617"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP54",
+    "description": "ignore-progress-preservation",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "row.kind != \"agent_message\" || row.preserve_progress",
+        "after": "row.kind != \"agent_message\""
+      }
+    ],
+    "witnesses": ["progress-preserved"],
     "suite": "turn_prepare"
   }
 ]

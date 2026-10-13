@@ -4,6 +4,10 @@
 //! Synthetic byte budgets are soft: reference-only summaries can exceed their share.
 //! There is no finite total ceiling with unbounded IDs/paths, context, or bypass events.
 //! The transcript and its input excerpts each have a hard 20,000-character ceiling.
+//! JSON evidence admits at most 64 nested containers, finite floats and i64/u64
+//! integers; unsupported numbers, negative integer zero and invalid structured JSON
+//! return a located InvalidJsonEvidence. Caller/bypass text is not parsed; progress
+//! revisions retain the explicitly registered negative-zero/u64-overflow exception.
 use chrono::{DateTime, Datelike, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -243,6 +247,8 @@ pub enum PrepareError {
     AttachmentOwnership,
     #[error("Invalid stored event evidence metadata")]
     InvalidEvidence,
+    #[error("Invalid stored JSON evidence at {location}")]
+    InvalidJsonEvidence { location: String },
     #[error("Invalid message receipt time")]
     InvalidClock,
     #[error("Context sequence exhausted")]
@@ -257,26 +263,9 @@ impl std::fmt::Debug for PrepareError {
     }
 }
 
-fn packed(value: &Value) -> String {
-    value.to_string()
-}
-/// Explicit recursive key sorting keeps hashes independent of serde feature unification.
+/// serde_json objects are sorted; workspace preserve_order is forbidden.
 pub fn context_version(value: &Value) -> String {
-    fn canonical(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let keys: BTreeSet<_> = map.keys().collect();
-                Value::Object(
-                    keys.into_iter()
-                        .map(|k| (k.clone(), canonical(&map[k])))
-                        .collect(),
-                )
-            }
-            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
-            other => other.clone(),
-        }
-    }
-    sha256_hex(packed(&canonical(value)).as_bytes())[..24].into()
+    sha256_hex(value.to_string().as_bytes())[..24].into()
 }
 fn chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
@@ -374,7 +363,7 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
         let version = context_version(&value);
         if known.get("plan") != Some(&version) {
             let content = match plan {
-                Some(p) if !p.steps.is_empty() || !p.explanation.is_empty() => packed(&value),
+                Some(p) if !p.steps.is_empty() || !p.explanation.is_empty() => value.to_string(),
                 _ => "The agent plan is empty. Discard the previous agent plan.".into(),
             };
             blocks.push(format!("[Agent plan version {version}]\n{content}"));
@@ -394,7 +383,7 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
         versions.insert(key, version);
     }
     if !changed.is_empty() {
-        blocks.push(format!("[Complaint messages requiring a response]\n{}", packed(&json!({"complaints":changed,"required":"Respond to each complaint with orchestration_complaint action=respond before finishing. The full complaint is in this message. No separate read call is required."}))));
+        blocks.push(format!("[Complaint messages requiring a response]\n{}", json!({"complaints":changed,"required":"Respond to each complaint with orchestration_complaint action=respond before finishing. The full complaint is in this message. No separate read call is required."})));
     }
     if !unchanged.is_empty() {
         blocks.push(format!("[Complaints still requiring a response] {}. The full text was delivered earlier. Read orchestration_context topic=complaints if needed.", unchanged.join(", ")));
@@ -447,145 +436,174 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
 
 // Retain producer order only when rewritten payload bytes become summary evidence.
 // serde owns tokenization and validation; duplicate keys keep their first position.
-struct OrderedJson(Value, Vec<(String, OrderedJson)>, Vec<OrderedJson>);
+enum OrderedJson {
+    Scalar(Value),
+    Object(Vec<(String, OrderedJson)>),
+    Array(Vec<OrderedJson>),
+}
 impl<'de> Deserialize<'de> for OrderedJson {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        Self::parse(&raw, 0, true).map_err(serde::de::Error::custom)
+    }
+}
+impl OrderedJson {
+    fn parse(
+        raw: &serde_json::value::RawValue,
+        depth: usize,
+        progress: bool,
+    ) -> Result<Self, serde_json::Error> {
+        use serde::de::{Deserializer, Error};
+        let text = raw.get();
+        if !text.starts_with(['{', '[']) {
+            let value: Value = serde_json::from_str(text)?;
+            if value.is_number()
+                && !text.contains(['.', 'e', 'E'])
+                && (text == "-0" || (text.parse::<i64>().is_err() && text.parse::<u64>().is_err()))
+                && !(progress && (text == "-0" || !text.starts_with('-')))
+            {
+                return Err(serde_json::Error::custom("unsupported integer"));
+            }
+            return Ok(Self::Scalar(value));
+        }
+        if depth >= 64 {
+            return Err(serde_json::Error::custom("JSON depth exceeds 64"));
+        }
+        struct Visitor {
+            depth: usize,
+            progress: bool,
+        }
         impl<'de> serde::de::Visitor<'de> for Visitor {
             type Value = OrderedJson;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("JSON")
-            }
-            fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                Ok(OrderedJson(Value::Null, vec![], vec![]))
-            }
-            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-                Ok(OrderedJson(json!(v), vec![], vec![]))
-            }
-            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-                Ok(OrderedJson(json!(v), vec![], vec![]))
-            }
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(OrderedJson(json!(v), vec![], vec![]))
-            }
-            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
-                Ok(OrderedJson(json!(v), vec![], vec![]))
-            }
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(OrderedJson(json!(v), vec![], vec![]))
+                f.write_str("JSON container")
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(
                 self,
                 mut seq: A,
             ) -> Result<Self::Value, A::Error> {
                 let mut values = Vec::new();
-                while let Some(v) = seq.next_element()? {
-                    values.push(v);
+                while let Some(raw) = seq.next_element::<Box<serde_json::value::RawValue>>()? {
+                    values.push(
+                        OrderedJson::parse(&raw, self.depth + 1, false)
+                            .map_err(A::Error::custom)?,
+                    );
                 }
-                Ok(OrderedJson(json!([]), vec![], values))
+                Ok(OrderedJson::Array(values))
             }
             fn visit_map<A: serde::de::MapAccess<'de>>(
                 self,
                 mut map: A,
             ) -> Result<Self::Value, A::Error> {
                 let mut values: Vec<(String, OrderedJson)> = Vec::new();
-                while let Some((k, v)) = map.next_entry()? {
-                    if let Some(existing) = values.iter_mut().find(|(key, _)| *key == k) {
-                        existing.1 = v;
+                let mut positions = BTreeMap::new();
+                while let Some((key, raw)) =
+                    map.next_entry::<String, Box<serde_json::value::RawValue>>()?
+                {
+                    let value = OrderedJson::parse(
+                        &raw,
+                        self.depth + 1,
+                        self.progress && self.depth == 0 && key == "progress_version",
+                    )
+                    .map_err(A::Error::custom)?;
+                    let index = *positions.entry(key.clone()).or_insert(values.len());
+                    if index == values.len() {
+                        values.push((key, value));
                     } else {
-                        values.push((k, v));
+                        values[index].1 = value;
                     }
                 }
-                Ok(OrderedJson(json!({}), values, vec![]))
+                Ok(OrderedJson::Object(values))
             }
         }
-        deserializer.deserialize_any(Visitor)
+        serde_json::Deserializer::from_str(text).deserialize_any(Visitor { depth, progress })
     }
+}
+// The raw-token checks share the ordered parse; there is no validation-only walk.
+fn event_json(row: &Event, index: usize) -> Result<Option<Value>, PrepareError> {
+    if matches!(
+        row.kind.as_str(),
+        "user" | "followup" | "work_decision" | "radio_turn"
+    ) {
+        return Ok(None);
+    }
+    let invalid = || PrepareError::InvalidJsonEvidence {
+        location: format!("events[{index}].text"),
+    };
+    let text = row.text.trim();
+    let raw = match serde_json::from_str::<Box<serde_json::value::RawValue>>(text) {
+        Ok(raw) => raw,
+        Err(_)
+            if text.starts_with(['{', '[']) || matches!(text, "NaN" | "Infinity" | "-Infinity") =>
+        {
+            return Err(invalid());
+        }
+        Err(_) => return Ok(None),
+    };
+    let ordered =
+        OrderedJson::parse(&raw, 0, row.kind == "agent_message").map_err(|_| invalid())?;
+    serde_json::to_value(ordered)
+        .map(Some)
+        .map_err(|_| invalid())
 }
 impl Serialize for OrderedJson {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::{SerializeMap, SerializeSeq};
-        if self.0.is_object() {
-            let mut map = serializer.serialize_map(Some(self.1.len()))?;
-            for (key, value) in &self.1 {
-                map.serialize_entry(key, value)?;
+        match self {
+            Self::Object(values) => {
+                let mut map = serializer.serialize_map(Some(values.len()))?;
+                for (key, value) in values {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
             }
-            map.end()
-        } else if self.0.is_array() {
-            let mut seq = serializer.serialize_seq(Some(self.2.len()))?;
-            for value in &self.2 {
-                seq.serialize_element(value)?;
+            Self::Array(values) => {
+                let mut seq = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    seq.serialize_element(value)?;
+                }
+                seq.end()
             }
-            seq.end()
-        } else if let Some(value) = self.0.as_f64().filter(|_| self.0.is_f64()) {
-            serde_json::value::RawValue::from_string(python_float_json(value))
-                .map_err(serde::ser::Error::custom)?
-                .serialize(serializer)
-        } else {
-            self.0.serialize(serializer)
+            Self::Scalar(v) => {
+                if let Some(value) = v.as_f64().filter(|_| v.is_f64()) {
+                    serde_json::value::RawValue::from_string(python_float_json(value))
+                        .map_err(serde::ser::Error::custom)?
+                        .serialize(serializer)
+                } else {
+                    v.serialize(serializer)
+                }
+            }
         }
     }
 }
 impl OrderedJson {
-    fn update(&mut self, value: &Value) {
-        if let Value::Object(map) = value {
-            self.1.retain(|(k, _)| map.contains_key(k));
-            for (k, v) in &mut self.1 {
-                v.update(&map[k]);
-            }
-            // Order of fields appended by Python's three rewriting operations.
-            for key in [
-                "textTruncated",
-                "checks",
-                "checksTruncated",
-                "filesTruncated",
-                "resultFile",
-                "resultTruncated",
-                "read",
-                "earlierProgressUpdates",
-                "history",
-                "tool",
-                "output_ref",
-            ]
-            .into_iter()
-            .chain(map.keys().map(String::as_str))
-            {
-                if let Some(v) = map.get(key)
-                    && !self.1.iter().any(|(k, _)| k == key)
-                {
-                    let mut ordered = Self(Value::Null, vec![], vec![]);
-                    ordered.update(v);
-                    self.1.push((key.into(), ordered));
-                }
-            }
-        } else if let Value::Array(values) = value {
-            self.2.truncate(values.len());
-            for (i, v) in values.iter().enumerate() {
-                if i == self.2.len() {
-                    self.2.push(Self(Value::Null, vec![], vec![]));
-                }
-                self.2[i].update(v);
+    // Only a fixed number of known fields are edited per event, so these scans
+    // remain linear in payload width. Parsing uses an index for duplicate keys.
+    fn set(&mut self, key: &str, value: Self) {
+        if let Self::Object(fields) = self {
+            if let Some((_, v)) = fields.iter_mut().find(|(k, _)| k == key) {
+                *v = value;
+            } else {
+                fields.push((key.into(), value));
             }
         }
-        self.0 = match value {
-            Value::Object(_) => json!({}),
-            Value::Array(_) => json!([]),
-            v => v.clone(),
-        };
+    }
+    fn fields(&mut self, value: &Value, keys: &[&str]) {
+        for key in keys {
+            if let Some(v) = value.get(key) {
+                self.set(key, Self::Scalar(v.clone()));
+            }
+        }
     }
 }
-fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {
-    // Called only for successfully parsed event JSON.
+fn rewritten(text: &str, edit: impl FnOnce(&mut OrderedJson)) -> String {
+    // Parsing already passed the explicit JSON evidence boundary.
     match serde_json::from_str::<OrderedJson>(text) {
         Ok(mut ordered) => {
-            if replace_read && let Some((_, read)) = ordered.1.iter_mut().find(|(k, _)| k == "read")
-            {
-                *read = OrderedJson(Value::Null, vec![], vec![]);
-            }
-            ordered.update(value);
-            serde_json::to_string(&ordered).unwrap_or_else(|_| packed(value))
+            edit(&mut ordered);
+            serde_json::to_string(&ordered).unwrap_or_else(|_| text.into())
         }
-        Err(_) => packed(value),
+        Err(_) => text.into(),
     }
 }
 
@@ -595,7 +613,7 @@ fn truncate_review(result: &mut Value) {
     result["checks"] = json!(chars(checks, CHECKS_CHARS));
     result["checksTruncated"] = json!(truncated);
     if let Some(files) = result.get("files").and_then(Value::as_array)
-        && packed(&json!(files)).len() > FILES_BYTES
+        && json!(files).to_string().len() > FILES_BYTES
     {
         let names: Vec<_> = files
             .iter()
@@ -640,15 +658,54 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
                 value["read"] =
                     json!({"tool":"orchestration_read","output_ref":format!("event:{}",row.id)});
             }
-            text = rewritten(&text, &value, replace_read);
+            text = rewritten(&text, |ordered| {
+                if row.kind == "work_review" && value["result"].is_object() {
+                    if let OrderedJson::Object(fields) = ordered
+                        && let Some((_, result)) = fields.iter_mut().find(|(k, _)| k == "result")
+                    {
+                        result.fields(
+                            &value["result"],
+                            &[
+                                "text",
+                                "textTruncated",
+                                "checks",
+                                "checksTruncated",
+                                "files",
+                                "filesTruncated",
+                            ],
+                        );
+                    }
+                } else {
+                    ordered.fields(&value, &["result", "resultTruncated", "resultFile"]);
+                }
+                if replace_read && let Some(read) = value.get("read") {
+                    ordered.set(
+                        "read",
+                        OrderedJson::Object(
+                            ["tool", "output_ref"]
+                                .map(|key| (key.into(), OrderedJson::Scalar(read[key].clone())))
+                                .into(),
+                        ),
+                    );
+                }
+            });
         } else if row.kind == "work_review"
             && result.is_object()
             && path.is_some()
-            && packed(&value).len() > limit
+            && value.to_string().len() > limit
         {
             let result = &mut value["result"];
             truncate_review(result);
-            text = rewritten(&text, &value, false);
+            text = rewritten(&text, |ordered| {
+                if let OrderedJson::Object(fields) = ordered
+                    && let Some((_, result)) = fields.iter_mut().find(|(k, _)| k == "result")
+                {
+                    result.fields(
+                        &value["result"],
+                        &["checks", "checksTruncated", "files", "filesTruncated"],
+                    );
+                }
+            });
         }
     }
     if text.len() <= limit {
@@ -692,19 +749,19 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
         );
     }
     for key in ["identity", "eventId"] {
-        if packed(&summary).len() > limit
+        if summary.to_string().len() > limit
             && let Some(map) = summary.as_object_mut()
         {
             map.remove(key);
         }
     }
-    let remaining = limit.saturating_sub(packed(&summary).len() + SUMMARY_RESERVE);
+    let remaining = limit.saturating_sub(summary.to_string().len() + SUMMARY_RESERVE);
     let mut excerpt = byte_prefix(&text, remaining / 2).to_owned();
     let mut tail = byte_tail(&text, remaining / 2).to_owned();
     loop {
         summary["excerpt"] = json!(excerpt);
         summary["tail"] = json!(tail);
-        if packed(&summary).len() <= limit || (excerpt.is_empty() && tail.is_empty()) {
+        if summary.to_string().len() <= limit || (excerpt.is_empty() && tail.is_empty()) {
             break;
         }
         excerpt = chars(&excerpt, excerpt.chars().count() / 2);
@@ -714,7 +771,7 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
             String::new()
         };
     }
-    packed(&summary)
+    summary.to_string()
 }
 
 type ProgressKey = (String, String, String);
@@ -805,8 +862,9 @@ fn event_text(
 ) -> Result<(String, Vec<ArtifactIntent>), PrepareError> {
     let parsed: Vec<_> = rows
         .iter()
-        .map(|r| serde_json::from_str::<Value>(&r.text).ok())
-        .collect();
+        .enumerate()
+        .map(|(index, row)| event_json(row, index))
+        .collect::<Result<_, _>>()?;
     let progress: Vec<_> = rows
         .iter()
         .zip(&parsed)
@@ -846,14 +904,15 @@ fn event_text(
             continue;
         }
         if row.kind == "child_result"
-            && let Some(mut value) = parsed.clone()
+            && let Some(value) = parsed.clone()
             && let Some(body) = value["result"].as_str().filter(|v| v.len() > RESULT_BYTES)
             && !value["resultFile"].as_str().is_some_and(|p| !p.is_empty())
         {
             let intent = artifact(row, &value, body);
             if let Some(path) = s.artifact_paths.get(&row.id).filter(|p| !p.is_empty()) {
-                value["resultFile"] = json!(path);
-                text = rewritten(&text, &value, false);
+                text = rewritten(&text, |ordered| {
+                    ordered.set("resultFile", OrderedJson::Scalar(json!(path)))
+                });
             } else {
                 missing.push(intent.clone());
             }
@@ -872,7 +931,9 @@ fn event_text(
                 value["earlierProgressUpdates"] = json!(count - 1);
                 value["history"] =
                     json!("Read earlier progress with orchestration_chat_read in this room.");
-                text = rewritten(&text, &value, false);
+                text = rewritten(&text, |ordered| {
+                    ordered.fields(&value, &["earlierProgressUpdates", "history"])
+                });
             }
         }
         if !matches!(
