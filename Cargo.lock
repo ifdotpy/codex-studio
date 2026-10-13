@@ -1985,6 +1985,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-runtime-priority-sys"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "studio-runtime-process"
 version = "0.1.0"
 dependencies = [
@@ -1995,6 +2002,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "studio-runtime-priority-sys",
  "studio-runtime-providers",
  "studio-runtime-store",
  "tempfile",
@@ -2028,6 +2036,7 @@ dependencies = [
  "getrandom 0.3.4",
  "serde_json",
  "studio-runtime-http",
+ "studio-runtime-process",
  "studio-runtime-services",
  "studio-runtime-store",
  "tokio",

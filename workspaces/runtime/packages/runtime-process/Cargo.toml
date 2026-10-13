@@ -21,6 +21,9 @@ command-fds = "=0.3.2"
 process-wrap.workspace = true
 rustix.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+studio-runtime-priority-sys = { path = "../runtime-priority-sys" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

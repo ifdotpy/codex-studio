@@ -17,6 +17,7 @@ const DEFAULT_PORT: u16 = 4620;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    studio_runtime_process::child_priority::ChildPriority::from_environment();
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(String::as_str) == Some("state-check") {
         let state_dir = args
