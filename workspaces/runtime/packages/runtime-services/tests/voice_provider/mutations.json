@@ -1,0 +1,28 @@
+[
+  {
+    "id": "VP1",
+    "description": "provider-error-does-not-become-terminal-failure",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "session.state = Some(VoiceSessionState::Failed);",
+        "after": "session.state = Some(VoiceSessionState::Unknown);"
+      }
+    ],
+    "witnesses": ["provider_error_callback_stops_and_keeps_failure_terminal"],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP2",
+    "description": "realtime-errors-do-not-request-stop",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "message.get(\"method\").and_then(Value::as_str) == Some(\"thread/realtime/error\")",
+        "after": "message.get(\"method\").and_then(Value::as_str) == Some(\"thread/realtime/closed\")"
+      }
+    ],
+    "witnesses": ["realtime_error_notifications_require_stop_rpc"],
+    "suite": "voice_provider"
+  }
+]

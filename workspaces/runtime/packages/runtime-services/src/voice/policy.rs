@@ -5,7 +5,8 @@
 //! returns decisions without holding any runtime resources.
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use studio_runtime_store::sha256_hex;
+use studio_runtime_store::{AgentId, sha256_hex};
+use thiserror::Error;
 
 pub const MAX_SESSION_ID_CHARS: usize = 120;
 pub const MAX_OFFER_CHARS: usize = 100_000;
@@ -20,19 +21,6 @@ impl SessionId {
             return Err(VoiceError::InvalidSessionIdentity);
         }
         Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct AgentId(String);
-
-impl AgentId {
-    pub fn new(value: String) -> Self {
-        Self(value)
     }
 
     pub fn as_str(&self) -> &str {
@@ -116,7 +104,7 @@ impl VoiceSession {
         }
         Ok(Self {
             id: SessionId::parse(row.id).map_err(|_| VoiceError::InvalidStoredSession)?,
-            agent: AgentId::new(row.agent),
+            agent: AgentId::from(row.agent),
             created: row.created,
             ended: row.ended,
             offer: row.offer,
@@ -209,6 +197,10 @@ impl StartRequest {
             session_id,
             offer,
         })
+    }
+
+    pub fn offer(&self) -> &str {
+        &self.offer
     }
 }
 
@@ -407,7 +399,7 @@ pub fn decide_audio(
     }
     let identity = format!(
         "{}:{}:{}",
-        request.agent.as_str(),
+        request.agent.as_ref(),
         request.session_id.as_str(),
         request.chunk_id
     );
@@ -424,18 +416,29 @@ pub fn decide_audio(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum VoiceError {
+    #[error("invalid voice session identity")]
     InvalidSessionIdentity,
+    #[error("invalid WebRTC offer")]
     InvalidOffer,
+    #[error("invalid stored voice session")]
     InvalidStoredSession,
+    #[error("voice session identity conflict")]
     SessionIdentityConflict,
+    #[error("active voice session exists")]
     ActiveSessionExists,
+    #[error("unknown voice session")]
     UnknownSession,
+    #[error("unsupported audio format")]
     UnsupportedAudioFormat,
+    #[error("invalid audio encoding")]
     InvalidAudioEncoding,
+    #[error("audio chunk exceeds 4 MiB")]
     AudioTooLarge,
+    #[error("audio chunk identity conflict")]
     AudioIdentityConflict,
+    #[error("invalid clock")]
     InvalidClock,
 }
 
@@ -509,22 +512,14 @@ mod tests {
     #[test]
     fn start_replay_precedes_active_session_refusal_and_rejects_changed_identity() {
         let prior = session("s", "a", Some("connecting"), None, Some("v=0 offer"));
-        let request = StartRequest::new(
-            AgentId::new("a".to_owned()),
-            "s".to_owned(),
-            "v=0 offer".to_owned(),
-        )
-        .expect("offer is valid");
+        let request = StartRequest::new(AgentId::from("a"), "s".to_owned(), "v=0 offer".to_owned())
+            .expect("offer is valid");
         assert_eq!(
             decide_start(Some(2.0), request.clone(), Some(&prior), Some(&prior)),
             Ok(StartDecision::Replay(prior.clone()))
         );
-        let changed = StartRequest::new(
-            AgentId::new("a".to_owned()),
-            "s".to_owned(),
-            "v=0 other".to_owned(),
-        )
-        .expect("offer is valid");
+        let changed = StartRequest::new(AgentId::from("a"), "s".to_owned(), "v=0 other".to_owned())
+            .expect("offer is valid");
         assert_eq!(
             decide_start(Some(2.0), changed, Some(&prior), None),
             Err(VoiceError::SessionIdentityConflict)
@@ -577,7 +572,7 @@ mod tests {
     #[test]
     fn audio_decision_limits_and_deduplicates_by_session_chunk_identity() {
         let request = AudioChunkRequest {
-            agent: AgentId::new("a".to_owned()),
+            agent: AgentId::from("a"),
             session_id: SessionId::parse("s".to_owned()).expect("session ID is valid"),
             chunk_id: "part-1".to_owned(),
             base64: "AQID".to_owned(),
@@ -602,7 +597,7 @@ mod tests {
     #[test]
     fn audio_refuses_unknown_sessions_bad_encoding_and_unsupported_media() {
         let request = |base64: &str, mime: &str| AudioChunkRequest {
-            agent: AgentId::new("a".to_owned()),
+            agent: AgentId::from("a"),
             session_id: SessionId::parse("s".to_owned()).expect("session ID is valid"),
             chunk_id: "part".to_owned(),
             base64: base64.to_owned(),
