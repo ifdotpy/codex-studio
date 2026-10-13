@@ -33,6 +33,7 @@ pub mod queue_write;
 pub mod remote_transport;
 pub mod rules;
 pub mod scheduler;
+pub mod submit_gates;
 pub mod sync_documents;
 pub(crate) mod sync_entity_context;
 pub mod sync_policy;

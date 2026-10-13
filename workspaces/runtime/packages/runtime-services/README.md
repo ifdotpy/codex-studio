@@ -487,3 +487,24 @@ rejection does not make this a complete provider runtime.
 The server factory/TurnRuntime caller is not part of this stage.
 The old provider process/session/turn-driver thread code and tests are removed;
 the model catalog uses the accepted async session and ephemeral stdio adapter.
+
+## Submit gate corpus boundary
+
+`tests/submit_gates` compares event authorization, execution revalidation and the
+freeze block against real Python functions or statements compiled from their AST.
+The execution fixture reads raw stored JSON: it does not project lead-mode fields
+through `Runtime.agent`/`mode_fields`. The compared effort/service-tier values are
+the immediate projection after freezing, not evidence of a complete `prepare`
+or provider turn. The consumer owns mode projection, preparation, attempt/epoch
+checks and the atomic write. Selected execution fields are checked again when
+applying a selection, including fixed retries; a concurrent change requires a
+new selection. Catalog generation is checked only when admission needed a proof.
+
+A separate Python preparation witness executes the real missing-`nativeEffort`
+validation block for an unloaded agent: omission resolves the catalog default
+(`medium` in the fixture); explicit null remains null. Callers must finish that
+preparation before using the final wire settings. This slice does not port full
+preparation or start a provider. Digests of the enclosing `Runtime.start` and
+`prepare_locked` ASTs make control-flow drift fail until these extraction
+boundaries are re-derived. Budget initialization and history-backed accounting
+remain outside the corpus; every present budget retains the named coverage hold.
