@@ -687,7 +687,7 @@ fn commands_commit_before_send_and_reject_changed_input() {
 #[test]
 fn stored_native_action_errors_name_the_table_and_row() {
     let case = &corpus()["actions"][0];
-    let mut db = db(case);
+    let db = db(case);
     db.execute(
         r#"UPDATE runtime_agents SET record='{"id":"lead"}' WHERE id='lead'"#,
         [],
