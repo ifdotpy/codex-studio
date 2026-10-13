@@ -30,6 +30,37 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_provider_turn_refusals_are_keyed_to_the_undeclared_dependency(self) -> None:
+        boundary = "workspaces/runtime/apps/server/tests/http-boundary-contract.py"
+        protocol = "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py"
+        boundary_tests = ledger.UNDECLARED_PROVIDER_TURN_TESTS[boundary]
+        self.assertIn(
+            "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable",
+            boundary_tests,
+        )
+        self.assertIn(
+            "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts",
+            boundary_tests,
+        )
+        self.assertIn(
+            "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS[protocol],
+        )
+        self.assertNotIn(boundary, ledger.MISSING_SERVICE_TESTS)
+        self.assertNotIn(protocol, ledger.MISSING_SERVICE_TESTS)
+        self.assertEqual(
+            ledger.missing_service_tests_for_suite(boundary)[
+                "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts"
+            ]["service"],
+            ledger.UNDECLARED_PROVIDER_TURN_SERVICE,
+        )
+        self.assertIn(
+            "cause is not yet known",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS[protocol][
+                "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations"
+            ],
+        )
+
     def test_split_suite_counts_include_every_unittest_summary(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
