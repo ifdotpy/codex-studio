@@ -64,8 +64,6 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
 # authority; docs/testing.md points here.
 BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     "runtime_agents": frozenset({
-        # Dispatcher advances accepted agents from queued to starting at codex_runtime.py:6857.
-        "status",
         # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
         "complaintsPresented",
         # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.

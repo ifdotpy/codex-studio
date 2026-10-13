@@ -25,7 +25,6 @@ HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
 from http_backend_harness import (
-    BACKGROUND_OWNED_FIELDS,
     TimedHTTPContractTest,
     start_contract_backend,
     no_write_snapshot,
@@ -527,7 +526,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", agent_id,
             )
             for field in ("status", "inFlight", "turnId", "autoWake", "error", "capacityRetry"):
-                if field in BACKGROUND_OWNED_FIELDS["runtime_agents"]:
+                if field == "status":
+                    # The dispatcher may advance accepted agents at codex_runtime.py:6857.
+                    self.assertIn(projection.get(field), {"queued", "starting"})
+                    self.assertIn(record.get(field), {"queued", "starting"})
                     continue
                 self.assertEqual(projection.get(field), record.get(field), f"agent projection field {field}")
 
