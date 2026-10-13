@@ -46,6 +46,7 @@ pub mod recovery;
 pub mod recovery_absence;
 pub mod recovery_history;
 pub mod recovery_policy;
+pub mod recovery_runtime;
 pub mod recovery_store;
 pub mod remote_transport;
 pub mod rules;
