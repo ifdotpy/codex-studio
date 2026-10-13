@@ -816,6 +816,14 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
     let state = DisposableState::new();
     let python = python_executable();
     let mut supervisor = SupervisorProcess::start(&state, &python);
+    // Socket existence precedes chmod and serve_forever in the Python supervisor.
+    // Finish a handshake before renaming, otherwise startup can chmod a missing
+    // path and exit while the proxy is connecting.
+    let endpoint = state.socket();
+    let identity = state.identity();
+    tokio::task::spawn_blocking(move || {
+        drop(SupervisorClient::connect(endpoint, identity).unwrap());
+    }).await.unwrap();
     let actual = state.0.join("actual.sock");
     std::fs::rename(state.socket(), &actual).unwrap();
     let listener = UnixListener::bind(state.socket()).unwrap();
