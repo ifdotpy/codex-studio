@@ -322,3 +322,11 @@ mod tests {
         );
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "models",
+        routes: Some(routes),
+        dependencies: &["provider-service/claude-model-catalog"],
+    }
+}

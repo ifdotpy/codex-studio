@@ -56,3 +56,11 @@ pub(crate) fn attach(mut result: Value, rows: Vec<EntityRow>, sync_after: Option
     }
     result
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "sync_delta",
+        routes: None,
+        dependencies: &[],
+    }
+}

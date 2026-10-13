@@ -31,18 +31,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[
         ConditionalTableRequirement {
-            table_exists: "runtime_projects",
-            tables: PROJECT_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_sidebar_order",
-            tables: SIDEBAR_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_operation_receipts",
-            tables: RECEIPT_TABLE,
-        },
-        ConditionalTableRequirement {
             table_exists: "runtime_agents",
             tables: AGENT_TABLE,
         },
@@ -54,7 +42,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[PROJECT_TABLE[0], SIDEBAR_TABLE[0], RECEIPT_TABLE[0]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -342,5 +330,12 @@ impl ProjectsRepository {
             json!({"sidebarOrder":value}),
         )?;
         Ok(())
+    }
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "projects",
+        requirements: &REQUIREMENTS,
     }
 }

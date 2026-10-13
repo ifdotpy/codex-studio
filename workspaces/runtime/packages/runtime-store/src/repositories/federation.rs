@@ -1,6 +1,6 @@
 //! Local federation settings and projections over Python-written records.
 
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value, json};
@@ -31,17 +31,13 @@ const TABLES: &[TableRequirement] = &[
         columns: &["id", "peer_id", "record"],
     },
 ];
-const CONDITIONAL_TABLES: &[ConditionalTableRequirement] = &[ConditionalTableRequirement {
-    table_exists: "runtime_federation_settings",
-    tables: TABLES,
-}];
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: CONDITIONAL_TABLES,
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: TABLES,
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -594,4 +590,11 @@ fn now() -> StoreResult<f64> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| StoreError::SchemaMismatch(e.to_string()))?
         .as_secs_f64())
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "federation",
+        requirements: &REQUIREMENTS,
+    }
 }

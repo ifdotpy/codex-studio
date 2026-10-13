@@ -188,3 +188,11 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
         | QuestionsWriteError::Clock => ApiError::internal(),
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "questions_write",
+        routes: Some(routes),
+        dependencies: &["provider-session/question-answer"],
+    }
+}

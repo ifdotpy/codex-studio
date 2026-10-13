@@ -76,3 +76,10 @@ impl QuestionsWriteRepository {
         Ok(())
     }
 }
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "questions_write",
+        requirements: &REQUIREMENTS,
+    }
+}

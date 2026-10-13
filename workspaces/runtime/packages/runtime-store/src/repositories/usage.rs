@@ -205,6 +205,13 @@ pub fn disable_usage_resume(
     Ok(resume)
 }
 
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "usage",
+        requirements: &REQUIREMENTS,
+    }
+}
+
 fn invalid(table: &'static str, id: &str) -> UsageRepositoryError {
     UsageRepositoryError::InvalidStoredObject {
         table,

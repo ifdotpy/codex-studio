@@ -154,3 +154,19 @@ fn projects_error(error: ProjectsError) -> ApiError {
         ProjectsError::Sqlite(_) => ApiError::internal(),
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "projects",
+        routes: Some(routes),
+        dependencies: &[
+            "cross-server-driver/local-identity",
+            "cross-server-driver/peer-team-transport",
+            "cross-server-driver/project-location-read",
+            "cross-server-driver/project-location-write",
+            "cross-server-driver/project-registration",
+            "workspace-state/peer-radio",
+            "workspace-state/worker-environment",
+        ],
+    }
+}

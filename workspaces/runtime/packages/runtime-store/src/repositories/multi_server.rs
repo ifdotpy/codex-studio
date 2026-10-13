@@ -3,25 +3,20 @@
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 const TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_access_audit",
     columns: &["seq", "client", "actor", "action", "created"],
 }];
-const CONDITIONAL_TABLES: &[ConditionalTableRequirement] = &[ConditionalTableRequirement {
-    table_exists: "runtime_access_clients",
-    tables: TABLES,
-}];
-
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: CONDITIONAL_TABLES,
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: TABLES,
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -74,4 +69,11 @@ fn invalid(field: &str, sequence: &str) -> StoreError {
     StoreError::SchemaMismatch(format!(
         "invalid stored object runtime_access_audit/{sequence}: {field}"
     ))
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "multi_server",
+        requirements: &REQUIREMENTS,
+    }
 }

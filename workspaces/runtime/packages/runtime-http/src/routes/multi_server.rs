@@ -243,3 +243,19 @@ fn map_service_error(error: MultiServerError) -> ApiError {
         }
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "multi_server",
+        routes: Some(routes),
+        dependencies: &[
+            "federation-credentials/private-key",
+            "multi-server-runtime/orchestration",
+            "remote-transport/identity-write",
+            "remote-transport/owner-lookup",
+            "remote-transport/signed-server-requests",
+            "remote-transport/tailscale-discovery",
+            "server-credentials/local-identity",
+        ],
+    }
+}

@@ -223,3 +223,18 @@ mod tests {
         assert!(now.is_finite() && now > 0.0);
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "usage",
+        routes: Some(routes),
+        dependencies: &[
+            "account-driver/reset-credit-redemption",
+            "event-driver/queue-mutations",
+            "store-bootstrap/capacity-retry-schema",
+            "store-bootstrap/usage-resume-schema",
+            "turn-driver/capacity-retry",
+            "turn-driver/usage-resume",
+        ],
+    }
+}

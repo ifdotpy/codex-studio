@@ -166,3 +166,17 @@ fn map_service_error(error: FederationError) -> ApiError {
         FederationError::NeedsIdentity => unavailable_for(&IDENTITY_DEPENDENCIES),
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "federation",
+        routes: Some(routes),
+        dependencies: &[
+            "federation-credentials/invitation",
+            "federation-credentials/key-generation",
+            "federation-credentials/private-key",
+            "remote-transport/signed-federation-exchange",
+            "remote-transport/tailscale-identity",
+        ],
+    }
+}

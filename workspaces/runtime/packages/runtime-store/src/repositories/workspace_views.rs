@@ -2,8 +2,34 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as 
 use serde_json::Value;
 
 use crate::StoreResult;
+use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::StoredRecord;
 use crate::records::get_json_record;
+
+const BOOTSTRAP_TABLES: &[TableRequirement] = &[
+    TableRequirement { name: "runtime_annotations", columns: &["id", "record"] },
+    TableRequirement { name: "runtime_checkpoints", columns: &["id", "record"] },
+    TableRequirement { name: "runtime_plans", columns: &["id", "record"] },
+    TableRequirement { name: "runtime_rules", columns: &["id", "record"] },
+    TableRequirement { name: "runtime_work", columns: &["id", "record"] },
+];
+const CONDITIONAL_TABLES: &[ConditionalTableRequirement] = &[
+    ConditionalTableRequirement { table_exists: "runtime_agents", tables: &[TableRequirement { name: "runtime_agents", columns: &["id", "record"] }] },
+    ConditionalTableRequirement { table_exists: "runtime_complaints", tables: &[TableRequirement { name: "runtime_complaints", columns: &["id", "record"] }] },
+    ConditionalTableRequirement { table_exists: "runtime_requests", tables: &[TableRequirement { name: "runtime_requests", columns: &["id", "record"] }] },
+    ConditionalTableRequirement { table_exists: "runtime_tasks", tables: &[TableRequirement { name: "runtime_tasks", columns: &["id", "record"] }] },
+];
+
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+    tables: &[],
+    conditional_tables: CONDITIONAL_TABLES,
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: BOOTSTRAP_TABLES,
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTaskRow {
@@ -254,4 +280,11 @@ fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {
         [table],
         |row| row.get(0),
     )?)
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "workspace_views",
+        requirements: &REQUIREMENTS,
+    }
 }
