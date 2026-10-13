@@ -54,8 +54,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
     "edits": [
       {
-        "before": "small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)",
-        "after": "small_preview(&Value::Array(items.iter().take(0).cloned().collect()), 0)"
+        "before": "            Value::Array(items) => {\n                small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)\n            }",
+        "after": "            Value::Array(items) => {\n                small_preview(&Value::Array(items.iter().take(0).cloned().collect()), 0)\n            }"
       }
     ]
   },
