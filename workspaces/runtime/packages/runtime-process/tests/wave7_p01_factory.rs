@@ -32,7 +32,8 @@ fn options() -> OpenOptions {
             vec!["scripted".into()],
             BTreeMap::new(),
             "/var/tmp".into(),
-        ),
+        )
+        .with_inherited_cwd(),
         expected_generation: None,
     }
 }
@@ -64,6 +65,7 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
     )
     .await;
     let open = request(&mut stream).await;
+    assert!(open["cwd"].is_null());
     respond(&mut stream,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":1,"generation":17,"returnCode":null,"pid":1}})).await;
     let prepared = prepare.await.unwrap();
     assert_eq!(prepared.generation(), Generation(17));

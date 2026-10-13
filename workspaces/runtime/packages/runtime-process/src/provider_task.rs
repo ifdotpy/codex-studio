@@ -131,7 +131,11 @@ impl SupervisorProviderTaskFactory {
                 || options.launch.command.is_empty()
                 || options.launch.command.iter().any(|arg| arg.contains('\0'))
                 || options.launch.retained_response_ids.len() > MAX_PENDING_RESPONSES
-                || !options.launch.cwd.is_absolute()
+                || options
+                    .launch
+                    .cwd
+                    .as_ref()
+                    .is_some_and(|cwd| !cwd.is_absolute())
             {
                 return Err(AdapterError::InvalidConfiguration);
             }
@@ -139,11 +143,20 @@ impl SupervisorProviderTaskFactory {
                 handle: SupervisorHandle(handle.as_str().into()),
                 command: options.launch.command,
                 env: clean_environment(&options.launch.environment),
-                cwd: options.launch.cwd.to_string_lossy().into_owned(),
+                cwd: options
+                    .launch
+                    .cwd
+                    .as_ref()
+                    .map(|cwd| cwd.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 extra: Default::default(),
             };
             // Both validation and full wire-size validation precede all I/O.
-            serialize_frame(&request_value(SupervisorAction::Open, u64::MAX, &open)?)?;
+            serialize_frame(&request_value(
+                SupervisorAction::Open,
+                u64::MAX,
+                open_value(&open, options.launch.cwd.is_none())?,
+            )?)?;
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (events, journal) = mpsc::channel(LANE_CAPACITY);
             let (state, status) = watch::channel(AttachmentStatus {
@@ -154,6 +167,7 @@ impl SupervisorProviderTaskFactory {
             });
             let actor = AdapterTask {
                 activation,
+                inherit_cwd: options.launch.cwd.is_none(),
                 clock: options.clock,
                 handle,
                 open,
@@ -196,6 +210,14 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
     ) -> OpenFuture<'_> {
         self.start(handle, options, shutdown, None)
     }
+}
+
+fn open_value(open: &OpenRequest, inherit_cwd: bool) -> Result<Value, AdapterError> {
+    let mut value = serde_json::to_value(open).map_err(|_| AdapterError::InvalidConfiguration)?;
+    if inherit_cwd {
+        value["cwd"] = Value::Null;
+    }
+    Ok(value)
 }
 
 async fn interruptible<T>(
@@ -279,6 +301,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
 }
 
 struct AdapterTask {
+    inherit_cwd: bool,
     activation: Option<(oneshot::Sender<Generation>, oneshot::Receiver<Activation>)>,
     clock: SessionClock,
     handle: ProviderHandle,
@@ -372,8 +395,9 @@ impl AdapterTask {
         }
         self.open_attempted = true;
         self.publish();
+        let open = open_value(&self.open, self.inherit_cwd)?;
         let opened: OpenResult = rpc
-            .call(SupervisorAction::Open, &self.open, &mut self.stop)
+            .call(SupervisorAction::Open, open, &mut self.stop)
             .await?;
         // Any uncertain response or identity change preserves a recovery result;
         // it never reconnects or guesses that a second open is safe.
