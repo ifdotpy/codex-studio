@@ -24,7 +24,12 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    BACKGROUND_OWNED_FIELDS,
+    TimedHTTPContractTest,
+    start_contract_backend,
+    no_write_snapshot,
+)
 
 _fixture_spec = importlib.util.spec_from_file_location("messages_runtime_fixture", HERE / "runtime-contract.py")
 _fixture = importlib.util.module_from_spec(_fixture_spec)
@@ -522,6 +527,8 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", agent_id,
             )
             for field in ("status", "inFlight", "turnId", "autoWake", "error", "capacityRetry"):
+                if field in BACKGROUND_OWNED_FIELDS["runtime_agents"]:
+                    continue
                 self.assertEqual(projection.get(field), record.get(field), f"agent projection field {field}")
 
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
