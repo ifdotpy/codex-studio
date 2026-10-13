@@ -1,32 +1,51 @@
+pub mod account_state;
 pub(crate) mod agents;
+pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod execution_history;
 pub(crate) mod messages;
+pub(crate) mod monitors;
+pub(crate) mod profiles;
+pub(crate) mod questions_reads;
+pub(crate) mod queue_write;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
+pub(crate) mod terminals;
+pub(crate) mod transcript;
 pub(crate) mod work_items;
+pub(crate) mod workspace_files;
+pub(crate) mod workspace_views;
 
 use crate::schema::SchemaRequirements;
 
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &agents::REQUIREMENTS,
+    &account_state::REQUIREMENTS,
+    &coordination::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
     &event_write::REQUIREMENTS,
     &execution_history::REQUIREMENTS,
+    &queue_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
+    &monitors::REQUIREMENTS,
+    &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,
+    &questions_reads::REQUIREMENTS,
     &scheduler::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
+    &terminals::REQUIREMENTS,
+    &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
+    &workspace_files::REQUIREMENTS,
 ];
 
 #[cfg(test)]
 mod tests {
-    use super::{agents, events, messages, sync_documents, tasks};
+    use super::{account_state, agents, events, messages, sync_documents, tasks};
     use crate::records::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
         MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
@@ -34,12 +53,17 @@ mod tests {
     };
     use rusqlite::Connection;
     use serde_json::Value;
+    use serde_json::json;
     use std::collections::BTreeMap;
     use sync_documents::SyncDocumentsRepository;
 
     fn database_with(requirements: &crate::schema::SchemaRequirements) -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
-        for table in requirements.tables {
+        for table in requirements
+            .tables
+            .iter()
+            .chain(requirements.bootstrap_tables)
+        {
             let columns = table
                 .columns
                 .iter()
@@ -121,6 +145,21 @@ mod tests {
         };
         MessageRepository::put(&db, &message).expect("message write uses declared objects");
         MessageRepository::get(&db, &message.id).expect("message read uses declared objects");
+
+        let db = database_with(&account_state::REQUIREMENTS);
+        db.execute(
+            "INSERT INTO sync_entities(collection, id, payload, deleted) VALUES ('workspace', 'current', ?1, 0)",
+            [json!({"value": {"rateLimitsByAccount": {
+                "alpha": {"accountKey": "alpha", "data": {"status": "ready"}}
+            }}}).to_string()],
+        )
+        .expect("fixture row uses declared columns");
+        account_state::limits_snapshots(&db).expect("account limits read uses only declared table");
+        assert!(
+            account_state::authentication_recovery_account_keys(&db, 2_000.0)
+                .expect("declared resume table query succeeds")
+                .is_empty()
+        );
     }
 
     #[test]

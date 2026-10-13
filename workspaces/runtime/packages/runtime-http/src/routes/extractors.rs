@@ -81,10 +81,8 @@ where
 }
 
 /// Schema-validated scalar header parameters.
-#[cfg(test)]
 pub(crate) struct ApiHeaders(pub serde_json::Map<String, Value>);
 
-#[cfg(test)]
 impl<S> FromRequestParts<S> for ApiHeaders
 where
     S: Send + Sync,
@@ -110,6 +108,12 @@ impl QueryParams {
     #[allow(dead_code, reason = "route modules consume schema-typed query values")]
     pub(crate) fn typed_value(&self, name: &str) -> Option<&Value> {
         self.typed.get(name)
+    }
+
+    pub(crate) fn nonempty_str(&self, name: &str) -> Option<&str> {
+        self.typed_value(name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
     }
 
     #[cfg(test)]
@@ -275,6 +279,7 @@ mod tests {
             None,
             "state".to_owned(),
             12345,
+            None,
             None,
             None,
         ))

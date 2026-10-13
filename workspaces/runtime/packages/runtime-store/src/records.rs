@@ -184,6 +184,21 @@ pub(crate) fn get_json_record<T: serde::de::DeserializeOwned>(
     Ok(record)
 }
 
+pub(crate) fn get_raw_record(
+    connection: &Connection,
+    table: &str,
+    id: &str,
+) -> StoreResult<Option<String>> {
+    connection
+        .query_row(
+            &format!("SELECT record FROM {table} WHERE id = ?1"),
+            [id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 pub(crate) fn put_json_record<T: Serialize>(
     connection: &Connection,
     table: &str,

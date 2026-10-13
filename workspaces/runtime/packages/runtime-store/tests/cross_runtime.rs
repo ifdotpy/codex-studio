@@ -189,6 +189,11 @@ with runtime.lock, runtime.db() as db:
         "futureFeatureField":{"enabled":True}})
 from codex_voice import VoiceStore
 voice = VoiceStore(runtime)
+from codex_canvas import Canvas
+canvas = Canvas(root)
+from codex_sync import SyncStore
+sync = SyncStore(lambda: runtime.db(), lambda _agent: [], runtime=runtime, canvas=canvas)
+sync.generation()
 from codex_terminals import TerminalManager
 terminals = TerminalManager(root)
 from codex_multi_server import MultiServerService
@@ -197,6 +202,79 @@ with runtime.db() as db:
 from codex_server_discovery import ServerDiscovery
 from types import SimpleNamespace
 discovery = ServerDiscovery(SimpleNamespace(runtime=runtime))
+# These tables and indexes are created on first use in production. Install
+# them through Python in this fixture so the catalog comparison covers them.
+with runtime.db() as db:
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_model_modes (agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version))')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_native_catalog_updates (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_native_limit_refreshes (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    db.execute("CREATE TABLE IF NOT EXISTS runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT)")
+    from codex_native_sweep import _account_busy
+    _account_busy(runtime, db, 'default')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_native_action_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL, outcome TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    db.execute("CREATE INDEX IF NOT EXISTS runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'))")
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS runtime_limit_reset_attempts (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_limit_reset_requests (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_server_outbox (
+            id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
+            state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+            next_at REAL NOT NULL DEFAULT 0, error TEXT);
+        CREATE INDEX IF NOT EXISTS runtime_server_outbox_due
+            ON runtime_server_outbox(state,next_at);
+        CREATE TABLE IF NOT EXISTS runtime_server_inbox (
+            id TEXT PRIMARY KEY, signature TEXT NOT NULL, state TEXT NOT NULL,
+            result TEXT);
+        CREATE TABLE IF NOT EXISTS runtime_server_links (
+            id TEXT PRIMARY KEY, record TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS runtime_server_links_home_parent
+            ON runtime_server_links(json_extract(record,'$.parent'))
+            WHERE json_extract(record,'$.side')='home';
+        CREATE TABLE IF NOT EXISTS runtime_server_fetch (
+            id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,
+            state TEXT NOT NULL, result TEXT);
+        CREATE TABLE IF NOT EXISTS runtime_server_retired (
+            id TEXT NOT NULL, direction TEXT NOT NULL, signature TEXT NOT NULL,
+            server TEXT, PRIMARY KEY(id,direction));
+        CREATE TABLE IF NOT EXISTS runtime_server_output_tools (
+            id TEXT PRIMARY KEY, expires REAL NOT NULL);
+        CREATE INDEX IF NOT EXISTS runtime_server_output_tools_expiry
+            ON runtime_server_output_tools(expires);
+        CREATE TABLE IF NOT EXISTS runtime_server_sequence (
+            id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+        INSERT OR IGNORE INTO runtime_server_sequence VALUES(1,0);
+    ''')
+    for table in ('outbox', 'inbox'):
+        columns = {row[1] for row in db.execute('PRAGMA table_info(runtime_server_' + table + ')')}
+        for column in ('created_at', 'completed_at'):
+            if column not in columns:
+                db.execute('ALTER TABLE runtime_server_' + table + ' ADD COLUMN ' + column + ' REAL NOT NULL DEFAULT 0')
+    for table, column, declaration in (
+        ('outbox', 'fingerprint', 'TEXT'), ('retired', 'actor', 'TEXT'),
+        ('inbox', 'principal', 'TEXT'), ('inbox', 'actor', 'TEXT'),
+    ):
+        columns = {row[1] for row in db.execute('PRAGMA table_info(runtime_server_' + table + ')')}
+        if column not in columns:
+            db.execute('ALTER TABLE runtime_server_' + table + ' ADD COLUMN ' + column + ' ' + declaration)
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS runtime_server_exec (
+            id TEXT PRIMARY KEY, owner TEXT NOT NULL, actor TEXT NOT NULL,
+            record TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_server_exec_audit (
+            id TEXT PRIMARY KEY, actor TEXT NOT NULL, source_server TEXT NOT NULL,
+            server TEXT NOT NULL, cwd TEXT NOT NULL, argv_hash TEXT NOT NULL,
+            start REAL NOT NULL, end REAL, exit_code INTEGER, signal INTEGER);
+        CREATE TABLE IF NOT EXISTS runtime_server_exec_input (
+            id TEXT PRIMARY KEY, handle TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS runtime_server_exec_input_handle
+            ON runtime_server_exec_input(handle);
+    ''')
 # Exercise the real migration routine without making the test depend on the
 # runner's free-space report. This empty disposable state has no payload to copy.
 import codex_work
@@ -208,6 +286,7 @@ with runtime.db() as db:
         raise AssertionError(f"search migration phase is {phase}")
 terminals.close()
 discovery.close()
+canvas = None
 runtime.close()
 print(json.dumps({"agent_id":agent_id,"search_phase":phase}))
 "#;
@@ -240,6 +319,71 @@ with runtime.db() as db:
         raise AssertionError(f"feature tables disappeared: {missing}")
 runtime.close()
 print(json.dumps({"feature_tables":list(required),"agent":agent,"task":task}))
+"#;
+
+const COPY_AND_REMOVE_BOOTSTRAP_TABLES: &str = r#"
+import pathlib, sqlite3, sys
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[3])
+target.mkdir(parents=True, exist_ok=True)
+with sqlite3.connect(source / "canvas.sqlite3") as original, sqlite3.connect(target / "canvas.sqlite3") as copy:
+    original.backup(copy)
+with sqlite3.connect(target / "analytics.sqlite3") as copy:
+    with sqlite3.connect(source / "analytics.sqlite3") as original:
+        original.backup(copy)
+with sqlite3.connect(target / "canvas.sqlite3") as db:
+    for table in (
+        "runtime_work", "runtime_plans", "runtime_annotations", "runtime_operation_receipts",
+        "runtime_event_meta", "runtime_item_fulltext", "runtime_search_next_meta", "runtime_search_rollout",
+        "runtime_search_next", "runtime_payload_migrations", "sync_versions", "runtime_transcript_revisions",
+        "runtime_assets", "runtime_checkpoints", "runtime_profiles", "runtime_projects",
+        "runtime_sidebar_order", "runtime_workspace_operations", "runtime_payload_refs",
+        "runtime_tool_requests", "runtime_tool_request_aliases", "runtime_tool_results",
+        "runtime_budget", "runtime_budget_usage", "runtime_execution_runs",
+        "runtime_execution_attempts", "runtime_execution_inputs", "runtime_execution_effects",
+        "runtime_execution_nodes", "runtime_federation_settings", "runtime_federation_identity",
+        "runtime_federation_peers", "runtime_federation_invites", "runtime_federation_rooms",
+        "runtime_federation_outbox", "runtime_federation_inbox", "runtime_federation_nonces",
+        "groups", "messages", "graph_agents", "graph_edges",
+        "voice_sessions", "voice_records", "voice_approvals", "voice_deliveries",
+        "voice_speech_requests", "user_terminals", "user_terminal_receipts",
+        "user_terminal_output", "user_terminal_event_cursor", "user_terminal_decoder_state",
+        "runtime_access_settings", "runtime_access_discovered", "runtime_access_auto_attempts",
+        "runtime_access_unrevokes", "runtime_access_clients", "runtime_access_invites",
+        "runtime_access_nonces", "runtime_access_receipts", "runtime_access_outbound",
+        "runtime_access_audit", "runtime_access_local_alias", "runtime_access_name_targets",
+        "runtime_access_name_requests", "runtime_access_alias_requests",
+        "runtime_model_status", "runtime_model_modes", "runtime_native_notices",
+        "runtime_native_catalog_updates", "runtime_native_limit_refreshes",
+        "runtime_native_sweeps", "runtime_supervisor_cursor",
+        "runtime_native_action_receipts", "runtime_safety_retries",
+        "runtime_context_terminal_receipts", "runtime_account_transfers",
+        "runtime_limit_reset_attempts", "runtime_limit_reset_requests",
+        "runtime_agent_moves", "runtime_server_outbox", "runtime_server_inbox",
+        "runtime_server_links", "runtime_server_fetch", "runtime_server_retired",
+        "runtime_server_output_tools", "runtime_server_sequence", "runtime_server_exec",
+        "runtime_server_exec_audit", "runtime_server_exec_input",
+    ):
+        db.execute(f'DROP TABLE "{table}"')
+    for index in (
+        "runtime_workspace_operation_agent_phase", "runtime_request_agent_status",
+        "runtime_rule_agent_inflight", "runtime_conversion_rules_rootId",
+        "runtime_conversion_plans_rootId", "runtime_conversion_annotations_rootId",
+        "runtime_conversion_complaints_leadId", "runtime_conversion_event_meta_rootId",
+        "runtime_conversion_event_meta_leadId", "runtime_room_root", "runtime_room_member_first",
+        "runtime_room_member_second", "runtime_room_many_members",
+        "messages_room", "voice_records_agent", "user_terminal_output_end",
+        "runtime_access_nonce_age", "runtime_access_receipt_age", "runtime_access_outbound_age",
+        "runtime_agent_sweep_busy", "runtime_agent_sweep_cleanup",
+        "runtime_account_transfer_status", "runtime_server_outbox_due",
+        "runtime_server_links_home_parent", "runtime_server_output_tools_expiry",
+        "runtime_server_exec_input_handle",
+        "sync_transcript_revision_runtime_agents_insert", "sync_transcript_revision_runtime_agents_update",
+        "sync_transcript_revision_runtime_agents_delete", "sync_transcript_revision_runtime_items_insert",
+        "sync_transcript_revision_runtime_items_update", "sync_transcript_revision_runtime_items_delete",
+    ):
+        db.execute(f'DROP INDEX IF EXISTS "{index}"')
+(target / "runtime.lock").touch()
 "#;
 
 #[test]
@@ -545,6 +689,236 @@ fn python_feature_initialized_state_round_trips_through_rust() {
     assert_eq!(checked["agent"]["rustWrite"], true);
     assert_eq!(checked["task"]["rustWrite"], true);
     root.cleanup().expect("feature state is removed");
+}
+
+#[test]
+fn rust_bootstrap_matches_python_feature_table_catalog() {
+    let reference = temporary_state("bootstrap-python");
+    let rust_state = temporary_state("bootstrap-rust");
+    python(&reference, CREATE_FEATURE_STATE, &[]);
+    python(
+        &reference,
+        COPY_AND_REMOVE_BOOTSTRAP_TABLES,
+        &[rust_state.to_str().expect("temporary path is UTF-8")],
+    );
+
+    let store =
+        RuntimeStore::open(Some(&rust_state)).expect("Rust prepares missing feature tables");
+    let auto_pair: i64 = store
+        .read()
+        .expect("Rust feature state opens")
+        .query_row(
+            "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("discovery bootstrap preserves Python's default setting");
+    assert_eq!(auto_pair, 1);
+    let python_catalog = feature_catalog(&reference.join("canvas.sqlite3"));
+    let rust_catalog = feature_catalog(&rust_state.join("canvas.sqlite3"));
+    let differing: Vec<_> = python_catalog
+        .iter()
+        .filter(|python_object| !rust_catalog.contains(python_object))
+        .map(|python_object| {
+            let rust_object = rust_catalog.iter().find(|rust_object| {
+                rust_object.0 == python_object.0 && rust_object.1 == python_object.1
+            });
+            (
+                python_object.1.as_str(),
+                python_object.3.as_str(),
+                rust_object.map(|object| object.3.as_str()),
+            )
+        })
+        .collect();
+    let extra: Vec<_> = rust_catalog
+        .iter()
+        .filter(|rust_object| !python_catalog.contains(rust_object))
+        .map(|object| object.1.as_str())
+        .collect();
+    assert!(
+        differing.is_empty() && extra.is_empty(),
+        "sqlite_master differs for Python and Rust bootstrap; differing={differing:?}, extra={extra:?}"
+    );
+    drop(store);
+    reference
+        .cleanup()
+        .expect("Python reference state is removed");
+    rust_state.cleanup().expect("Rust feature state is removed");
+}
+
+fn feature_catalog(path: &Path) -> Vec<(String, String, String, String)> {
+    const OBJECTS: &[&str] = &[
+        "runtime_work",
+        "runtime_work_root_status",
+        "runtime_work_owner_status",
+        "runtime_work_archive_due",
+        "runtime_plans",
+        "runtime_annotations",
+        "runtime_operation_receipts",
+        "runtime_event_meta",
+        "runtime_item_fulltext",
+        "runtime_search_next_meta",
+        "runtime_search_rollout",
+        "runtime_search_next",
+        "runtime_search_next_config",
+        "runtime_search_next_data",
+        "runtime_search_next_docsize",
+        "runtime_search_next_idx",
+        "runtime_payload_migrations",
+        "sync_versions",
+        "runtime_transcript_revisions",
+        "sync_transcript_revision_runtime_agents_insert",
+        "sync_transcript_revision_runtime_agents_update",
+        "sync_transcript_revision_runtime_agents_delete",
+        "sync_transcript_revision_runtime_items_insert",
+        "sync_transcript_revision_runtime_items_update",
+        "sync_transcript_revision_runtime_items_delete",
+        "runtime_assets",
+        "runtime_checkpoints",
+        "runtime_profiles",
+        "runtime_projects",
+        "runtime_sidebar_order",
+        "runtime_workspace_operations",
+        "runtime_workspace_operation_phase",
+        "runtime_payload_refs",
+        "runtime_payload_refs_hash",
+        "runtime_payload_checkpoints_insert",
+        "runtime_payload_checkpoints_update",
+        "runtime_payload_checkpoints_delete",
+        "runtime_tool_requests",
+        "runtime_tool_request_actor",
+        "runtime_tool_request_aliases",
+        "runtime_payload_requests_insert",
+        "runtime_payload_requests_update",
+        "runtime_payload_requests_delete",
+        "runtime_tool_results",
+        "runtime_payload_results_insert",
+        "runtime_payload_results_update",
+        "runtime_payload_results_delete",
+        "runtime_rules",
+        "runtime_rule_ready_tick",
+        "runtime_budget",
+        "runtime_budget_usage",
+        "runtime_budget_usage_agent",
+        "runtime_execution_runs",
+        "runtime_execution_run_agent",
+        "runtime_execution_run_created",
+        "runtime_execution_run_message",
+        "runtime_execution_run_native",
+        "runtime_execution_attempts",
+        "runtime_execution_attempt_run",
+        "runtime_execution_inputs",
+        "runtime_execution_input_event",
+        "runtime_execution_effects",
+        "runtime_execution_effect_run",
+        "runtime_execution_nodes",
+        "runtime_execution_node_run",
+        "runtime_federation_settings",
+        "runtime_federation_identity",
+        "runtime_federation_peers",
+        "runtime_federation_invites",
+        "runtime_federation_rooms",
+        "runtime_federation_outbox",
+        "runtime_federation_outbox_peer",
+        "runtime_federation_inbox",
+        "runtime_federation_nonces",
+        "runtime_federation_nonce_age",
+        "runtime_workspace_operation_agent_phase",
+        "runtime_request_agent_status",
+        "runtime_rule_agent_inflight",
+        "runtime_conversion_rules_rootId",
+        "runtime_conversion_plans_rootId",
+        "runtime_conversion_annotations_rootId",
+        "runtime_conversion_complaints_leadId",
+        "runtime_conversion_event_meta_rootId",
+        "runtime_conversion_event_meta_leadId",
+        "runtime_room_root",
+        "runtime_room_member_first",
+        "runtime_room_member_second",
+        "runtime_room_many_members",
+        "groups",
+        "messages",
+        "messages_room",
+        "graph_agents",
+        "graph_edges",
+        "voice_sessions",
+        "voice_records",
+        "voice_records_agent",
+        "voice_approvals",
+        "voice_deliveries",
+        "voice_speech_requests",
+        "user_terminals",
+        "user_terminal_receipts",
+        "user_terminal_output",
+        "user_terminal_output_end",
+        "user_terminal_event_cursor",
+        "user_terminal_decoder_state",
+        "runtime_access_settings",
+        "runtime_access_discovered",
+        "runtime_access_auto_attempts",
+        "runtime_access_unrevokes",
+        "runtime_access_clients",
+        "runtime_access_invites",
+        "runtime_access_nonces",
+        "runtime_access_nonce_age",
+        "runtime_access_receipts",
+        "runtime_access_receipt_age",
+        "runtime_access_outbound",
+        "runtime_access_outbound_age",
+        "runtime_access_audit",
+        "runtime_access_local_alias",
+        "runtime_access_name_targets",
+        "runtime_access_name_requests",
+        "runtime_access_alias_requests",
+        "runtime_model_status",
+        "runtime_model_modes",
+        "runtime_native_notices",
+        "runtime_native_catalog_updates",
+        "runtime_native_limit_refreshes",
+        "runtime_native_sweeps",
+        "runtime_supervisor_cursor",
+        "runtime_agent_sweep_busy",
+        "runtime_agent_sweep_cleanup",
+        "runtime_native_action_receipts",
+        "runtime_safety_retries",
+        "runtime_context_terminal_receipts",
+        "runtime_account_transfers",
+        "runtime_account_transfer_status",
+        "runtime_limit_reset_attempts",
+        "runtime_limit_reset_requests",
+        "runtime_agent_moves",
+        "runtime_server_outbox",
+        "runtime_server_outbox_due",
+        "runtime_server_inbox",
+        "runtime_server_links",
+        "runtime_server_links_home_parent",
+        "runtime_server_fetch",
+        "runtime_server_retired",
+        "runtime_server_output_tools",
+        "runtime_server_output_tools_expiry",
+        "runtime_server_sequence",
+        "runtime_server_exec",
+        "runtime_server_exec_audit",
+        "runtime_server_exec_input",
+        "runtime_server_exec_input_handle",
+    ];
+    let connection = rusqlite::Connection::open(path).expect("feature catalog database opens");
+    let mut statement = connection
+        .prepare("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")
+        .expect("feature catalog query prepares");
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .expect("feature catalog reads")
+        .filter_map(Result::ok)
+        .filter(|(_, name, _, _)| OBJECTS.contains(&name.as_str()))
+        .collect()
 }
 
 fn python(root: &Path, code: &str, args: &[&str]) -> String {

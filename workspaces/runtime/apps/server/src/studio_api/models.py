@@ -4,7 +4,7 @@ from __future__ import annotations
 from enum import StrEnum
 import math
 import re
-from typing import Annotated, Literal, TypeAlias, cast
+from typing import Annotated, Iterable, Literal, TypeAlias, cast
 
 from pydantic import (
     BaseModel,
@@ -76,6 +76,28 @@ def require_strict_integer(value: object) -> object:
     if type(value) is not int:
         raise ValueError("Value must be an integer")
     return value
+
+
+def _document_model_defaults(schema: dict[str, JsonValue], model: type[BaseModel]) -> None:
+    """Expose concrete field defaults in JSON Schema without changing validation."""
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    for name, field in model.model_fields.items():
+        if field.is_required():
+            continue
+        if field.default_factory is list:
+            default: JsonValue = []
+        elif field.default_factory is dict:
+            default = {}
+        elif field.default_factory is not None:
+            continue
+        else:
+            default = cast(JsonValue, field.default)
+        property_name = field.serialization_alias or field.alias or name
+        property_schema = properties.get(property_name)
+        if isinstance(property_schema, dict):
+            property_schema.setdefault("default", default)
 
 
 # Keep the shared range check in a validator so a field's narrower Field bounds
@@ -164,6 +186,25 @@ class ContractModel(BaseModel):
         validate_assignment=True,
         populate_by_name=True,
     )
+
+
+def document_model_defaults(
+    document: dict[str, JsonValue], model_types: Iterable[type[BaseModel]]
+) -> None:
+    """Add defaults for the models reachable from the application's routes."""
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    if not isinstance(schemas, dict):
+        return
+
+    models_by_name: dict[str, list[type[BaseModel]]] = {}
+    for model in set(model_types):
+        models_by_name.setdefault(model.__name__, []).append(model)
+
+    for name, matches in models_by_name.items():
+        schema = schemas.get(name)
+        if isinstance(schema, dict) and len(matches) == 1:
+            _document_model_defaults(schema, matches[0])
 
 
 class SupervisorIdentity(ContractModel):

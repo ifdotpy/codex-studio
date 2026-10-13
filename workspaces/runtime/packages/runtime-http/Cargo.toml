@@ -24,6 +24,7 @@ openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+rusqlite = { workspace = true }
 tower = { workspace = true }
 
 [lints]

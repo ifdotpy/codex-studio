@@ -1,21 +1,20 @@
 //! Pure, deterministic provider connection state machine.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::io::{Read, Write};
-use std::sync::{
-    Mutex,
-    mpsc::{self, Receiver, RecvTimeoutError},
-};
-use std::thread;
-use std::time::Duration;
-
 use serde_json::{Map, Value};
+use std::collections::{BTreeMap, VecDeque};
 use thiserror::Error;
 
 use crate::{
-    BookError, CallbackDispatcher, CodecError, Frame, Handler, Inbound, Method, PendingBook,
-    RequestFrame, RequestId, RequestState, ResponseBody, ResponseMatch, encode_line,
+    BookError, CodecError, Frame, Method, PendingBook, RequestFrame, RequestId, RequestState,
+    ResponseBody, ResponseMatch, encode_line,
 };
+
+/// Provider request or notification delivered to the account session owner.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Inbound {
+    Request(RequestFrame),
+    Notification(Frame),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
@@ -87,6 +86,8 @@ pub struct SessionState {
     generation: u64,
     claude: bool,
     next_claude_id: u64,
+    request_id_prefix: Option<String>,
+    next_request_sequence: u64,
     lifecycle: Lifecycle,
     book: PendingBook,
     pending: BTreeMap<RequestId, Pending>,
@@ -120,10 +121,34 @@ impl SessionState {
         initialize_params: Value,
         recovered: Vec<(RequestId, Method, Option<String>)>,
     ) -> Result<(Self, Vec<Action>), SessionError> {
+        Self::new_with_recovered_and_prefix(
+            generation,
+            claude,
+            now_ms,
+            timeout_ms,
+            initialize_params,
+            recovered,
+            None,
+        )
+    }
+
+    /// Initialize with a connection-scoped request ID namespace. This keeps
+    /// late replies from an older attachment from matching fresh requests.
+    pub fn new_with_recovered_and_prefix(
+        generation: u64,
+        claude: bool,
+        now_ms: u64,
+        timeout_ms: u64,
+        initialize_params: Value,
+        recovered: Vec<(RequestId, Method, Option<String>)>,
+        request_id_prefix: Option<String>,
+    ) -> Result<(Self, Vec<Action>), SessionError> {
         let mut state = Self {
             generation,
             claude,
             next_claude_id: 1,
+            request_id_prefix,
+            next_request_sequence: 1,
             lifecycle: Lifecycle::Initializing,
             book: PendingBook::new(),
             pending: BTreeMap::new(),
@@ -131,7 +156,12 @@ impl SessionState {
             queued_threads: BTreeMap::new(),
         };
         for (id, method, thread_id) in recovered {
-            state.track_existing_request(id, method, thread_id)?;
+            state.track_existing_request_until(
+                id,
+                method,
+                thread_id,
+                now_ms.saturating_add(timeout_ms),
+            )?;
         }
         let ticket = state.register(
             Method::Initialize,
@@ -152,6 +182,16 @@ impl SessionState {
         method: Method,
         thread_id: Option<String>,
     ) -> Result<RequestTicket, SessionError> {
+        self.track_existing_request_until(id, method, thread_id, u64::MAX)
+    }
+
+    fn track_existing_request_until(
+        &mut self,
+        id: RequestId,
+        method: Method,
+        thread_id: Option<String>,
+        deadline_ms: u64,
+    ) -> Result<RequestTicket, SessionError> {
         if matches!(self.lifecycle, Lifecycle::Lost | Lifecycle::Closed) {
             return Err(SessionError::NotReady);
         }
@@ -166,7 +206,7 @@ impl SessionState {
             Pending {
                 ticket: ticket.clone(),
                 params: Value::Null,
-                deadline_ms: u64::MAX,
+                deadline_ms,
                 thread_id,
                 serialized: false,
             },
@@ -227,6 +267,25 @@ impl SessionState {
         )
     }
 
+    /// Validate a caller allocated request before its durable Submitted marker.
+    pub fn preflight_with_id(
+        &self,
+        id: RequestId,
+        method: Method,
+        params: &Value,
+        thread_id: Option<&str>,
+        lightweight_read: bool,
+    ) -> Result<(), SessionError> {
+        if self.lifecycle != Lifecycle::Ready {
+            return Err(SessionError::NotReady);
+        }
+        let serialized = self.claude && !lightweight_read && is_thread_serialized(method);
+        if serialized && thread_id.is_none() {
+            return Err(SessionError::MissingThreadId);
+        }
+        validate_request_encoding(id, method, params)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn submit_with_id_inner(
         &mut self,
@@ -284,6 +343,15 @@ impl SessionState {
         request_id: Option<RequestId>,
     ) -> Result<RequestTicket, SessionError> {
         let id = if let Some(id) = request_id {
+            validate_request_encoding(id.clone(), method, &params)?;
+            self.book.register(id.clone(), method)?;
+            id
+        } else if let Some(prefix) = &self.request_id_prefix {
+            let id = RequestId::String(format!("{prefix}:{}", self.next_request_sequence));
+            self.next_request_sequence = self
+                .next_request_sequence
+                .checked_add(1)
+                .ok_or(BookError::IdExhausted)?;
             validate_request_encoding(id.clone(), method, &params)?;
             self.book.register(id.clone(), method)?;
             id
@@ -511,16 +579,6 @@ impl SessionState {
         self.active_threads.remove(thread);
         Ok(Vec::new())
     }
-
-    fn next_deadline_ms(&self) -> Option<u64> {
-        if matches!(self.lifecycle, Lifecycle::Lost | Lifecycle::Closed) {
-            return None;
-        }
-        self.pending
-            .values()
-            .map(|pending| pending.deadline_ms)
-            .min()
-    }
 }
 
 fn validate_request_encoding(
@@ -546,321 +604,4 @@ fn is_thread_serialized(method: Method) -> bool {
             | Method::ThreadFork
             | Method::ThreadRead
     )
-}
-
-enum ReadEvent {
-    Frame(Frame),
-    End,
-    Failure(CodecError),
-}
-
-/// Dedicated reader thread for one owned read half. Callback work is never run here.
-pub struct ReaderThread {
-    events: Receiver<ReadEvent>,
-    worker: thread::JoinHandle<()>,
-}
-
-impl ReaderThread {
-    pub fn start<R: Read + Send + 'static>(mut reader: R) -> Self {
-        let (sender, events) = mpsc::sync_channel(65_536);
-        let worker = thread::spawn(move || {
-            let mut decoder = crate::LineDecoder::new();
-            let mut bytes = [0_u8; 8192];
-            loop {
-                match reader.read(&mut bytes) {
-                    Ok(0) => {
-                        if let Err(error) = decoder.finish()
-                            && sender.send(ReadEvent::Failure(error)).is_err()
-                        {
-                            break;
-                        }
-                        if sender.send(ReadEvent::End).is_err() {
-                            break;
-                        }
-                        break;
-                    }
-                    Ok(count) => match decoder.push(&bytes[..count]) {
-                        Ok(frames) => {
-                            if frames
-                                .into_iter()
-                                .any(|frame| sender.send(ReadEvent::Frame(frame)).is_err())
-                            {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            if sender.send(ReadEvent::Failure(error)).is_err() {
-                                break;
-                            }
-                            break;
-                        }
-                    },
-                    Err(_) => {
-                        if sender.send(ReadEvent::End).is_err() {
-                            break;
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-        Self { events, worker }
-    }
-
-    fn stop(self) {
-        let Self { events, worker } = self;
-        drop(events);
-        let _joined = worker.join();
-    }
-}
-
-/// Split-I/O adapter. The reader and callback workers are independent; each
-/// write action is serialized under one mutex before it reaches the write half.
-pub struct ConnectionDriver<R, W, H>
-where
-    R: Read + Send + 'static,
-    W: Write + Send + 'static,
-    H: Handler + Send + 'static,
-{
-    reader: ReaderThread,
-    writer: Mutex<W>,
-    state: SessionState,
-    dispatcher: CallbackDispatcher<H>,
-    _reader_type: std::marker::PhantomData<R>,
-}
-
-pub struct DriverConfig {
-    pub generation: u64,
-    pub claude: bool,
-    pub now_ms: u64,
-    pub timeout_ms: u64,
-    pub initialize_params: Value,
-}
-
-impl<R, W, H> ConnectionDriver<R, W, H>
-where
-    R: Read + Send + 'static,
-    W: Write + Send + 'static,
-    H: Handler + Send + 'static,
-{
-    pub fn start(
-        reader: R,
-        writer: W,
-        handler: H,
-        config: DriverConfig,
-    ) -> Result<Self, DriverError> {
-        let (state, actions) = SessionState::new(
-            config.generation,
-            config.claude,
-            config.now_ms,
-            config.timeout_ms,
-            config.initialize_params,
-        )?;
-        let mut driver = Self {
-            reader: ReaderThread::start(reader),
-            writer: Mutex::new(writer),
-            state,
-            dispatcher: CallbackDispatcher::new(handler),
-            _reader_type: std::marker::PhantomData,
-        };
-        driver.apply(actions)?;
-        Ok(driver)
-    }
-
-    pub fn submit(
-        &mut self,
-        method: Method,
-        params: Value,
-        thread_id: Option<String>,
-        lightweight: bool,
-        now_ms: u64,
-        timeout_ms: u64,
-    ) -> Result<(RequestTicket, Vec<Action>), DriverError> {
-        let (ticket, actions) =
-            self.state
-                .submit(method, params, now_ms, timeout_ms, thread_id, lightweight)?;
-        Ok((ticket, self.apply(actions)?))
-    }
-
-    pub fn pump_one(&mut self, now_ms: u64) -> Result<Vec<Action>, DriverError> {
-        let event = match self.reader.events.try_recv() {
-            Ok(event) => Some(event),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(ReadEvent::End),
-        };
-        self.process_event(event, now_ms)
-    }
-
-    /// Wait for the next frame, waking at the earliest request deadline.
-    pub fn pump_next(&mut self, now_ms: u64) -> Result<Vec<Action>, DriverError> {
-        let mut clock = || now_ms;
-        self.pump_next_at(&mut clock, true)
-    }
-
-    /// Blocking variant with an injectable monotonic clock. The receiver wait
-    /// is bounded by the earliest pending deadline; the clock is sampled again
-    /// after a frame or timeout so a fake clock can drive deterministic tests.
-    pub fn pump_next_with_clock<C>(&mut self, mut now_ms: C) -> Result<Vec<Action>, DriverError>
-    where
-        C: FnMut() -> u64,
-    {
-        self.pump_next_at(&mut now_ms, false)
-    }
-
-    fn pump_next_at<C>(
-        &mut self,
-        now_ms: &mut C,
-        advance_on_timeout: bool,
-    ) -> Result<Vec<Action>, DriverError>
-    where
-        C: FnMut() -> u64,
-    {
-        loop {
-            let now = now_ms();
-            if self
-                .state
-                .next_deadline_ms()
-                .is_some_and(|deadline| now >= deadline)
-            {
-                return self.process_event(None, now);
-            }
-            let deadline = self.state.next_deadline_ms();
-            let received = match deadline {
-                Some(deadline_ms) => {
-                    let timeout = Duration::from_millis(deadline_ms.saturating_sub(now));
-                    match self.reader.events.recv_timeout(timeout) {
-                        Ok(event) => Some((Some(event), now_ms())),
-                        Err(RecvTimeoutError::Timeout) => {
-                            let after_wait = now_ms();
-                            if advance_on_timeout || after_wait >= deadline_ms {
-                                let expired_at = if advance_on_timeout {
-                                    after_wait.max(deadline_ms)
-                                } else {
-                                    after_wait
-                                };
-                                return self.process_event(None, expired_at);
-                            }
-                            None
-                        }
-                        Err(RecvTimeoutError::Disconnected) => {
-                            Some((Some(ReadEvent::End), now_ms()))
-                        }
-                    }
-                }
-                None => match self.reader.events.recv() {
-                    Ok(event) => Some((Some(event), now_ms())),
-                    Err(_) => Some((Some(ReadEvent::End), now_ms())),
-                },
-            };
-            if let Some((event, event_time)) = received {
-                return self.process_event(event, event_time);
-            }
-        }
-    }
-
-    fn process_event(
-        &mut self,
-        event: Option<ReadEvent>,
-        now_ms: u64,
-    ) -> Result<Vec<Action>, DriverError> {
-        // The Python reader resolves a response as soon as it reads the frame;
-        // the waiting caller times out independently (codex_runtime.py:706,
-        // :1382). At this pump boundary, an elapsed injected deadline wins,
-        // then a queued response is retained as late evidence.
-        let (deadline_result, expired) = self.state.expire(now_ms);
-        let mut actions = self.apply(expired)?;
-        match event {
-            Some(ReadEvent::Frame(frame)) => {
-                let received = self.state.receive(frame)?;
-                match self.apply(received) {
-                    Ok(received_actions) => actions.extend(received_actions),
-                    Err(DriverError::Dispatcher {
-                        actions: mut pending,
-                    }) => {
-                        actions.append(&mut pending);
-                        return Err(DriverError::Dispatcher { actions });
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            Some(ReadEvent::Failure(error)) => {
-                drop(error);
-                actions.extend(self.state.transport_lost());
-            }
-            Some(ReadEvent::End) => actions.extend(self.state.transport_lost()),
-            None => {}
-        }
-        if deadline_result.is_err() {
-            return Err(DriverError::DeadlineUnknown { actions });
-        }
-        Ok(actions)
-    }
-
-    pub fn cancel(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, DriverError> {
-        let actions = self.state.cancel(ticket)?;
-        self.apply(actions)
-    }
-
-    pub fn close(mut self) -> Result<(), DriverError> {
-        let actions = self.state.close();
-        self.apply(actions)?;
-        let Self {
-            reader, dispatcher, ..
-        } = self;
-        reader.stop();
-        dispatcher.close().map_err(|_| DriverError::Dispatcher {
-            actions: Vec::new(),
-        })
-    }
-
-    fn apply(&mut self, actions: Vec<Action>) -> Result<Vec<Action>, DriverError> {
-        let mut unhandled = Vec::new();
-        for action in actions {
-            match action {
-                Action::Write(bytes) => {
-                    let mut writer = self
-                        .writer
-                        .lock()
-                        .map_err(|_| DriverError::WriterPoisoned)?;
-                    if let Err(source) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
-                        let mut unresolved = unhandled;
-                        unresolved.extend(self.state.transport_lost());
-                        return Err(DriverError::Io { source, unresolved });
-                    }
-                }
-                Action::Dispatch(frame) => {
-                    let inbound = match frame {
-                        Frame::Request(request) => Inbound::Request(request),
-                        Frame::Notification(notification) => {
-                            Inbound::Notification(Frame::Notification(notification))
-                        }
-                        other => Inbound::Notification(other),
-                    };
-                    if self.dispatcher.send(inbound).is_err() {
-                        return Err(DriverError::Dispatcher { actions: unhandled });
-                    }
-                }
-                other => unhandled.push(other),
-            }
-        }
-        Ok(unhandled)
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum DriverError {
-    #[error(transparent)]
-    Session(#[from] SessionError),
-    #[error("provider write half mutex was poisoned")]
-    WriterPoisoned,
-    #[error("provider byte write failed; unresolved requests have unknown outcomes")]
-    Io {
-        #[source]
-        source: std::io::Error,
-        unresolved: Vec<Action>,
-    },
-    #[error("provider request deadline elapsed; unresolved outcomes are unknown")]
-    DeadlineUnknown { actions: Vec<Action> },
-    #[error("provider callback lane failed; actions retain any settled request outcomes")]
-    Dispatcher { actions: Vec<Action> },
 }

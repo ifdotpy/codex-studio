@@ -111,11 +111,16 @@ impl Registry {
             })?;
         let mut stored_schemas = BTreeMap::new();
         for name in [
-            "WorkItem",
+            "AgentRecordResponse",
+            "AnnotationReceipt",
+            "CheckpointSummary",
+            "ComplaintRecordResponse",
             "PlanView",
             "QueueItem",
+            "RequestRecordResponse",
+            "TaskDetailResponse",
             "TranscriptAsset",
-            "AnnotationReceipt",
+            "WorkItem",
         ] {
             let validator = jsonschema::options()
                 .with_registry(&schema_registry)
@@ -313,6 +318,11 @@ impl Registry {
         self.stored_schemas
             .get(schema)
             .is_some_and(|validator| validator.is_valid(value))
+    }
+
+    pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
+        let value = serde_json::from_str(raw).ok()?;
+        self.validate_stored(schema, &value).then_some(value)
     }
 }
 
@@ -1516,6 +1526,23 @@ mod tests {
         );
         let opaque = json!({"$ref":"#/components/schemas/JsonValue"});
         assert!(check_safe_integer_bounds(&document, &opaque, "/body/payload", "send").is_ok());
+    }
+
+    #[test]
+    fn persisted_record_schemas_validate_full_values_without_number_coercion() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let complaint = r#"{"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9007199254740992}"#;
+        assert!(
+            registry
+                .validated_stored("ComplaintRecordResponse", complaint)
+                .is_none()
+        );
+
+        let checkpoint = r#"{"id":"p","agent":"lead","created":1,"extension":9007199254740993}"#;
+        let value = registry
+            .validated_stored("CheckpointSummary", checkpoint)
+            .expect("valid extension record retains its integer");
+        assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
     }
 
     #[test]

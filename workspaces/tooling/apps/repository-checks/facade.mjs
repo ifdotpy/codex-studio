@@ -576,6 +576,18 @@ function browserTestOptions() {
   };
 }
 
+function browserSmokeTestOptions() {
+  return {
+    script: "test:browser:smoke",
+    playwrightJsonReport: true,
+    selector: "explicit browser smoke cases",
+    reason:
+      "Run the fast browser smoke subset through the isolated Playwright launcher.",
+    costCategory: "browser smoke subset; under 120 s target",
+    label: "browser smoke subset",
+  };
+}
+
 function serverCategoryOptions(category, suite = "") {
   const serverArgs = ["--only", category];
   if (category === "expensive") {
@@ -666,9 +678,9 @@ function serverCategoryPlan(root, category, suite = "") {
   return value;
 }
 
-function browserPlan(root) {
+function browserPlan(root, smoke = false) {
   const item = packageTarget(discover(root), "codex-agents-web");
-  const options = browserTestOptions();
+  const options = smoke ? browserSmokeTestOptions() : browserTestOptions();
   const value = plan(
     root,
     item,
@@ -733,11 +745,18 @@ function fastTierCommands(root) {
     },
     { item: web, label: "web unit tests" },
     { item: tooling, label: "tooling tests" },
+    {
+      item: web,
+      label: "browser smoke subset",
+      options: browserSmokeTestOptions(),
+    },
   ];
 }
 
 function fastTierRestCommands(root) {
-  return fastTierCommands(root).slice(1);
+  return fastTierCommands(root)
+    .slice(1)
+    .filter(({ label }) => label !== "browser smoke subset");
 }
 
 function heavyTierCommands(root) {
@@ -1251,7 +1270,7 @@ function formatServerRunDiagnostics(output) {
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-server-shard <index> <count> | test-heavy | test-browser | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -1726,6 +1745,11 @@ export async function main(argv = process.argv.slice(2)) {
     const item = packageTarget(discover(root), "codex-agents-web");
     return (await execute(root, item, "", json, browserTestOptions())).exitCode;
   }
+  if (action === "test-browser-smoke") {
+    const item = packageTarget(discover(root), "codex-agents-web");
+    return (await execute(root, item, "", json, browserSmokeTestOptions()))
+      .exitCode;
+  }
   if (action === "test-server-category")
     return executeServerCategory(root, packageName || "", requestedCase || "");
   if (action === "test-server-load") {
@@ -1758,6 +1782,10 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (packageName === "test-browser") {
       reportPlan(browserPlan(root), json);
+      return 0;
+    }
+    if (packageName === "test-browser-smoke") {
+      reportPlan(browserPlan(root, true), json);
       return 0;
     }
     if (packageName === "test-server-heavy") {

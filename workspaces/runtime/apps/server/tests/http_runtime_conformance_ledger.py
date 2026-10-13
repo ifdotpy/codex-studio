@@ -49,7 +49,7 @@ def operations() -> list[tuple[str, str]]:
 def appendix_http_assertions(
     known_operations: set[str],
 ) -> dict[str, set[str]]:
-    """Resolve the plan's 23 H witnesses to named test methods."""
+    """Validate named appendix witnesses and return the HTTP witnesses."""
     plan = ROOT / "docs/plans/rust-runtime-work-breakdown.md"
     text = plan.read_text(encoding="utf-8").split("<!-- operation-map -->", 1)[1]
     witnesses: dict[str, set[str]] = defaultdict(set)
@@ -57,16 +57,16 @@ def appendix_http_assertions(
         if not line.startswith("| `"):
             continue
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) < 8 or cells[6] != "H":
+        if len(cells) < 8:
             continue
         operation = cells[0].strip("`")
-        if operation not in known_operations:
-            continue
         witness = cells[7].strip("`")
-        match = re.fullmatch(r"T/([^:]+):(\d+)", witness)
-        if match is None:
+        if not witness.startswith("T/"):
             continue
-        relative, line_number_text = match.groups()
+        match = re.fullmatch(r"T/([^:]+)::([A-Za-z_][A-Za-z0-9_.]*)", witness)
+        if match is None:
+            raise ValueError(f"plan witness {witness} must name a test with file::test_name")
+        relative, test_name = match.groups()
         source_path = TESTS / relative
         module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         source_tests: set[str] = set()
@@ -77,61 +77,18 @@ def appendix_http_assertions(
                 current = [*ancestors, node.name]
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name.startswith("test_"):
-                    source_tests.add(f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join([*ancestors, node.name])}")
+                    source_tests.add(".".join([*ancestors, node.name]))
                 current = [*ancestors, node.name]
             for child in ast.iter_child_nodes(node):
                 collect_test_ids(child, current)
 
         collect_test_ids(module, [])
-        line_number = int(line_number_text)
-        candidates: list[tuple[list[str], int]] = []
-        enclosing_functions: list[str] = []
-
-        def find_test(node: ast.AST, ancestors: list[str]) -> None:
-            start = getattr(node, "lineno", 0)
-            end = getattr(node, "end_lineno", start)
-            if not isinstance(node, ast.Module) and not start <= line_number <= end:
-                return
-            current = ancestors
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                current = [*ancestors, node.name]
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    enclosing_functions.append(node.name)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                    candidates.append((current, end - start))
-            for child in ast.iter_child_nodes(node):
-                find_test(child, current)
-
-        find_test(module, [])
-        selected = [min(candidates, key=lambda candidate: candidate[1])[0]] if candidates else []
-        helper = enclosing_functions[-1] if enclosing_functions else None
-        if not selected and helper is not None:
-            def find_helper_callers(node: ast.AST, ancestors: list[str]) -> None:
-                current = ancestors
-                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    current = [*ancestors, node.name]
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                        calls_helper = any(
-                            isinstance(call, ast.Call)
-                            and ((isinstance(call.func, ast.Name) and call.func.id == helper)
-                                 or (isinstance(call.func, ast.Attribute) and call.func.attr == helper))
-                            for call in ast.walk(node)
-                        )
-                        if calls_helper:
-                            selected.append(current)
-                for child in ast.iter_child_nodes(node):
-                    find_helper_callers(child, current)
-            find_helper_callers(module, [])
-        if not selected:
+        if test_name not in source_tests:
             raise ValueError(f"plan witness {witness} does not resolve to a named test")
-        resolved = {
-            f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join(names)}"
-            for names in selected
-        }
-        missing = resolved - source_tests
-        if missing:
-            raise ValueError(f"plan witness {witness} resolves to missing test IDs: {sorted(missing)}")
-        witnesses[operation].update(resolved)
+        if cells[6] == "H" and operation in known_operations:
+            witnesses[operation].add(
+                f"workspaces/runtime/apps/server/tests/{relative}::__main__.{test_name}"
+            )
     return witnesses
 
 
@@ -220,7 +177,60 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
     return {}
 
 
-def valid_probe(method: str, template: str) -> tuple[str, Any | None]:
+def seed_python_probe_state(backend: Any) -> dict[str, str]:
+    """Seed the disposable backend with records written by the Python runtime."""
+    agent_id = "ledger-probe-agent"
+    task_id = "ledger-probe-task"
+    work_id = "ledger-probe-work"
+    source = Path(__file__).resolve().parents[1] / "src"
+    seed = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+from codex_runtime import Runtime
+
+runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+try:
+    agent = {{
+        "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
+        "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
+        "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
+        "autoWake": True, "approvalPolicy": "never",
+    }}
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "agents", agent, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "completed",
+            "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "work", {{
+            "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
+            "status": "ready", "title": "HTTP ledger probe work", "description": "",
+            "created": 1.0, "updated": 1.0, "createdBy": {agent_id!r},
+            "version": 1, "dependencies": [], "decisions": [], "results": [],
+        }}, sync_rooms=False)
+        runtime.put(db, "plans", {{
+            "id": {agent_id!r}, "rootId": {agent_id!r}, "text": "HTTP ledger probe plan",
+            "version": 1, "updated": 1.0, "steps": [],
+        }}, sync_rooms=False)
+finally:
+    runtime.close()
+"""
+    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    subprocess.run(
+        [python, "-B", "-c", seed],
+        cwd=backend.cwd,
+        env=backend._environment(),
+        check=True,
+        timeout=30,
+    )
+    return {"agent": agent_id, "task": task_id}
+
+
+def valid_probe(
+    method: str, template: str, identifiers: dict[str, str] | None = None
+) -> tuple[str, Any | None]:
     document = json.loads(SPEC.read_text(encoding="utf-8"))
     operation = document["paths"][template][method.lower()]
     path_values: dict[str, Any] = {}
@@ -228,10 +238,21 @@ def valid_probe(method: str, template: str) -> tuple[str, Any | None]:
     for parameter in operation.get("parameters", []):
         schema = resolve_schema(parameter.get("schema", {}), document)
         value = sample_value(schema, document)
+        name = parameter["name"]
+        if identifiers and parameter.get("in") in {"path", "query"}:
+            if name in {"agent", "agentId", "agent_id"}:
+                value = identifiers["agent"]
+            elif (
+                name in {"task", "taskId", "task_id"}
+                or (name == "id" and template == "/api/task")
+            ):
+                value = identifiers["task"]
+            elif name == "scope" and template == "/api/sync/pull":
+                value = f"transcript:{identifiers['agent']}"
         if parameter.get("in") == "path":
-            path_values[parameter["name"]] = value
+            path_values[name] = value
         elif parameter.get("in") == "query":
-            query_values.append((parameter["name"], str(value).lower() if isinstance(value, bool) else str(value)))
+            query_values.append((name, str(value).lower() if isinstance(value, bool) else str(value)))
     path = re.sub(r"\{([^}:]+)(?::[^}]+)?\}", lambda match: urllib.parse.quote(str(path_values.get(match.group(1), "probe")), safe=""), template)
     if query_values:
         path += "?" + urllib.parse.urlencode(query_values)
@@ -257,11 +278,15 @@ def probe_operations(
         backend = BackendProcess(scratch)
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+            seed_catalog_state(backend)
+            backend.start()
+            backend.stop()
+            identifiers = seed_python_probe_state(backend)
             backend.start()
             token = backend.session["token"]
             rows = []
             for method, template in operations():
-                path, body = valid_probe(method, template)
+                path, body = valid_probe(method, template, identifiers)
                 headers = {
                     "X-Canvas-Token": token,
                     "X-Studio-API-Schema": backend.schema_hash,
@@ -325,6 +350,36 @@ def probe_operations(
             return rows
         finally:
             backend.close()
+
+
+def seed_catalog_state(backend: Any) -> None:
+    accounts = backend.state / "accounts"
+    accounts.mkdir(parents=True)
+    (accounts / "registry.json").write_text(json.dumps({
+        "version": 1,
+        "defaultAccountKey": "default",
+        "accounts": {
+            "default": {
+                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+                "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
+                "status": "ready",
+            },
+        },
+        "logins": {},
+    }), encoding="utf-8")
+    python = os.environ.get("CODEX_AGENTS_PYTHON")
+    if not python:
+        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    environment = backend._environment()
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
+    )))
+    subprocess.run(
+        [python, "-c", "from codex_runtime import Runtime; import sys; Runtime(sys.argv[1]).close()", str(backend.state)],
+        check=True,
+        env=environment,
+        timeout=30,
+    )
 
 
 def case_results(log_text: str) -> list[dict[str, Any]]:
@@ -545,13 +600,13 @@ def classify_observation(
     if implementation == "implemented":
         if status >= 500:
             return "unexpected"
-        return "implemented" if status < 400 else "unverified"
+        return "implemented" if 200 <= status < 300 else "unverified"
     if implementation == "partial":
         if status == 501:
             return "partial"
         if status >= 500:
             return "unexpected"
-        return "partial" if status < 400 else "unverified"
+        return "partial" if 200 <= status < 300 else "unverified"
     return "unexpected"
 
 

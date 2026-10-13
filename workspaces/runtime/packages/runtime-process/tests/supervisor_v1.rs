@@ -17,7 +17,6 @@ use studio_runtime_process::{
     OperationStatusRequest, RetireCommandRequest, SupervisorClient, SupervisorError,
     SupervisorHandle, WriteRequest,
 };
-
 const SOCKET: &str = "supervisor.sock";
 #[cfg(target_os = "linux")]
 const UNIX_SOCKET_PATH_LIMIT: usize = 108;

@@ -192,6 +192,7 @@ class LedgerTraceContract(unittest.TestCase):
         self.assertEqual(classify(501, "unimplemented", *valid), "not_implemented")
         self.assertEqual(classify(200, "unimplemented", *valid), "unexpected")
         self.assertEqual(classify(400, "implemented", *valid), "unverified")
+        self.assertEqual(classify(302, "implemented", *valid), "unverified")
         self.assertEqual(classify(500, "implemented", *valid), "unexpected")
         self.assertEqual(classify(501, "partial", *valid), "partial")
         self.assertEqual(classify(403, "partial", *valid), "unverified")

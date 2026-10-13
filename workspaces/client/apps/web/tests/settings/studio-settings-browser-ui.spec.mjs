@@ -57,6 +57,20 @@ test("studio settings browser ui", async ({
     page.setDefaultTimeout(12000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const validLegacyPreferenceUpload = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        new URL(response.url()).pathname !== "/api/sync/preferences"
+      )
+        return false;
+      const body = response.request().postDataJSON();
+      return (
+        body.scope === "user" &&
+        body.fields['["codex-studio-preferences-v1","theme"]']?.value ===
+          "dark" &&
+        !('["codex-studio-preferences-v1","sidebarFontSize"]' in body.fields)
+      );
+    });
     await page.route(/\/api\/panel\?/, (route) => {
       const agent = new URL(route.request().url()).searchParams.get("agent");
       return route.fulfill({
@@ -154,15 +168,29 @@ test("studio settings browser ui", async ({
     await settleLayout();
 
     const openStudioSettings = async () => {
-      await page
-        .getByRole("button", { name: "Studio settings", exact: true })
-        .click();
+      const button = page.getByRole("button", {
+        name: "Studio settings",
+        exact: true,
+      });
+      if (!(await button.isVisible())) {
+        await page
+          .getByRole("button", { name: "Toggle conversations", exact: true })
+          .click();
+        await expect(button).toBeVisible();
+      }
+      await button.click();
       return page.getByRole("dialog", {
         name: "Studio settings",
         exact: true,
       });
     };
     const settings = await openStudioSettings();
+    const preferenceUpload = await validLegacyPreferenceUpload;
+    assert.equal(
+      preferenceUpload.status(),
+      200,
+      "invalid legacy appearance fields are omitted while valid choices still sync",
+    );
     const settingsTabs = settings.getByRole("tab");
     assert.deepEqual(
       (await settingsTabs.allTextContents()).map((label) => label.trim()),
@@ -757,19 +785,22 @@ test("studio settings browser ui", async ({
       sessionStorage.setItem(seedKey, "1");
     }, storageKey);
     await emptyPage.goto(legacyOrigin);
-    await emptyPage
-      .getByRole("button", { name: "Studio settings", exact: true })
-      .waitFor();
+    const emptySettingsButton = emptyPage.getByRole("button", {
+      name: "Studio settings",
+      exact: true,
+    });
+    if (!(await emptySettingsButton.isVisible())) {
+      await emptyPage
+        .getByRole("button", { name: "Toggle conversations", exact: true })
+        .click();
+      await expect(emptySettingsButton).toBeVisible();
+    }
     assert.equal(await emptyPage.locator(".chat-row").count(), 0);
-    const noChatSettings = await emptyPage
-      .getByRole("button", { name: "Studio settings", exact: true })
-      .click()
-      .then(() =>
-        emptyPage.getByRole("dialog", {
-          name: "Studio settings",
-          exact: true,
-        }),
-      );
+    await emptySettingsButton.click();
+    const noChatSettings = emptyPage.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
     await noChatSettings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();

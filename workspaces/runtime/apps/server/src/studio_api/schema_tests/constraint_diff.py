@@ -98,7 +98,22 @@ def _reachable_schema_names(document: JsonValue) -> set[str]:
 
 
 def _canonical(value: JsonValue) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(
+        _without_defaults(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def _without_defaults(value: JsonValue) -> JsonValue:
+    """Remove documentation-only default values from nested union schemas."""
+    if isinstance(value, list):
+        return [_without_defaults(child) for child in value]
+    if isinstance(value, dict):
+        return {
+            key: _without_defaults(child)
+            for key, child in value.items()
+            if key != "default"
+        }
+    return value
 
 
 def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
@@ -138,6 +153,21 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
             null_branches = [branch for branch in nullable_union
                              if isinstance(branch, dict) and branch.get("type") == "null"]
             concrete = [branch for branch in nullable_union if branch not in null_branches]
+            concrete_types = {
+                branch.get("type") for branch in concrete if isinstance(branch, dict)
+            }
+            if (
+                null_branches
+                and len(concrete) > 1
+                and concrete_types == {"integer", "number"}
+            ):
+                # Integer is already included by JSON Schema's number type.
+                # Compare the numeric branches as a nullable numeric union.
+                constraints["@nullable"] = True
+                constraints["@nullableBranch"] = [
+                    _canonical(branch) for branch in concrete
+                ]
+                nullable_union = None
             if null_branches and len(concrete) == 1 and isinstance(concrete[0], dict):
                 concrete_schema = resolve_ref(document, concrete[0])
                 if isinstance(concrete_schema, dict):
@@ -320,6 +350,19 @@ def constraint_changes(
         if not new_value:
             return "loosening"
         old_type, new_type = old_value.get("type"), new_value.get("type")
+        old_union = old_value.get("anyOf")
+        if old_type is None and new_type == "number" and isinstance(old_union, list):
+            old_branches = [branch for branch in old_union if isinstance(branch, dict)]
+            if {branch.get("type") for branch in old_branches} == {"integer", "number"}:
+                new_branch: dict[str, JsonValue] = {
+                    key: new_value[key]
+                    for key in ("type", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum")
+                    if key in new_value
+                }
+                return union_direction(
+                    [_canonical(branch) for branch in old_branches],
+                    [_canonical(new_branch)],
+                )
         if old_type != new_type:
             if old_type == "integer" and new_type == "number":
                 return "loosening"
@@ -595,7 +638,38 @@ def constraint_changes(
                 if removed:
                     record(tightenings, path, key, sorted(old, key=repr), sorted(new, key=repr))
                 continue
-            constraint_direction = classify(key, old, new)
+            constraint_direction = None
+            if (
+                key in {"@anyOf", "@nullableBranch"}
+                and isinstance(old, list)
+                and all(isinstance(branch, str) for branch in old)
+            ):
+                old_branches = [json.loads(branch) for branch in old if isinstance(branch, str)]
+                old_types = {
+                    branch.get("type") for branch in old_branches
+                    if isinstance(branch, dict)
+                }
+                candidate_is_numeric = new_schema.get("type") == "number"
+                branch_count_matches = (
+                    new is None if key == "@anyOf"
+                    else new == ["{}"]
+                )
+                if (
+                    old_types == {"integer", "number"}
+                    and candidate_is_numeric
+                    and branch_count_matches
+                ):
+                    new_branch: dict[str, JsonValue] = {
+                        key: new_schema[key]
+                        for key in ("type", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum")
+                        if key in new_schema
+                    }
+                    constraint_direction = union_direction(
+                        [_canonical(branch) for branch in old_branches],
+                        [_canonical(new_branch)],
+                    )
+            if constraint_direction is None:
+                constraint_direction = classify(key, old, new)
             if constraint_direction == "loosening":
                 record(loosenings, path, key, old, new)
             elif constraint_direction == "tightening":
