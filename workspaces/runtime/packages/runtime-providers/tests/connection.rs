@@ -1012,3 +1012,42 @@ fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
         );
     }
 }
+
+#[test]
+fn restored_request_preserves_original_deadline_and_prior_unknown() {
+    for unknown in [false, true] {
+        let mut session = state(false);
+        let ticket = RequestTicket {
+            generation: 9,
+            id: RequestId::Number(80),
+            method: Method::ModelList,
+        };
+        session
+            .restore_request(&ticket, None, 5, unknown)
+            .expect("valid recovery");
+        assert_eq!(session.request_deadline_ms(&ticket.id), Some(5));
+        assert_eq!(
+            session.next_deadline_ms(),
+            if unknown { None } else { Some(5) }
+        );
+        let (_, expired) = session.expire(20);
+        assert_eq!(expired.len(), usize::from(!unknown));
+        let actions = session
+            .receive_at(
+                Frame::Response {
+                    id: ticket.id,
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                },
+                4,
+            )
+            .expect("late delivery, early arrival");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Resolve {
+                outcome: RequestOutcome::Reply { late: false, .. },
+                ..
+            }
+        )));
+    }
+}

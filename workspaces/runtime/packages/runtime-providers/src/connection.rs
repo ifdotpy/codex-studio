@@ -201,6 +201,33 @@ impl SessionState {
         self.track_existing_request_until(id, method, thread_id, u64::MAX)
     }
 
+    /// Restore the original deadline and uncertainty, without restarting a timer.
+    pub fn restore_request(
+        &mut self,
+        ticket: &RequestTicket,
+        thread_id: Option<String>,
+        deadline_ms: u64,
+        unknown: bool,
+    ) -> Result<(), SessionError> {
+        if ticket.generation != self.generation {
+            return Err(SessionError::StaleGeneration);
+        }
+        self.track_existing_request_until(
+            ticket.id.clone(),
+            ticket.method,
+            thread_id,
+            deadline_ms,
+        )?;
+        if unknown {
+            self.book.mark_unknown(&ticket.id)?;
+        }
+        Ok(())
+    }
+
+    pub fn request_deadline_ms(&self, id: &RequestId) -> Option<u64> {
+        self.pending.get(id).map(|pending| pending.deadline_ms)
+    }
+
     fn track_existing_request_until(
         &mut self,
         id: RequestId,
