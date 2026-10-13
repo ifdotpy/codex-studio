@@ -16,6 +16,16 @@ pub(crate) fn reserve(
         .as_str()
         .ok_or(ToolRequestError::InvalidRequest("Invalid request identity"))?;
     let existing = records::get(tx, "runtime_tool_requests", id)?;
+    if existing.as_ref().is_some_and(|old| {
+        old["agent"] != candidate["agent"]
+            || old["epoch"] != candidate["epoch"]
+            || old["accountKey"] != candidate["accountKey"]
+            || old["threadId"] != candidate["threadId"]
+    }) {
+        return Err(ToolRequestError::InvalidRequest(
+            "Tool receipt belongs to another actor or turn",
+        ));
+    }
     let state = lifecycle::state(&candidate)?;
     let op = state
         .operation
