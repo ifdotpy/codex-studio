@@ -633,7 +633,13 @@ fn corpus(full: bool) {
             Err(error) => {
                 let location = case["expect_refusal"]
                     .as_str()
-                    .and_then(|value| value.strip_prefix("invalid stored object "))
+                    .and_then(|value| {
+                        value.strip_prefix("invalid stored object ").or_else(|| {
+                            value.strip_prefix(
+                                "database schema or migration marker is incompatible: Invalid stored object ",
+                            )
+                        })
+                    })
                     .unwrap_or_else(|| panic!("{id}: open Python-written state: {error}"))
                     .replacen(':', "/", 1)
                     .replace(

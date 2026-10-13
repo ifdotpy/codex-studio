@@ -21,6 +21,7 @@ The shared child includes `ChildSpec.inherited_lease` from `df91010e`
 `c10d7422` belongs to the later main-based batch merge and is deliberately absent.
 
 All Python-starting subsystem corpora include the canonical
-`runtime-services/tests/support/prepared_python.rs` helper from `bd9025a5`.
+`runtime-services/tests/support/prepared_python.rs` helper, deduplicated with
+base commit `2d25c682` when rebasing onto `4739426c`.
 The full corpus commands are collected in `just test-rust-runtime-corpora`;
 mutation manifests and their runner are manual-only tools and were not run here.
