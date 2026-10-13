@@ -51,6 +51,7 @@ pub enum WorkWrite {
 pub struct WorkWriteResult {
     pub record: Value,
     pub event_inserted: bool,
+    pub changed: bool,
 }
 
 pub fn write(
@@ -73,6 +74,7 @@ pub fn write(
         return Ok(WorkWriteResult {
             record,
             event_inserted: false,
+            changed: false,
         });
     }
     match command {
@@ -126,6 +128,7 @@ fn create(
     Ok(WorkWriteResult {
         record: view,
         event_inserted: false,
+        changed: true,
     })
 }
 
@@ -241,6 +244,7 @@ fn mutate(
                 return Ok(WorkWriteResult {
                     record: view,
                     event_inserted: false,
+                    changed: false,
                 });
             }
             if status == "accepted" {
@@ -324,6 +328,7 @@ fn mutate(
     Ok(WorkWriteResult {
         record: view,
         event_inserted: wake,
+        changed: true,
     })
 }
 

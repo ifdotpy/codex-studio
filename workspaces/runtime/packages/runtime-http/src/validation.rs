@@ -118,6 +118,7 @@ impl Registry {
             "PlanView",
             "QueueItem",
             "RequestRecordResponse",
+            "ResourceRef",
             "TaskDetailResponse",
             "TranscriptAsset",
             "WorkItem",
@@ -315,6 +316,10 @@ impl Registry {
     }
 
     pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
+        self.validate_component(schema, value)
+    }
+
+    pub(crate) fn validate_component(&self, schema: &str, value: &Value) -> bool {
         self.stored_schemas
             .get(schema)
             .is_some_and(|validator| validator.is_valid(value))

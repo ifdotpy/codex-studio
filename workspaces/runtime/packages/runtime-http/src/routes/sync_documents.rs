@@ -243,6 +243,9 @@ pub(crate) async fn push_preferences(
         .map_err(|_| ApiError::internal())??;
     let mut response = json!({"fields": merged});
     if !sync_entities.is_empty() {
+        state.event_wake.notify_one();
+    }
+    if !sync_entities.is_empty() {
         response["_syncEntities"] = Value::Array(
             sync_entities
                 .iter()
