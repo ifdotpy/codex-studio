@@ -894,30 +894,6 @@ pub fn request_digest(params: &Map<String, Value>) -> String {
 
 /// Existing catalog markers use sorted ASCII JSON with compact separators.
 pub fn catalog_digest(tools: &[ToolDefinition]) -> String {
-    fn compact(value: &Value) -> String {
-        match value {
-            Value::Array(items) => format!(
-                "[{}]",
-                items.iter().map(compact).collect::<Vec<_>>().join(",")
-            ),
-            Value::Object(fields) => {
-                let mut keys = fields.keys().collect::<Vec<_>>();
-                keys.sort();
-                format!(
-                    "{{{}}}",
-                    keys.into_iter()
-                        .map(|k| format!(
-                            "{}:{}",
-                            crate::event_write::python_json(&json!(k)),
-                            compact(&fields[k])
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            }
-            _ => crate::event_write::python_json(value),
-        }
-    }
     let catalog: Vec<Value> = tools
         .iter()
         .map(|tool| {
@@ -929,7 +905,9 @@ pub fn catalog_digest(tools: &[ToolDefinition]) -> String {
             Value::Object(fields)
         })
         .collect();
-    sha256_hex(compact(&json!(catalog)).as_bytes())
+    sha256_hex(
+        crate::event_write::python_json_with_separators(&json!(catalog), ",", ":").as_bytes(),
+    )
 }
 
 fn release_scope(s: &Snapshot, release: &Map<String, Value>, thread_id: Option<&str>) -> bool {

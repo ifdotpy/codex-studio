@@ -50,6 +50,11 @@ fn baseline() -> Value {
     serde_json::from_str(include_str!("thread_prepare/snapshot.json")).expect("snapshot")
 }
 fn merge(target: &mut Value, patch: &Value) {
+    // A presence-aware field becoming absent discards its former payload.
+    if patch.get("state") == Some(&json!("absent")) {
+        *target = patch.clone();
+        return;
+    }
     if let (Some(target), Some(patch)) = (target.as_object_mut(), patch.as_object()) {
         for (key, value) in patch {
             if let Some(old) = target.get_mut(key) {
@@ -127,6 +132,14 @@ fn python_thread_preparation_corpus() {
         }
         let s = snapshot(&value);
         let planned = plan(&s, "attempt", "ticket");
+        if let Some(expected_id) = case.get("expected_attempt_id") {
+            let a = attempt(planned.clone());
+            assert_eq!(
+                json!(a.attempt_id),
+                *expected_id,
+                "{name}: independent attempt identity"
+            );
+        }
         let mut current_value = value.clone();
         current_value["actor"]["prepare_attempt"] = json!("attempt");
         if let Some(change) = case.get("current") {
@@ -200,6 +213,18 @@ fn python_thread_preparation_corpus() {
                         .as_object_mut()
                         .expect("row")
                         .insert(key.clone(), value.clone());
+                }
+                for key in expected["external_remove"]
+                    .as_array()
+                    .expect("external removals")
+                {
+                    actual
+                        .as_object_mut()
+                        .expect("row")
+                        .remove(key.as_str().expect("key"));
+                }
+                if let Some(key) = case.get("removed_setting").and_then(Value::as_str) {
+                    assert!(actual.get(key).is_none(), "{name}: setting must be absent");
                 }
                 equal(name, "receipt_before", &actual, &expected["receipt_before"]);
                 if case.get("close").is_some() {
@@ -616,5 +641,21 @@ fn malformed_stored_catalog_family_never_panics() {
     assert_eq!(
         plan(&s, "attempt", "ticket"),
         Outcome::Refuse(Refusal::EmptyThreadIdentity)
+    );
+}
+
+#[test]
+fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
+    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated interpreter");
+    let result = Command::new(python)
+        .arg("-B")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
+        .arg("--boundary-test")
+        .output()
+        .expect("boundary test");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
     );
 }

@@ -6903,7 +6903,8 @@
       "settings": {
         "fast_mode": true
       }
-    }
+    },
+    "expected_attempt_id": "attempt"
   },
   {
     "name": "saved-empty-role",
@@ -8189,6 +8190,78 @@
       "connection_id": "connection",
       "thread_id": "thread",
       "release_id": "release"
+    }
+  },
+  {
+    "name": "settings-remove-daybreakEnabled",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": false
+        }
+      }
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "absent"
+        }
+      }
+    },
+    "removed_setting": "daybreakEnabled",
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "settings-remove-cyberAccessProgram",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "standard"
+        }
+      }
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "absent"
+        }
+      }
+    },
+    "removed_setting": "cyberAccessProgram",
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
     }
   }
 ]

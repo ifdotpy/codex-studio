@@ -33,6 +33,7 @@ SERVER = pathlib.Path(__file__).resolve().parents[4] / "apps/server"
 sys.path.insert(0, str(SERVER / "src"))
 import ast
 import copy
+import hashlib
 import concurrent.futures
 import contextlib
 import json
@@ -48,6 +49,15 @@ from codex_native_tools import digest
 from codex_native_errors import NativeRpcError
 
 
+def check_boundaries(runtime):
+    # Lock complete enclosing control flow, not only the selected statements.
+    expected = {'start': '78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca', 'notification': 'b1b8b9253c82ceb6ab0acf479f026db8a07e67d7fe4e944d84ec349bfc857b4d'}
+    for name, digest in expected.items():
+        node = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+        assert actual == digest, "Runtime control flow changed: re-derive the thread-preparation oracle boundaries before updating the digest"
+
+
 def projection_functions():
     """Compile unchanged statements from real callers, never Runtime.start.
 
@@ -56,6 +66,7 @@ def projection_functions():
     """
     tree = ast.parse((SERVER / "src/codex_runtime.py").read_text())
     runtime = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
+    check_boundaries(runtime)
     start = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == "start")
     selected = None
     for node in ast.walk(start):
@@ -84,6 +95,23 @@ def projection_functions():
 
 
 projected_turn, projected_close = projection_functions()
+if "--boundary-test" in sys.argv:
+    for name in ("start", "notification"):
+        tree = ast.parse((SERVER / "src/codex_runtime.py").read_text())
+        runtime = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
+        node = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        if name == "start":
+            node.body = [ast.If(test=ast.Constant(False), body=node.body, orelse=[])]
+        else:
+            close = next(n for n in ast.walk(node) if isinstance(n, ast.If)
+                         and any(isinstance(v, ast.Constant) and v.value == "thread/closed" for v in ast.walk(n.test)))
+            close.test = ast.Constant(False)
+        try:
+            check_boundaries(runtime)
+        except AssertionError:
+            continue
+        raise AssertionError("oracle accepted changed enclosing control flow: " + name)
+    raise SystemExit(0)
 
 
 def forbidden_runtime(*args, **kwargs):
@@ -276,6 +304,7 @@ def run(command):
                               artifacts=h.artifacts, catalog_digest=digest(h.tool_definitions(a)))
                 stored = h.agent(a["id"])
                 external_delta = {}
+                external_remove = []
                 if "current" in command:
                     current = command["current"]
                     h.snapshot = current
@@ -284,6 +313,9 @@ def run(command):
                     for key, value in current_actor.items():
                         if key not in initial_actor or value != initial_actor[key]:
                             external_delta[key] = value
+                    external_remove = sorted(initial_actor.keys() - current_actor.keys())
+                    for key in external_remove:
+                        stored.pop(key, None)
                     stored.update(external_delta)
                     h.closed = current["closed"]
                 h.put(h.connection, "agents", stored)
@@ -298,6 +330,7 @@ def run(command):
                             external_delta[key] = copy.deepcopy(value)
                 h.connection.commit()
                 result["external_delta"] = external_delta
+                result["external_remove"] = external_remove
                 result["receipt_before"] = h.agent(a["id"])
                 if command.get("receipt") is None:
                     result["settlement"] = "unknown"

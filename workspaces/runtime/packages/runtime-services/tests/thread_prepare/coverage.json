@@ -57,8 +57,8 @@
       "full": 5
     },
     "stale": {
-      "fast": 16,
-      "full": 16
+      "fast": 18,
+      "full": 18
     },
     "tools": {
       "fast": 7,
@@ -104,7 +104,7 @@
       "reason": "Preserve every Python preparation_settings field including presence-aware daybreakEnabled/cyberAccessProgram; additionally compare provider/isLead/needsTitle/claudeOptions, as required by the assigned frozen-settings guard."
     }
   ],
-  "normalization": "No request/patch/content normalization. Both Rust patches apply to an independent original stored actor, with complete before/after comparison; only external current/close observations are injected between patches. Clock and uid are injected effect boundaries.",
+  "normalization": "No request/patch/content normalization. Both Rust patches apply to an independent original stored actor, with complete before/after comparison; only external current/close observations are injected between patches. Clock and uid are injected effect boundaries. External observations include removals. AST projections verify enclosing-function digests before extraction; control-flow changes require re-deriving the boundary.",
   "defensiveFamilies": {
     "malformed-stored-catalog": {
       "differential": 15,
