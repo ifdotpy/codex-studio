@@ -20,11 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import SERVER_TESTS_ROOT, VM_GUEST_ROOT  # noqa: E402
 
 sys.path.insert(0, str(VM_GUEST_ROOT))
-from codex_host_exec_server import HostService
+import codex_host_exec_server
+from codex_host_exec_server import HostService, clone_tree
 from codex_host_exec import run_tool, tool_definition
 from host_exec import HostExec
 import host_exec_protocol
-from host_exec_protocol import HostExecError, conflicts, key, mapped, page, scan
+from host_exec_protocol import FRAME_LIMIT, HostExecError, conflicts, key, mapped, page, scan
 from host_exec_slot import HostSlotHandlers
 
 
@@ -108,15 +109,22 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             return await self.slots.agents.dispatch("context", "agent.context", {"agentId": agent})
         self.guest = HostExec(SimpleNamespace(state=self.state, host_context=host_context))
         self.guest.configure({"token": "a" * 64})
-        async def call(method, params, phase):
-            response = await self.host.request({"id": key(params["operationId"] + ":" + phase),
-                "method": method, "params": params, "token": "a" * 64})
+        self.calls = []
+        async def call(method, params, phase, timeout=300):
+            request = {"id": key(params["operationId"] + ":" + phase), "method": method, "params": params, "token": "a" * 64}
+            # The real channel refuses a larger request.
+            self.assertLessEqual(len(json.dumps(request)) + 1, FRAME_LIMIT)
+            self.calls.append(method)
+            response = await self.host.request(request)
             if "error" in response:
                 raise HostExecError(response["error"]["code"], response["error"]["message"])
             return response["result"]
         self.guest.call = call
         async def broker(method, params, phase):
-            return await self.slots.dispatch(key(params["operationId"] + phase), method, params)
+            result = await self.slots.dispatch(key(params["operationId"] + phase), method, params)
+            # The admin channel has the same frame limit.
+            self.assertLessEqual(len(json.dumps({"id": "x" * 64, "result": result})) + 1, FRAME_LIMIT)
+            return result
         self.guest.broker = broker
         self.events = []
         async def emit(event, value):
@@ -429,6 +437,146 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         await self.slots.dispatch("collect", "host.slot.collect",
                                   {**slot, "paths": ["chromium/x.cc", "keep/y", "main.swift"], "final": True})
         self.assertEqual(self.slots.collect_batches, [["main.swift"]])
+
+    def mac_project(self, files):
+        """The project folder on this Mac, as project.json names it."""
+        folder = self.root / "mac-project"
+        for name, data in files.items():
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(data)
+        record = self.state / "layr-projects" / "project"
+        record.mkdir(parents=True, exist_ok=True)
+        (record / "project.json").write_text(json.dumps({"projectId": "project", "source": str(folder)}))
+        return folder
+
+    async def test_a_new_slot_clones_the_cache_folder_and_sends_only_differences(self):
+        files = {"chromium/src/big.bin": os.urandom(3 * 1024 * 1024), "chromium/src/a.cc": b"int a = 1;\n",
+                 "chromium/src/.git/HEAD": b"ref: refs/heads/main\n"}
+        project = self.mac_project({**files, "chromium/src/out/Default/user.o": b"user build"})
+        self.project_settings({"slots": 1, "macOnly": ["chromium/src/out"]})
+        self.slots.caches = ["chromium"]
+        for name, data in files.items():
+            (self.line / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / name).write_bytes(data)
+        (self.line / "chromium/src/a.cc").write_text("int a = 2;\n")
+        first = await self.execute("prime-1", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"a.cc").read_text()=="int a = 2;\\n";'
+            'assert (s/"out/Default/user.o").read_text()=="user build";'
+            '(s/"out/Default/a.o").write_text("slot build")')
+        self.assertEqual(first["exitCode"], 0)
+        self.assertEqual([(row["path"], row["primed"]) for row in first["primed"]], [("chromium", True)])
+        # The clone has the same content, so only the changed file and main.swift travel.
+        self.assertEqual(first["transferredBytes"], len("int a = 2;\n") + len('print("Hello")\n'))
+
+        # A line without the cache folder leaves only Mac-only output in the slot ...
+        empty = self.root / "empty-line"
+        empty.mkdir()
+        (empty / "main.swift").write_text('print("Hello")\n')
+        self.another_line("empty", empty)
+        await self.execute("prime-2", 'print("no cache")', agent="empty")
+        (project / "chromium/src/out/Default/user.o").write_text("user build 2")
+        # ... and the next line with the folder clones it again and keeps the slot's own output.
+        again = await self.execute("prime-3", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"out/Default/a.o").read_text()=="slot build";assert (s/"out/Default/user.o").read_text()=="user build";'
+            'assert (s/"big.bin").stat().st_size==3*1024*1024')
+        self.assertEqual(again["exitCode"], 0)
+        self.assertEqual([(row["path"], row["primed"]) for row in again["primed"]], [("chromium", True)])
+        self.assertEqual(again["transferredBytes"], len("int a = 2;\n"))
+
+    async def test_a_failed_clone_falls_back_to_the_transfer(self):
+        files = {"chromium/a.cc": b"a" * 1000, "chromium/b.cc": b"b" * 2000}
+        self.mac_project(files)
+        self.slots.caches = ["chromium"]
+        for name, data in files.items():
+            (self.line / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / name).write_bytes(data)
+        with patch.object(codex_host_exec_server, "clone_tree", side_effect=OSError(45, "Operation not supported")):
+            result = await self.execute("no-clone", 'print("ok")')
+        self.assertEqual(result["exitCode"], 0)
+        self.assertFalse(result["primed"][0]["primed"])
+        self.assertIn("clone failed", result["primed"][0]["reason"])
+        self.assertEqual(result["transferredBytes"], 3000 + len('print("Hello")\n'))
+        self.assertEqual(list((self.state / "host-slots").rglob("prime")), [])
+
+    def test_clone_tree_copies_files_and_links_and_skips_special_files(self):
+        origin = self.root / "origin"
+        (origin / "a/b").mkdir(parents=True)
+        (origin / "a/b/file").write_bytes(b"content")
+        (origin / "a/b/file").chmod(0o751)
+        (origin / "link").symlink_to("a/b/file")
+        os.mkfifo(origin / "pipe")
+        total = clone_tree(origin, self.root / "copy")
+        self.assertEqual((self.root / "copy/a/b/file").read_bytes(), b"content")
+        self.assertEqual((self.root / "copy/a/b/file").stat().st_mode & 0o777, 0o751)
+        self.assertEqual(os.readlink(self.root / "copy/link"), "a/b/file")
+        self.assertFalse((self.root / "copy/pipe").exists())
+        self.assertEqual(total, (origin / "a/b/file").lstat().st_blocks * 512)
+
+    def test_the_hash_cache_reads_only_changed_files(self):
+        tree = self.root / "hashed"
+        for index in range(20):
+            (tree / "d").mkdir(parents=True, exist_ok=True)
+            (tree / "d" / ("f%02d" % index)).write_text("x%02d" % index)
+        hashes = {}
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        first = scan(tree, hashes=hashes)
+        self.assertEqual((digest.call_count, len(hashes)), (20, 20))
+        digest.reset_mock()
+        self.assertEqual(scan(tree, hashes=hashes), first)
+        self.assertEqual(digest.call_count, 0)
+        # The same size and new content: the stat key changes, so the file is read again.
+        (tree / "d/f03").write_text("y03")
+        os.utime(tree / "d/f05", ns=(1, 1))
+        changed = scan(tree, hashes=hashes)
+        self.assertEqual(digest.call_count, 2)
+        self.assertNotEqual(changed["d/f03"]["sha256"], first["d/f03"]["sha256"])
+        (tree / "d/f07").unlink()
+        scan(tree, hashes=hashes)
+        self.assertNotIn("d/f07", hashes)
+        # A skipped folder keeps its cached hashes.
+        scan(tree, ["d"], hashes)
+        self.assertEqual(len(hashes), 19)
+
+    def test_the_hash_cache_does_not_keep_a_file_that_just_changed(self):
+        tree = self.root / "racy"
+        tree.mkdir()
+        (tree / "new").write_text("now")
+        hashes = {}
+        scan(tree, hashes=hashes)
+        self.assertEqual(hashes, {})
+
+    async def test_a_warm_command_does_not_hash_unchanged_cache_files_again(self):
+        self.slots.caches = ["chromium"]
+        for index in range(60):
+            (self.line / "chromium" / ("f%02d.cc" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "chromium" / ("f%02d.cc" % index)).write_text("int f%02d;\n" % index)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        await self.execute("hash-1", 'print("cold")')
+        await asyncio.sleep(0.01)
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        result = await self.execute("hash-2", 'print("warm")')
+        self.assertEqual(result["exitCode"], 0)
+        # Without the caches the guest and the Mac would read the 60 cache files three times.
+        self.assertLess(digest.call_count, 10)
+
+    async def test_small_files_travel_in_batches_below_the_frame_limit(self):
+        for index in range(300):
+            (self.line / "small" / ("f%03d" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "small" / ("f%03d" % index)).write_text("x" * index)
+        for index in range(12):
+            (self.line / "medium" / ("m%02d" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "medium" / ("m%02d" % index)).write_bytes(os.urandom(250 * 1024))
+        (self.line / "large.bin").write_bytes(os.urandom(600 * 1024))
+        result = await self.execute("batched", 'import pathlib;assert len(list(pathlib.Path("small").iterdir()))==300;'
+            'assert pathlib.Path("large.bin").stat().st_size==600*1024')
+        self.assertEqual(result["exitCode"], 0)
+        sync = [method for method in self.calls if method.startswith("sync.")]
+        # 316 entries: a few batches, and the chunks of the one large file.
+        self.assertLess(len(sync), 20)
+        self.assertGreater(sync.count("sync.batch"), 1)
 
     def test_scan_skips_paths_and_pages_follow_the_cursor(self):
         tree = self.root / "tree"

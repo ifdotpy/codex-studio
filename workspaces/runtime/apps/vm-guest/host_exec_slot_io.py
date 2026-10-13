@@ -12,9 +12,11 @@ import subprocess
 import sys
 import tempfile
 
-from host_exec_protocol import CHUNK, HostExecError, inside, relative, require, scan
+from host_exec_protocol import CHUNK, HostExecError, atomic, inside, load_hashes, relative, require, scan
 
 EXPORT_MARKER = ".layr-export.json"
+# A batch read returns at most this many bytes of file content.
+BATCH_BYTES = 4 * 1024 * 1024
 
 
 def _entry(path: Path):
@@ -111,11 +113,33 @@ def collect(params):
     return {"copied": copied, "conflicts": conflicts}
 
 
+def read_many(items):
+    """Small files of a batch transfer: path -> base64 content."""
+    files, total = {}, 0
+    for item in items:
+        path = inside(Path(item["root"]), item["path"], leaf=True)
+        require(path.is_file() and not path.is_symlink(), "The source is not a regular file: " + item["path"])
+        data = path.read_bytes()
+        total += len(data)
+        require(total <= BATCH_BYTES, "The source batch exceeds its limit")
+        files[item["path"]] = base64.b64encode(data).decode()
+    return {"files": files}
+
+
 def run(params):
-    root = Path(params["root"])
     action = params["action"]
+    if action == "read-many":
+        return read_many(params["items"])
+    root = Path(params["root"])
     if action == "manifest":
-        return {"entries": scan(root, params.get("skip", []))}
+        if not params.get("hashes"):
+            return {"entries": scan(root, params.get("skip", []))}
+        # The line owner's hash cache: an unchanged file is not read again.
+        cache = Path(params["hashes"])
+        hashes = load_hashes(cache)
+        entries = scan(root, params.get("skip", []), hashes)
+        atomic(cache, hashes)
+        return {"entries": entries}
     if action == "collect":
         return collect(params)
     if action == "clear":

@@ -88,12 +88,21 @@ class HostSlotHandlers:
         require(child.returncode == 0, "The slot file helper failed", "outcome_unknown")
         return dict(result["result"])
 
+    def hash_cache(self, context: dict[str, Any], root: Path) -> str:
+        """The line owner's hash cache file for one scanned folder. The folder of the agent above it
+        is root's, so the owner cannot replace the cache folder with a link."""
+        folder = self.root / key(context["projectId"]) / key(context["agentId"]) / "hash-cache"
+        folder.mkdir(exist_ok=True, mode=0o700)
+        os.chown(folder, context["uid"], context["gid"], follow_symlinks=False)
+        return str(folder / (key(str(root)) + ".json"))
+
     async def target(self, context: dict[str, Any], source: Path, parent: Path, manifest_path: Path) -> dict[str, Any]:
         """What the Mac slot must hold: the exported state and the line's cache folders, without the
         Mac-only paths. It is saved for the later pages."""
         paths = self.slot_paths(parent)
         caches, mac_only = paths["caches"], paths["macOnly"]
-        entries = (await self.io(context, {"action": "manifest", "root": str(source), "skip": mac_only}))["entries"]
+        entries = (await self.io(context, {"action": "manifest", "root": str(source), "skip": mac_only,
+                                           "hashes": self.hash_cache(context, source)}))["entries"]
         entries.pop(EXPORT_MARKER, None)
         line = Path(context["path"])
         for cache in caches:
@@ -105,7 +114,8 @@ class HostSlotHandlers:
             for size in range(1, len(parts) + 1):
                 entries.setdefault("/".join(parts[:size]), {"kind": "directory"})
             skip = [item[len(cache) + 1:] for item in mac_only if item.startswith(cache + "/")]
-            found = (await self.io(context, {"action": "manifest", "root": str(line / cache), "skip": skip}))["entries"]
+            found = (await self.io(context, {"action": "manifest", "root": str(line / cache), "skip": skip,
+                                             "hashes": self.hash_cache(context, line / cache)}))["entries"]
             entries.update({cache + "/" + path: entry for path, entry in found.items()})
         # The Mac keeps the folders above a Mac-only path, so the slot holds them for every line.
         for item in mac_only:
@@ -187,7 +197,14 @@ class HostSlotHandlers:
             return result
         if method == "host.slot.read":
             # A cache file comes from the line folder; the slot folder has no cache files.
-            root = context["path"] if under(params["path"], self.slot_paths(parent)["caches"]) else str(source)
+            caches = self.slot_paths(parent)["caches"]
+            if "paths" in params:
+                names = params["paths"]
+                require(isinstance(names, list) and 0 < len(names) <= 1024, "Invalid source batch")
+                items = [{"root": context["path"] if under(relative(name), caches) else str(source), "path": name}
+                         for name in names]
+                return await self.io(context, {"action": "read-many", "items": items})
+            root = context["path"] if under(params["path"], caches) else str(source)
             return await self.io(context, {**params, "root": root, "action": "read"})
         if method in {"host.slot.apply", "host.slot.artifact"}:
             if method == "host.slot.artifact":
@@ -216,7 +233,8 @@ class HostSlotHandlers:
             # Cache folders and Mac-only paths never return to the line.
             paths_of = self.slot_paths(parent)
             all_paths = [path for path in all_paths if not under(path, paths_of["caches"] + paths_of["macOnly"])]
-            entries = (await self.io(context, {"action": "manifest", "root": str(source)}))["entries"]
+            entries = (await self.io(context, {"action": "manifest", "root": str(source),
+                                               "hashes": self.hash_cache(context, source)}))["entries"]
             require(not conflicts(list(entries)), "The guest slot names conflict", "name_conflict")
             require(held.exists(), "The slot holds no known state", "lease_lost")
             report = await self.io(context, {"action": "collect", "root": str(source), "line": context["path"],
