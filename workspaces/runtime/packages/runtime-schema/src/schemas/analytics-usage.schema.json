@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "AnalyticsTokenEnvelope": {
+      "additionalProperties": true,
+      "properties": {
+        "last": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelContextWindow": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Modelcontextwindow"
+        },
+        "total": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "AnalyticsTokenEnvelope",
+      "type": "object"
+    },
+    "AnalyticsTokens": {
+      "additionalProperties": true,
+      "properties": {
+        "cacheWriteInputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cachewriteinputtokens"
+        },
+        "cachedInputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cachedinputtokens"
+        },
+        "inputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Inputtokens"
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Outputtokens"
+        },
+        "reasoningOutputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reasoningoutputtokens"
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Totaltokens"
+        }
+      },
+      "title": "AnalyticsTokens",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "agentId": {
+      "title": "Agentid",
+      "type": "string"
+    },
+    "at": {
+      "minimum": 0,
+      "title": "At",
+      "type": "number"
+    },
+    "counterDomain": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Counterdomain"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "last": {
+      "$ref": "#/$defs/AnalyticsTokens"
+    },
+    "modelContextWindow": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Modelcontextwindow"
+    },
+    "raw": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsTokenEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "responseId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Responseid"
+    },
+    "total": {
+      "$ref": "#/$defs/AnalyticsTokens"
+    }
+  },
+  "required": ["id", "agentId", "at", "total", "last"],
+  "title": "AnalyticsUsage",
+  "type": "object"
+}

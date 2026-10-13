@@ -1,0 +1,89 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "allowedSourceThreadIds": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1024,
+      "title": "Allowedsourcethreadids",
+      "type": "array"
+    },
+    "effort": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Effort"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Model"
+    },
+    "noticeAssociation": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Noticeassociation"
+    },
+    "pendingUsage": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pendingusage"
+    },
+    "threadId": {
+      "title": "Threadid",
+      "type": "string"
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnid"
+    },
+    "window": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Window"
+    }
+  },
+  "required": ["threadId"],
+  "title": "AnalyticsContext",
+  "type": "object"
+}

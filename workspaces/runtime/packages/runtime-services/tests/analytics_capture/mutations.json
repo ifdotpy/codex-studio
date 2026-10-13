@@ -1,0 +1,90 @@
+[
+  {
+    "id": "checkpoint-cas",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+    "witness": "restart_after_ack_loss_retains_exact_effects_and_cursor",
+    "edits": [
+      {
+        "before": "if current != self.previous {",
+        "after": "if false && current != self.previous {"
+      }
+    ]
+  },
+  {
+    "id": "checkpoint-effects",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+    "witness": "full_tail_import_matches_real_python_rows_and_checkpoint",
+    "edits": [
+      {
+        "before": "decision.apply(tx)?;",
+        "after": "let _ = &decision;"
+      }
+    ]
+  },
+  {
+    "id": "partial-line",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+    "witness": "partial_tail_and_changed_anchor_never_acknowledge_unread_bytes",
+    "edits": [
+      {
+        "before": "partial = true;\n            break;",
+        "after": "partial = true;"
+      }
+    ]
+  },
+  {
+    "id": "anchor-continuity",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+    "witness": "partial_tail_and_changed_anchor_never_acknowledge_unread_bytes",
+    "edits": [
+      {
+        "before": "&& anchor_at(&mut reader, offset)? != anchor",
+        "after": "&& false && anchor_at(&mut reader, offset)? != anchor"
+      }
+    ]
+  },
+  {
+    "id": "active-fairness",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history_schedule.rs",
+    "witness": "active_import_quota_notification_and_timer_budget",
+    "edits": [
+      {
+        "before": "const ACTIVE_QUOTA: usize = 8;",
+        "after": "const ACTIVE_QUOTA: usize = usize::MAX;"
+      }
+    ]
+  },
+  {
+    "id": "native-counter-reset",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
+    "witness": "real_python_capture_rows_match_complete_rust_outputs",
+    "edits": [
+      {
+        "before": ".is_some_and(|(a, b)| a < b)",
+        "after": ".is_some_and(|(a, b)| a > b)"
+      }
+    ]
+  },
+  {
+    "id": "live-failure-authority",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
+    "witness": "real_python_capture_rows_match_complete_rust_outputs",
+    "edits": [
+      {
+        "before": "if !previous\n                    || incoming",
+        "after": "if true || !previous\n                    || incoming"
+      }
+    ]
+  },
+  {
+    "id": "stored-validation",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/analytics_capture.rs",
+    "witness": "checked_history_identity_and_state_check_refuse_malformed_rows",
+    "edits": [
+      {
+        "before": ".map_err(StoreError::SchemaValidation)?\n        {",
+        "after": ".map_err(StoreError::SchemaValidation)?\n            && false\n        {"
+      }
+    ]
+  }
+]
