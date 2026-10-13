@@ -17,6 +17,7 @@ pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,
 };
+pub use repositories::analytics_capture;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };

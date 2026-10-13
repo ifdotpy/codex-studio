@@ -4,6 +4,7 @@ pub mod agent_management;
 pub(crate) mod agent_move;
 pub(crate) mod agents;
 pub mod analytics;
+pub mod analytics_capture;
 pub(crate) mod checkpoints;
 pub(crate) mod context_repair;
 pub(crate) mod coordination;

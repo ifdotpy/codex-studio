@@ -74,6 +74,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     tables.extend(crate::repositories::federation_messaging::check_state(
         &connection,
     )?);
+    tables.extend(crate::analytics_capture::check_state_readonly(state_dir)?);
     Ok(StateCheckReport { tables })
 }
 
