@@ -57,7 +57,10 @@ impl CallbackSnapshot {
     pub fn from_record(raw: &str, context: &CallbackContext) -> Result<Self, CallbackError> {
         let actor = system_reads::decode("runtime_agents", &context.agent, raw)?;
         if actor["epoch"].as_u64() != Some(context.epoch)
-            || actor["accountKey"].as_str().unwrap_or("default") != context.account
+            || actor
+                .get("accountKey")
+                .map_or(Some("default"), Value::as_str)
+                != Some(context.account.as_str())
             || actor["threadId"] != context.thread
             || actor["turnId"] != context.turn
             || actor

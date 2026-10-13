@@ -410,6 +410,11 @@ fn provider_callbacks_malformed_and_foreign_records_are_refused() {
         );
     }
     let mut prior_turn = template().value["agents"][0].clone();
+    prior_turn.as_object_mut().unwrap().remove("accountKey");
+    assert!(CallbackSnapshot::from_record(&prior_turn.to_string(), &context).is_ok());
+    prior_turn["accountKey"] = Value::Null;
+    assert!(CallbackSnapshot::from_record(&prior_turn.to_string(), &context).is_err());
+    prior_turn.as_object_mut().unwrap().remove("accountKey");
     prior_turn["turnEpoch"] = json!(2);
     assert!(CallbackSnapshot::from_record(&prior_turn.to_string(), &context).is_err());
     let foreign = template().value["agents"][2]["id"].as_str().unwrap();
