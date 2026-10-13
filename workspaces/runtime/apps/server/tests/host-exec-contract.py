@@ -551,6 +551,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         (record / "project.json").write_text(json.dumps({"projectId": "project", "source": str(folder)}))
         return folder
 
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
     async def test_a_new_slot_clones_the_cache_folder_and_sends_only_differences(self):
         files = {"chromium/src/big.bin": os.urandom(3 * 1024 * 1024), "chromium/src/a.cc": b"int a = 1;\n",
                  "chromium/src/.git/HEAD": b"ref: refs/heads/main\n"}
@@ -600,6 +601,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["transferredBytes"], 3000 + len('print("Hello")\n'))
         self.assertEqual(list((self.state / "host-slots").rglob("prime")), [])
 
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
     def test_clone_tree_copies_files_and_links_and_skips_special_files(self):
         origin = self.root / "origin"
         (origin / "a/b").mkdir(parents=True)
