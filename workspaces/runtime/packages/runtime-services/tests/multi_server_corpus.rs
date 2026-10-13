@@ -279,6 +279,7 @@ fn multi_server_corpus_witness() {
     python_receipt_states_preserve_completed_results_and_uncertainty();
     nonce_capacity_is_rate_limited_without_committing_access_writes();
     signatures_precede_owner_lookups_and_probes();
+    queried_status_crosses_service_dispatch();
     fractional_invitation_boundary_matches_python();
 }
 
@@ -663,6 +664,46 @@ fn fractional_invitation_boundary_matches_python() {
             assert_eq!(result.expect("not expired")["paired"], true);
         }
     }
+}
+
+fn queried_status_crosses_service_dispatch() {
+    let data = &fixture().data;
+    let case = data["auth"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "status-query")
+        .expect("queried status");
+    let (_root, store) = store();
+    let lookup = CountingOwner::new(case.clone());
+    let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+        data["identity"].clone(),
+        lookup,
+    )
+    .expect("boundary");
+    let result = boundary
+        .handle_incoming(
+            &store,
+            &request(case).expect("signed target"),
+            "100.64.0.2",
+            &[],
+            case["now"].as_f64().expect("clock"),
+        )
+        .expect("dispatch by path after checking full signed target");
+    assert_eq!(result, data["identity"]);
+    let stored: String = store
+        .read()
+        .expect("read")
+        .query_row(
+            "SELECT record FROM runtime_access_clients WHERE id='peer-server'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("client");
+    assert_eq!(
+        serde_json::from_str::<Value>(&stored).expect("client JSON"),
+        case["expected"]["clientWrite"]
+    );
 }
 
 fn signatures_precede_owner_lookups_and_probes() {
