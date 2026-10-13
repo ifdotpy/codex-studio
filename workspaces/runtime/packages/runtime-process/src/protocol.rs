@@ -21,8 +21,20 @@ pub trait ProviderProcess: Send {
     fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)>;
     fn acknowledged_cursor(&self) -> u64;
     fn generation(&self) -> u64;
+    /// Whether this attachment reused an already-running supervisor child.
+    fn resumed(&self) -> bool {
+        false
+    }
+    /// Persist that the caller has durably handled the complete contiguous
+    /// journal prefix through this cursor.
     fn acknowledge(&mut self, cursor: u64) -> io::Result<()>;
     fn stop(&mut self) -> io::Result<()>;
+    /// Interrupt blocked reads or writes before bounded worker shutdown.
+    /// Implementations with cancellable transports should close the transport;
+    /// the default keeps existing in-memory implementations source compatible.
+    fn cancel(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Backend identity sent in the supervisor handshake.

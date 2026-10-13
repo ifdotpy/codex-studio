@@ -66,7 +66,14 @@ impl DisposableSupervisor {
             owned_children: Vec::new(),
         };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !harness.root.join(SOCKET).exists() {
+        loop {
+            if harness.root.join(SOCKET).exists()
+                && let Ok(mut client) =
+                    SupervisorClient::connect(harness.root.join(SOCKET), harness.identity())
+                && client.health(Default::default()).is_ok()
+            {
+                break;
+            }
             assert!(
                 Instant::now() < deadline,
                 "supervisor socket startup timed out"
@@ -173,7 +180,9 @@ while True:
             }
             assert!(
                 Instant::now() < deadline,
-                "drop proxy socket startup timed out"
+                "drop proxy socket startup timed out: supervisor log: {}; proxy log: {}",
+                fs::read_to_string(self.root.join("supervisor.log")).unwrap_or_default(),
+                fs::read_to_string(self.root.join("drop-proxy.log")).unwrap_or_default()
             );
             thread::yield_now();
         }
@@ -324,17 +333,25 @@ fn await_notification(session: &mut ProviderSession, expected: &str) -> u64 {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         let (event, cursor) = session.receive_event().unwrap();
-        if let ProviderSessionEvent::Inbound(Inbound::Notification(Frame::UnknownMethod(note))) =
-            event
-            && note.method == expected
-        {
-            return cursor.expect("supervisor frame must include its journal cursor");
+        match event {
+            ProviderSessionEvent::Inbound(Inbound::Notification(Frame::UnknownMethod(note)))
+                if note.method == expected =>
+            {
+                return cursor.expect("supervisor frame must include its journal cursor");
+            }
+            ProviderSessionEvent::OrphanReply { .. } => {
+                if let Some(cursor) = cursor {
+                    session.acknowledge_handled(cursor).unwrap();
+                }
+            }
+            _ => {}
         }
     }
     panic!("notification {expected} was not delivered");
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn provider_session_defers_initialization_notifications_and_reattaches_backlog() {
     let mut harness = DisposableSupervisor::new();
     let workspace = harness.root.join("provider-workspace");
@@ -364,8 +381,9 @@ fn provider_session_defers_initialization_notifications_and_reattaches_backlog()
         first.handled_cursor() < cursor,
         "consumer event cannot be acked before settlement"
     );
-    first.acknowledge_handled(cursor).unwrap();
-    assert!(first.handled_cursor() >= cursor);
+    // Runtime state committed this notification, but its ACK has not reached
+    // the supervisor when the process connection is lost.
+    launch.lock().unwrap().handled_cursor = cursor;
     let mut client = harness.client();
     let status = client
         .status(HandleRequest {
@@ -395,18 +413,76 @@ fn provider_session_defers_initialization_notifications_and_reattaches_backlog()
             .environment
             .insert("CODEX_AGENTS_BACKEND_ID".into(), "new-backend".into());
     }
-    let mut second = connect(&factory, &handle);
+    let resumed = factory.start_or_reattach(&handle).unwrap();
+    assert!(
+        resumed.acknowledged_cursor() >= cursor,
+        "persisted handled cursor must be installed before the reader starts"
+    );
+    let mut config = ProviderSessionConfig::new();
+    config.request_timeout_ms = 5_000;
+    let mut second = ProviderSession::connect(resumed, config).unwrap();
     assert_eq!(second.generation(), 1);
     let backlog_cursor = await_notification(&mut second, "test/backlog");
     second.acknowledge_handled(backlog_cursor).unwrap();
     assert!(second.handled_cursor() >= backlog_cursor);
     second.close().unwrap();
 
+    let third = connect(&factory, &handle);
+    assert_eq!(third.generation(), 1);
+    third.close().unwrap();
+
     let methods = fs::read_to_string(audit).unwrap();
     assert_eq!(
         methods.lines().collect::<Vec<_>>(),
         ["initialize", "initialized", "trigger"]
     );
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn retained_child_environment_change_fails_closed() {
+    let mut harness = DisposableSupervisor::new();
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let handle = ProviderHandle::for_account("non-linux-environment-change");
+    let launch = Arc::new(Mutex::new(launch_spec(
+        &workspace,
+        &workspace.join("unused"),
+        false,
+    )));
+    let resolver_launch = Arc::clone(&launch);
+    let expected = handle.clone();
+    let factory = SupervisorProviderProcessFactory::new(
+        harness.identity(),
+        move |actual: &ProviderHandle| {
+            if actual != &expected {
+                return Err("unexpected provider handle".into());
+            }
+            Ok(resolver_launch
+                .lock()
+                .map_err(|_| "launch resolver poisoned")?
+                .clone())
+        },
+    );
+    let mut first = connect(&factory, &handle);
+    let status = harness
+        .client()
+        .status(HandleRequest {
+            handle: SupervisorHandle(handle.as_str().to_owned()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    harness.own_child(status.pid);
+    first.close().unwrap();
+    launch
+        .lock()
+        .unwrap()
+        .environment
+        .insert("PATH".into(), "/changed/path".into());
+    assert!(matches!(
+        factory.start_or_reattach(&handle),
+        Err(studio_runtime_process::ProviderFactoryError::Launch)
+    ));
 }
 
 #[test]

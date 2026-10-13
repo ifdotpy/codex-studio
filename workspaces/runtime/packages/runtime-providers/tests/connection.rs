@@ -79,7 +79,7 @@ fn initialize_handshake_and_python_caller_request_shapes() {
 }
 
 #[test]
-fn injected_deadline_marks_all_pending_unknown_and_late_reply_is_positive_evidence() {
+fn injected_deadline_marks_only_one_request_unknown_and_late_reply_is_positive_evidence() {
     let mut session = state(false);
     let (first, _) = session
         .submit(Method::TurnStart, json!({}), 0, 5, None, false)
@@ -103,8 +103,9 @@ fn injected_deadline_marks_all_pending_unknown_and_late_reply_is_positive_eviden
                 }
             ))
             .count(),
-        2
+        1
     );
+    assert_eq!(session.lifecycle(), Lifecycle::Ready);
     let late = session
         .receive(Frame::Response {
             id: first.id,
