@@ -775,6 +775,7 @@ class ServerSuiteRunner(unittest.TestCase):
                   mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
                   mock.patch.object(RUNNER, "_memory_scratch_root", side_effect=memory_root),
                   mock.patch.object(RUNNER, "TEST_TMP_ROOT", disk_root),
+                  mock.patch.object(RUNNER, "TMP_ROOT_OVERRIDE", None),
                   mock.patch.object(RUNNER, "run_process", execute)):
                 runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                     [("one.py", "safe")], set(), 1, 1, execute=execute,
