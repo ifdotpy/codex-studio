@@ -39,35 +39,32 @@ SCHEMA_EXCEPTIONS = {
         "returns an unknown-action error. It has no accepted request contract."
     ),
     ("studio_api.sync.models.DraftPushRequest", "validate_identities"): (
-        "The payload is JSON serialized inside a string, so its parsed identity must "
-        "match the row key. The smallest declarative form is to send the payload as "
-        "an object and constrain its identity fields alongside the row id."
+        "The draft payload is JSON serialized inside a string, so JSON Schema cannot "
+        "inspect its device/session/id fields and compare them with the row key. The "
+        "Rust route validates the decoded value before any draft write."
     ),
     ("studio_api.sync.models.DraftPushRow", "validate_payload"): (
-        "The request embeds DraftPayload as serialized JSON text. The smallest "
-        "declarative form is a typed object payload instead of a JSON string."
+        "The request embeds DraftPayload as serialized JSON text, which JSON Schema "
+        "cannot parse. The Rust route validates the decoded payload before any write."
     ),
     ("studio_api.sync.models.DraftPushRow", "validate_assumed_payload"): (
-        "The request embeds arbitrary JSON as serialized text. The smallest "
-        "declarative form is a JSON value payload instead of a JSON string."
+        "The request embeds arbitrary JSON as serialized text, which JSON Schema "
+        "cannot parse. The Rust route validates the decoded payload before any write."
     ),
     ("studio_api.sync.preferences.UiPreferencesDto", "validate_fields"): (
-        "Preference keys select different value schemas and scopes, a cross-field "
-        "condition. The smallest declarative form is a discriminated preference "
-        "entry union with typed key and value fields."
+        "The dynamic map key is itself encoded JSON and selects a value schema. JSON "
+        "Schema cannot decode that key and apply the selected value schema; the Rust "
+        "route validates the map before writing."
     ),
     ("studio_api.sync.preferences.PreferencePushRequest", "validate_scope"): (
-        "Whether a key belongs to a scope is cross-field. The smallest declarative "
-        "form is a discriminated union with scope-specific key patterns."
+        "The scope rule depends on the first value in a JSON-encoded map key. JSON "
+        "Schema cannot decode property names as JSON; the Rust route validates the "
+        "key/scope relation before writing."
     ),
     ("studio_api.sync.preferences.PreferencePushRequest", "validate_fields"): (
-        "Preference map keys choose different field and value rules. The smallest "
-        "declarative form is a typed preference-entry union with key and value "
-        "properties instead of a dynamically keyed map."
-    ),
-    ("studio_api.work.models.QueueCancelBody", "has_message_identity"): (
-        "At least one of id and message_id is required. The smallest declarative "
-        "form is anyOf with each property required."
+        "Preference map keys choose different field and value rules and are encoded "
+        "JSON. JSON Schema cannot decode them; the Rust route validates the map "
+        "before writing."
     ),
     ("studio_api.work.models.QueueEditBody", "has_message_identity"): (
         "At least one of id and message_id is required. The smallest declarative "
@@ -77,22 +74,26 @@ SCHEMA_EXCEPTIONS = {
         "Identity is required and send_now also requires request_id. The smallest "
         "declarative form is if/then plus anyOf required properties."
     ),
-    ("studio_api.agents.models.RenameRequest", "smart_rename_identity"): (
-        "A generated name requires request_id when name is absent. The smallest "
-        "declarative form is dependentRequired."
-    ),
     ("studio_api.work.models.RuleBody", "validate_save_kind"): (
-        "Save requirements depend on rule kind: low_workers forbids command; file "
-        "requires a non-empty path and is the only kind that supports livenessCommand; "
-        "when at is omitted it defaults to the current time plus intervalSeconds, and "
-        "the resulting date must be within the next year. These cross-field and "
-        "time-dependent rules are enforced by the RuleBody model validator and rule handler."
+        "When at is omitted it defaults to the current time plus intervalSeconds, and "
+        "the resulting date must be within the next year. A static JSON Schema cannot "
+        "express this moving time window; the Rust handler checks explicit at values "
+        "before opening a write transaction. Kind-specific command and path rules "
+        "are declared by RuleBody's conditional JSON Schema."
     ),
     ("studio_api.voice.models.VoiceRecordRequest", "validate_record_payload"): (
         "Payload and text requirements depend on kind and nested payload values. "
         "The smallest declarative form is a kind-discriminated record union with "
         "typed payload models."
     ),
+}
+
+# Conditional JSON Schema rules mirror these named model validators. Keep the
+# pairing explicit so model_config metadata does not become an unchecked
+# schema-only constraint.
+_SCHEMA_VALIDATOR_PAIRS = {
+    ("studio_api.agents.models.RenameRequest", "smart_rename_identity"): {"if", "else"},
+    ("studio_api.work.models.QueueCancelBody", "has_message_identity"): {"if", "else"},
 }
 
 # Handler coverage is manual: this script does not detect an unlisted handler
@@ -294,8 +295,15 @@ def _validator_findings(model: type[BaseModel]) -> list[dict[str, str]]:
                 "model": key[0],
                 "name": name,
             }
+            schema_extra = model.model_config.get("json_schema_extra")
             if reason is not None:
                 finding["exception"] = reason
+            elif (
+                key in _SCHEMA_VALIDATOR_PAIRS
+                and isinstance(schema_extra, dict)
+                and _SCHEMA_VALIDATOR_PAIRS[key].issubset(schema_extra)
+            ):
+                continue
             findings.append(finding)
     return findings
 
@@ -345,6 +353,8 @@ def _json_schema_extra_findings(
                 continue
             for keyword in node.keywords:
                 if keyword.arg != "json_schema_extra":
+                    continue
+                if isinstance(node.func, ast.Name) and node.func.id == "ConfigDict":
                     continue
                 uses += 1
                 if not isinstance(keyword.value, ast.Dict):

@@ -159,7 +159,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         before = work_state_snapshot(self.backend.state)
         for body in (
-            {"agent": self.agent_id, "action": "cancel"},
+            {"agent": self.agent_id, "action": "cancel", "id": None},
             {"agent": self.agent_id, "action": "send_now", "message_id": "python-queue-1"},
         ):
             invalid_queue = self.backend.request(
@@ -177,6 +177,16 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     {"error": f"Not implemented: requires {dependency}"},
                 )
                 self.assertEqual(work_state_snapshot(self.backend.state), before)
+
+    def test_cancel_without_message_identity_is_refused_without_writing(self):
+        before = work_state_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST", "/api/queue",
+            body={"agent": self.agent_id, "action": "cancel", "id": None},
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(work_state_snapshot(self.backend.state), before)
 
     def test_reads_refuse_deleted_agents(self):
         state_file = self.backend.state / "canvas.sqlite3"

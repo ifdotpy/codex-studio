@@ -19,28 +19,34 @@ if str(PYTHON_SRC) not in __import__("sys").path:
     __import__("sys").path.insert(0, str(PYTHON_SRC))
 CORPUS_GENERATOR = ROOT / "workspaces/runtime/packages/runtime-http/tests/generate_openapi_request_corpus.py"
 MARKER = "RUST_HTTP_GENERATED_CORPUS="
-# Every entry is an exact generated case. Temporary schema/model differences expire
-# at the next schema-tightening remeasurement; route rules remain tied to these cases.
-_EXPECTED_DIRECTIONS = {
-            ("rename_api_rename_post", "name:type:NoneType", "rust_accept_python_reject"):
-        "permanent route rule: Python requires a name unless request_id is present",
-    ("push_drafts_api_sync_drafts_post", "rows:maxItems:below", "rust_accept_python_reject"):
-        "permanent route rule: draft payload identity is cross-field validated",
-    ("push_preferences_api_sync_preferences_post", "fields:compound:2", "rust_accept_python_reject"):
-        "permanent route rule: preference key and scope are cross-field validated",
-    ("queue_action_api_queue_post", "id:type:NoneType", "rust_accept_python_reject"):
-        "permanent Python model rule: studio_api.work.models.QueueCancelBody.has_message_identity",
-    **{
-        ("update_rules_api_rules_post", label, "rust_accept_python_reject"):
-        "permanent Python model rule: studio_api.work.models.RuleBody.validate_save_kind"
-        for label in (
-            "at:type:int", "at:type:float", "at:lax:18446744073709551616",
-            "at:lax:1267650600228229401496703205376", "at:lax:1.5",
-            "at:minimum:below", "at:minimum:above", "at:maximum:below",
-            "at:maximum:above", "at:maximum:equal",
-        )
-    },
+# Cross-runtime acceptance exceptions are either predicted opaque-value
+# precision cases or handler rules proven by the named HTTP contract suites.
+_EXPECTED_DIRECTIONS: dict[tuple[str, str, str], str] = {}
+# These checks run after extraction in the Rust route, so the echo-handler
+# differential cannot see their refusal. The named HTTP contract suites below
+# exercise the real routes and assert full relevant-state snapshots.
+_HANDLER_VALIDATION_CASES = {
+    ("update_rules_api_rules_post", label): (
+        "studio_api.work.models.RuleBody.validate_save_kind",
+        "rust-rules-http-contract.py",
+    )
+    for label in (
+        "at:type:int", "at:type:float", "at:lax:18446744073709551616",
+        "at:lax:1267650600228229401496703205376", "at:lax:1.5",
+        "at:minimum:below", "at:minimum:above", "at:maximum:below",
+        "at:maximum:above", "at:maximum:equal",
+    )
 }
+_HANDLER_VALIDATION_CASES.update({
+    ("push_drafts_api_sync_drafts_post", "rows:maxItems:below"): (
+        "studio_api.sync.models.DraftPushRow.validate_payload / DraftPushRequest.validate_identities",
+        "rust-sync-documents-http-contract.py",
+    ),
+    ("push_preferences_api_sync_preferences_post", "fields:compound:2"): (
+        "studio_api.sync.preferences.UiPreferencesDto.validate_fields / PreferencePushRequest.validate_scope",
+        "rust-sync-documents-http-contract.py",
+    ),
+})
 # The authored declarations are terse directions; the runtime table stores an exact
 # operation, case label, both HTTP statuses, and the reason for each exception.
 _STATUS_BY_DIRECTION = {
@@ -594,7 +600,8 @@ def classify(
         "predicted_cases_by_cause": {OPAQUE_JSON_INTEGER_CAUSE: 0},
         "agreement_on_refusal_by_cause": {OPAQUE_JSON_INTEGER_CAUSE: 0},
         "agreement_on_refusal_cases": [], "opaque_json_precision_fields": [],
-        "expected_difference_cases": [],
+        "expected_difference_cases": [], "handler_validation_cases": [],
+        "handler_validation_cases_by_cause": {},
     }
     exact_predicted_differences = {OPAQUE_JSON_INTEGER_CAUSE: 0}
     for case, rust_row, python_row in zip(cases, rust, python, strict=True):
@@ -617,6 +624,25 @@ def classify(
             raise AssertionError(f"Python refusal lacks its located error envelope operation={operation_id} case={case['label']}: {python_row}")
 
         predicted = _predicted_difference(case, operation, document)
+        handler_rule = _HANDLER_VALIDATION_CASES.get(key)
+        if handler_rule:
+            if statuses == (400, 400):
+                continue
+            if statuses != (200, 400):
+                raise AssertionError(
+                    f"handler validation case {key} must be refused by Python and "
+                    f"covered by the named Rust route contract {handler_rule[1]}, "
+                    f"observed {statuses}"
+                )
+            cause, contract = handler_rule
+            totals["handler_validation_cases"].append({
+                "operation": operation_id, "case": case["label"],
+                "cause": cause, "contract": contract,
+            })
+            totals["handler_validation_cases_by_cause"][cause] = (
+                totals["handler_validation_cases_by_cause"].get(cause, 0) + 1
+            )
+            continue
         expected = allowances.get(key) or predicted
         if predicted is not None:
             cause = predicted[2]

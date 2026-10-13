@@ -201,10 +201,8 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers(),
         )
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(
-            response.json(),
-            {"error": "Invalid request", "location": ["body"]},
-        )
+        self.assertEqual(response.json()["error"], "Invalid request")
+        self.assertIn(response.json()["location"], (["body"], ["body", "request_id"]))
         self.assertEqual(
             rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
         )

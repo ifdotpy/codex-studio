@@ -66,9 +66,18 @@ async fn update(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let action = string(&body, "action").unwrap_or("save");
     let now = now_seconds()?;
-    let action = string(&body, "action").unwrap_or("save").to_owned();
+    if action == "save"
+        && let Some(at) = body.get("at").filter(|value| !value.is_null())
+        && at
+            .as_f64()
+            .is_none_or(|at| at < now - 1.0 || at > now + 31_536_000.0)
+    {
+        return Err(located("at"));
+    }
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let action = action.to_owned();
     let agent_id = string(&body, "agent").unwrap_or_default().to_owned();
     let supplied_id = string(&body, "id").map(str::to_owned);
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);

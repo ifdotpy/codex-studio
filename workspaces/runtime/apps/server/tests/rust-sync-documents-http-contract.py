@@ -331,6 +331,17 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=common,
         )
         self.assertEqual(invalid_value.status, 400)
+        before_invalid_scope_payload = sync_state_snapshot(backend.state)
+        invalid_scope_payload = backend.request(
+            "POST", "/api/sync/preferences",
+            body={"scope": "user", "fields": {
+                "key": {"timestamp": 1, "value": {"key": {"key": {"key": None}}}, "writer": "x"},
+            }},
+            headers=common,
+        )
+        self.assertEqual(invalid_scope_payload.status, 400)
+        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_scope_payload)
+        before_wrong_scope = sync_state_snapshot(backend.state)
         wrong_scope = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "server", "fields": {
@@ -339,6 +350,7 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=common,
         )
         self.assertEqual(wrong_scope.status, 400)
+        self.assertEqual(sync_state_snapshot(backend.state), before_wrong_scope)
         malformed_key = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "user", "fields": {
@@ -449,11 +461,23 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 }),
             }}],
         }
+        before_invalid_identity = sync_state_snapshot(backend.state)
         invalid_draft = backend.request(
             "POST", "/api/sync/drafts", body=invalid_identity,
             headers={**common, "X-Canvas-Workspace": backend.identity["workspaceId"]},
         )
         self.assertEqual(invalid_draft.status, 400)
+        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_identity)
+        invalid_payload = {
+            "rows": [{"newDocumentState": {"id": "x", "payload": "x"}} for _ in range(99)],
+        }
+        before_invalid_payload = sync_state_snapshot(backend.state)
+        invalid_serialized_payload = backend.request(
+            "POST", "/api/sync/drafts", body=invalid_payload,
+            headers={**common, "X-Canvas-Workspace": backend.identity["workspaceId"]},
+        )
+        self.assertEqual(invalid_serialized_payload.status, 400)
+        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_payload)
 
         configured = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
         if configured is None:
