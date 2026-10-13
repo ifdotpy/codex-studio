@@ -28,10 +28,6 @@ const SIGNED_ORCHESTRATION_DEPENDENCIES: [Dependency; 2] = [
 ];
 const TAILSCALE_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("remote-transport/tailscale-discovery")];
-const INVITE_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/owner-lookup"),
-    Dependency::new("federation-credentials/private-key"),
-];
 const MANAGEMENT_DEPENDENCIES: [Dependency; 7] = [
     Dependency::new("federation-credentials/private-key"),
     Dependency::new("multi-server-runtime/orchestration"),
@@ -161,7 +157,7 @@ async fn manage(
         >(result)?));
     }
     let deps: &'static [Dependency] = match action {
-        "create_invite" => &INVITE_DEPENDENCIES,
+        "create_invite" => &MANAGEMENT_DEPENDENCIES,
         "discover" => &TAILSCALE_DEPENDENCIES,
         "accept_invite" | "ui_invite" => &SIGNED_DEPENDENCIES,
         _ => &MANAGEMENT_DEPENDENCIES,

@@ -13,10 +13,6 @@ use crate::router::HttpState;
 
 const SIGNING_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("federation-credentials/private-key")];
-const ACCEPT_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("federation-credentials/invitation"),
-    Dependency::new("remote-transport/signed-federation-exchange"),
-];
 const MANAGEMENT_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("federation-credentials/private-key"),
     Dependency::new("remote-transport/tailscale-identity"),
@@ -24,9 +20,6 @@ const MANAGEMENT_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("federation-credentials/invitation"),
     Dependency::new("remote-transport/signed-federation-exchange"),
 ];
-const IDENTITY_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("federation-credentials/key-generation")];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -140,8 +133,8 @@ async fn manage(
         // The route is declared with MANAGEMENT_DEPENDENCIES; report missing
         // operation-specific services without violating that manifest contract.
         "create_invite" => Err(unavailable_for(&MANAGEMENT_DEPENDENCIES)),
-        "accept_peer" => Err(unavailable_for(&ACCEPT_DEPENDENCIES)),
-        _ => Err(unavailable_for(&SIGNING_DEPENDENCIES)),
+        "accept_peer" => Err(unavailable_for(&MANAGEMENT_DEPENDENCIES)),
+        _ => Err(unavailable_for(&MANAGEMENT_DEPENDENCIES)),
     }
 }
 
@@ -161,7 +154,7 @@ fn map_service_error(error: FederationError) -> ApiError {
             ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
         FederationError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
-        FederationError::NeedsIdentity => unavailable_for(&IDENTITY_DEPENDENCIES),
+        FederationError::NeedsIdentity => unavailable_for(&MANAGEMENT_DEPENDENCIES),
     }
 }
 

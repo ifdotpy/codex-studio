@@ -296,32 +296,35 @@ fn workspace_view(
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
             .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?,
     )?;
-    let monitors = parse_records(
-        validators,
-        "MonitorRecordResponse",
-        "runtime_monitors",
-        WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
-            .map_err(|_| invalid_stored("runtime_monitors", "unknown"))?,
-    )?
-    .into_iter()
-    .map(|monitor| {
-        let id = monitor["id"].as_str().unwrap_or("unknown");
-        let projection = validators
-            .project_entity("MonitorEntityDto", &monitor)
-            .ok_or_else(|| invalid_stored("runtime_monitors", id))?;
-        if !validators.validate_stored("MonitorEntityDto", &projection) {
-            return Err(invalid_stored("runtime_monitors", id));
-        }
-        Ok(projection)
-    })
-    .collect::<Result<Vec<_>, ApiError>>()?
-    .into_iter()
-    .filter(|monitor| {
-        monitor["agent"]
-            .as_str()
-            .is_some_and(|agent| ids.iter().any(|id| id == agent))
-    })
-    .collect::<Vec<_>>();
+    let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
+        .map_err(|_| invalid_stored("runtime_monitors", "unknown"))?
+        .into_iter()
+        .map(|row| {
+            let id = row.id;
+            let raw = row
+                .record
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
+            let monitor: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_monitors", &id))?;
+            if monitor.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(invalid_stored("runtime_monitors", &id));
+            }
+            let projection = validators
+                .project_entity("monitor", &monitor)
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
+            if !validators.validate_stored("MonitorEntityDto", &projection) {
+                return Err(invalid_stored("runtime_monitors", &id));
+            }
+            Ok(projection)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?
+        .into_iter()
+        .filter(|monitor| {
+            monitor["agent"]
+                .as_str()
+                .is_some_and(|agent| ids.iter().any(|id| id == agent))
+        })
+        .collect::<Vec<_>>();
     let inbox = studio_runtime_services::workspace_views::workspace_inbox(
         studio_runtime_services::workspace_views::WorkspaceInboxData {
             agents: &agents,
@@ -461,7 +464,7 @@ fn project_task_records(
                 return Err(invalid_stored("runtime_tasks", &id));
             }
             let projection = validators
-                .project_entity("TaskEntityDto", &task)
+                .project_entity("task", &task)
                 .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
             if !validators.validate_stored("TaskEntityDto", &projection) {
                 return Err(invalid_stored("runtime_tasks", &id));
@@ -489,13 +492,13 @@ async fn task_detail(
         let task = WorkspaceViewsRepository::task(&connection, &id)
             .map_err(|_| invalid_stored("runtime_tasks", &id))?
             .ok_or_else(invalid_request)?;
-        let task = checked_stored(
-            &validators,
-            "TaskDetailResponse",
-            "runtime_tasks",
-            &id,
-            task,
-        )?;
+        let task = validators
+            .project_entity("taskDetail", &task)
+            .filter(|value| validators.validate_stored("TaskDetailResponse", value))
+            .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
+        if task.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err(invalid_stored("runtime_tasks", &id));
+        }
         let agent_id = task["agent"]
             .as_str()
             .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
@@ -594,14 +597,10 @@ async fn workspace_tasks(
                 let record = WorkspaceViewsRepository::task(&connection, &row.id)
                     .map_err(|_| invalid_stored("runtime_tasks", &row.id))?
                     .ok_or_else(|| invalid_stored("runtime_tasks", &row.id))?;
-                let record = checked_stored(
-                    &validators,
-                    "TaskDetailResponse",
-                    "runtime_tasks",
-                    &row.id,
-                    record,
-                )?;
-                let mut summary = record;
+                let mut summary = validators
+                    .project_entity("task", &record)
+                    .filter(|value| validators.validate_stored("TaskEntityDto", value))
+                    .ok_or_else(|| invalid_stored("runtime_tasks", &row.id))?;
                 if let Some(record) = summary.as_object_mut() {
                     record.remove("tail");
                     record.remove("arguments");

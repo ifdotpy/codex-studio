@@ -181,6 +181,7 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         "agent" => "AgentEntityDto",
         "room" => "RoomEntityDto",
         "task" => "TaskEntityDto",
+        "taskDetail" => "TaskDetailResponse",
         "monitor" => "MonitorEntityDto",
         "complaint" => "ComplaintEntityDto",
         "request" => "RequestEntityDto",

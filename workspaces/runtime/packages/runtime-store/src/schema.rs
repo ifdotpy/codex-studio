@@ -217,36 +217,38 @@ pub fn truthy(value: Option<&Value>) -> bool {
 
 /// Python-compatible sorted-key JSON used for persisted signatures.
 pub fn python_json(value: &Value) -> String {
-    python_json_separated(value, ", ", ": ")
+    python_json_separated(value, ", ", ": ", true)
 }
 
 /// Compact Python-compatible JSON for content-addressed signatures.
 pub fn python_json_compact(value: &Value) -> String {
-    python_json_separated(value, ",", ":")
+    python_json_separated(value, ",", ":", false)
 }
 
-fn python_json_separated(value: &Value, item_separator: &str, key_separator: &str) -> String {
+fn python_json_separated(
+    value: &Value,
+    item_separator: &str,
+    key_separator: &str,
+    ensure_ascii: bool,
+) -> String {
     match value {
         Value::Null | Value::Bool(_) => value.to_string(),
-        Value::Number(number) if number.is_f64() => {
-            let text = format!("{:?}", number.as_f64().unwrap_or_default());
-            if let Some((mantissa, exponent)) = text.split_once('e') {
-                let exponent: i32 = exponent.parse().unwrap_or_default();
-                format!(
-                    "{mantissa}e{}{exponent:02}",
-                    if exponent < 0 { "-" } else { "+" }
-                )
-            } else {
-                text
-            }
-        }
+        Value::Number(number) if number.is_f64() => number
+            .as_f64()
+            .map(python_float_json)
+            .unwrap_or_else(|| number.to_string()),
         Value::Number(number) => number.to_string(),
-        Value::String(text) => python_quote(text),
+        Value::String(text) => python_quote(text, ensure_ascii),
         Value::Array(values) => format!(
             "[{}]",
             values
                 .iter()
-                .map(|item| python_json_separated(item, item_separator, key_separator))
+                .map(|item| python_json_separated(
+                    item,
+                    item_separator,
+                    key_separator,
+                    ensure_ascii
+                ))
                 .collect::<Vec<_>>()
                 .join(item_separator)
         ),
@@ -258,8 +260,13 @@ fn python_json_separated(value: &Value, item_separator: &str, key_separator: &st
                 keys.into_iter()
                     .map(|key| format!(
                         "{}{key_separator}{}",
-                        python_quote(key),
-                        python_json_separated(&values[key], item_separator, key_separator)
+                        python_quote(key, ensure_ascii),
+                        python_json_separated(
+                            &values[key],
+                            item_separator,
+                            key_separator,
+                            ensure_ascii,
+                        )
                     ))
                     .collect::<Vec<_>>()
                     .join(item_separator)
@@ -268,7 +275,7 @@ fn python_json_separated(value: &Value, item_separator: &str, key_separator: &st
     }
 }
 
-fn python_quote(value: &str) -> String {
+fn python_quote(value: &str, ensure_ascii: bool) -> String {
     let mut output = String::from("\"");
     for character in value.chars() {
         match character {
@@ -279,8 +286,10 @@ fn python_quote(value: &str) -> String {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            c if c < ' ' || c == '\u{7f}' => output.push_str(&format!("\\u{:04x}", c as u32)),
-            c if c as u32 > 0x7f => {
+            c if c < ' ' || (ensure_ascii && c as u32 == 0x7f) => {
+                output.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if ensure_ascii && c as u32 > 0x7f => {
                 let n = c as u32;
                 if n <= 0xffff {
                     output.push_str(&format!("\\u{n:04x}"));
@@ -630,8 +639,8 @@ fn connection_pragmas(connection: &Connection) -> StoreResult<(String, i64)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json,
-        registered_connection_functions, verify_payload_migration,
+        PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json, python_json,
+        python_json_compact, registered_connection_functions, verify_payload_migration,
     };
     use rusqlite::Connection;
     use serde_json::Value;
@@ -658,6 +667,17 @@ mod tests {
         );
         assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
         assert_eq!(snapshot["pragmas"]["analytics"]["synchronous"], 2);
+    }
+
+    #[test]
+    fn persisted_and_federation_json_keep_distinct_unicode_formats() {
+        let value = serde_json::json!({"z": 1, "a": "é"});
+        assert_eq!(python_json(&value), r#"{"a": "\u00e9", "z": 1}"#,);
+        assert_eq!(python_json_compact(&value), r#"{"a":"é","z":1}"#,);
+        assert_eq!(
+            python_json_compact(&serde_json::json!({"x": 1e-6})),
+            r#"{"x":1e-06}"#
+        );
     }
 
     #[test]
