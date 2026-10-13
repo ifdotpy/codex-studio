@@ -51,10 +51,9 @@ pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, Costs
         has_claude_history |= provider == Some("claude");
         if let (Some(key), Some(provider)) =
             (record.get("accountKey").and_then(Value::as_str), provider)
+            && let Some(provider) = pricing_provider(provider)
         {
-            if let Some(provider) = pricing_provider(provider) {
-                providers_by_account.insert(key.to_owned(), provider.to_owned());
-            }
+            providers_by_account.insert(key.to_owned(), provider.to_owned());
         }
         if let Some(history) = record.get("accountHistory").and_then(Value::as_array) {
             for entry in history {

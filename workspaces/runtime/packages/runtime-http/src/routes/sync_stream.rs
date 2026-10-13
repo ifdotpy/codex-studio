@@ -487,6 +487,7 @@ mod tests {
             entity_sequence: 0,
             store: None,
             changes,
+            token_rates: studio_runtime_services::token_rate::TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
