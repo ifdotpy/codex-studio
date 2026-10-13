@@ -8,10 +8,12 @@ use crate::{StoreError, StoreResult};
 
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     TableRequirement {
-        name: "voice_sessions",
-        columns: &[
-            "id", "agent", "created", "ended", "answer", "state", "error",
-        ],
+        name: "voice_approvals",
+        columns: &["id", "agent", "speech", "transcript", "status", "result"],
+    },
+    TableRequirement {
+        name: "voice_deliveries",
+        columns: &["id", "agent", "records", "text", "edited_text"],
     },
     TableRequirement {
         name: "voice_records",
@@ -29,12 +31,10 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         ],
     },
     TableRequirement {
-        name: "voice_deliveries",
-        columns: &["id", "agent", "records", "text", "edited_text"],
-    },
-    TableRequirement {
-        name: "voice_approvals",
-        columns: &["id", "agent", "speech", "transcript", "status", "result"],
+        name: "voice_sessions",
+        columns: &[
+            "id", "agent", "created", "ended", "answer", "state", "error",
+        ],
     },
     TableRequirement {
         name: "voice_speech_requests",
