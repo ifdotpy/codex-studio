@@ -97,6 +97,7 @@ async fn sync_stream(
     };
     let change_hub = Arc::clone(&state.sync_changes);
     let mut changes = change_hub.subscribe();
+    let mut token_rates = state.token_rates.subscribe();
     let subscription_snapshot = changes.borrow_and_update().clone();
     let progress_agents = match active_panel_agents(Arc::clone(&store), &resources).await {
         Ok(agents) => agents,
@@ -141,6 +142,13 @@ async fn sync_stream(
         Some(subscription_snapshot.revision),
         initial_event,
     ));
+    let initial_token_rates = token_rates.borrow_and_update().clone();
+    initial.push_back(token_rates_event(
+        &state.workspace_id,
+        &subscription_snapshot.epoch,
+        subscription_snapshot.revision,
+        &initial_token_rates,
+    ));
 
     let stream_state = ResourceStream {
         initial,
@@ -151,6 +159,7 @@ async fn sync_stream(
         entity_sequence: initial_entity_sequence,
         store: Some(store),
         changes,
+        token_rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -260,6 +269,8 @@ struct ResourceStream {
     entity_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
+    token_rates:
+        tokio::sync::watch::Receiver<studio_runtime_services::token_rate::TokenRateSnapshot>,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -272,15 +283,33 @@ async fn next_frame(
     }
 
     loop {
-        let snapshot = tokio::select! {
+        enum Wake {
+            Changes(Result<(), tokio::sync::watch::error::RecvError>),
+            TokenRates(Result<(), tokio::sync::watch::error::RecvError>),
+            Heartbeat,
+        }
+        let wake = tokio::select! {
             biased;
-            changed = state.changes.changed() => {
-                if changed.is_err() {
-                    return None;
-                }
-                state.changes.borrow_and_update().clone()
-            },
-            _ = state.heartbeat.tick() => state.changes.borrow().clone(),
+            changed = state.changes.changed() => Wake::Changes(changed),
+            changed = state.token_rates.changed() => Wake::TokenRates(changed),
+            _ = state.heartbeat.tick() => Wake::Heartbeat,
+        };
+        let snapshot = match wake {
+            Wake::Changes(Err(_)) | Wake::TokenRates(Err(_)) => return None,
+            Wake::TokenRates(Ok(())) => {
+                let rates = state.token_rates.borrow_and_update().clone();
+                return Some((
+                    Ok(token_rates_event(
+                        &state.workspace_id,
+                        &state.epoch,
+                        state.last_revision,
+                        &rates,
+                    )),
+                    state,
+                ));
+            }
+            Wake::Changes(Ok(())) => state.changes.borrow_and_update().clone(),
+            Wake::Heartbeat => state.changes.borrow().clone(),
         };
         if snapshot.closed {
             return None;
@@ -326,6 +355,27 @@ async fn next_frame(
             ));
         }
     }
+}
+
+fn token_rates_event(
+    workspace_id: &str,
+    epoch: &str,
+    revision: i64,
+    rates: &studio_runtime_services::token_rate::TokenRateSnapshot,
+) -> Event {
+    let rates = rates.to_value();
+    sse_event(
+        "token-rates",
+        Some(revision),
+        json!({
+            "protocol": 3,
+            "workspaceId": workspace_id,
+            "epoch": epoch,
+            "revision": revision,
+            "rates": rates["rates"],
+            "teams": rates["teams"],
+        }),
+    )
 }
 
 fn resource_event(
@@ -400,6 +450,7 @@ mod tests {
             entity_sequence: 0,
             store: None,
             changes,
+            token_rates: studio_runtime_services::token_rate::TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
