@@ -7,12 +7,6 @@ pub(super) fn execute(
     id: &str,
 ) -> Result<Value, CallbackError> {
     validate_command(args)?;
-    if args
-        .get("version")
-        .is_some_and(|v| !v.is_null() && v.as_i64().is_none())
-    {
-        return Err(CallbackError::Invalid("Task version must be an integer"));
-    }
     let actor = snapshot.actor();
     let root = text(actor, "rootId")?;
     let who = &snapshot.context().agent;
@@ -163,6 +157,35 @@ pub(super) fn execute(
 }
 
 fn validate_command(args: &Value) -> Result<(), CallbackError> {
+    let fields: &[&str] = match args["action"].as_str().unwrap_or("list") {
+        "create" => &["title", "description", "status", "owner", "dependencies"],
+        "update" => &[
+            "title",
+            "description",
+            "status",
+            "owner",
+            "dependencies",
+            "version",
+        ],
+        "cancel" => &["reason", "version"],
+        "reject" => &["result", "version"],
+        _ => return Ok(()),
+    };
+    let consumed = Value::Object(
+        fields
+            .iter()
+            .filter_map(|field| {
+                args.get(*field)
+                    .map(|value| ((*field).into(), value.clone()))
+            })
+            .collect(),
+    );
+    if consumed
+        .get("version")
+        .is_some_and(|v| !v.is_null() && v.as_i64().is_none())
+    {
+        return Err(CallbackError::Invalid("Task version must be an integer"));
+    }
     static SCHEMA: std::sync::OnceLock<Result<studio_runtime_schema::Validator, String>> =
         std::sync::OnceLock::new();
     let schema = SCHEMA.get_or_init(|| {
@@ -183,7 +206,7 @@ fn validate_command(args: &Value) -> Result<(), CallbackError> {
     let schema = schema
         .as_ref()
         .map_err(|_| CallbackError::Stored("callback work schema".into()))?;
-    if !schema.is_valid(args) {
+    if !schema.is_valid(&consumed) {
         return Err(CallbackError::Invalid(
             "Invalid task command field or bound",
         ));

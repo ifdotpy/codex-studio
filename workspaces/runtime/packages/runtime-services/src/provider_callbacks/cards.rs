@@ -327,8 +327,8 @@ pub fn resolve(
         }
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')='pending')", [&context.agent], |r| r.get(0))?;
         if !pending {
-            let mut actor = storage::snapshot(tx, context)?.actor().clone();
-            if actor["status"] == "approval" && studio_runtime_store::truthy(actor.get("inFlight")) && actor["autoWake"] == true {
+            let mut actor = records::get(tx, "runtime_agents", &context.agent)?.ok_or(CallbackError::Stale)?;
+            if actor["epoch"].as_u64() == Some(context.epoch) && actor["status"] == "approval" && studio_runtime_store::truthy(actor.get("inFlight")) && actor["autoWake"] == true {
                 actor["status"] = json!("running");
                 storage::save_actor(tx, &actor)?;
             }

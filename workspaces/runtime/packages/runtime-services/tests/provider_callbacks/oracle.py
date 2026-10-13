@@ -158,6 +158,11 @@ seed = runtime.work_action(lead["id"], {"action":"create","title":"Review fixtur
 with runtime.db() as db:
     base_work = json.loads(db.execute("SELECT record FROM runtime_work WHERE id=?", (seed["id"],)).fetchone()[0])
 for args in [
+    {"action":"list","title":"","version":"ignored"},
+    {"action":"get","description":None},
+    {"action":"history","result":None},
+    {"action":"cancel","reason":"Unused description","description":None},
+    {"action":"create","reason":""},
     {"action":"cancel","reason":"No longer needed"},
     {"action":"cancel","result":"Wrong field"},
     {"action":"cancel","reason":"x"*32001},
@@ -172,18 +177,22 @@ for args in [
         before.update(status="review",owner=lead["id"],results=[{"id":"review-result","agent":lead["id"],"text":"Evidence","created":10.0}])
     args = {"title":"Valid title",**args,"task_id":before["id"]}
     with runtime.db() as db:
+        db.execute("DELETE FROM runtime_work")
         runtime.put(db,"work",before)
         db.execute("DELETE FROM runtime_events")
+    key = runtime.tool_request_key({"params":{"threadId":lead["threadId"],"callId":f"review-work-{len(review_cases)}"}})
     try:
         with patch("time.time", return_value=20.0):
-            value = runtime.model_work(lead["id"],args,None,3)
+            value = runtime.model_work(lead["id"],args,key,3)
         expected = {"success":True,"value":value}
     except ValueError as error:
         expected = {"success":False,"error":str(error)}
     with runtime.db() as db:
         after = json.loads(db.execute("SELECT record FROM runtime_work WHERE id=?",(before["id"],)).fetchone()[0])
         events = [dict(row) for row in db.execute("SELECT agent,kind,text FROM runtime_events")]
-    review_cases.append({"args":args,"before":before,"after":after,"expected":expected,"events":events})
+        created = runtime.work_by_id(db,value["id"],lead["id"]) if args["action"] == "create" and expected["success"] else None
+        db.execute("DELETE FROM runtime_operation_receipts WHERE id=?",(key,))
+    review_cases.append({"args":args,"before":before,"after":after,"expected":expected,"events":events,"created":created})
 with runtime.db() as db:
     db.execute("DELETE FROM runtime_work")
     db.execute("DELETE FROM runtime_events")
@@ -205,16 +214,20 @@ with runtime.db() as db:
     preview_expected=next(r for r in runtime.records(db,"requests") if r.get("rpcId")=="preview-rpc")["preview"]
 from native_notifications.dispatch import consume_native_notification
 resolved_cases=[]
-for status in ["pending","answering","uncertain","blocked"]:
-    card={"id":"resolve-card","rpcId":"resolve-rpc","method":methods[0],"params":{"threadId":lead["threadId"]},"agent":lead["id"],"accountKey":"default","connectionId":"connection","epoch":3,"supervisor":{"generation":7},"status":status,"createdAt":10.0}
-    with runtime.db() as db:
-        db.execute("DELETE FROM runtime_requests")
-        runtime.put(db,"requests",card)
-        runtime.put(db,"agents",{**lead,"status":"approval","inFlight":True})
-    with patch("time.time",return_value=20.0):
-        consume_native_notification(runtime,{"method":"serverRequest/resolved","params":{"threadId":lead["threadId"],"requestId":"resolve-rpc"}},"default","connection")
-    with runtime.db() as db:
-        resolved_cases.append({"card":card,"expected":runtime.records(db,"requests")[0],"agentStatus":runtime.agent(lead["id"],db)["status"]})
+for turn_state in ["active","completed","cleared"]:
+    for status in ["pending","answering","uncertain","blocked"]:
+        card={"id":"resolve-card","rpcId":"resolve-rpc","method":methods[0],"params":{"threadId":lead["threadId"]},"agent":lead["id"],"accountKey":"default","connectionId":"connection","epoch":3,"supervisor":{"generation":7},"status":status,"createdAt":10.0}
+        actor={**lead,"status":"approval","inFlight":True}
+        if turn_state != "active":
+            actor.update(turnId=None,inFlight=False,status="completed" if turn_state=="completed" else "approval")
+        with runtime.db() as db:
+            db.execute("DELETE FROM runtime_requests")
+            runtime.put(db,"requests",card)
+            runtime.put(db,"agents",actor)
+        with patch("time.time",return_value=20.0):
+            consume_native_notification(runtime,{"method":"serverRequest/resolved","params":{"threadId":lead["threadId"],"requestId":"resolve-rpc"}},"default","connection")
+        with runtime.db() as db:
+            resolved_cases.append({"card":card,"expected":runtime.records(db,"requests")[0],"actor":actor,"expectedActor":runtime.agent(lead["id"],db),"turnState":turn_state})
 with runtime.db() as db:
     runtime.put(db,"agents",lead)
 # A chat message is no longer readable when its private-room member is archived.

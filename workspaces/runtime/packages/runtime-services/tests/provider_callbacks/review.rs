@@ -63,7 +63,29 @@ fn work_commands_match_python_arguments_bounds_and_provenance() {
                 ),
                 case["before"]
             );
-        } else if case["args"]["action"] != "create" {
+        } else if case["args"]["action"] == "create" {
+            let mut actual = tool_value(&result);
+            let mut expected = case["expected"]["value"].clone();
+            let id = actual["id"].as_str().unwrap().to_owned();
+            let mut stored = record(&store, "runtime_work", &id);
+            let mut expected_stored = case["created"].clone();
+            // Normalize only newly allocated work identity, preserving every
+            // occurrence and every non-generated field in the full result.
+            for value in [&mut actual, &mut expected] {
+                assert!(!value["id"].as_str().unwrap().is_empty());
+                assert_ne!(value["id"], case["before"]["id"]);
+                assert_eq!(value["detail"]["task_id"], value["id"]);
+                value["id"] = json!("<created-work>");
+                value["detail"]["task_id"] = json!("<created-work>");
+            }
+            assert_eq!(actual, expected);
+            for value in [&mut stored, &mut expected_stored] {
+                value["id"] = json!("<created-work>");
+                value.as_object_mut().unwrap().remove("created");
+                value.as_object_mut().unwrap().remove("updated");
+            }
+            assert_eq!(stored, expected_stored);
+        } else {
             let mut actual = record(
                 &store,
                 "runtime_work",
@@ -159,10 +181,7 @@ fn resolved_answering_unknown_and_blocked_match_python() {
             })
             .unwrap();
         put_record(&store, "runtime_requests", &case["card"]);
-        let mut actor = template().value["agents"][0].clone();
-        actor["status"] = json!("approval");
-        actor["inFlight"] = json!(true);
-        put_record(&store, "runtime_agents", &actor);
+        put_record(&store, "runtime_agents", &case["actor"]);
         assert_eq!(
             resolve(
                 &store,
@@ -178,8 +197,8 @@ fn resolved_answering_unknown_and_blocked_match_python() {
             case["expected"]
         );
         assert_eq!(
-            record(&store, "runtime_agents", &context.agent)["status"],
-            case["agentStatus"]
+            record(&store, "runtime_agents", &context.agent),
+            case["expectedActor"]
         );
     }
     for submitted in [false, true] {
@@ -205,7 +224,13 @@ fn resolved_answering_unknown_and_blocked_match_python() {
         if submitted {
             delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).unwrap();
         }
+        let mut completed = record(&store, "runtime_agents", &context.agent);
+        completed["turnId"] = Value::Null;
+        completed["inFlight"] = json!(false);
+        completed["status"] = json!("completed");
+        put_record(&store, "runtime_agents", &completed);
         resolve(&store, &context, &prepared.identity.rpc_id, 12.0).unwrap();
+        assert_eq!(record(&store, "runtime_agents", &context.agent), completed);
         assert!(delivery(&store, &prepared.identity, DeliveryOutcome::Submitted).is_err());
         assert!(delivery(&store, &prepared.identity, DeliveryOutcome::Written).is_err());
         assert_eq!(
