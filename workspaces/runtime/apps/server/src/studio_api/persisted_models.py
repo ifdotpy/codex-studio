@@ -78,6 +78,51 @@ class _OpenPersistedRecord(ContractModel):
     id: StrictStr
 
 
+class PersistedToolRequestRecord(_OpenPersistedRecord):
+    agent: StrictStr
+    stage: Literal["queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed"]
+    outcome: Literal["pending", "applied", "not_applied", "unknown"]
+    tool: StrictStr | None = None
+    signature: StrictStr | None = None
+    cancelRequested: StrictBool = False
+    readOnly: StrictBool = False
+    result: PersistedToolResult | None = None
+    agentIds: list[StrictStr] = Field(default_factory=list)
+    created: float | None = None
+    updated: float | None = None
+    finished: float | None = None
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    accountKey: StrictStr | None = None
+    threadId: StrictStr | None = None
+    callId: StrictStr | None = None
+    request_id: StrictStr | None = None
+    operationResult: dict[StrictStr, JsonValue] | None = None
+
+
+class PersistedToolContent(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    type: StrictStr | None = None
+    text: StrictStr | None = None
+
+
+class PersistedToolResult(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    success: StrictBool | None = None
+    contentItems: list[PersistedToolContent] | None = None
+    serverOutputExpiresAt: float | None = None
+
+
+class PersistedExecutionRecord(_OpenPersistedRecord):
+    runId: StrictStr | None = None
+    latestAttemptId: StrictStr | None = None
+    kind: StrictStr | None = None
+    status: StrictStr | None = None
+    outcome: StrictStr | None = None
+    resultReference: StrictStr | None = None
+
+
 class PersistedTaskRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     status: StrictStr | None = None
@@ -271,6 +316,9 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 
 STATE_SCHEMA_MODELS = {
+    "persisted-execution-record.schema.json": PersistedExecutionRecord,
+    "persisted-tool-result.schema.json": PersistedToolResult,
+    "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-task-record.schema.json": PersistedTaskRecord,
