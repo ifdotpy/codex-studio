@@ -9,9 +9,7 @@
         "after": "(PrereleasePart::Numeric(_), PrereleasePart::Text(_)) => Ordering::Greater,"
       }
     ],
-    "witnesses": [
-      "comparisons: numeric prerelease 1.2.3-2 precedes text prerelease 1.2.3-beta.1"
-    ]
+    "witnesses": ["assertion: numeric prerelease sorts before text prerelease"]
   },
   {
     "id": "PB02",
