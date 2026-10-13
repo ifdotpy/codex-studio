@@ -116,7 +116,6 @@ impl QueryParams {
             .filter(|value| !value.is_empty())
     }
 
-    #[cfg(test)]
     pub(crate) fn into_typed(self) -> serde_json::Map<String, Value> {
         self.typed
     }
