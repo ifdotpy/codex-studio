@@ -11,6 +11,7 @@ import { performance } from "node:perf_hooks";
 import { execFileSync } from "node:child_process";
 
 const harness = dirname(fileURLToPath(import.meta.url));
+const parallelWaves = process.argv.includes("--parallel-waves");
 const sourceRootAt = process.argv.indexOf("--source-root");
 const sourceRoot =
   sourceRootAt >= 0
@@ -233,7 +234,11 @@ try {
     );
 
   const acceptedWaves = [];
-  for (const wave of waves) acceptedWaves.push(await postBatch(wave));
+  if (parallelWaves) {
+    acceptedWaves.push(await postBatch(messages));
+  } else {
+    for (const wave of waves) acceptedWaves.push(await postBatch(wave));
+  }
   const accepted = acceptedWaves.flat();
   const retryBatch = waves[0];
   const retries = await postBatch(retryBatch);
@@ -349,6 +354,7 @@ try {
     workerCount: ready.workers.length,
     waves: waves.length,
     workersPerWave: ready.workers.length,
+    offerMode: parallelWaves ? "parallel_waves" : "sequential_waves",
     concurrentPosts: accepted.length,
     sameIdRetries: retries.length,
     waveLatencyMs: acceptedWaves.map((wave) =>
