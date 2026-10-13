@@ -1,0 +1,254 @@
+{
+  "$defs": {
+    "ClaudeChildIdentity": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "pid": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "start": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": ["pid", "start"],
+      "title": "ClaudeChildIdentity",
+      "type": "object"
+    },
+    "ClaudeLoginMetadata": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "binaryPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Binarypath"
+        },
+        "child": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaudeChildIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanupDone": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cleanupdone"
+        },
+        "codeSubmitted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Codesubmitted"
+        },
+        "configDir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Configdir"
+        },
+        "emailHint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Emailhint"
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "const": "add",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Flow"
+        },
+        "inheritedLease": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Inheritedlease"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Label"
+        },
+        "outcomeUnknown": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Outcomeunknown"
+        },
+        "requestHash": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requesthash"
+        }
+      },
+      "title": "ClaudeLoginMetadata",
+      "type": "object"
+    },
+    "ClaudeLoginReceipt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "accountKey": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "chatsRefreshed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chatsrefreshed"
+        },
+        "codeSubmitted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Codesubmitted"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Email"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Plan"
+        },
+        "requestId": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        },
+        "status": {
+          "enum": ["starting", "pending", "ready", "error", "cancelled"],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["requestId", "accountKey", "status"],
+      "title": "ClaudeLoginReceipt",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "metadata": {
+      "$ref": "#/$defs/ClaudeLoginMetadata"
+    },
+    "receipt": {
+      "$ref": "#/$defs/ClaudeLoginReceipt"
+    }
+  },
+  "required": ["receipt", "metadata"],
+  "title": "PersistedClaudeLoginRecord",
+  "type": "object"
+}
