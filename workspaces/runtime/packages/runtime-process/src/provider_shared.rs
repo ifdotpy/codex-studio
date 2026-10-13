@@ -15,6 +15,7 @@ const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
     "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
     "CODEX_NODE",
 ];
+#[cfg(target_os = "linux")]
 const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
     "PATH",
     "LANG",

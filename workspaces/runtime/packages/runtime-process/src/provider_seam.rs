@@ -129,7 +129,7 @@ impl Shutdown {
     pub fn cancel(&self) {
         self.0.send_replace(true);
     }
-    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
+    pub fn subscribe(&self) -> watch::Receiver<bool> {
         self.0.subscribe()
     }
 }
@@ -194,6 +194,26 @@ pub struct ProviderAttachment {
 }
 
 impl ProviderAttachment {
+    /// Construct another bounded implementation or a deterministic test factory.
+    /// The task must own its socket and drop the status sender on completion;
+    /// sessions can select `status.changed()` alongside journal reception and
+    /// call `completion()` when that watch closes, even with a full journal.
+    pub fn from_task(
+        commands: mpsc::Sender<AdapterCommand>,
+        journal: mpsc::Receiver<JournalEntry>,
+        status: watch::Receiver<AttachmentStatus>,
+        shutdown: Shutdown,
+        task: JoinHandle<TaskExit>,
+    ) -> Self {
+        Self {
+            commands,
+            journal,
+            status,
+            shutdown,
+            task: Some(task),
+        }
+    }
+
     /// Returns only after the task has dropped its socket. Completion never
     /// enters the journal lane, so a full consumer cannot deadlock shutdown.
     pub async fn shutdown(&mut self) -> TaskExit {
@@ -250,4 +270,11 @@ pub trait ProviderTaskFactory: Send + Sync {
         options: OpenOptions,
         shutdown: Shutdown,
     ) -> OpenFuture<'_>;
+}
+
+/// Stable Python-compatible identity for the session's initialized notification.
+pub fn initialized_operation(handle: &ProviderHandle) -> OperationId {
+    crate::provider_shared::initialized_operation_id(&crate::SupervisorHandle(
+        handle.as_str().into(),
+    ))
 }

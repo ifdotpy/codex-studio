@@ -2,13 +2,14 @@
 
 ## Change Contract
 
-- **Responsibility:** Synchronous process boundary ports and the typed client
+- **Responsibility:** Process boundary ports, bounded Tokio provider attachments, and the typed client
   for the existing supervisor v1 protocol. This crate does not start the
   production supervisor, make HTTP requests, or access SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
   models for each v1 action; `ProviderProcessFactory` and its supervisor-backed
-  native-account adapter; `PtyHost` and `ProgressWatch` ports.
-- **Forbidden dependencies:** Tokio, HTTP frameworks, SQLite, Python runtime
+  native-account adapter; `provider_seam::ProviderTaskFactory` and
+  `provider_task::SupervisorProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports.
+- **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
   bindings, and OS-specific code outside transport adapters.
 - **Invariants:** The supervisor remains the sole owner of provider and command
   children. Handshake identity is `(backendId, stateDir)`; each child receipt
@@ -176,3 +177,55 @@ For that decision, evaluate [`interprocess` 2.4.5](https://crates.io/crates/inte
 recent commits and explicit Windows/Linux/macOS support) against
 the existing pipe endpoint identity/security contract before adding it. It is
 not currently in the dependency graph.
+
+## Provider task seam (stages 2 and 3)
+
+`ProviderTaskFactory::open(handle, OpenOptions, Shutdown) -> OpenFuture` is
+object-safe as `Arc<dyn ProviderTaskFactory>` without async-trait. The caller
+resolves launch configuration outside the executor and validates session recovery
+before opening. The factory validates initialization and wire size, then returns
+`ProviderAttachment` before connecting. Use `ProviderHandle::for_account` for the
+one supervisor-owned child; the account registry still owns attachment admission.
+
+The attachment exposes bounded `commands` and `journal` channels, a `status`
+watch, and cancellation-safe `completion()` / `shutdown()` futures. Both channels
+hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
+JSON allocation overhead). One outstanding RPC and at most 32 numeric response
+mappings are retained. Startup replay uses the same channel and no deferred queue.
+A receive slot is reserved before issuing `next`. Write/ACK receipts and shutdown
+never depend on journal capacity. The sole 50 ms empty-`next` pause is cancellable.
+
+`JournalEntry { cursor, generation, payload }` distinguishes `Frame`, `RawStdout`,
+`Stderr`, `Exit`, and future supervisor event kinds. `PreparedWrite::new` validates
+a frame before command admission. `AdapterCommand::write` and `::ack` return a
+command and `Receipt`; `Receipt::receive` distinguishes `Written`,
+`Acknowledged`, `CachedInitialize`, `NotSent`, and `Unknown`. Write operation IDs
+belong to the caller. Use `initialized_operation(&handle)` for the shared
+Python-compatible initialized identity. A lost receipt terminates the attachment;
+there is no reconnect, flush, or automatic resend surface. A closed receipt is
+Unknown. The supervisor may have committed a write before returning an error, so
+remote write errors are conservatively Unknown too.
+
+The session stage retains its single `SessionState` and owns initialize and
+initialized commands. Feed a `CachedInitialize` control receipt back to that state
+with the local initialize ticket; it is not a journal entry to ACK. Observe
+`InitializedWritePending` after the reply and `Ready` only after the real
+initialized write receipt, then call `mark_initialized_notification_written`.
+Use `SessionState::next_deadline_ms()` as the session's deadline authority.
+Process startup replay while waiting for readiness instead of draining it into
+another queue. Commit a contiguous durable prefix before sending ACK; the adapter
+never sends ACK itself, including for the launch spec's recovered handled cursor.
+
+`TaskExit::recovery_needed` identifies incomplete initialization separately from
+socket cleanup, including a generation when known. Persist it before declaring
+protocol cleanup complete. A verified resumed child without cached initialization
+returns `AttachmentInfo::initialization_recovery` and can complete the same
+handshake; it does not fail with generic Launch. I/O loss cannot prove protocol
+completion. Retained-child environment checks run in at most four owned blocking
+jobs per factory; shutdown reaps an already-started job. Linux `/proc` identity
+verification is required; other Unix platforms refuse reattach before open.
+
+The old thread adapter and session remain unmodified in behavior until the
+session and account driver use this seam and independent review approves cutover.
+These stages add no production caller wiring or live-model verification. Remove
+the old byte-stream workers only when those callers have migrated.
