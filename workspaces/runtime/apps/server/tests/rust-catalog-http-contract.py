@@ -3,18 +3,19 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 SERVER_SOURCE = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(Path(__file__).parent))
@@ -83,74 +84,33 @@ class RustCatalogHttpContract(unittest.TestCase):
         )
 
         # Python creates the existing schema; Rust only opens it in place.
-        environment = {
-            "HOME": str(cls.backend.home),
-            "CODEX_HOME": str(cls.backend.codex_home),
-            "CLAUDE_CONFIG_DIR": str(cls.backend.claude_home),
-            "CLAUDE_SECURESTORAGE_CONFIG_DIR": str(cls.backend.claude_home),
-            "CODEX_AGENTS_STATE_DIR": str(cls.backend.state),
-            "XDG_CONFIG_HOME": str(cls.backend.xdg_config),
-            "XDG_CACHE_HOME": str(cls.backend.xdg_cache),
-            "XDG_STATE_HOME": str(cls.backend.xdg_state),
-            "XDG_DATA_HOME": str(cls.backend.root / "xdg-data"),
-            "TMPDIR": str(cls.backend.scratch_root),
-        }
-        # Runtime starts its maintenance scheduler in this test process too.
-        # Use the same replay pin and restricted PATH as the HTTP child so
-        # host-side fixture bootstrapping cannot discover an installed Codex.
-        environment.update(cls.backend._environment())
-        with patch.dict(os.environ, environment, clear=True):
-            # This fixture tests persisted account and cached-limit reads. Keep
-            # provider-version maintenance offline and avoid contaminating the
-            # test process's global urllib opener with its temporary proxy.
-            with patch(
-                "codex_provider_upstream_releases.updates_enabled",
-                return_value=False,
-            ):
-                runtime = Runtime(cls.backend.state)
-                try:
-                    from codex_sync_entities import put as put_entity
-
-                    with runtime.db() as database:
-                        put_entity(
-                            database,
-                            "uiPreferences",
-                            "user",
-                            {
-                                "fields": {
-                                    '["codex-studio-preferences-v1","checkProviderUpdates"]': {
-                                        "value": False,
-                                        "timestamp": 1,
-                                        "writer": "catalog-http-contract",
-                                    },
-                                },
-                            },
-                        )
-                    runtime.set_rate_limits(
-                        "default",
-                        {
-                            "data": {
-                                "accountId": "fixture-account",
-                                "status": "ready",
-                                "signedIn": True,
-                                "rateLimits": {"primary": {"usedPercent": 27}},
-                            },
-                            "at": 1234.5,
-                            "readAt": 1234.5,
-                            "error": None,
-                        },
-                    )
-                    runtime.set_rate_limits(
-                        "cached-unknown",
-                        {
-                            "data": {"accountId": "cached-only"},
-                            "at": 2345.0,
-                            "readAt": 2345.0,
-                            "error": None,
-                        },
-                    )
-                finally:
-                    runtime.close()
+        runtime = make_runtime(Runtime, cls.backend)
+        try:
+            runtime.set_rate_limits(
+                "default",
+                {
+                    "data": {
+                        "accountId": "fixture-account",
+                        "status": "ready",
+                        "signedIn": True,
+                        "rateLimits": {"primary": {"usedPercent": 27}},
+                    },
+                    "at": 1234.5,
+                    "readAt": 1234.5,
+                    "error": None,
+                },
+            )
+            runtime.set_rate_limits(
+                "cached-unknown",
+                {
+                    "data": {"accountId": "cached-only"},
+                    "at": 2345.0,
+                    "readAt": 2345.0,
+                    "error": None,
+                },
+            )
+        finally:
+            runtime.close()
         cls.backend.start()
 
     @classmethod
@@ -224,22 +184,8 @@ class RustCatalogHttpContract(unittest.TestCase):
             (backend.root / "malformed-profile" / "auth.json").write_text(
                 "{}", encoding="utf-8",
             )
-            environment = {
-                "HOME": str(backend.home),
-                "CODEX_HOME": str(backend.codex_home),
-                "CLAUDE_CONFIG_DIR": str(backend.claude_home),
-                "CLAUDE_SECURESTORAGE_CONFIG_DIR": str(backend.claude_home),
-                "CODEX_AGENTS_STATE_DIR": str(backend.state),
-                "XDG_CONFIG_HOME": str(backend.xdg_config),
-                "XDG_CACHE_HOME": str(backend.xdg_cache),
-                "XDG_STATE_HOME": str(backend.xdg_state),
-                "XDG_DATA_HOME": str(backend.root / "xdg-data"),
-                "TMPDIR": str(backend.scratch_root),
-            }
-            environment.update(backend._environment())
-            with patch.dict(os.environ, environment, clear=True):
-                runtime = Runtime(backend.state)
-                runtime.close()
+            runtime = make_runtime(Runtime, backend)
+            runtime.close()
             registry_path.write_text("{", encoding="utf-8")
 
             with self.assertRaisesRegex(RuntimeError, "Backend did not emit its ready line") as raised:
@@ -258,24 +204,10 @@ class RustCatalogHttpContract(unittest.TestCase):
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             (backend.codex_home / "auth.json").write_text("{}", encoding="utf-8")
-            environment = {
-                "HOME": str(backend.home),
-                "CODEX_HOME": str(backend.codex_home),
-                "CLAUDE_CONFIG_DIR": str(backend.claude_home),
-                "CLAUDE_SECURESTORAGE_CONFIG_DIR": str(backend.claude_home),
-                "CODEX_AGENTS_STATE_DIR": str(backend.state),
-                "XDG_CONFIG_HOME": str(backend.xdg_config),
-                "XDG_CACHE_HOME": str(backend.xdg_cache),
-                "XDG_STATE_HOME": str(backend.xdg_state),
-                "XDG_DATA_HOME": str(backend.root / "xdg-data"),
-                "TMPDIR": str(backend.scratch_root),
-            }
-            environment.update(backend._environment())
-            with patch.dict(os.environ, environment, clear=True):
-                runtime = Runtime(backend.state)
-                runtime.close()
-                backend.start()
-                result = backend.request("GET", "/api/accounts")
+            runtime = make_runtime(Runtime, backend)
+            runtime.close()
+            backend.start()
+            result = backend.request("GET", "/api/accounts")
             assert_status(result, 200)
             account = result.json()["accounts"][0]
             self.assertEqual(account["id"], "default")

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Native unload and rejection recovery without replaying user input."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 from concurrent.futures import Future
@@ -34,7 +36,7 @@ class MissingThreadContract(unittest.TestCase):
         self.session_names_tick = patch('codex_session_names.SessionNames.tick', autospec=True)
         self.session_names_tick.start()
         self.addCleanup(self.session_names_tick.stop)
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         self.agent = self.runtime.create({'name': 'Worker', 'cwd': self.temp.name, 'prompt': 'Task'}, draft=True)
         self.agent = self.runtime.prepare(self.agent)

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Hot delegation switches and arbitrary catalog models, without native model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 from contextlib import closing
@@ -31,7 +33,7 @@ from codex_agent_modes import guidance
 class AgentModes(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.rt = f.ControlledRuntime(Path(self.tmp.name), f.f.FakeServer)
+        self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         self.lead = self.rt.new_lead({'cwd': self.tmp.name})
         self.worker = self.rt.create({'name': 'Worker', 'prompt': 'Check'}, self.lead['id'])
@@ -206,7 +208,7 @@ class AgentModes(unittest.TestCase):
             db.execute('UPDATE runtime_agents SET record=? WHERE id=?',
                        (json.dumps(legacy), self.lead['id']))
         self.rt.close()
-        self.rt = f.ControlledRuntime(Path(self.tmp.name), f.f.FakeServer)
+        self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         migrated = self.rt.agent(self.lead['id'])
         self.assertEqual((migrated['concurrency'], migrated['agentMode'],
                           migrated['subagentConcurrencyVersion']), (0, 'single', 2))
@@ -449,7 +451,7 @@ class AgentModes(unittest.TestCase):
         self.assertEqual((lead['agentMode'], lead['agentModeRevision'], lead['agentModeSupported']), ('multi', 0, True))
         self.mode()
         self.rt.close()
-        self.rt = f.ControlledRuntime(Path(self.tmp.name), f.f.FakeServer)
+        self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         self.assertEqual(self.rt.agent(self.lead['id'])['agentMode'], 'single')
 
     def test_current_guidance_after_switch_and_on_next_turn(self):

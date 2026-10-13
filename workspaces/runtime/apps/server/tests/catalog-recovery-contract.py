@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Delayed model metadata cannot create workers or block coordination locks."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import importlib.util
@@ -275,7 +277,7 @@ class DelayedServer(fixture.FakeServer):
 class CatalogRuntimeContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = ControlledRuntime(Path(self.temp.name), DelayedServer)
+        self.runtime = make_runtime(ControlledRuntime, Path(self.temp.name), DelayedServer)
         self.runtime._catalog_cache = ModelCatalogCache(wait_seconds=.03)
         self.lead = self.runtime.create({"name": "Lead", "prompt": "Plan", "cwd": self.temp.name}, defer=True)
         with self.runtime.lock, self.runtime.db() as db:

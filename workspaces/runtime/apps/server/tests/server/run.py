@@ -115,8 +115,12 @@ def resolve_codex_executable():
     if explicit:
         candidate = Path(explicit).expanduser()
     else:
-        located = shutil.which("codex")
-        candidate = Path(located) if located else Path.home() / ".local" / "bin" / "codex"
+        # General test discovery never searches a caller's provider PATH.
+        # Native suites can still select an executable explicitly with CODEX_BIN.
+        located = shutil.which("codex", path=os.defpath)
+        if not located:
+            return None
+        candidate = Path(located)
     try:
         resolved = candidate.resolve(strict=True)
         if not resolved.is_file() or not os.access(resolved, os.X_OK):
@@ -933,27 +937,24 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     for index, (key, value) in enumerate(git_overrides.items()):
         environment[f"GIT_CONFIG_KEY_{index}"] = key
         environment[f"GIT_CONFIG_VALUE_{index}"] = value
-    # A host-local `codex` shim commonly resolves into ~/.codex/packages. Do
-    # not let isolated tests discover or launch it. Keep unrelated PATH tools,
-    # but remove entries whose codex executable resolves into protected state.
-    protected_codex = (Path.home() / ".codex").resolve()
-    inherited_path = []
-    for entry in environment.get("PATH", "").split(os.pathsep):
-        candidate = Path(entry or ".") / "codex"
-        try:
-            if candidate.resolve().is_relative_to(protected_codex):
-                continue
-        except OSError:
-            pass
-        inherited_path.append(entry)
-    environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), *inherited_path))
-    configured_codex = environment.get("CODEX_BIN")
-    if configured_codex:
-        try:
-            if Path(configured_codex).resolve().is_relative_to(protected_codex):
-                environment.pop("CODEX_BIN", None)
-        except OSError:
-            pass
+    # Ordinary suites cannot discover inherited provider programs or selectors.
+    # Pin the crypto helper before dropping the caller's tool-cache PATH.
+    node = environment.get("CODEX_NODE") or shutil.which("node")
+    path_entries = [str(Path(sys.executable).parent), os.defpath]
+    if node:
+        environment["CODEX_NODE"] = node
+        # JS suites and bridge probes launch "node" by name. Expose only that
+        # executable, never its caller-owned directory (which may hold providers).
+        tools = temp_root / "tools"
+        tools.mkdir()
+        (tools / "node").symlink_to(Path(node).absolute())
+        path_entries.insert(0, str(tools))
+    environment["PATH"] = os.pathsep.join(path_entries)
+    for key in tuple(environment):
+        if key in {"CODEX_BIN", "CODEX_AGENTS_NATIVE_RUNTIME_PIN", "CLAUDE_BIN",
+                   "STUDIO_CLAUDE_BIN", "STUDIO_NODE_BIN", "OPENAI_API_KEY",
+                   "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}:
+            environment.pop(key)
     if relative in CODEX_BIN_SUITES and RESOLVED_CODEX_BIN:
         environment["CODEX_BIN"] = RESOLVED_CODEX_BIN
     environment["CLAUDE_CONFIG_DIR"] = str(temp_root / "claude-home")

@@ -2,18 +2,18 @@
 """Terminal monitor receipts continue current work and preserve historical stops."""
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
 import sqlite3
-from pathlib import Path
-import sys
 import time
 import unittest
 
@@ -105,7 +105,7 @@ class MonitorContinuation(unittest.TestCase):
         quiet = self.seed_terminal('completed', wake_on='failure')
         lost = self.seed_terminal('lost')
         self.runtime.close()
-        self.runtime = f.Runtime(Path(self.temp.name), f.MonitorServer)
+        self.runtime = make_runtime(f.Runtime, Path(self.temp.name), f.MonitorServer)
         self.assertEqual(self.runtime.agent(self.agent['id'])['status'], 'completed')
         self.assertTrue(self.runtime.agent(self.agent['id'])['autoWake'])
         self.assertFalse(any(method == 'turn/start' for server in self.runtime.servers.values()

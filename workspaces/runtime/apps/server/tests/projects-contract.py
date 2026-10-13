@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Project registry and lead directory contracts. No user state or model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -42,23 +44,21 @@ class ProjectContracts(unittest.TestCase):
         self.first, self.second = self.root / "first", self.root / "second"
         self.first.mkdir()
         self.second.mkdir()
-        self.env = patch.dict(os.environ, {
+        self.runtime_environment = {
             "CODEX_HOME": str(self.root / "home"),
             "CODEX_CANVAS_CWD": str(self.first),
             "CODEX_AGENTS_STATE_DIR": str(self.root / "state"),
             "CODEX_BOARD_STATE_DIR": "",
-        })
-        self.env.start()
-        self.runtime = fixture.ControlledRuntime(self.root / "state", fixture.AccountServer)
+        }
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.root / "state", fixture.AccountServer, environment_overrides=self.runtime_environment)
 
     def tearDown(self):
         self.runtime.close()
-        self.env.stop()
         self.tmp.cleanup()
 
     def restart(self):
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.root / "state", fixture.AccountServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.root / "state", fixture.AccountServer, environment_overrides=self.runtime_environment)
 
     def test_registry_canonical_concurrent_idempotence_and_restart(self):
         alias = self.root / "alias"

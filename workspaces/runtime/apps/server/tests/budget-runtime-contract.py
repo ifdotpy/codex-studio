@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Real Runtime budget deferral, fake native requests, isolated account files."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
 import os
-from pathlib import Path
 import tempfile
 import time
 import unittest
@@ -67,16 +71,14 @@ class BudgetRuntimeTests(unittest.TestCase):
         for home in (self.home, self.other):
             home.mkdir()
             (home / 'auth.json').write_text(json.dumps({'tokens': {'account_id': home.name, 'access_token': 'fixture'}}))
-        self.env = patch.dict(os.environ, {'CODEX_HOME': str(self.home)})
-        self.env.start()
         self.homes = {'default': self.home}
-        self.runtime = f.Runtime(self.root / 'state', lambda *args: Server(*args, self.homes))
+        self.runtime = make_runtime(f.Runtime, self.root / 'state', lambda *args: Server(*args, self.homes),
+                                    environment_overrides={'CODEX_HOME': str(self.home)})
         self.other_key = self.runtime.accounts.register(str(self.other))
         self.homes[self.other_key] = self.other
 
     def tearDown(self):
         self.runtime.close()
-        self.env.stop()
         self.temp.cleanup()
 
     def lead(self, account='default'):

@@ -1,7 +1,12 @@
 """Isolate supervisor routing and image storage before a Studio test imports code."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).absolute().parent))
+from runtime_home_guard import install_home_guard
+install_home_guard()
+
 import atexit
 import os
-from pathlib import Path
 import shutil
 import tempfile
 
@@ -39,12 +44,9 @@ def isolate_supervisor_environment():
 
 
 def minimal_runtime_environment(home: str | Path) -> dict[str, str]:
-    """Build a cleared test environment with the external runtime Runtime starts."""
-    node = os.environ.get("CODEX_NODE") or shutil.which("node")
-    if not node:
-        raise RuntimeError("Node.js is required to construct an isolated Runtime")
-    root = str(home)
-    return {"HOME": root, "CODEX_HOME": root, "CODEX_NODE": node}
+    """Use the same complete environment as HTTP backends and seed processes."""
+    from runtime_test_environment import runtime_environment
+    return runtime_environment(Path(home))
 
 
 def isolate_api_schema_cache():

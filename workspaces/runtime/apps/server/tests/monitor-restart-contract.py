@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Monitor results survive a database rollback and an independent process restart."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import base64
@@ -187,7 +189,7 @@ class MonitorRestart(unittest.TestCase):
         self.runtime.close()
         self.runtime.finish_monitor(monitor['id'], 7, None, operation=receipt['operation'])
         self.assertTrue(_path(self.runtime.root, monitor['id']).exists())
-        self.runtime = f.Runtime(Path(self.temp.name), f.MonitorServer)
+        self.runtime = make_runtime(f.Runtime, Path(self.temp.name), f.MonitorServer)
         self.assertEqual(self.record(monitor['id'])['status'], 'failed')
         self.assertEqual(self.record(monitor['id'])['exitCode'], 7)
         self.assertEqual(len(self.exits(monitor['id'])), 1)

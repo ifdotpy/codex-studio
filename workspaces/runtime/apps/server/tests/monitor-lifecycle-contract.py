@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Monitor outcomes retain their workspace lease until the native command exits."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import base64
@@ -106,7 +108,7 @@ class MonitorServer(fixture.FakeServer):
 class MonitorLifecycleContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), MonitorServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), MonitorServer)
         self.agent = self.runtime.create({"name": "Monitor lead", "cwd": self.temp.name, "prompt": "Wait"})
         fixture.eventually(lambda: self.runtime.agent(self.agent["id"])["status"] == "running")
         self.agent = self.runtime.agent(self.agent["id"])
@@ -203,7 +205,7 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.assertEqual(len(stalls()), 2)
         old_runtime = self.runtime
         old_runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), MonitorServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), MonitorServer)
         self.assertEqual(len(stalls()), 2)
 
     def test_monitor_stall_event_includes_liveness_result(self):

@@ -183,6 +183,35 @@ class ServerSuiteRunner(unittest.TestCase):
                 )
                 self.assertEqual(result.stdout.strip(), value)
 
+    def test_suite_children_pin_node_before_removing_tool_cache_from_path(self):
+        import shutil
+        node = os.environ.get("CODEX_NODE") or shutil.which("node")
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory(prefix="server-node-path-") as directory:
+            root = Path(directory)
+            tools = root / "hostedtoolcache"
+            tools.mkdir()
+            (tools / "node").symlink_to(node)
+            for explicit in (False, True):
+                with self.subTest(explicit=explicit):
+                    suite_root = root / str(explicit)
+                    suite_root.mkdir()
+                    inherited = {"PATH": str(tools)}
+                    if explicit:
+                        inherited.update(CODEX_NODE=str(tools / "node"), PATH="/missing")
+                    with mock.patch.dict(os.environ, inherited, clear=True):
+                        environment = RUNNER._suite_environment(ROOT, suite_root)
+                    self.assertEqual(environment["CODEX_NODE"], str(tools / "node"))
+                    self.assertEqual(shutil.which("node", path=environment["PATH"]),
+                                     str(suite_root / "tools" / "node"))
+                    self.assertNotIn(str(tools), environment["PATH"].split(os.pathsep))
+                    result = subprocess.run(
+                        ["node", "-e", "require('node:crypto').generateKeyPairSync('ed25519')"],
+                        env=environment, capture_output=True, text=True,
+                        timeout=HANG_GUARD_SECONDS,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_resolved_codex_binary_is_scoped_to_pty_integration_suites(self):
         with tempfile.TemporaryDirectory(prefix="server-codex-bin-scope-") as directory:
             root = Path(directory)

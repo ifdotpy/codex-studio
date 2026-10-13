@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Nested delegation policy, root budgets and restart persistence without providers."""
 
+from test_isolation import isolate_supervisor_environment
+
 import importlib.util
 from pathlib import Path
 import sys
@@ -10,8 +12,8 @@ from unittest.mock import patch
 
 # Support direct execution without runner-provided PYTHONPATH.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from server_test_waits import wait_for_condition
 
@@ -35,7 +37,7 @@ class NestedDelegationContract(unittest.TestCase):
         self.temp.cleanup()
 
     def open_runtime(self):
-        runtime = fixture.ControlledRuntime(self.state, fixture.f.FakeServer)
+        runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.f.FakeServer)
         runtime.catalog = lambda account="default": fixture.copy.deepcopy(fixture.CATALOG)
         return runtime
 

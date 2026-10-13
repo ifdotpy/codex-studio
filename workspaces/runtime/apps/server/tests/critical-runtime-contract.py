@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regressions for transport stalls, receipt truth, and transaction boundaries."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 from contextlib import contextmanager
@@ -51,7 +53,7 @@ class QuietRuntime(Runtime):
 class CriticalRuntimeContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = QuietRuntime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(QuietRuntime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
 
     def prepare_worker(self, worker):

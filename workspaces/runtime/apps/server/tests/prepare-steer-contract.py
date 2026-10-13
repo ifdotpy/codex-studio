@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Preparation, steering, and native action receipts with delayed acknowledgements."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import importlib.util
@@ -67,7 +69,7 @@ class PrepareSteerContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.runtime = Runtime(self.root, DelayedServer)
+        self.runtime = make_runtime(Runtime, self.root, DelayedServer)
         self.runtime.preparation_wait_seconds = .01
         self.server = self.runtime.connect()
 
@@ -481,7 +483,7 @@ class BackloggedServer(fixture.FakeServer):
 class PreparationReceiptContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), BackloggedServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), BackloggedServer)
 
     def tearDown(self):
         self.runtime.close()

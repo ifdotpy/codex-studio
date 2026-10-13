@@ -2,16 +2,17 @@
 """A busy input retains capacity if its old turn finishes before submission."""
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import threading
 import unittest
@@ -88,12 +89,10 @@ class BusyInputCapacityContract(unittest.TestCase):
         return observed, post_release
 
     def team(self, concurrency=8, global_concurrency=5):
-        global_limit = patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': str(global_concurrency)})
-        global_limit.start()
-        self.addCleanup(global_limit.stop)
         temp = tempfile.TemporaryDirectory(prefix='studio-busy-capacity-')
         self.addCleanup(temp.cleanup)
-        runtime = fixture.Runtime(Path(temp.name), fixture.fixture.FakeServer)
+        runtime = make_runtime(fixture.Runtime, Path(temp.name), fixture.fixture.FakeServer,
+                               environment_overrides={"CODEX_CANVAS_CONCURRENCY": str(global_concurrency)})
         self.addCleanup(runtime.close)
         lead = runtime.create({'name': 'Lead', 'cwd': temp.name, 'prompt': 'Coordinate', 'concurrency': concurrency})
         runtime.dispatch(lead['id'])

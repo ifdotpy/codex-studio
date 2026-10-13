@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Read state uses SQLite, exact results, and revision conflict checks."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
-from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch
@@ -123,7 +127,7 @@ class ChatReadStateContract(fixture.RuntimeContract):
         self.apply(agent)
         expected = self.apply(agent, read=False, revision=1)['readState']
         self.runtime.close()
-        self.runtime = fixture.Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.FakeServer)
         self.assertEqual(self.runtime.agent(agent['id'])['readState'], expected)
         self.assertEqual(self.apply(agent, read=False, revision=1)['readState'], expected)
         with self.assertRaisesRegex(ValueError, 'read state changed'):

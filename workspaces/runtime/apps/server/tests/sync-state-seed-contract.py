@@ -1,5 +1,7 @@
 """A Canvas chat node is seeded only as a chat entity."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -7,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -44,7 +46,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-builder-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                draft=True, defer=True)
@@ -63,7 +65,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-complaint-seed-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -97,7 +99,7 @@ class CanvasChatSeedContract(unittest.TestCase):
     def test_marker_one_without_runtime_owner_does_not_build_snapshots(self):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-no-owner-") as directory:
-            runtime = Runtime(Path(directory), fixture.FakeServer)
+            runtime = make_runtime(Runtime, Path(directory), fixture.FakeServer)
             try:
                 runtime.create({"name": "Lead", "cwd": str(runtime.root), "prompt": ""},
                                draft=True, defer=True)
@@ -216,7 +218,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-agent-seed-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -257,7 +259,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-all-collections-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             canvas = Canvas(root)
             canvas.runtime = runtime
             try:
@@ -343,7 +345,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -370,7 +372,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-wave-refresh-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 canvas = Canvas(root)
                 canvas.runtime = runtime
@@ -464,7 +466,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-room-deleted-member-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -487,7 +489,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-room-refresh-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -563,7 +565,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-no-phantom-tombstones-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -589,7 +591,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-malformed-runtime-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)
@@ -636,7 +638,7 @@ class CanvasChatSeedContract(unittest.TestCase):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-work-") as directory:
             root = Path(directory)
-            runtime = Runtime(root, fixture.FakeServer)
+            runtime = make_runtime(Runtime, root, fixture.FakeServer)
             try:
                 lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
                                       draft=True, defer=True)

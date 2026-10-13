@@ -2,11 +2,13 @@
 """Image workspace caller state, permissions, recovery, and failure contracts."""
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import HANG_GUARD_SECONDS
 
 import copy
@@ -15,12 +17,10 @@ import importlib.util
 import shutil
 import subprocess
 import shutil
-import sys
 import tempfile
 import threading
 import types
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
@@ -53,7 +53,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.repo = self.root / 'repo'
         shutil.copytree(self.repo_template, self.repo)
         self.repo = self.repo.resolve()
-        self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+        self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
         self.addCleanup(patch.stopall)
         patch('codex_worker_workspace.platform.system', return_value='Darwin').start()
@@ -241,7 +241,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
 
         with patch.object(fixture.f.Runtime, 'start_image_base', autospec=True,
                           side_effect=start) as resumed:
-            self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+            self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
         self.assertCountEqual([call.args[1:] for call in resumed.call_args_list],
                               [(str(self.repo), worker) for worker in workers])
 
@@ -426,7 +426,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                     record.pop('imageWorkspaceNoticeSent', None)
                     self.rt.put(db, 'agents', record)
                 self.rt.close()
-                self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+                self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
                 self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
                 self.rt._send_image_workspace_notice(worker_id, 'changed callback text', ready_id)
                 self.rt.dispatch(worker_id)

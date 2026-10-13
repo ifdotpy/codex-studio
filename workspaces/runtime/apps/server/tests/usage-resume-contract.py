@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Automatic usage-limit continuation keeps the exact thread and queued input."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 from server_test_waits import HANG_GUARD_SECONDS
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -60,7 +62,7 @@ class UsageResumeContract(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = ManualRuntime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(ManualRuntime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         original_call = self.server.call
         self.server.limit_result = {'rateLimits': {'primary': {'usedPercent': 100,
@@ -400,7 +402,7 @@ class UsageResumeContract(unittest.TestCase):
         self.assertGreater(before['dueAt'], before['updatedAt'])
         self.assertAlmostEqual(before['plannedAt'], reset, delta=1)
         self.runtime.close()
-        self.runtime = ManualRuntime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(ManualRuntime, Path(self.temp.name), fixture.FakeServer)
         after = self.runtime.agent(self.key)['usageResume']
         self.assertEqual(after['id'], before['id'])
         self.assertEqual(after['status'], 'scheduled')

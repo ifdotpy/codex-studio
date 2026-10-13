@@ -2,6 +2,8 @@
 """Reopen private states written by two historical runtimes and finish upgrades."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -12,10 +14,8 @@ from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 import importlib.util
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
-import sys
 import tarfile
 import tempfile
 import textwrap
@@ -26,8 +26,8 @@ import urllib.request
 import unittest
 from unittest.mock import patch
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime, runtime_environment
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -68,12 +68,13 @@ def seed_with_revision(revision: str, state: Path) -> None:
         import json, sqlite3, sys, time
         from pathlib import Path
         sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts'))
+        from runtime_test_environment import make_runtime
         from codex_runtime import Runtime
         class IdleServer:
             def __init__(self, *args, **kwargs): pass
             def close(self): pass
         root = Path(sys.argv[2])
-        runtime = Runtime(root, IdleServer)
+        runtime = make_runtime(Runtime, root, IdleServer, environment=dict(__import__("os").environ))
         try:
             with runtime.lock, runtime.db() as db:
                 agent = runtime.create({'name':'Legacy upgrade lead', 'cwd':str(root),
@@ -106,7 +107,7 @@ def seed_with_revision(revision: str, state: Path) -> None:
     """)
     subprocess.run([sys.executable, "-B", "-c", seed, str(source), str(state)],
                    check=True, cwd=ROOT, capture_output=True, text=True,
-                   env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                   env={**runtime_environment(state), "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
     # This contract covers the other resumable upgrades. The retired analytics
     # file copy is tested separately as an explicit startup refusal.
     with sqlite3.connect(state / "canvas.sqlite3") as db:
@@ -168,7 +169,7 @@ class UpgradeContract(unittest.TestCase):
                 finally:
                     canvas_db.close()
 
-                runtime = Runtime(state, IdleServer)
+                runtime = make_runtime(Runtime, state, IdleServer)
                 with runtime.read_db() as db:
                     after_tables = {row[0] for row in db.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'")}

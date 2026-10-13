@@ -5,13 +5,12 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 import importlib.util
 import json
-from pathlib import Path
 import sqlite3
-import sys
 import threading
 import time
 import unittest
@@ -80,7 +79,7 @@ class LifecycleScenarios(unittest.TestCase):
         if hold_rules_tick and not hasattr(self, "real_rules_tick"):
             self.real_rules_tick = Runtime.rules_tick
             Runtime.rules_tick = lambda runtime: None
-        self.runtime = Runtime(Path(self.temp.name), fixture.MonitorServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.MonitorServer)
         self.agent = self.runtime.agent(self.agent["id"])
         self.server = self.runtime.server or self.runtime.servers.get("default")
         original = self.runtime.run_monitor

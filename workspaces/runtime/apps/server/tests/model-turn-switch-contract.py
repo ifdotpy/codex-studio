@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """A loaded native thread keeps Studio's selected model for its next turn."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
 
@@ -43,7 +47,7 @@ class ModelTurnSwitchContract(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-model-turn-switch-")
         self.root = Path(self.temporary.name)
-        self.runtime = fixture.Runtime(self.root, LoadedThreadServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, LoadedThreadServer)
         self.server = self.runtime.connect()
         created = self.runtime.create({"name": "Lead", "cwd": str(self.root), "prompt": "Original task",
                                        "model": ASTRA, "effort": "high", "fast_mode": True, "yolo_mode": False})

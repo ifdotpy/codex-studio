@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Turn completion uses the exact item scope and preserves legacy labels."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from contextlib import contextmanager
 import importlib.util
@@ -32,7 +34,7 @@ TURN_INDEX_SQL = """CREATE INDEX runtime_item_turn_scope ON runtime_items(
 class TurnCompletionScope(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.FakeServer)
         self.runtime.closed = True
         self.runtime.changed.set()
         self.runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)
@@ -129,7 +131,7 @@ class TurnCompletionScope(unittest.TestCase):
             db.set_trace_callback(queries.append)
             return db
         with patch.object(codex_runtime, 'sqlite_connect', traced):
-            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.FakeServer)
+            self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.FakeServer)
             self.runtime.closed = True
             self.runtime.changed.set()
             self.runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)

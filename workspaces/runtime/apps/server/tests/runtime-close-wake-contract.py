@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Runtime shutdown wakes the search migration worker paused for disk space."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import tempfile
 import threading
@@ -36,7 +38,7 @@ class RuntimeCloseWakeContract(unittest.TestCase):
             free = 0
 
         with tempfile.TemporaryDirectory(prefix='runtime-close-wake-') as directory:
-            runtime = Runtime(Path(directory), FixtureServer)
+            runtime = make_runtime(Runtime, Path(directory), FixtureServer)
             try:
                 with runtime.lock, runtime.db() as db:
                     db.execute("UPDATE runtime_search_rollout SET phase='building' WHERE id=1")

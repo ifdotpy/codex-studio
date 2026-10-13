@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Claude session controls against isolated SQLite and a fake native provider."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 from concurrent.futures import ThreadPoolExecutor
@@ -71,7 +73,7 @@ class Server(f.FakeServer):
 class Controls(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.rt = Runtime(Path(self.tmp.name), Server)
+        self.rt = make_runtime(Runtime, Path(self.tmp.name), Server)
         agent = self.rt.new_lead({})
         self.key = agent['id']
         with self.rt.lock, self.rt.db() as db:

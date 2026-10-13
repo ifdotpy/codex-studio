@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Exact historical tool completions settle tasks without changing the current turn."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import unittest
 
@@ -27,7 +31,7 @@ class OldTurnTaskCompletion(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.runtime = ControlledRuntime(self.root, f.FakeServer)
+        self.runtime = make_runtime(ControlledRuntime, self.root, f.FakeServer)
         self.agent = self.runtime.create({'name': 'Exact tool history',
             'cwd': str(self.root), 'prompt': 'Fixture'}, defer=True)
         self.runtime.connect()

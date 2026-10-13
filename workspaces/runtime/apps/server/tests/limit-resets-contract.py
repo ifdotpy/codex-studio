@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Exact reset credits, account identity and uncertain RPC retries. No live credit use."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import copy
@@ -82,7 +84,7 @@ class ResetContracts(unittest.TestCase):
     def setUp(self):
         f.WorkspaceContract.setUp(self)
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, ResetServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, ResetServer)
         self.server = self.runtime.connect()
 
     tearDown = f.WorkspaceContract.tearDown
@@ -163,7 +165,7 @@ class ResetContracts(unittest.TestCase):
         original = self.server.consume_calls[0]
         snapshot = copy.deepcopy(self.server.snapshot)
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, ResetServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, ResetServer)
         self.server = self.runtime.connect()
         self.server.snapshot = snapshot
         self.server.outcomes = ["alreadyRedeemed"]

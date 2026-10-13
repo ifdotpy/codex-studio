@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Idle native subscription release, with a fake Codex app-server."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import importlib.util
@@ -91,7 +93,7 @@ class ReleaseServer(fixture.FakeServer):
 class NativeReleaseContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.rt = Runtime(Path(self.tmp.name), ReleaseServer)
+        self.rt = make_runtime(Runtime, Path(self.tmp.name), ReleaseServer)
 
     def tearDown(self):
         self.rt.close()
