@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persisted agent rename behavior against Python and Rust HTTP backends."""
+"""Persisted agent creation, settings, and rename behavior across HTTP backends."""
 
 from __future__ import annotations
 
@@ -88,6 +88,221 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def test_draft_creation_replays_same_content_and_syncs_python_shape(self):
+        request = {
+            "id": "b7f4742c-f61d-4c77-bcfe-51edfc3d17a9",
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        response = self.backend.request(
+            "POST", "/api/leads", body=request, headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        record = response.json()
+        self.assertEqual(record["id"], request["id"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+            ).fetchone()
+            events = database.execute(
+                "SELECT COUNT(*) FROM runtime_events WHERE agent=?", (request["id"],)
+            ).fetchone()[0]
+            projection = database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (request["id"],),
+            ).fetchone()
+        self.assertIsNotNone(stored)
+        stored_record = json.loads(stored[0])
+        self.assertTrue(stored_record["quickCreate"])
+        self.assertTrue(stored_record["needsTitle"])
+        self.assertEqual(stored_record["cwd"], str(self.backend.cwd))
+        self.assertEqual(events, 0)
+        self.assertIsNotNone(projection)
+        replay = self.backend.request(
+            "POST", "/api/leads", body=request, headers=self.headers()
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
+        changed = {**request, "yolo_mode": False}
+        before_conflict = sqlite3.connect(self.backend.state / "canvas.sqlite3")
+        try:
+            old_record = before_conflict.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+            ).fetchone()
+            old_projection = before_conflict.execute(
+                "SELECT seq,hash,payload,deleted FROM sync_entities "
+                "WHERE collection='agent' AND id=?",
+                (request["id"],),
+            ).fetchone()
+        finally:
+            before_conflict.close()
+        conflict = self.backend.request(
+            "POST", "/api/leads", body=changed, headers=self.headers()
+        )
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        after = sqlite3.connect(self.backend.state / "canvas.sqlite3")
+        try:
+            self.assertEqual(
+                after.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+                ).fetchone(),
+                old_record,
+            )
+            self.assertEqual(
+                after.execute(
+                    "SELECT seq,hash,payload,deleted FROM sync_entities "
+                    "WHERE collection='agent' AND id=?",
+                    (request["id"],),
+                ).fetchone(),
+                old_projection,
+            )
+        finally:
+            after.close()
+
+    def test_persisted_configure_and_exclusions_update_python_written_agent(self):
+        configure = self.backend.request(
+            "POST",
+            "/api/configure",
+            body={"id": self.agent_id, "maxAgents": 10, "tokenBudget": 1234},
+            headers=self.headers(),
+        )
+        self.assertEqual(configure.status, 200, configure.body[:1000])
+        self.assertEqual(configure.json()["maxAgents"], 10)
+        self.assertEqual(configure.json()["tokenBudget"], 1234)
+        conversation = self.backend.request(
+            "POST",
+            "/api/conversation",
+            body={"id": self.agent_id, "excluded_account_keys": ["other-account"]},
+            headers=self.headers(),
+        )
+        self.assertEqual(conversation.status, 200, conversation.body[:1000])
+        self.assertEqual(conversation.json()["excludedAccountKeys"], ["other-account"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()
+            projection = database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.agent_id,),
+            ).fetchone()
+        stored = json.loads(row[0])
+        self.assertEqual(stored["maxAgents"], 10)
+        self.assertEqual(stored["tokenBudget"], 1234)
+        self.assertEqual(stored["excludedAccountKeys"], ["other-account"])
+        self.assertEqual(
+            json.loads(projection[0])["value"]["excludedAccountKeys"],
+            ["other-account"],
+        )
+
+    def test_rust_dependency_refusal_writes_nothing(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("Python reference backend implements provider settings")
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            before = database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'runtime_%' ORDER BY name"
+            ).fetchall()
+            records = {
+                table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
+                for table in before
+            }
+        response = self.backend.request(
+            "POST",
+            "/api/conversation/delete",
+            body={"id": self.agent_id},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 501, response.body[:1000])
+        self.assertEqual(
+            response.json(),
+            {"error": "Not implemented: requires agent-management/conversation-termination"},
+        )
+        reuse = self.backend.request(
+            "POST",
+            "/api/leads",
+            body={"reuse_empty": True},
+            headers=self.headers(),
+        )
+        self.assertEqual(reuse.status, 501, reuse.body[:1000])
+        self.assertEqual(
+            reuse.json(),
+            {"error": "Not implemented: requires agent-management/empty-chat-reuse"},
+        )
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            after = database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'runtime_%' ORDER BY name"
+            ).fetchall()
+            self.assertEqual(after, before)
+            self.assertEqual(
+                {
+                    table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
+                    for table in after
+                },
+                records,
+            )
+
+    def test_rust_agent_creation_writes_one_pending_event_and_replays(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("Python reference backend may start a real provider turn")
+        request = {
+            "id": "45c18ad9-c7c1-4dba-a65b-986914448b77",
+            "cwd": str(self.backend.cwd),
+            "prompt": "Persist the initial task before any provider starts.",
+            "name": "Persisted lead",
+            "workspaceMode": "worktree",
+        }
+        response = self.backend.request(
+            "POST", "/api/agents", body=request, headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["id"], request["id"])
+        self.assertEqual(response.json()["status"], "queued")
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            agent = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+            ).fetchone()
+            event = database.execute(
+                "SELECT kind,text,status FROM runtime_events WHERE id=?",
+                (request["id"] + ":initial",),
+            ).fetchone()
+            projection = database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (request["id"],),
+            ).fetchone()
+        self.assertEqual(json.loads(agent[0])["prompt"], request["prompt"])
+        self.assertEqual(
+            event,
+            ("user", request["prompt"], "pending"),
+        )
+        self.assertIsNotNone(projection)
+        replay = self.backend.request(
+            "POST", "/api/agents", body=request, headers=self.headers()
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
+        changed = {**request, "prompt": "Different content must not replace the task."}
+        before = (agent, event, projection)
+        conflict = self.backend.request(
+            "POST", "/api/agents", body=changed, headers=self.headers()
+        )
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            after = (
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+                ).fetchone(),
+                database.execute(
+                    "SELECT kind,text,status FROM runtime_events WHERE id=?",
+                    (request["id"] + ":initial",),
+                ).fetchone(),
+                database.execute(
+                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                    (request["id"],),
+                ).fetchone(),
+            )
+        self.assertEqual(after, before)
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")
