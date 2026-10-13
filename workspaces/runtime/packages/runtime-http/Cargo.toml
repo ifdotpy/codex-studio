@@ -28,6 +28,8 @@ openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+studio-runtime-providers = { path = "../runtime-providers" }
+tempfile = { workspace = true }
 rusqlite = { workspace = true }
 tower = { workspace = true }
 

@@ -1976,10 +1976,12 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
 ]

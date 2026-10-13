@@ -18,6 +18,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub(crate) callback_runtime:
+        Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
@@ -65,6 +67,7 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            callback_runtime: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,
@@ -84,6 +87,15 @@ impl HttpState {
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
+    }
+
+    /// Attach the retained provider callback reply adapter.
+    pub fn with_callback_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::callback_runtime::CallbackRuntime>,
+    ) -> Self {
+        self.callback_runtime = Some(runtime);
+        self
     }
 
     /// Attach the retained account refresh driver used by account admission.
