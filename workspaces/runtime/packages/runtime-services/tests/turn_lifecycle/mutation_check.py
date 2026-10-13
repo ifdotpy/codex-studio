@@ -34,7 +34,9 @@ def main():
         if source.is_file():
             destination = work / name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            # Fresh mtimes invalidate a cached mutant left by any previous run.
+            # copy2 can make pristine sources older than the mutant artifact.
+            shutil.copy(source, destination)
     mutations = json.loads(args.manifest.read_text())
     assert len({m["id"] for m in mutations}) == len(mutations), "duplicate mutation ID"
     if args.only:
