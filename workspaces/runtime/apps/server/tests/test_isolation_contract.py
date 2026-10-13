@@ -375,8 +375,11 @@ finally:
                 }
                 with patch.dict(os.environ, hostile):
                     environment = runtime_environment(backend)
-                self.assertFalse(set(hostile) - {"CODEX_BIN", "PATH"} & set(environment))
+                self.assertFalse(
+                    set(hostile) - {"CODEX_BIN", "STUDIO_CLAUDE_BIN", "PATH"} & set(environment)
+                )
                 self.assertEqual(environment["CODEX_BIN"], str(backend.root / "bin/codex"))
+                self.assertEqual(environment["STUDIO_CLAUDE_BIN"], backend._claude_bin)
                 self.assertEqual(environment["CODEX_AGENTS_NATIVE_RUNTIME_PIN"], environment["CODEX_BIN"])
                 self.assertEqual(environment["PATH"].split(os.pathsep),
                                  [str(backend.root / "bin"), *os.defpath.split(os.pathsep)])
