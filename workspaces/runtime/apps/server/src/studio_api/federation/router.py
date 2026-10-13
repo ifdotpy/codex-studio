@@ -84,7 +84,7 @@ def _register_request_schema(
         raise RuntimeError(f"Signed federation operation {action!r} has no route path")
     SIGNED_REQUEST_OPERATION_MODELS[path] = model
     schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
-    register_route_components(route, {name: schema})
+    register_route_components(route, {name: schema}, models=(model,))
 
 
 def create_router(context: ApiContext) -> APIRouter:

@@ -249,7 +249,7 @@ class BoundaryContractTests(TimedBoundaryTest):
             "workspaceMode": "worktree"}, headers=headers)
         assert_status(lead, 200)
         lead_id = lead.json()["id"]
-        body = {"id": "http-contract-provider-message", "room": lead_id,
+        body = {"id": "20000000-0000-4000-8000-000000000003", "room": lead_id,
                 "text": "Reply with the fixture result.", "delivery": "queue", "assets": []}
         provider_request_started = time.monotonic()
         sent = backend.request("POST", "/api/messages", body=body, headers=headers)
@@ -365,7 +365,7 @@ class RestartContractTests(TimedBoundaryTest):
             "workspaceMode": "worktree"}, headers=headers)
         assert_status(lead, 200)
         lead_id = lead.json()["id"]
-        provider_message = {"id": "http-contract-restart-provider", "room": lead_id,
+        provider_message = {"id": "20000000-0000-4000-8000-000000000004", "room": lead_id,
                             "text": "Reply with the fixture result.", "delivery": "queue", "assets": []}
         sent = backend.request("POST", "/api/messages", body=provider_message, headers=headers)
         assert_status(sent, 200)

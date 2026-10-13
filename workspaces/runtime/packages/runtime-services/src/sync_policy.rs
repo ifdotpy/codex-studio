@@ -208,10 +208,9 @@ fn validate_preference(
         {
             return Err(SyncPolicyError::InvalidPreferences);
         }
-    } else if !value
-        .as_str()
-        .is_some_and(|label| !python_strip_empty(label) && label.chars().count() <= 128)
-    {
+    } else if !value.as_str().is_some_and(|label| {
+        !crate::event_write::python_strip(label).is_empty() && label.chars().count() <= 128
+    }) {
         return Err(SyncPolicyError::InvalidPreferences);
     }
     Ok(())
@@ -249,14 +248,6 @@ fn preference_rank(field: &Value) -> (i64, String, String) {
             .to_owned(),
         canonical_json(field.get("value").unwrap_or(&Value::Null)),
     )
-}
-
-fn python_strip_empty(value: &str) -> bool {
-    value
-        .trim_matches(|character: char| {
-            character.is_whitespace() || ('\u{001c}'..='\u{001f}').contains(&character)
-        })
-        .is_empty()
 }
 
 fn prune_preferences(fields: &mut Map<String, Value>) {

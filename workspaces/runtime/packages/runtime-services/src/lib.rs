@@ -9,13 +9,20 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod agents_create;
+pub mod coordination;
 pub mod event_write;
 pub mod panels;
 pub mod progress_panel;
 pub mod provider_session;
+pub mod questions_reads;
+pub mod queue_write;
 pub mod rules;
+pub mod scheduler;
 pub mod sync_policy;
+pub mod terminal_driver;
 pub mod transcript;
 pub mod work_policy;
+pub mod work_write;
 pub mod workspace_files;
 pub mod workspace_views;

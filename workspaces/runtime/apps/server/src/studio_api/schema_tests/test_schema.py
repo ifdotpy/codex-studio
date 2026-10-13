@@ -29,12 +29,13 @@ from studio_api.work.models import (
     PersistedToolRequest,
     _record_response_model,
 )
-from codex_records import WorktreeCleanupRecord
+from codex_records import SafeNumber, WorktreeCleanupRecord
 import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_types import render
 from studio_api.schema import (
+    canonical_openapi_json,
     entity_schema_names,
     bound_integer_schemas,
     normalize_json_value_schema,
@@ -51,6 +52,7 @@ from studio_api.request_schema_audit import (
     request_schema_audit,
 )
 from studio_api.schema_tests.constraint_diff import (
+    _canonical,
     constraint_changes,
     constraint_loosening_findings,
     constraint_snapshot,
@@ -115,6 +117,39 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_openapi_defaults_ignore_unrelated_same_named_models(self) -> None:
+        from pydantic import BaseModel
+
+        before = canonical_openapi_json(openapi_document())
+        type(
+            "ConfigureRequest",
+            (BaseModel,),
+            {"__annotations__": {"unrelated": str}, "unrelated": "value"},
+        )
+        after = canonical_openapi_json(openapi_document())
+        self.assertEqual(after, before)
+
+    def test_openapi_documents_explicit_null_defaults(self) -> None:
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        configure = schemas["ConfigureRequest"]
+        assert isinstance(configure, dict)
+        properties = configure["properties"]
+        assert isinstance(properties, dict)
+        max_agents = properties["maxAgents"]
+        assert isinstance(max_agents, dict)
+        self.assertIn("default", max_agents)
+        self.assertIsNone(max_agents["default"])
+
+    def test_constraint_diff_ignores_documentation_defaults(self) -> None:
+        self.assertEqual(
+            _canonical({"type": "string", "default": None}),
+            _canonical({"type": "string"}),
+        )
+
     def test_record_integer_domains_are_explicit_on_typed_dict_fields(self) -> None:
         source = Path(record_contracts.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -188,6 +223,17 @@ class SchemaContractTests(unittest.TestCase):
                 for invalid_value in invalid_values:
                     with self.assertRaises(ValidationError):
                         adapter.validate_python(invalid_value)
+
+        number_adapter = TypeAdapter(SafeNumber)
+        number_schema = number_adapter.json_schema()
+        self.assertEqual(number_schema["type"], "number")
+        self.assertEqual(number_schema["minimum"], MIN_SAFE_INTEGER)
+        self.assertEqual(number_schema["maximum"], MAX_SAFE_INTEGER)
+        for number_value in (MIN_SAFE_INTEGER, 0, 1.5, MAX_SAFE_INTEGER):
+            number_adapter.validate_python(number_value)
+        for invalid_number in (MIN_SAFE_INTEGER - 1, MAX_SAFE_INTEGER + 1):
+            with self.assertRaises(ValidationError):
+                number_adapter.validate_python(invalid_number)
 
     def test_persisted_rule_and_negative_exit_code_fit_bounded_response_models(self) -> None:
         rule = RuleRecord.model_validate(
@@ -413,6 +459,24 @@ class SchemaContractTests(unittest.TestCase):
             {(item["constraint"], item["pointer"]) for item in tightenings},
             {("enum", "/paths/~1example/post/operationParameters/header/X-Mode/schema")},
         )
+
+    def test_constraint_diff_treats_bounded_number_as_tighter_than_integer_number_union(self) -> None:
+        old: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "@anyOf": ['{"type":"integer"}', '{"type":"number"}'],
+            }
+        }
+        new: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "type": "number",
+                "minimum": MIN_SAFE_INTEGER,
+                "maximum": MAX_SAFE_INTEGER,
+            }
+        }
+        loosenings, _ = constraint_changes(old, new)
+        self.assertEqual(loosenings, [])
 
     def test_constraint_diff_ignores_unreachable_components(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

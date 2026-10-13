@@ -72,7 +72,9 @@ async fn panel(
         })
         .await
         .map_err(|_| ApiError::internal())??;
-        generated_json::<crate::generated::ProgressPanel>(result)
+        Ok(Json(super::generated_json::<
+            crate::generated::ProgressPanel,
+        >(result)?))
     }
 }
 
@@ -103,7 +105,9 @@ async fn save_panel_layout(
         })
         .await
         .map_err(|_| ApiError::internal())??;
-        generated_json::<crate::generated::PanelLayoutResult>(result)
+        Ok(Json(super::generated_json::<
+            crate::generated::PanelLayoutResult,
+        >(result)?))
     }
 }
 
@@ -166,14 +170,16 @@ fn field_validation(section: &str, field: &str) -> ApiError {
 
 async fn profiles(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let profiles = tokio::task::spawn_blocking(move || {
+    let profiles = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let records = ProfileRepository::list(&connection).map_err(profile_read_error)?;
         Ok(json!({"profiles": records}))
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::ProfileList>(profiles)
+    Ok(Json(
+        super::generated_json::<crate::generated::ProfileList>(profiles)?,
+    ))
 }
 
 async fn update_profiles(
@@ -185,9 +191,6 @@ async fn update_profiles(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        if !ProfileRepository::available(&connection).map_err(|_| ApiError::internal())? {
-            return Err(schema_dependency_error());
-        }
         let id = if requested_id.is_empty() {
             ProfileRepository::new_id(&connection).map_err(|_| ApiError::internal())?
         } else {
@@ -237,7 +240,9 @@ async fn update_profiles(
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::ProfileMutation>(result)
+    Ok(Json(super::generated_json::<
+        crate::generated::ProfileMutation,
+    >(result)?))
 }
 
 fn profile_field_error(field: ProfileField) -> ApiError {
@@ -263,21 +268,4 @@ fn profile_read_error(error: StoreError) -> ApiError {
         }
         _ => ApiError::internal(),
     }
-}
-
-fn schema_dependency_error() -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "Not implemented: requires store-bootstrap/workspace-profiles-schema",
-    )
-}
-
-fn generated_json<T>(value: Value) -> Result<Json<Value>, ApiError>
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let typed: T = serde_json::from_value(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(typed)
-        .map(Json)
-        .map_err(|_| ApiError::internal())
 }

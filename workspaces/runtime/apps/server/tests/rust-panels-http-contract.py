@@ -373,7 +373,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_missing_profiles_table_reads_empty_and_refuses_writes(self) -> None:
+    def test_missing_profiles_table_fails_closed(self) -> None:
         state = self.backend.state
         schema = profile_table(state)
         self.assertIsNotNone(schema)
@@ -382,8 +382,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DROP TABLE runtime_profiles")
         try:
             listed = self.backend.request("GET", "/api/profiles", headers=self.headers())
-            self.assertEqual(listed.status, 200, listed.body[:1000])
-            self.assertEqual(listed.json(), {"profiles": []})
+            self.assertEqual(listed.status, 500, listed.body[:1000])
 
             refused = self.backend.request(
                 "POST",
@@ -398,11 +397,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 },
                 headers=self.headers(),
             )
-            self.assertEqual(refused.status, 501, refused.body[:1000])
-            self.assertEqual(
-                refused.json()["error"],
-                "Not implemented: requires store-bootstrap/workspace-profiles-schema",
-            )
+            self.assertEqual(refused.status, 500, refused.body[:1000])
             self.assertIsNone(profile_table(state))
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:

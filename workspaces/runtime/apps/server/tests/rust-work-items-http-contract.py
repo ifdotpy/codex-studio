@@ -149,8 +149,12 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_partial_writes_refuse_without_writing(self):
         cases = (
-            ("POST", "/api/work", {"agent": self.agent_id, "action": "create", "title": "No write"}, "event-driver/work-items"),
-            ("POST", "/api/queue", {"agent": self.agent_id, "action": "cancel", "message_id": "python-queue-1"}, "event-driver/queue-mutations"),
+            (
+                "POST",
+                "/api/work",
+                {"agent": self.agent_id, "action": "claim", "task_id": "assignment-required"},
+                "worker-driver/work-assignment",
+            ),
             ("POST", "/api/organization", {"id": self.agent_id, "pinned": True}, "workspace-state/organization-effects"),
         )
         before = work_state_snapshot(self.backend.state)
@@ -328,7 +332,9 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DROP TABLE runtime_work")
             database.execute("DROP TABLE runtime_plans")
             database.execute("DROP TABLE runtime_annotations")
+            database.execute("DROP TABLE runtime_operation_receipts")
             database.execute("DROP TABLE runtime_event_meta")
+            database.execute("DROP TABLE runtime_profiles")
         self.backend.start()
 
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
@@ -337,7 +343,8 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )}
         self.assertTrue({
             "runtime_assets", "runtime_work", "runtime_plans",
-            "runtime_annotations", "runtime_event_meta",
+            "runtime_annotations", "runtime_operation_receipts", "runtime_event_meta",
+            "runtime_profiles",
         }.issubset(tables))
 
         work = self.backend.request(

@@ -30,6 +30,70 @@ STATIC_ALLOWLIST = frozenset({
     "icon.svg", "icon-192.png", "icon-512.png",
 })
 
+
+def route_models(routes: Sequence[BaseRoute]) -> set[type[BaseModel]]:
+    """Return Pydantic models reachable from this application's API routes."""
+    models: set[type[BaseModel]] = set()
+    pending: list[type[BaseModel]] = []
+
+    def collect_type(annotation: object) -> None:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if annotation not in models:
+                models.add(annotation)
+                pending.append(annotation)
+            return
+        for argument in get_args(annotation):
+            collect_type(argument)
+
+    def collect_field(field: object) -> None:
+        collect_type(getattr(field, "type_", None))
+        field_info = getattr(field, "field_info", None)
+        collect_type(getattr(field_info, "annotation", None))
+
+    pending_routes = list(routes)
+    seen_routes: set[int] = set()
+    while pending_routes:
+        route = pending_routes.pop()
+        if id(route) in seen_routes:
+            continue
+        seen_routes.add(id(route))
+        if not isinstance(route, APIRoute):
+            original_router = getattr(route, "original_router", None)
+            pending_routes.extend(getattr(original_router, "routes", ()))
+            continue
+
+        collect_type(route.response_model)
+        for model in getattr(route, "studio_contract_models", ()):
+            collect_type(model)
+        collect_field(route.body_field)
+        for response in route.responses.values():
+            if isinstance(response, dict):
+                collect_type(response.get("model"))
+
+        dependants = [route.dependant]
+        seen_dependants: set[int] = set()
+        while dependants:
+            dependant = dependants.pop()
+            if id(dependant) in seen_dependants:
+                continue
+            seen_dependants.add(id(dependant))
+            dependants.extend(dependant.dependencies)
+            for name in (
+                "body_params",
+                "cookie_params",
+                "header_params",
+                "path_params",
+                "query_params",
+            ):
+                for field in getattr(dependant, name):
+                    collect_field(field)
+
+    while pending:
+        model = pending.pop()
+        for field in model.model_fields.values():
+            collect_type(field.annotation)
+    return models
+
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
 

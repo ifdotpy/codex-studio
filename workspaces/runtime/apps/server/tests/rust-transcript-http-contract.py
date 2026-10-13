@@ -105,7 +105,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST",
                 "/api/messages",
                 body={
-                    "id": "rust-transcript-http-contract-message",
+                    "id": "f13f1a2b-6c8d-4e0f-9123-abcdef012345",
                     "room": cls.agent,
                     "text": "Reply with the fixture result.",
                     "delivery": "queue",

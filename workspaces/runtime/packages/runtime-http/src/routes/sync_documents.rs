@@ -6,8 +6,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
 use studio_runtime_store::SyncDocumentsRepository;
@@ -132,9 +130,9 @@ pub(crate) async fn pull(
     .await
     .map_err(|_| ApiError::internal())??;
     let response = if result.get("reset").and_then(Value::as_bool) == Some(true) {
-        generated_json::<crate::generated::SyncPullResetResponse>(result)?
+        super::generated_json::<crate::generated::SyncPullResetResponse>(result)?
     } else {
-        generated_json::<crate::generated::SyncPullResponse>(result)?
+        super::generated_json::<crate::generated::SyncPullResponse>(result)?
     };
     Ok(Json(response))
 }
@@ -186,9 +184,9 @@ pub(crate) async fn push_drafts(
         }
     }
     if !has_rows {
-        return Ok(Json(generated_json::<Vec<crate::generated::SyncDocument>>(
-            Value::Array(Vec::new()),
-        )?));
+        return Ok(Json(super::generated_json::<
+            Vec<crate::generated::SyncDocument>,
+        >(Value::Array(Vec::new()))?));
     }
     Err(dependency_error(
         "POST",
@@ -263,17 +261,9 @@ pub(crate) async fn push_preferences(
             response["_syncEntitiesAfter"] = json!(sync_after);
         }
     }
-    Ok(Json(generated_json::<
+    Ok(Json(super::generated_json::<
         crate::generated::PreferencePushResponse,
     >(response)?))
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
 
 fn draft_validation_error(index: usize, document: &str) -> ApiError {

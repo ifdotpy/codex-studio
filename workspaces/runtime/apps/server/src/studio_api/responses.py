@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -259,7 +260,12 @@ def install_error_response_docs(app: FastAPI) -> None:
     setattr(app, "openapi", openapi)
 
 
-def register_route_components(route: object, components: Mapping[str, JsonValue]) -> None:
+def register_route_components(
+    route: object,
+    components: Mapping[str, JsonValue],
+    *,
+    models: Sequence[type[BaseModel]] = (),
+) -> None:
     """Attach named schema components to one FastAPI route for app assembly."""
     current = getattr(route, "openapi_extra", None)
     extras = dict(current) if isinstance(current, dict) else {}
@@ -268,3 +274,5 @@ def register_route_components(route: object, components: Mapping[str, JsonValue]
     registered.update(components)
     extras[OPENAPI_COMPONENTS_EXTENSION] = registered
     setattr(route, "openapi_extra", extras)
+    current_models = getattr(route, "studio_contract_models", ())
+    setattr(route, "studio_contract_models", (*current_models, *models))

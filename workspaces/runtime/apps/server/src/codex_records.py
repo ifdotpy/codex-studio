@@ -8,10 +8,10 @@ remain separate contracts; known disagreements are checked in
 # Runtime reuses these overloads as its public class attributes under TYPE_CHECKING.
 # Helpers use this narrow Protocol when they need only record-store operations.
 
-from typing import Literal, Protocol, TYPE_CHECKING, overload
+from typing import Annotated, Literal, Protocol, TYPE_CHECKING, overload
 from typing_extensions import NotRequired, TypedDict
-from pydantic import ConfigDict
-from studio_api.models import Int64, SafeInt, SignedSafeInt, UInt64
+from pydantic import ConfigDict, Field
+from studio_api.models import Int64, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, SafeInt, SignedSafeInt, UInt64
 
 if TYPE_CHECKING:
     import sqlite3
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
+SafeNumber = Annotated[float, Field(ge=MIN_SAFE_INTEGER, le=MAX_SAFE_INTEGER)]
 
 AgentStatusValue = Literal[
     "unknown", "idle", "queued", "starting", "running", "waiting", "approval",
@@ -382,14 +383,14 @@ class UsageResumeRecord(TypedDict):
 
 
 class RateLimitWindowRecord(TypedDict):
-    usedPercent: NotRequired[SafeInt | float]
-    resetsAt: NotRequired[SafeInt | float]
+    usedPercent: NotRequired[SafeNumber]
+    resetsAt: NotRequired[SafeNumber]
 
 
 class RateLimitBucketRecord(TypedDict):
     primary: NotRequired[RateLimitWindowRecord]
     secondary: NotRequired[RateLimitWindowRecord]
-    individualLimit: NotRequired[dict[str, SafeInt | float]]
+    individualLimit: NotRequired[dict[str, SafeNumber]]
     rateLimitReachedType: NotRequired[JsonValue]
     spendControlReached: NotRequired[bool]
 
@@ -405,7 +406,7 @@ class RateLimitSnapshotRecord(TypedDict):
     error: NotRequired[JsonValue]
     stale: NotRequired[bool]
     accountKey: NotRequired[str]
-    at: NotRequired[SafeInt | float | None]
+    at: NotRequired[SafeNumber | None]
 
 
 class AccountDataRecord(TypedDict):
@@ -601,14 +602,14 @@ class MonitorRecord(TypedDict):
     timeout_ms: NotRequired[SafeInt]
     stallTimeoutSeconds: NotRequired[SafeInt]
     livenessCommand: NotRequired[str]
-    activityAt: NotRequired[SafeInt | float]
+    activityAt: NotRequired[SafeNumber]
     activityGeneration: NotRequired[SafeInt]
     stallWakeGeneration: NotRequired[SignedSafeInt]
     wakeOn: NotRequired[str]
     successExitCodes: NotRequired[list[SafeInt]]
     status: NotRequired[str]
-    created: NotRequired[SafeInt | float]
-    finished: NotRequired[SafeInt | float | None]
+    created: NotRequired[SafeNumber]
+    finished: NotRequired[SafeNumber | None]
     exitCode: NotRequired[SignedSafeInt | None]
     tail: NotRequired[str]
     bytes: NotRequired[SafeInt]
@@ -631,7 +632,7 @@ class MonitorRecord(TypedDict):
 class ToolRequestTimingRecord(TypedDict):
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[SafeInt | float]
+    callbackStartedAt: NotRequired[SafeNumber]
     executionQueueDelayMs: NotRequired[float]
     handlerEndedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
     handlerStartedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
@@ -640,7 +641,7 @@ class ToolRequestTimingRecord(TypedDict):
     reservationDelayMs: NotRequired[float]
     reservationEndedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
     reservationLockedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
-    wireReceivedAt: NotRequired[SafeInt | float]
+    wireReceivedAt: NotRequired[SafeNumber]
 
 
 class ToolRequestRecord(TypedDict):
@@ -675,11 +676,11 @@ class ToolRequestRecord(TypedDict):
     supervisor: NotRequired[JsonObject]
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[SafeInt | float]
+    callbackStartedAt: NotRequired[SafeNumber]
     executionQueueDelayMs: NotRequired[float]
     queueDelayMs: NotRequired[float]
     reservationDelayMs: NotRequired[float]
-    wireReceivedAt: NotRequired[SafeInt | float]
+    wireReceivedAt: NotRequired[SafeNumber]
 
 
 class AgentActivityRecord(TypedDict):
@@ -985,7 +986,7 @@ class WorktreeCleanupRecord(TypedDict):
     relative: str
     branch: NotRequired[str | None]
     head: NotRequired[str | None]
-    identity: list[SafeInt | float | str | None]
+    identity: list[SafeNumber | str | None]
     gitFile: NotRequired[list[Int64]]  # filesystem identity includes epoch nanoseconds
     rootFile: NotRequired[list[Int64]]  # filesystem identity includes epoch nanoseconds
     missing: NotRequired[bool]
@@ -1018,7 +1019,7 @@ class CleanedWorktreeRecord(TypedDict):
     branch: NotRequired[str | None]
     bytes: NotRequired[SafeInt | None]
     head: NotRequired[str | None]
-    identity: NotRequired[list[SafeInt | float | str | None]]
+    identity: NotRequired[list[SafeNumber | str | None]]
     relative: NotRequired[str]
     repo: NotRequired[str]
     root: NotRequired[str]
@@ -1081,7 +1082,7 @@ class BudgetStateRecord(TypedDict):
     noticeSpent: SafeInt
     counter: SafeInt | None
     thread: str | None
-    noticeAt: SafeInt | float
+    noticeAt: SafeNumber
     created: float
     lastAmount: SafeInt | None
     ambiguousNotices: list[str]
