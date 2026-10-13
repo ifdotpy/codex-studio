@@ -109,7 +109,8 @@ pub(crate) async fn pull(
         if let Some(agent) = scope.strip_prefix("transcript:") {
             let mut response = transcript::pull_scope(&store, &scope, agent, after)
                 .map_err(super::transcript::map_transcript_error)?;
-            response["generation"] = json!(generation);
+            // Python samples generation after transcript maintenance commits.
+            response["generation"] = json!(store.generation().map_err(|_| ApiError::internal())?);
             if !validators.validate_stored("SyncPullResponse", &response)
                 || serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone())
                     .is_err()
