@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import json
 from pathlib import Path
 import sqlite3
@@ -10,6 +12,8 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+
+isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from http_backend_harness import BACKGROUND_OWNED_FIELDS, no_write_snapshot
