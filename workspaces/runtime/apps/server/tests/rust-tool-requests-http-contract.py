@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import importlib.util
 import unittest
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -23,7 +24,7 @@ from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
 def database_snapshot(state: Path):
-    with sqlite3.connect(f"file:{state / 'canvas.sqlite3'}?mode=ro", uri=True) as database:
+    with closing(sqlite3.connect(f"file:{state / 'canvas.sqlite3'}?mode=ro", uri=True)) as database:
         tables = database.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).fetchall()
@@ -42,6 +43,47 @@ def normalized(value):
     return value
 
 def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, location_outbox=False, saved_results=None):
+    # Most cases need only persisted fixture rows. Seed them through SQLite
+    # with the same payload and execution-effect helpers; the Python oracle and
+    # outbox cases need a Runtime, which owns the state directory exclusively.
+    if not settlement_oracle and not location_outbox:
+        from codex_payloads import externalize_record, externalize_result, release_db_writer_lock
+        from codex_execution import reconcile_effect
+
+        class RecordRuntime:
+            @staticmethod
+            def agent(agent_id, database):
+                row = database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+                ).fetchone()
+                return json.loads(row[0]) if row else None
+
+        database = sqlite3.connect(backend.state / "canvas.sqlite3")
+        try:
+            for key, result in (saved_results or {}).items():
+                stored = externalize_result(backend.state, database, result)
+                database.execute(
+                    "INSERT INTO runtime_tool_results(id,result) VALUES (?,?)",
+                    (key, json.dumps(stored)),
+                )
+            for record in records:
+                stored = externalize_record(backend.state, database, "tool_requests", record)
+                database.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES (?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                    (stored["id"], json.dumps(stored)),
+                )
+                reconcile_effect(RecordRuntime(), database, "tool_requests", stored)
+            database.executemany(
+                "INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES (?,?,?)",
+                aliases,
+            )
+            database.commit()
+        finally:
+            release_db_writer_lock(database)
+            database.close()
+        return {}
+
     backend.stop()
     spec = importlib.util.spec_from_file_location(
         "tool_requests_runtime_fixture", Path(__file__).with_name("runtime-contract.py")
@@ -55,8 +97,8 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
             pass
 
     runtime = make_runtime(QuietRuntime, backend, fixture.FakeServer)
-    saved = []
     expected = {}
+    saved = []
     service = None
     if location_outbox:
         from codex_multi_server_orchestration import MultiServerService, identity
@@ -71,7 +113,9 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
         with runtime.db() as database:
             for record in records:
                 runtime.put(database, "tool_requests", record)
-                saved.append(database.execute("SELECT id,record FROM runtime_tool_requests WHERE id=?", (record["id"],)).fetchone())
+                saved.append(database.execute(
+                    "SELECT id,record FROM runtime_tool_requests WHERE id=?", (record["id"],)
+                ).fetchone())
             for key, result in (saved_results or {}).items():
                 from codex_payloads import externalize_result
                 stored = externalize_result(runtime.root, database, result)
@@ -100,6 +144,7 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
     backend.start()
     with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
         database.executemany("UPDATE runtime_tool_requests SET record=?2 WHERE id=?1", saved)
+    # Runtime-backed fixtures restore their seeded rows after startup recovery.
     return expected
 
 
