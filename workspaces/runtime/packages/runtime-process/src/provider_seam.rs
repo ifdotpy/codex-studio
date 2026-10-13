@@ -296,8 +296,9 @@ pub trait ProviderTaskFactory: Send + Sync {
 }
 
 /// Stable Python-compatible identity for the session's initialized notification.
-pub fn initialized_operation(handle: &ProviderHandle) -> OperationId {
-    crate::provider_shared::initialized_operation_id(&crate::SupervisorHandle(
-        handle.as_str().into(),
-    ))
+pub fn initialized_operation(handle: &ProviderHandle, generation: Generation) -> OperationId {
+    crate::provider_shared::initialized_operation_id(
+        &crate::SupervisorHandle(handle.as_str().into()),
+        generation,
+    )
 }

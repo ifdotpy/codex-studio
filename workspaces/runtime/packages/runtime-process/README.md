@@ -200,7 +200,7 @@ never depend on journal capacity. The sole 50 ms empty-`next` pause is cancellab
 a frame before command admission. `AdapterCommand::write` and `::ack` return a
 command and `Receipt`; `Receipt::receive` distinguishes `Written`,
 `Acknowledged`, `CachedInitialize`, `NotSent`, and `Unknown`. Write operation IDs
-belong to the caller. Use `initialized_operation(&handle)` for the shared
+belong to the caller. Use `initialized_operation(&handle, generation)` for the shared
 Python-compatible initialized identity. A lost receipt terminates the attachment;
 there is no reconnect, flush, or automatic resend surface. A closed receipt is
 Unknown. The supervisor may have committed a write before returning an error, so

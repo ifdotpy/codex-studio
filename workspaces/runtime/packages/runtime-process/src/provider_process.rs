@@ -1110,7 +1110,7 @@ impl ProviderInputWriter {
                 self.shared.connection.lock().map_err(|_| {
                     io::Error::other("provider supervisor connection lock poisoned")
                 })?;
-            initialized_operation_id(&connection.handle)
+            initialized_operation_id(&connection.handle, connection.generation)
         } else {
             match self.pending_operation_id.clone() {
                 Some(operation_id) => operation_id,

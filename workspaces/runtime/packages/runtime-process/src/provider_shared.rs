@@ -87,8 +87,16 @@ pub(crate) fn provider_native_id(message: &Value) -> Option<u64> {
         .and_then(Value::as_u64)
 }
 
-pub(crate) fn initialized_operation_id(handle: &SupervisorHandle) -> OperationId {
-    OperationId(format!("initialized:{}", handle.0))
+pub(crate) fn initialized_operation_id(
+    handle: &SupervisorHandle,
+    generation: crate::Generation,
+) -> OperationId {
+    let suffix = if generation.0 > 1 {
+        format!(":{}", generation.0)
+    } else {
+        String::new()
+    };
+    OperationId(format!("initialized:{}{suffix}", handle.0))
 }
 
 pub(crate) fn handshake_request(identity: &BackendIdentity, operator: bool) -> Value {

@@ -836,3 +836,49 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
             .await
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn initialized_identity_is_scoped_to_real_child_generation() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let state = DisposableState::new();
+        let python = python_executable();
+        let mut supervisor = SupervisorProcess::start(&state, &python);
+        let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)\n elif m.get('method')=='initialized': print(json.dumps({'method':'observed/initialized'}),flush=True)\n elif m.get('method')=='quit': sys.exit(0)";
+        let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],BTreeMap::from([("PYTHONUNBUFFERED".into(),"1".into())]),state.0.clone());
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let handle = ProviderHandle::for_account("generation");
+        let opts = || OpenOptions { clock: SessionClock::default(), launch: launch.clone(), initialize_params: json!({}), expected_generation: None };
+        let mut first = factory.open(handle.clone(),opts(),Shutdown::default()).await.unwrap();
+        let first_info = real_info(&mut first).await;
+        supervisor.own_child(first_info.pid);
+        assert!(matches!(real_write(&first,"init-gen-1",json!({"id":1,"method":"initialize"})).await,CommandReceipt::Written{..}));
+        first.journal.recv().await.unwrap();
+        let identity = initialized_operation(&handle, first_info.generation).0;
+        assert!(matches!(real_write(&first,&identity,json!({"method":"initialized"})).await,CommandReceipt::Written{duplicate:false,..}));
+        first.journal.recv().await.unwrap();
+        assert!(matches!(real_write(&first,"quit-gen-1",json!({"method":"quit"})).await,CommandReceipt::Written{..}));
+        loop { if matches!(first.journal.recv().await.unwrap().payload, JournalPayload::Exit(_)) { break; } }
+        first.shutdown().await;
+        let mut second = factory.open(handle.clone(),opts(),Shutdown::default()).await.unwrap();
+        let second_info = real_info(&mut second).await;
+        supervisor.own_child(second_info.pid);
+        assert_eq!(second_info.generation.0,first_info.generation.0+1);
+        assert!(matches!(real_write(&second,"init-gen-2",json!({"id":1,"method":"initialize"})).await,CommandReceipt::Written{..}));
+        loop {
+            let entry=second.journal.recv().await.unwrap();
+            if entry.generation == second_info.generation { break; }
+        }
+        assert_eq!(second.status.borrow().initialization,InitializationStatus::InitializedWritePending);
+        let correct=format!("initialized:{}:{}",handle.as_str(),second_info.generation.0);
+        assert_eq!(correct, initialized_operation(&handle, second_info.generation).0);
+        assert!(matches!(real_write(&second,&identity,json!({"method":"initialized"})).await,CommandReceipt::NotSent));
+        assert!(matches!(real_write(&second,&correct,json!({"method":"initialized"})).await,CommandReceipt::Written{duplicate:false,..}));
+        loop {
+            let observed = second.journal.recv().await.unwrap();
+            if observed.generation == second_info.generation && matches!(observed.payload, JournalPayload::Frame(Frame::UnknownMethod(_))) { break; }
+        }
+        assert_eq!(second.status.borrow().initialization,InitializationStatus::Ready);
+        assert!(second.shutdown().await.recovery_needed.is_none());
+    }).await.expect("review probe exceeded watchdog");
+}

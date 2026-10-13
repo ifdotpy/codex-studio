@@ -500,7 +500,14 @@ impl AdapterTask {
         let initialize = method == Some("initialize");
         let initialized = method == Some("initialized");
         if initialized
-            && (write.operation_id != initialized_operation_id(&self.open.handle)
+            && (write.operation_id
+                != initialized_operation_id(
+                    &self.open.handle,
+                    self.info
+                        .as_ref()
+                        .ok_or(AdapterError::InvalidConfiguration)?
+                        .generation,
+                )
                 || self.initialization != InitializationStatus::InitializedWritePending
                     && self.initialization != InitializationStatus::Ready)
         {
