@@ -1,3 +1,4 @@
+mod account_login;
 mod agents_create;
 mod catalog;
 mod checkpoints;
@@ -36,6 +37,22 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 type RegisteredRouteGroup = (&'static str, fn() -> RouteGroup);
+
+pub(super) fn accounts_response(
+    snapshot: studio_runtime_services::account_policy::AccountsSnapshot,
+) -> Result<axum::Json<crate::generated::AccountsResponse>, crate::error::ApiError> {
+    serde_json::from_value(serde_json::json!({
+        "accounts": snapshot.accounts,
+        "archivedAccounts": snapshot.archived_accounts,
+        "defaultAccountKey": snapshot.default_account_key,
+        "logins": snapshot.logins,
+        "supportsDisconnect": true,
+        "supportsDelete": true,
+    }))
+    .map(axum::Json)
+    .map_err(|_| crate::error::ApiError::internal())
+}
+
 
 fn generated_json<T: DeserializeOwned + Serialize>(
     value: Value,

@@ -91,6 +91,7 @@ class AccountRegistryRecord(ContractModel):
     logins: dict[StrictStr, CodexLoginReceiptRecord] = Field(default_factory=dict)
     deleteReceipts: dict[StrictStr, DeleteReceiptRecord] = Field(default_factory=dict)
     nameReceipts: dict[StrictStr, NameReceiptRecord] = Field(default_factory=dict)
+    pendingAccountsChange: StrictBool = False
 
 
 class UsageLimitsWorkspaceEnvelope(ContractModel):

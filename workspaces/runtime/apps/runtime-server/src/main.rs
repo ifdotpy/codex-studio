@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let state = HttpState::new(
+    let mut state = HttpState::new(
         token,
         workspace_id,
         native_path,
@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(store),
         Some(account_policy),
     );
+    state.account_driver = Some(Arc::new(AccountDriver::open(&registry_path)?));
     let sync_changes = state.sync_changes_handle();
     let app = router(state)?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());

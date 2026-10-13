@@ -17,6 +17,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub account_driver:
+        Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -52,6 +54,7 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            account_driver: None,
             token,
             workspace_id,
             native_path,
