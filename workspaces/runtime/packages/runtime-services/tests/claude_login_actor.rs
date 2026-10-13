@@ -357,7 +357,7 @@ exit 0
                         }
                     })
                     .await
-                    .expect("actor settled");
+                    .unwrap_or_else(|error| panic!("reauth={reauth}, boundary={boundary}, after={after}: actor did not settle: {error}; writes={}", f.receipts.writes.load(Ordering::SeqCst)));
                 }
                 service.shutdown().await.expect("close owned children");
                 assert!(

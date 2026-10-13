@@ -480,6 +480,10 @@ impl LoginService {
             }
         }
         drop(launch.lease);
+        drop(jobs);
+        // A final receipt write may fail after Ready was installed in memory.
+        // Wake readers even when finish() correctly leaves that terminal state intact.
+        (self.on_change)();
     }
     async fn run_inner(
         &self,
