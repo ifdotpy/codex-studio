@@ -911,7 +911,19 @@ try:
     subprocess.run(["git", "add", {file_path!r}], cwd=workspace, check=True)
     subprocess.run(["git", "commit", "-qm", "ledger seed"], cwd=workspace, check=True)
     checkpoint = runtime.capture_checkpoint({agent_id!r}, "HTTP ledger probe checkpoint")
-    image_checkpoint = runtime.capture_checkpoint({image_agent_id!r}, "HTTP ledger image checkpoint")
+    image_agent_for_checkpoint = dict(image_agent)
+    image_agent_for_checkpoint.pop("imageWorkspace", None)
+    image_agent_for_checkpoint.pop("workspaceMode", None)
+    image_agent_for_checkpoint.pop("executionMode", None)
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "agents", image_agent_for_checkpoint, sync_rooms=False)
+    try:
+        image_checkpoint = runtime.capture_checkpoint(
+            {image_agent_id!r}, "HTTP ledger image checkpoint"
+        )
+    finally:
+        with runtime.lock, runtime.db() as db:
+            runtime.put(db, "agents", image_agent, sync_rooms=False)
     runtime.set_rate_limits("default", {{
         "data": {{"accountId": "fixture-account", "status": "ready", "signedIn": True,
                  "rateLimits": {{"primary": {{"usedPercent": 27}}}}}},
