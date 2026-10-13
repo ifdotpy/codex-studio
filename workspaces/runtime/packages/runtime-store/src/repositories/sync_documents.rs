@@ -89,6 +89,59 @@ pub struct EntityRow {
 pub struct SyncDocumentsRepository;
 
 impl SyncDocumentsRepository {
+    /// Merge fields into an existing sync entity value without rebuilding its envelope.
+    pub fn patch_entity(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        patch: Value,
+    ) -> StoreResult<()> {
+        let raw = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection=?1 AND id=?2 AND deleted=0",
+                params![collection, id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let mut envelope: Value = match raw {
+            Some(raw) => serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
+                scope: collection.to_owned(),
+                id: id.to_owned(),
+            })?,
+            None => json!({"collection":collection,"id":id,"value":{}}),
+        };
+        if envelope.get("collection").and_then(Value::as_str) != Some(collection)
+            || envelope.get("id").and_then(Value::as_str) != Some(id)
+        {
+            return Err(StoreError::InvalidSyncObject {
+                scope: collection.to_owned(),
+                id: id.to_owned(),
+            });
+        }
+        let value = envelope
+            .get_mut("value")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| StoreError::InvalidSyncObject {
+                scope: collection.to_owned(),
+                id: id.to_owned(),
+            })?;
+        let patch = patch
+            .as_object()
+            .ok_or_else(|| StoreError::InvalidSyncObject {
+                scope: collection.to_owned(),
+                id: id.to_owned(),
+            })?;
+        value.extend(patch.clone());
+        Self::put_entity(
+            transaction,
+            collection,
+            id,
+            envelope["value"].clone(),
+            false,
+        )?;
+        Ok(())
+    }
+
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
     pub fn put_entity(
         transaction: &Transaction<'_>,

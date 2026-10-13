@@ -11,11 +11,10 @@ use studio_runtime_services::projects::{self, ProjectsError};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const PROJECT_WRITE_DEPENDENCIES: [Dependency; 5] = [
+const PROJECT_WRITE_DEPENDENCIES: [Dependency; 4] = [
+    Dependency::new("cross-server-driver/local-identity"),
     Dependency::new("cross-server-driver/project-location-write"),
     Dependency::new("cross-server-driver/project-registration"),
-    Dependency::new("workspace-state/logical-projects"),
-    Dependency::new("workspace-state/project-organization"),
     Dependency::new("workspace-state/worker-environment"),
 ];
 const LOCATION_READ_DEPENDENCIES: [Dependency; 1] =
@@ -61,7 +60,7 @@ async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    if let Some(dependency) = project_write_dependency(&body) {
+    if let Some(dependency) = projects::write_dependency(&body) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
@@ -115,15 +114,16 @@ async fn peer_teams(
         .account_policy
         .clone()
         .ok_or_else(ApiError::internal)?;
-    let default_account = account_policy
-        .accounts()
+    let account_snapshot = account_policy.accounts();
+    let known = account_snapshot.accounts;
+    let default_account = account_snapshot
         .default_account_key
         .as_str()
         .ok_or_else(ApiError::internal)?
         .to_owned();
     let result = tokio::task::spawn_blocking(move || {
-        let value =
-            projects::peer_team_write(&store, &body, &default_account).map_err(projects_error)?;
+        let value = projects::peer_team_write(&store, &body, &default_account, &known)
+            .map_err(projects_error)?;
         super::generated_json::<crate::generated::PeerProjectResponse>(value)
     })
     .await
@@ -139,43 +139,18 @@ fn projects_error(error: ProjectsError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
         ),
-        ProjectsError::InvalidStored(id) => ApiError::new(
+        ProjectsError::InvalidStored { table, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored project {id}"),
+            format!("Invalid stored {table} record {id}"),
+        ),
+        ProjectsError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
+            table,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored {table} record {id}"),
         ),
         ProjectsError::Store(_) => ApiError::internal(),
-    }
-}
-
-fn project_write_dependency(body: &Value) -> Option<&'static str> {
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or("register");
-    if body
-        .get("server")
-        .and_then(Value::as_str)
-        .is_some_and(|server| !server.is_empty())
-    {
-        Some("cross-server-driver/project-registration")
-    } else if matches!(action, "add_location" | "remove_location") {
-        Some("cross-server-driver/project-location-write")
-    } else if matches!(
-        action,
-        "rename" | "add_folder" | "rename_folder" | "remove_folder"
-    ) {
-        Some("workspace-state/project-organization")
-    } else if body.get("action").and_then(Value::as_str) == Some("set_worker_environment")
-        && body.get("environment").and_then(Value::as_str) == Some("linux")
-    {
-        Some("workspace-state/worker-environment")
-    } else if body
-        .get("path")
-        .and_then(Value::as_str)
-        .is_some_and(|path| path.starts_with("project:"))
-    {
-        Some("workspace-state/logical-projects")
-    } else {
-        None
+        ProjectsError::Sqlite(_) => ApiError::internal(),
     }
 }
