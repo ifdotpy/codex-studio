@@ -77,7 +77,7 @@ const TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_account_transfers",
     columns: &["id", "record"],
 }];
-const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[ConditionalTableRequirement {
         table_exists: "runtime_account_transfers",
