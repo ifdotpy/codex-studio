@@ -609,8 +609,25 @@ class BackendProcess:
             f"Backend did not emit its ready line: {reason}; "
             f"child exit status={exit_status}; stderr tail:\n{stderr_tail}"
         )
+        if "studio_operations_native" in stderr_tail:
+            message += "\n" + self._native_module_setup_hint()
         self.stop()
         raise RuntimeError(message)
+
+    def _native_module_setup_hint(self) -> str:
+        # The child environment is an allow-list without PYTHONPATH, so only the
+        # backend interpreter's own site-packages can supply the native module.
+        python = self._backend_python or "the configured backend interpreter"
+        return (
+            f"Test environment: the harness starts the backend with {python} and "
+            "without the caller's PYTHONPATH, so a module copy on PYTHONPATH is not "
+            "visible to it. Install the module in that interpreter's site-packages: "
+            "run `cargo build --release -p studio-operations-python`, then "
+            "`python3 workspaces/runtime/apps/server/src/install-cli.py --dev "
+            "--bin-dir <folder>` under the XDG_CACHE_HOME that selected that "
+            "interpreter. CI runs both steps "
+            "in .github/actions/fast-tier-setup before the server suites."
+        )
 
     @property
     def stderr(self) -> str:
