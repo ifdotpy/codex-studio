@@ -39,6 +39,7 @@ def transport_turn_eligible(agent):
     attempt = agent.get('startAttempt')
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and agent.get('threadId') and agent.get('turnId')
+            and isinstance(agent.get('error'), str)
             and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
                                  'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
             and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
@@ -104,6 +105,7 @@ def disconnected_preparation_eligible(agent):
     events = attempt.get('events')
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
         and not agent.get('autoWake') and not agent.get('startAttempt') and not agent.get('turnId')
+        and isinstance(agent.get('error'), str)
         and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
                                  'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
         and previous.get('autoWake') and not previous.get('turnId')
