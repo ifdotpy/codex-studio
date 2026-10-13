@@ -19,6 +19,7 @@ install_guard(block_processes=True)
 ROOT = HERE.parents[5]
 sys.path.insert(0, str(ROOT / "workspaces/runtime/apps/server/src"))
 from codex_runtime import Runtime
+from codex_native_voice import NativeVoice
 from codex_agent_management import manage_agent
 from codex_agent_modes import mode_fields
 from studio_api.persisted_models import PersistedAgentRecord
@@ -37,10 +38,20 @@ class MemoryRuntime:
         for table in TABLES:
             self.connection.execute(f"CREATE TABLE runtime_{table}(id TEXT PRIMARY KEY,record TEXT)")
         self.connection.execute("CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,status TEXT,epoch INTEGER)")
+        self.has_voice = "voice_sessions" in records["tables"]
+        if self.has_voice:
+            self.connection.execute("CREATE TABLE voice_sessions(id TEXT PRIMARY KEY,agent TEXT,state TEXT,ended REAL)")
+            self._voice_store = self
+            self.native_lock = self.lock
+            self.connections = {}
         for table, rows in records["tables"].items():
             for record in rows:
                 if table == "runtime_events":
                     self.connection.execute("INSERT INTO runtime_events VALUES(?,?,?,?)", tuple(record[k] for k in ("id", "agent", "status", "epoch")))
+                elif table == "voice_sessions":
+                    assert record["ended"] is not None
+                    self.connection.execute("INSERT INTO voice_sessions VALUES(?,?,?,?)", tuple(record[k] for k in ("id", "agent", "state", "ended")))
+                    self.connections[record["id"]] = {"agent": record["agent"], "closed": True}
                 else:
                     self.put(self.connection, table.removeprefix("runtime_"), record)
         self.connection.commit()
@@ -68,6 +79,7 @@ class MemoryRuntime:
     release_work_agents = staticmethod(Runtime.release_work_agents)
     _settle_deleted_conversations = Runtime._settle_deleted_conversations
     stop = Runtime.stop
+    end_active = NativeVoice.end_active
 
     def capacity_reset(self, db, agent, reason):
         assert not agent.get("capacityRetry")
@@ -103,6 +115,8 @@ class MemoryRuntime:
     def snapshot(self):
         result = {"tables": {"runtime_"+table: self.records(self.connection, table) for table in TABLES}}
         result["tables"]["runtime_events"] = [dict(row) for row in self.connection.execute("SELECT * FROM runtime_events ORDER BY rowid")]
+        if self.has_voice:
+            result["tables"]["voice_sessions"] = [dict(row) for row in self.connection.execute("SELECT * FROM voice_sessions ORDER BY rowid")]
         return result
 
 
@@ -182,6 +196,10 @@ def corpus():
         records["tables"]["runtime_requests"] = [dict(id="question", agent="lead", status="pending", method="agent/asyncQuestion"), dict(id="approval", agent="lead", status="pending", method="monitor/approve")]
         records["tables"]["runtime_agents"][0].update(parkedEvent="release", parkReceipt=dict(event="release",epoch=3,sequence=1),parkAfterTurn=True)
         cases.append(run("stop-"+str(descendants), records, dict(action="stop", target="lead", descendants=descendants)))
+    records = seed()
+    records["tables"]["voice_sessions"] = [dict(id="ended-voice", agent="lead", state="ended", ended=NOW-10)]
+    cases.append(run("stop-ended-voice", records, dict(action="stop", target="lead", descendants=True)))
+    cases.append(run("delete-child", seed(), dict(action="delete", target="worker")))
     cases.append(run("delete", seed(), dict(action="delete", target="lead")))
     cases.append(run("delete-retry", cases[-1]["expected"]["records"], dict(action="delete", target="lead")))
     return cases

@@ -59,8 +59,8 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
     ))?;
     let events = statement.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"epoch":r.get::<_,i64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
     tables.insert("runtime_events".to_owned(), events);
-    // These tables are lazy and have columns rather than JSON records. Any
-    // affected voice data requires the voice owner's termination adapter.
+    // These lazy tables use columns rather than JSON records. Session liveness
+    // distinguishes stop from deletion, which also removes saved voice data.
     for table in [
         "voice_sessions",
         "voice_records",
@@ -75,13 +75,23 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         if !exists {
             continue;
         }
+        let columns = if table == "voice_sessions" {
+            "id,agent,state,ended"
+        } else {
+            "id,agent"
+        };
         let mut statement = connection.prepare(&format!(
-            "SELECT id,agent FROM {table} LIMIT {}",
+            "SELECT {columns} FROM {table} LIMIT {}",
             ROW_LIMIT + 1
         ))?;
         let rows = statement
             .query_map([], |r| {
-                Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?}))
+                let mut row = json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?});
+                if table == "voice_sessions" {
+                    row["state"] = json!(r.get::<_, Option<String>>(2)?);
+                    row["ended"] = json!(r.get::<_, Option<f64>>(3)?);
+                }
+                Ok(row)
             })?
             .collect::<Result<Vec<_>, _>>()?;
         tables.insert(table.to_owned(), rows);

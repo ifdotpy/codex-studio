@@ -68,5 +68,55 @@
         "after": "AND status IN ('pending','uncertain')"
       }
     ]
+  },
+  {
+    "id": "monitor_stop_guard",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "return Err(ManagementError::Unavailable(\"monitor-driver/agent-stop\"));",
+        "after": "let _ = agent;"
+      }
+    ]
+  },
+  {
+    "id": "voice_stop_guard",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "session.agent == agent.id() && session.state.is_some() && session.ended.is_none()",
+        "after": "false"
+      }
+    ]
+  },
+  {
+    "id": "ended_voice_state",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "session.ended.is_none()",
+        "after": "true"
+      }
+    ]
+  },
+  {
+    "id": "voice_delete_cleanup",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "if delete && snapshot.has_voice_data(agent) {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "child_stop_guard",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "return Err(ManagementError::Unavailable(\n                \"event-driver/child-stop-notification\",\n            ));",
+        "after": "let _ = agent;"
+      }
+    ]
   }
 ]

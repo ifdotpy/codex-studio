@@ -61,6 +61,18 @@ class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(record["error"], "Stopped by user")
             self.assertEqual(self.projection(identity)[0], 0)
 
+    def test_stop_with_ended_voice_session(self):
+        identity = self.draft()
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            db.execute("INSERT INTO voice_sessions(id,agent,created,state,ended) VALUES(?,?,1,'ended',2)", ("ended-"+identity, identity))
+            db.commit()
+            before = db.execute("SELECT * FROM voice_sessions WHERE agent=?", (identity,)).fetchall()
+        response = self.post("/api/stop", {"id": identity})
+        self.assertEqual(response.status, 200, response.body)
+        self.assertEqual(response.json()["stopped"], [identity])
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            self.assertEqual(db.execute("SELECT * FROM voice_sessions WHERE agent=?", (identity,)).fetchall(), before)
+
     def test_delete_idle_draft(self):
         identity = self.draft()
         first = self.post("/api/conversation/delete", {"id": identity})
