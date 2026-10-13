@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
 
@@ -21,7 +22,7 @@ pub(crate) struct LocatedError {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RawRequest {
     pub body: Option<Value>,
-    pub raw_body: Option<Vec<u8>>,
+    pub raw_body: Option<Bytes>,
     pub query: BTreeMap<String, Vec<String>>,
     pub headers: BTreeMap<String, Vec<String>>,
     pub invalid_headers: BTreeSet<String>,
@@ -46,6 +47,7 @@ struct Part {
     location: &'static str,
     schema: Value,
     definitions: Arc<Map<String, Value>>,
+    has_opaque_json: bool,
 }
 
 #[derive(Clone, Default)]
@@ -339,6 +341,19 @@ impl Registry {
             self.operations
                 .get(&format!("{method} {template}"))
                 .map(|operation| operation.body.is_some())
+        })
+    }
+
+    pub(crate) fn has_opaque_body(&self, method: &str, path: &str) -> Option<bool> {
+        self.template_for(method, path).and_then(|template| {
+            self.operations
+                .get(&format!("{method} {template}"))
+                .map(|operation| {
+                    operation
+                        .body
+                        .as_ref()
+                        .is_some_and(|part| part.has_opaque_json)
+                })
         })
     }
 
@@ -812,9 +827,46 @@ fn compile_part(
     Ok(Part {
         validator,
         location,
+        has_opaque_json: location == "body" && schema_has_opaque_json(&schema, definitions),
         schema,
         definitions: Arc::clone(definitions),
     })
+}
+
+fn schema_has_opaque_json(schema: &Value, definitions: &Map<String, Value>) -> bool {
+    let mut pending = vec![schema];
+    let mut visited_references = BTreeSet::new();
+    while let Some(schema) = pending.pop() {
+        let Some(object) = schema.as_object() else {
+            continue;
+        };
+        if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+            if reference == "#/components/schemas/JsonValue" {
+                return true;
+            }
+            if let Some(name) = reference.strip_prefix("#/components/schemas/")
+                && visited_references.insert(reference.to_owned())
+                && let Some(target) = definitions.get(name)
+            {
+                pending.push(target);
+            }
+        }
+        for keyword in ["properties", "allOf", "anyOf", "oneOf"] {
+            if let Some(children) = object.get(keyword) {
+                if let Some(children) = children.as_object() {
+                    pending.extend(children.values());
+                } else if let Some(children) = children.as_array() {
+                    pending.extend(children.iter());
+                }
+            }
+        }
+        for keyword in ["items", "additionalProperties"] {
+            if let Some(child) = object.get(keyword).filter(|child| child.is_object()) {
+                pending.push(child);
+            }
+        }
+    }
+    false
 }
 
 fn parameter_schema_uri(method: &str, path: &str, index: usize) -> String {
@@ -854,8 +906,15 @@ fn validate_part(
         convert_parameters(&part.schema, &part.definitions, value);
     }
     if part.location == "body" {
-        let location = raw_body
-            .and_then(|bytes| serde_json::from_slice::<&serde_json::value::RawValue>(bytes).ok())
+        let location = part
+            .has_opaque_json
+            .then_some(raw_body)
+            .flatten()
+            .and_then(|bytes| {
+                #[cfg(test)]
+                OPAQUE_BODY_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+                serde_json::from_slice::<&serde_json::value::RawValue>(bytes).ok()
+            })
             .and_then(|raw| {
                 opaque_integer_precision_error(
                     &part.schema,
@@ -874,6 +933,16 @@ fn validate_part(
         Some(error) => Err(convert_error(&error, part.location)),
         None => Ok(()),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static OPAQUE_BODY_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn opaque_body_scan_count() -> usize {
+    OPAQUE_BODY_SCAN_COUNT.with(std::cell::Cell::get)
 }
 
 fn opaque_integer_precision_error(
@@ -1751,7 +1820,7 @@ mod tests {
                     "/api/servers/orchestration",
                     RawRequest {
                         body: Some(body),
-                        raw_body: Some(raw_body.into_bytes()),
+                        raw_body: Some(raw_body.into_bytes().into()),
                         ..RawRequest::default()
                     },
                 )
@@ -1772,7 +1841,7 @@ mod tests {
                     "/api/servers/orchestration",
                     RawRequest {
                         body: Some(safe_body),
-                        raw_body: Some(safe_raw_body.as_bytes().to_vec()),
+                        raw_body: Some(safe_raw_body.as_bytes().into()),
                         ..RawRequest::default()
                     },
                 )
@@ -1789,7 +1858,7 @@ mod tests {
                     "/api/servers/orchestration",
                     RawRequest {
                         body: Some(fractional_body),
-                        raw_body: Some(large_fraction.as_bytes().to_vec()),
+                        raw_body: Some(large_fraction.as_bytes().into()),
                         ..RawRequest::default()
                     },
                 )
