@@ -1,5 +1,7 @@
-//! Transactional consumer of the pure lifecycle core. Native effects remain refused.
-use crate::agent_management::{Action, ManagementError, ManagementSnapshot, Records, decide};
+//! Transactional lifecycle consumer; injected effects share this writer transaction.
+use crate::agent_management::{
+    Action, ManagementError, ManagementSnapshot, Records, decide, decide_with_effects,
+};
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
@@ -16,11 +18,33 @@ pub fn execute_in_transaction(
     action: &Action,
     now: f64,
 ) -> Result<Value, ManagementError> {
+    execute_decision(transaction, action, now, None)
+}
+
+pub(crate) fn execute_with_ports(
+    transaction: &Transaction<'_>,
+    action: &Action,
+    now: f64,
+    ports: &dyn crate::agent_lifecycle_runtime::LifecyclePorts,
+) -> Result<Value, ManagementError> {
+    execute_decision(transaction, action, now, Some(ports))
+}
+
+fn execute_decision(
+    transaction: &Transaction<'_>,
+    action: &Action,
+    now: f64,
+    ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+) -> Result<Value, ManagementError> {
     let records = Records {
         tables: repository::read(transaction)?,
     };
     let snapshot = ManagementSnapshot::from_records(records.clone())?;
-    let decision = decide(&snapshot, action, now)?;
+    let decision = if ports.is_some() {
+        decide_with_effects(&snapshot, action, now)?
+    } else {
+        decide(&snapshot, action, now)?
+    };
     if decision.writes.is_empty() && decision.cancel_pending.is_empty() {
         return Ok(decision.result);
     }
@@ -98,6 +122,36 @@ pub fn execute_in_transaction(
     }
     for agent in &decision.cancel_pending {
         repository::cancel_pending(transaction, agent)?;
+    }
+    if let Some(ports) = ports {
+        for effect in &decision.effects {
+            ports.stage(transaction, effect)?;
+        }
+        // An adapter cannot resume or replace an agent stopped by this action.
+        for write in &decision.writes {
+            if write.table != "runtime_agents" {
+                continue;
+            }
+            let id = write.record["id"]
+                .as_str()
+                .ok_or(ManagementError::Invalid("Invalid stop identity"))?;
+            let current = studio_runtime_store::AgentRepository::get(
+                transaction,
+                &studio_runtime_store::AgentId::from(id),
+            )?
+            .ok_or(ManagementError::Invalid(
+                "Lifecycle adapter removed stopped agent",
+            ))?;
+            let current =
+                serde_json::to_value(current).map_err(studio_runtime_store::StoreError::from)?;
+            for field in ["epoch", "autoWake", "status", "deletedAt"] {
+                if current.get(field) != write.record.get(field) {
+                    return Err(ManagementError::Invalid(
+                        "Lifecycle adapter changed stop identity",
+                    ));
+                }
+            }
+        }
     }
     // Reuse the canonical views, including room membership and tombstones.
     let state_dir = transaction

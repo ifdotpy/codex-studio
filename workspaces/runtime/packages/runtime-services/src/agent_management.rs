@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use studio_runtime_store::AgentStatus;
 use thiserror::Error;
 
+use crate::agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind};
 use crate::event_write::{python_strip, truthy};
 
 const MAX_ROWS: usize = 10_000;
@@ -163,6 +164,8 @@ pub struct Decision {
     pub result: Value,
     pub writes: Vec<RowWrite>,
     pub cancel_pending: Vec<String>,
+    #[serde(skip)]
+    pub(crate) effects: Vec<LifecycleEffect>,
 }
 impl Decision {
     fn result(result: Value) -> Self {
@@ -170,6 +173,7 @@ impl Decision {
             result,
             writes: Vec::new(),
             cancel_pending: Vec::new(),
+            effects: Vec::new(),
         }
     }
     fn write(&mut self, table: &str, record: Value) {
@@ -327,6 +331,21 @@ impl ManagementSnapshot {
         Ok(())
     }
     fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
+        self.stop_effects(agent, &mut Vec::new(), false)
+    }
+    fn stop_effects(
+        &self,
+        agent: &Agent,
+        effects: &mut Vec<LifecycleEffectKind>,
+        live: bool,
+    ) -> Result<(), ManagementError> {
+        let mut stage = |kind: LifecycleEffectKind| {
+            if !live {
+                return Err(ManagementError::Unavailable(kind.dependency()));
+            }
+            effects.push(kind);
+            Ok(())
+        };
         if agent.active()
             || [
                 "threadId",
@@ -338,9 +357,7 @@ impl ManagementSnapshot {
             .iter()
             .any(|key| agent.flag(key))
         {
-            return Err(ManagementError::Unavailable(
-                "account-worker/agent-interrupt",
-            ));
+            stage(LifecycleEffectKind::Interrupt)?;
         }
         if ["remoteWorker", "remoteAnchor", "remoteOrigin"]
             .iter()
@@ -358,14 +375,14 @@ impl ManagementSnapshot {
                 .and_then(Value::as_str)
                 .is_some_and(|s| matches!(s, "scheduled" | "started"))
         {
-            return Err(ManagementError::Unavailable("usage-policy/agent-stop"));
+            stage(LifecycleEffectKind::CancelResume)?;
         }
         if self
             .owned("runtime_monitors", "agent", agent.id())
             .iter()
             .any(|r| is_status(r, &["starting", "running", "approval"]))
         {
-            return Err(ManagementError::Unavailable("monitor-driver/agent-stop"));
+            stage(LifecycleEffectKind::CancelMonitors)?;
         }
         if self.voice_sessions.iter().any(|session| {
             session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
@@ -522,6 +539,27 @@ pub fn decide(
     action: &Action,
     now: f64,
 ) -> Result<Decision, ManagementError> {
+    let decision = decide_inner(snapshot, action, now, false)?;
+    if let Some(effect) = decision.effects.first() {
+        return Err(ManagementError::Unavailable(effect.kind().dependency()));
+    }
+    Ok(decision)
+}
+
+pub(crate) fn decide_with_effects(
+    snapshot: &ManagementSnapshot,
+    action: &Action,
+    now: f64,
+) -> Result<Decision, ManagementError> {
+    decide_inner(snapshot, action, now, true)
+}
+
+fn decide_inner(
+    snapshot: &ManagementSnapshot,
+    action: &Action,
+    now: f64,
+    live: bool,
+) -> Result<Decision, ManagementError> {
     if !now.is_finite() || now <= 0.0 {
         return Err(ManagementError::Invalid("Invalid lifecycle timestamp"));
     }
@@ -529,8 +567,8 @@ pub fn decide(
         Action::Stop {
             target,
             descendants,
-        } => stop(snapshot, target, *descendants, false, now),
-        Action::Delete { target } => stop(snapshot, target, true, true, now),
+        } => stop(snapshot, target, *descendants, false, now, live),
+        Action::Delete { target } => stop(snapshot, target, true, true, now, live),
         Action::Archive {
             actor,
             epoch,
@@ -570,10 +608,13 @@ fn stop(
     descendants: bool,
     delete: bool,
     now: f64,
+    live: bool,
 ) -> Result<Decision, ManagementError> {
     let agents = snapshot.descendants(target, descendants)?;
+    let mut required = BTreeMap::new();
     for agent in &agents {
-        snapshot.refuse_live(agent)?;
+        let mut effects = Vec::new();
+        snapshot.stop_effects(agent, &mut effects, live)?;
         // Deletion also removes saved voice data; stop only ends open sessions.
         if delete && snapshot.has_voice_data(agent) {
             return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
@@ -593,10 +634,21 @@ fn stop(
             && !agent.flag("deletedAt")
             && !agent.flag("agentArchive")
         {
-            return Err(ManagementError::Unavailable(
-                "event-driver/child-stop-notification",
-            ));
+            if !live {
+                return Err(ManagementError::Unavailable(
+                    LifecycleEffectKind::NotifyParent.dependency(),
+                ));
+            }
+            effects.push(LifecycleEffectKind::NotifyParent);
         }
+        if delete
+            && (agent.identity.in_flight == Some(true)
+                || agent.flag("turnId")
+                || truthy(agent.record["startAttempt"].get("activeAtReservation")))
+        {
+            effects.push(LifecycleEffectKind::FinalizeDeleted);
+        }
+        required.insert(agent.id(), effects);
     }
     if delete
         && snapshot
@@ -604,7 +656,10 @@ fn stop(
             .iter()
             .any(|r| !is_status(r, &["accepted", "cancelled"]))
     {
-        return Err(ManagementError::Unavailable("work-driver/deletion-release"));
+        required
+            .entry(target)
+            .or_default()
+            .push(LifecycleEffectKind::ReleaseWork);
     }
     let mut ids = agents.iter().map(|a| a.id().to_owned()).collect::<Vec<_>>();
     ids.sort();
@@ -642,6 +697,14 @@ fn stop(
         );
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
+        }
+        for kind in required.remove(agent.id()).unwrap_or_default() {
+            decision.effects.push(LifecycleEffect::new(
+                kind,
+                agent.record.clone(),
+                record.clone(),
+                now,
+            ));
         }
         decision.write("runtime_agents", record);
         decision.cancel_pending.push(agent.id().to_owned());

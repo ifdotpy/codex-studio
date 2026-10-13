@@ -4,9 +4,11 @@ use super::{
     manifest::{Dependency, OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, generated, router::HttpState};
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Extension, Json, extract::State, http::StatusCode};
 use serde_json::Value;
+use std::sync::Arc;
 use studio_runtime_services::{
+    agent_lifecycle_runtime::{self, LifecyclePorts},
     agent_management::{Action, ManagementError},
     agent_management_store,
 };
@@ -17,6 +19,7 @@ const LIFECYCLE: &[Dependency] = &[
     Dependency::new("cross-server/agent-management"),
     Dependency::new("event-driver/child-stop-notification"),
     Dependency::new("monitor-driver/agent-stop"),
+    Dependency::new("account-worker/deleted-settlement"),
     Dependency::new("usage-policy/agent-stop"),
     Dependency::new("voice-driver/agent-stop"),
     Dependency::new("work-driver/deletion-release"),
@@ -42,6 +45,7 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn stop(
     State(state): State<HttpState>,
+    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::StopRequest>,
 ) -> Result<Json<Value>, ApiError> {
     dispatch::<generated::StopResponse>(
@@ -50,14 +54,21 @@ async fn stop(
             target: body.id,
             descendants: body.descendants.unwrap_or(true),
         },
+        ports.map(|Extension(ports)| ports),
     )
     .await
 }
 async fn delete(
     State(state): State<HttpState>,
+    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::IdRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    dispatch::<generated::DeletedResponse>(state, Action::Delete { target: body.id }).await
+    dispatch::<generated::DeletedResponse>(
+        state,
+        Action::Delete { target: body.id },
+        ports.map(|Extension(ports)| ports),
+    )
+    .await
 }
 async fn native_action(
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
@@ -79,6 +90,7 @@ async fn native_action(
 async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
     state: HttpState,
     action: Action,
+    ports: Option<Arc<dyn LifecyclePorts>>,
 ) -> Result<Json<Value>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
@@ -86,19 +98,22 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| ApiError::internal())?
             .as_secs_f64();
-        let result =
-            agent_management_store::execute(store, &action, now).map_err(|error| match error {
-                ManagementError::Unavailable(_) => {
-                    ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
-                }
-                ManagementError::Invalid(_) => {
-                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-                }
-                ManagementError::Stored { .. } => {
-                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                }
-                ManagementError::Store(_) => ApiError::internal(),
-            })?;
+        let result = match ports {
+            Some(ports) => agent_lifecycle_runtime::execute(store, &action, now, ports.as_ref()),
+            None => agent_management_store::execute(store, &action, now),
+        }
+        .map_err(|error| match error {
+            ManagementError::Unavailable(_) => {
+                ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+            }
+            ManagementError::Invalid(_) => {
+                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+            }
+            ManagementError::Stored { .. } => {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+            ManagementError::Store(_) => ApiError::internal(),
+        })?;
         super::generated_json::<T>(result).map(Json)
     })
     .await
@@ -111,7 +126,7 @@ inventory::submit! {
             "account-worker/agent-interrupt", "account-worker/native-action",
             "agent-management/snapshot-limit", "cross-server/agent-management",
             "event-driver/child-stop-notification", "monitor-driver/agent-stop",
-            "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
+            "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
             "workspace-state/agent-lifecycle",
         ],
     }
