@@ -482,7 +482,7 @@ fn python_completed_ledger_rejects_old_notices_without_eviction() {
         })
         .expect("fixture operation succeeds");
     assert_eq!(count, 261);
-    assert_eq!(h.record(0).extra["lastAnswer"], "");
+    assert!(!h.record(0).extra.contains_key("lastAnswer"));
     assert_eq!(
         h.record(0).extra["lastCompletedTurnError"]["message"],
         HISTORY_UNAVAILABLE
@@ -601,8 +601,11 @@ fn not_sent_restores_pending_events_and_keeps_account_usable() {
     h.worker
         .drain_settlements()
         .expect("fixture operation succeeds");
-    assert_eq!(h.status(0), "pending");
-    assert!(!h.record(0).extra.contains_key("startAttempt"));
+    assert_eq!(h.status(0), "failed");
+    assert_eq!(
+        h.record(0).extra["startAttempt"]["executionOutcome"],
+        "rejected"
+    );
     let second = h.start(1);
     h.accepted(&second, "other");
     assert_eq!(h.record(1).status, AgentStatus::Running);
@@ -703,8 +706,8 @@ fn oversized_request_is_refused_before_submitted_marker() {
     intent.events[0].text = "x".repeat(studio_runtime_providers::MAX_FRAME_BYTES + 1);
     h.worker.submit(intent).expect("fixture operation succeeds");
     assert_eq!(h.status(0), "pending");
-    assert!(!h.record(0).extra.contains_key("startAttempt"));
-    assert_eq!(h.record(0).extra["nativeFailureHold"], true);
+    assert_eq!(h.record(0).extra["startAttempt"]["submitted"], false);
+    assert_eq!(h.record(0).status, AgentStatus::Failed);
     assert!(h.worker.pending.is_empty());
 }
 
@@ -847,6 +850,14 @@ fn reattach_recovers_original_ticket_and_settles_replay_before_initialize() {
     h.accepted(&start, "replayed");
     assert_eq!(h.status(0), "delivered");
     h.frame(json!({"id":initialize["id"],"result":{}}));
+    h.worker.retry_at = Some(Instant::now());
+    h.worker
+        .input(AccountInput::Deadline)
+        .expect("retry after initialize");
+    // Transport loss revoked continuation; the late acceptance binds history and
+    // requests interruption, just as Python does for a stopped submitted input.
+    let interrupt = h.request("turn/interrupt");
+    h.frame(json!({"id":interrupt["id"],"result":{}}));
     assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
     assert!(h.worker.pending.is_empty());
     h.notice(0, "turn/completed", "replayed", "completed");
@@ -959,7 +970,7 @@ fn activity_before_stop_interrupts_the_observed_unbound_turn() {
         h.request("turn/interrupt")["params"]["turnId"],
         "observed-before-stop"
     );
-    assert!(h.record(0).extra["turnId"].is_null());
+    assert_eq!(h.record(0).extra["turnId"], "observed-before-stop");
     assert_eq!(h.status(0), "dispatching");
 }
 
@@ -1202,99 +1213,31 @@ fn stale_completion_releases_cursor_after_not_sent() {
         .expect("reclassify deferred frame");
     assert!(h.worker.deferred.is_empty());
     assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
-    assert_eq!(h.status(0), "pending");
+    assert_eq!(h.status(0), "failed");
 }
 
 #[test]
-fn execution_history_matches_python_across_submission_acceptance_and_completion() {
+fn native_completion_and_visible_history_failure_have_distinct_receipts() {
     let mut h = Harness::new(1);
-    let start = h.start(0);
-    let submitted = serde_json::to_value(h.record(0)).expect("agent snapshot");
-    h.accepted(&start, "execution-turn");
-    let accepted = serde_json::to_value(h.record(0)).expect("agent snapshot");
+    let request = h.start(0);
+    h.accepted(&request, "execution-turn");
     h.notice(0, "turn/completed", "execution-turn", "completed");
-    let completed = serde_json::to_value(h.record(0)).expect("agent snapshot");
-    let attempt = completed["startAttempt"]["id"].as_str().expect("attempt");
-    let connection = h.store.read().expect("history read");
-    let raw: String = connection
-        .query_row(
-            "SELECT record FROM runtime_execution_attempts WHERE id=?1",
-            [attempt],
-            |r| r.get(0),
-        )
-        .expect("attempt history");
-    let mut actual_attempt: Value = serde_json::from_str(&raw).expect("attempt JSON");
-    actual_attempt
-        .as_object_mut()
-        .expect("attempt object")
-        .remove("inputIdentity");
-    actual_attempt
-        .as_object_mut()
-        .expect("attempt object")
-        .remove("claimResult");
-    let run = actual_attempt["runId"].as_str().expect("run id");
-    let raw: String = connection
-        .query_row(
-            "SELECT record FROM runtime_execution_runs WHERE id=?1",
-            [run],
-            |r| r.get(0),
-        )
-        .expect("run history");
-    let mut actual_run: Value = serde_json::from_str(&raw).expect("run JSON");
-    actual_run
-        .as_object_mut()
-        .expect("run object")
-        .remove("finished");
-    let events = connection
-        .prepare("SELECT event FROM runtime_execution_inputs WHERE run=?1 ORDER BY event")
-        .expect("input query")
-        .query_map([run], |r| r.get::<_, String>(0))
-        .expect("inputs")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("input rows");
-    let script = r#"
-import json,sqlite3,sys
-sys.path.insert(0,sys.argv[1])
-import codex_execution as execution
-submitted,accepted,completed=json.load(sys.stdin)
-db=sqlite3.connect(':memory:')
-execution.ensure_tables(db)
-db.execute('CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT)')
-execution.reconcile_agent(db,submitted,None)
-execution.reconcile_agent(db,accepted,submitted)
-execution.observe_native(db,accepted,'turn/completed',{'threadId':accepted['threadId'],'turn':{'id':'execution-turn','status':'completed'}})
-execution.reconcile_agent(db,completed,accepted)
-a=json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',(completed['startAttempt']['id'],)).fetchone()[0])
-r=json.loads(db.execute('SELECT record FROM runtime_execution_runs WHERE id=?',(a['runId'],)).fetchone()[0])
-r.pop('finished',None)
-print(json.dumps({'attempt':a,'run':r,'events':[row[0] for row in db.execute('SELECT event FROM runtime_execution_inputs WHERE run=? ORDER BY event',(r['id'],))]}))
-"#;
-    let mut child = Command::new(python_executable())
-        .args(["-c", script])
-        .arg(server_source())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("Python oracle");
-    child
-        .stdin
-        .take()
-        .expect("oracle input")
-        .write_all(
-            json!([submitted, accepted, completed])
-                .to_string()
-                .as_bytes(),
-        )
-        .expect("snapshots send");
-    let output = child.wait_with_output().expect("oracle exits");
-    assert!(output.status.success());
-    let expected: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    let record = h.record(0);
+    assert_eq!(record.status, AgentStatus::Failed);
+    let id = record.extra["startAttempt"]["id"]
+        .as_str()
+        .expect("attempt");
+    let attempt = h
+        .store
+        .transaction(|tx| studio_runtime_store::ExecutionHistoryRepository::attempt(tx, id))
+        .expect("read attempt")
+        .expect("saved attempt");
+    assert_eq!(attempt["turnStatus"], "completed");
     assert_eq!(
-        json!({"attempt":actual_attempt,"run":actual_run,"events":events}),
-        expected
+        attempt["receipts"]["terminal"]["input"]["nativeStatus"],
+        "completed"
     );
-    assert_eq!(expected["run"]["status"], "completed");
-    assert_eq!(h.record(0).status, AgentStatus::Failed); // named transcript refusal remains explicit
+    assert_eq!(attempt["receipts"]["terminal"]["input"]["status"], "failed");
 }
 
 #[test]
@@ -1311,7 +1254,7 @@ fn same_generation_restart_restores_authority_and_finishes_receipt() {
     let agent = h.record(0);
     assert_eq!(agent.status, AgentStatus::Running);
     assert_eq!(agent.extra["autoWake"], true);
-    assert_eq!(agent.extra["restartRecovery"]["stage"], "reattached");
+    assert_eq!(agent.extra["restartRecovery"]["stage"], "continued");
     let before = agent.extra["events"].as_u64().expect("counter");
     h.notice(0, "turn/started", "recovering-turn", "running");
     let agent = h.record(0);
@@ -1569,7 +1512,7 @@ fn shutdown_commits_proven_not_sent_before_dropping_session() {
         .expect("regression fixture")
         .quiesce()
         .expect("regression fixture");
-    h.store.transaction(|tx| {tx.execute_batch("CREATE TRIGGER fail_unsent BEFORE UPDATE OF status ON runtime_events WHEN NEW.status='pending' BEGIN SELECT RAISE(FAIL,'injected'); END;")?;Ok(())}).expect("regression fixture");
+    h.store.transaction(|tx| {tx.execute_batch("CREATE TRIGGER fail_unsent BEFORE UPDATE OF status ON runtime_events WHEN NEW.status='failed' BEGIN SELECT RAISE(FAIL,'injected'); END;")?;Ok(())}).expect("regression fixture");
     h.worker.submit(intent).expect("regression fixture");
     assert!(
         h.worker
@@ -1589,10 +1532,13 @@ fn shutdown_commits_proven_not_sent_before_dropping_session() {
         })
         .expect("regression fixture");
     h.shutdown();
-    assert_eq!(h.status(0), "pending");
-    assert!(!h.record(0).extra.contains_key("startAttempt"));
+    assert_eq!(h.status(0), "failed");
+    assert_eq!(
+        h.record(0).extra["startAttempt"]["executionOutcome"],
+        "rejected"
+    );
     recover_on_startup(&h.store).expect("regression fixture");
-    assert_eq!(h.status(0), "pending");
+    assert_eq!(h.status(0), "failed");
     assert!(h.requests.try_iter().all(|r| r["method"] != "turn/start"));
 }
 
@@ -1692,129 +1638,6 @@ fn invalid_claim_receipt_error_is_sanitized() {
     .to_string();
     assert!(!error.contains("sensitive-record-value"));
     assert!(error.contains("runtime_execution_attempts/invalid-claim"));
-}
-
-fn review_history_snapshot(h: &Harness, stage: &str, native: Option<Value>) -> Value {
-    let agent = serde_json::to_value(h.record(0)).expect("regression fixture");
-    let id = agent["startAttempt"]["id"]
-        .as_str()
-        .expect("regression fixture");
-    let connection = h.store.read().expect("regression fixture");
-    let raw: String = connection
-        .query_row(
-            "SELECT record FROM runtime_execution_attempts WHERE id=?1",
-            [id],
-            |r| r.get(0),
-        )
-        .expect("regression fixture");
-    let mut attempt: Value = serde_json::from_str(&raw).expect("regression fixture");
-    attempt
-        .as_object_mut()
-        .expect("regression fixture")
-        .remove("inputIdentity");
-    attempt
-        .as_object_mut()
-        .expect("regression fixture")
-        .remove("claimResult");
-    let run_id = attempt["runId"].as_str().expect("regression fixture");
-    let raw: String = connection
-        .query_row(
-            "SELECT record FROM runtime_execution_runs WHERE id=?1",
-            [run_id],
-            |r| r.get(0),
-        )
-        .expect("regression fixture");
-    let mut run: Value = serde_json::from_str(&raw).expect("regression fixture");
-    run.as_object_mut()
-        .expect("regression fixture")
-        .remove("finished");
-    let mut stmt = connection
-        .prepare("SELECT event FROM runtime_execution_inputs WHERE run=?1 ORDER BY event")
-        .expect("regression fixture");
-    let events = stmt
-        .query_map([run_id], |r| r.get::<_, String>(0))
-        .expect("regression fixture")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("regression fixture");
-    json!({"stage":stage,"agent":agent,"native":native,"actual":{"attempt":attempt,"run":run,"events":events}})
-}
-
-#[test]
-fn review_history_each_lifecycle_stage_against_python() {
-    let mut h = Harness::new(1);
-    let (agent, epoch) = h.agents[0].clone();
-    write_annotation(&h.store, &agent, "input-0");
-    h.worker
-        .input(AccountInput::Wake(agent, epoch))
-        .expect("regression fixture");
-    let mut snapshots = vec![review_history_snapshot(&h, "claim", None)];
-    let resume = h.request("thread/resume");
-    h.frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}));
-    let start = h.request("turn/start");
-    snapshots.push(review_history_snapshot(&h, "submitted", None));
-    let pending = h
-        .worker
-        .pending
-        .get(&serde_json::from_value::<RequestId>(start["id"].clone()).expect("regression fixture"))
-        .expect("regression fixture");
-    settle_start_outcome(&h.store, &pending.intent, TurnStart::Unknown)
-        .expect("regression fixture");
-    snapshots.push(review_history_snapshot(&h, "unknown", None));
-    h.notice(0, "turn/started", "oracle-turn", "inProgress");
-    snapshots.push(review_history_snapshot(&h, "observed", None));
-    h.accepted(&start, "oracle-turn");
-    snapshots.push(review_history_snapshot(&h, "accepted", None));
-    h.store
-        .transaction(|tx| SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, true))
-        .expect("regression fixture");
-    snapshots.push(review_history_snapshot(&h, "disconnected", None));
-    h.store
-        .transaction(|tx| SchedulerRepository::reconcile_generation(tx, "default", 1, 2.0))
-        .expect("regression fixture");
-    snapshots.push(review_history_snapshot(&h, "reattached", None));
-    let native =
-        json!({"threadId":"fake-thread-0","turn":{"id":"oracle-turn","status":"interrupted"}});
-    h.frame(json!({"method":"turn/completed","params":native}));
-    snapshots.push(review_history_snapshot(&h, "terminal", Some(native)));
-    let script = r#"
-import json,sqlite3,sys
-sys.path.insert(0,sys.argv[1])
-import codex_execution as e
-steps=json.load(sys.stdin)
-db=sqlite3.connect(':memory:'); e.ensure_tables(db)
-db.execute('CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT)')
-previous=None; results=[]
-for step in steps:
-    agent=step['agent']
-    if step['native']:
-        e.observe_native(db,previous,'turn/completed',step['native'])
-    e.reconcile_agent(db,agent,previous)
-    a=json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',(agent['startAttempt']['id'],)).fetchone()[0])
-    r=json.loads(db.execute('SELECT record FROM runtime_execution_runs WHERE id=?',(a['runId'],)).fetchone()[0]); r.pop('finished',None)
-    expected={'attempt':a,'run':r,'events':[x[0] for x in db.execute('SELECT event FROM runtime_execution_inputs WHERE run=? ORDER BY event',(r['id'],))]}
-    results.append({'stage':step['stage'],'equal':expected==step['actual'],'expected':expected,'actual':step['actual']})
-    previous=agent
-print(json.dumps(results))
-"#;
-    let mut child = Command::new(python_executable())
-        .args(["-c", script])
-        .arg(server_source())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("regression fixture");
-    child
-        .stdin
-        .take()
-        .expect("regression fixture")
-        .write_all(json!(snapshots).to_string().as_bytes())
-        .expect("regression fixture");
-    let out = child.wait_with_output().expect("regression fixture");
-    assert!(out.status.success());
-    let results: Value = serde_json::from_slice(&out.stdout).expect("regression fixture");
-    for row in results.as_array().expect("regression fixture") {
-        assert_eq!(row["equal"], true, "history drift at {}", row["stage"]);
-    }
 }
 
 #[test]

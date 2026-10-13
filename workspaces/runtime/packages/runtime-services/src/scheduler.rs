@@ -46,9 +46,32 @@ pub enum SchedulerError {
     Store(#[from] StoreError),
 }
 
+/// Lifecycle writes and canonical renderer publication share the writer transaction.
+/// The existing agent change journal supplies exactly the changed IDs, so replay
+/// neither republishes an agent nor scans unrelated stored payloads.
+pub fn lifecycle_transaction<T>(
+    store: &RuntimeStore,
+    change: impl FnOnce(&rusqlite::Transaction<'_>) -> studio_runtime_store::StoreResult<T>,
+) -> studio_runtime_store::StoreResult<T> {
+    store.transaction(|tx| {
+        let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0))?;
+        let result = change(tx)?;
+        let mut statement = tx.prepare("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id")?;
+        let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let server_id = crate::sync_entity_context::local_server_id(&store.root().to_string_lossy())?;
+        for (id,raw) in rows {
+            let agent: Value = serde_json::from_str(&raw).map_err(|_|StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
+            let context = crate::sync_entity_context::agent_view_context(tx,&agent,server_id.as_deref())?;
+            let projection = crate::sync_views::agent_entity_view(&agent,&context).ok_or_else(||StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
+            studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"agent",&id,projection,crate::event_write::truthy(agent.get("deletedAt")))?;
+        }
+        Ok(result)
+    })
+}
+
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
         let submitted = SchedulerRepository::recover_submitted(transaction)?;
         Ok(unsubmitted + submitted)
@@ -65,7 +88,7 @@ pub fn settle_started_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(None);
     };
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         SchedulerRepository::settle_started_provider(
             transaction,
             &intent.agent_id,
@@ -90,7 +113,7 @@ pub fn settle_start_rejected_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         SchedulerRepository::settle_start_rejected_provider(
             transaction,
             &intent.agent_id,
@@ -115,7 +138,7 @@ pub fn settle_terminal_attempt(
     let Some(turn_id) = params["turn"]["id"].as_str() else {
         return Ok(false);
     };
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         let input =
             serde_json::json!({"agent":identity.agent_id,"epoch":identity.epoch,"params":params});
         if let Some(saved) = ExecutionHistoryRepository::replay(
@@ -219,7 +242,7 @@ pub fn authorize_submission(
     let Some(thread) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(store.transaction(|tx| {
+    Ok(lifecycle_transaction(store, |tx| {
         let replay = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
             .is_some_and(|a| a["receipts"]["submission"].is_object());
         let result = SchedulerRepository::mark_submitted_identity(
@@ -245,7 +268,7 @@ pub fn mark_submitted_for_provider(
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(false);
     };
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         SchedulerRepository::mark_submitted_identity(
             transaction,
             &intent.agent_id,
@@ -270,7 +293,7 @@ pub fn claim_intent(
     if !attempt_created.is_finite() {
         return Err(SchedulerError::InvalidAttemptTimestamp);
     }
-    let claimed = store.transaction(|transaction| {
+    let claimed = lifecycle_transaction(store, |transaction| {
         SchedulerRepository::claim(
             transaction,
             agent_id,
@@ -330,7 +353,7 @@ pub fn settle_start_outcome(
     intent: &TurnIntent,
     outcome: TurnStart,
 ) -> Result<(), SchedulerError> {
-    Ok(store.transaction(|transaction| {
+    Ok(lifecycle_transaction(store, |transaction| {
         SchedulerRepository::settle_start_outcome(
             transaction,
             &intent.identity(),

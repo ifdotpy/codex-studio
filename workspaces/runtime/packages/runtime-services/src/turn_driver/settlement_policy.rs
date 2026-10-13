@@ -33,6 +33,47 @@ impl EvidenceWindow {
             || (!self.resolving && settlements >= limit - requests * 2)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EventDisposition {
+    Ignore,
+    Observe,
+    Defer,
+    Settle,
+}
+pub(super) fn event_disposition(
+    method: studio_runtime_providers::Method,
+    has_attempt: bool,
+    bound: bool,
+) -> EventDisposition {
+    use studio_runtime_providers::Method;
+    if !has_attempt {
+        return EventDisposition::Ignore;
+    }
+    match method {
+        Method::TurnStarted => EventDisposition::Observe,
+        Method::TurnCompleted if bound => EventDisposition::Settle,
+        Method::TurnCompleted => EventDisposition::Defer,
+        _ => EventDisposition::Ignore,
+    }
+}
+pub(super) fn start_delivery(
+    method: studio_runtime_providers::Method,
+    not_sent: bool,
+) -> (crate::scheduler::TurnStart, bool) {
+    use crate::scheduler::TurnStart;
+    use studio_runtime_providers::Method;
+    let decision = if not_sent {
+        TurnStart::NotSubmitted
+    } else if method == Method::TurnStart {
+        TurnStart::Unknown
+    } else {
+        TurnStart::Blocked {
+            reason: "Provider thread resume outcome is unknown; input remains pending.".into(),
+        }
+    };
+    (decision, not_sent || method == Method::ThreadResume)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

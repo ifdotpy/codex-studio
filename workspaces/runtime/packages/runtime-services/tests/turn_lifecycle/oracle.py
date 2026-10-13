@@ -19,10 +19,16 @@ class IsolationViolation(BaseException):
 
 
 def guard(event, args):
+    global _CHECKING_PATH
     if event in {"open", "os.listdir", "os.scandir", "os.stat", "os.lstat", "os.fstatat"}:
         path = args[0] if args else None
         if isinstance(path, (str, bytes, os.PathLike)):
-            resolved = pathlib.Path(os.fsdecode(path)).resolve()
+            checking = globals().get("_CHECKING_PATH", False)
+            _CHECKING_PATH = True
+            try:
+                resolved = pathlib.Path(os.fsdecode(path)).resolve()
+            finally:
+                _CHECKING_PATH = checking
             if any(resolved == forbidden or forbidden in resolved.parents for forbidden in _FORBIDDEN):
                 raise IsolationViolation("oracle refused access to a real provider home")
     if event == "socket.connect":
@@ -30,6 +36,20 @@ def guard(event, args):
 
 
 sys.addaudithook(guard)
+# CPython emits no audit event for stat/lstat; enforce the same boundary there.
+_ORIGINAL_STAT, _ORIGINAL_LSTAT = os.stat, os.lstat
+_CHECKING_PATH = False
+def guarded_stat(original, path, *args, **kwargs):
+    global _CHECKING_PATH
+    if not _CHECKING_PATH:
+        _CHECKING_PATH = True
+        try:
+            guard("os.stat", (path,))
+        finally:
+            _CHECKING_PATH = False
+    return original(path, *args, **kwargs)
+os.stat = lambda path, *a, **kw: guarded_stat(_ORIGINAL_STAT, path, *a, **kw)
+os.lstat = lambda path, *a, **kw: guarded_stat(_ORIGINAL_LSTAT, path, *a, **kw)
 if "--guard-test" in sys.argv:
     for forbidden in _FORBIDDEN:
         try:
@@ -38,6 +58,13 @@ if "--guard-test" in sys.argv:
             pass
         else:
             raise AssertionError("real provider home was not blocked")
+        for operation in (os.stat, os.lstat, os.listdir, os.scandir):
+            try:
+                operation(forbidden / "oracle-guard-must-not-open")
+            except IsolationViolation:
+                pass
+            else:
+                raise AssertionError("provider-home metadata access was not blocked")
     print("guard refused both real provider homes")
     sys.exit(0)
 
@@ -57,6 +84,7 @@ if "--isolated" not in sys.argv:
     os.execve(sys.executable, [sys.executable, "-B", __file__, "--isolated"], environment)
 
 import copy
+import concurrent.futures
 import hashlib
 import json
 import sqlite3
@@ -73,11 +101,11 @@ TABLES = (
     "runtime_agents", "runtime_events", "runtime_execution_runs", "runtime_execution_attempts",
     "runtime_execution_inputs", "runtime_execution_effects", "runtime_execution_nodes", "runtime_completed_turns",
     "runtime_event_meta", "runtime_items", "runtime_item_fulltext", "runtime_context_manifests", "runtime_context_reminders",
-    "runtime_requests", "runtime_tasks", "runtime_complaints", "runtime_operation_receipts",
+    "runtime_budget", "runtime_budget_usage", "runtime_requests", "runtime_tasks", "runtime_complaints", "runtime_operation_receipts",
     "sync_entities", "sync_documents", "sync_versions", "runtime_search", "runtime_search_rows",
     "runtime_search_indexed", "runtime_search_next_meta",
 )
-TIMES = {"created", "createdAt", "created_at", "finished", "at", "lastEvent", "reconciledAt", "updated", "updatedAt", "acceptedAt", "enqueuedAt", "dispatchPickedAt"}
+TIMES = {"created", "createdAt", "created_at", "finished", "at", "lastEvent", "reconciledAt", "updated", "updatedAt", "acceptedAt", "enqueuedAt", "dispatchPickedAt", "observedAt"}
 
 
 class QuietRuntime(Runtime):
@@ -142,6 +170,7 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
         if "runtime_search_next" in present:
             db.execute("CREATE VIRTUAL TABLE temp.corpus_vocab USING fts5vocab(main,'runtime_search_next','instance')")
             result["runtime_search_next_postings"] = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM corpus_vocab ORDER BY 1,2,3,4")]
+        result.setdefault("runtime_search_next_postings", [])
         return result
 
 
@@ -187,8 +216,13 @@ def capture_submission(runtime, *, stop="submitted"):
     raise AssertionError("real start did not reach the selected submission boundary")
 
 
+_SEED_AGENT = None
+
 def seed(runtime, case):
-    agent = runtime.create({"name": "lifecycle fixture", "cwd": str(runtime.root), "prompt": "seed"}, defer=True)
+    global _SEED_AGENT
+    if _SEED_AGENT is None:
+        _SEED_AGENT = runtime.create({"name": "lifecycle fixture", "cwd": str(runtime.root), "prompt": "seed"}, defer=True)
+    agent = copy.deepcopy(_SEED_AGENT)
     with runtime.db() as db:
         db.execute("DELETE FROM runtime_agents WHERE id=?", (agent["id"],))
         db.execute("DELETE FROM sync_entities WHERE collection='agent' AND id=?", (agent["id"],))
@@ -207,6 +241,7 @@ def seed(runtime, case):
                                supervisorIdentity=None)
                 if case.get("state") != "python_unknown":
                     attempt.update(requestTicket="ticket", connectionGeneration=1)
+            attempt.update(case.get("attempt", {}))
             if phase == "accepted":
                 attempt["turnId"] = "turn"
             agent.update(status="running" if phase == "accepted" else "starting", inFlight=True,
@@ -228,7 +263,28 @@ def seed(runtime, case):
             run = codex_execution._load(db, "runs", "run:attempt")
             run.update(case["run"])
             codex_execution._save_run(db, run)
-    return agent
+    if case.get("seedRecovery"):
+        if case["seedRecovery"] == "restart":
+            runtime = transition(runtime, {"transition":"restart"})
+        else:
+            runtime.disconnected()
+        with runtime.db() as db:
+            agent = runtime.agent("agent",db)
+            agent.update(case.get("agent",{}))
+            runtime.put(db,"agents",agent)
+    for corruption in case.get("corrupt", []):
+        table, key = corruption["table"], corruption["id"]
+        assert table in TABLES
+        with runtime.db() as db:
+            row=json.loads(db.execute('SELECT record FROM "'+table+'" WHERE id=?',(key,)).fetchone()[0])
+            row[corruption["field"]]=corruption["value"]
+            db.execute('UPDATE "'+table+'" SET record=? WHERE id=?',(json.dumps(row),key))
+    if case.get("phase") == "queued":
+        from codex_native_tools import mark_current
+        mark_current(agent, runtime.tool_definitions(agent))
+        with runtime.db() as db:
+            runtime.put(db, "agents", agent)
+    return runtime
 
 
 def transition(runtime, case):
@@ -260,11 +316,27 @@ def transition(runtime, case):
             backup.backup(db)
         backup.close()
         runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+    elif action == "reattach":
+        import codex_connection_recovery as recovery
+        server = object()
+        with patch.object(runtime,"server_for",lambda *_:server), patch.object(runtime,"connection_current",lambda *_:True):
+            if case.get("seedRecovery") == "restart":
+                recovery.adopt_restart_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"})
+            else:
+                recovery.adopt_transport_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"},None)
     elif action == "claim":
         with patch.object(codex_runtime, "uid", lambda:"attempt"):
             runtime.dispatch_candidates("agent")
     elif action == "submission":
         capture_submission(runtime)
+    elif action.startswith("interrupt_"):
+        class InterruptProvider:
+            def call(self, method, params):
+                assert method == "turn/interrupt"
+                if action == "interrupt_rejected": raise ValueError("rejected")
+                if action == "interrupt_unknown": raise TimeoutError("interrupt response unknown")
+        with patch.object(runtime,"server_for",lambda *_:InterruptProvider()):
+            Runtime.interrupt(runtime,agent)
     elif action in {"stop", "pause"}:
         runtime.stop("agent", descendants=False)
     else:
@@ -272,18 +344,81 @@ def transition(runtime, case):
     return runtime
 
 
+class LifecycleCases:
+    """Reuse only initialized runtime services and Python-written seed backups."""
+    def __init__(self, template):
+        self.template = template
+        self.runtime = None
+        self.pristine = None
+        self.seeds = {}
+
+    def run(self, command):
+        if self.runtime is None:
+            root = pathlib.Path(command["root"])
+            shutil.copytree(self.template, root)
+            self.runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+            self.pristine = sqlite3.connect(":memory:")
+            with self.runtime.read_db() as db:
+                db.backup(self.pristine)
+        runtime, case = self.runtime, command["case"]
+        runtime.close_notification_database()
+        runtime.__dict__.pop("_agent_records_cache", None)
+        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery") if k in case}}, sort_keys=True)
+        if key not in self.seeds:
+            with sqlite3.connect(runtime.db_path) as db:
+                self.pristine.backup(db)
+            self.runtime = runtime = seed(runtime, case)
+            saved = sqlite3.connect(":memory:")
+            with runtime.read_db() as db:
+                db.backup(saved)
+            self.seeds[key] = saved
+        saved = self.seeds[key]
+        with sqlite3.connect(runtime.db_path) as db:
+            saved.backup(db)
+        runtime.__dict__.pop("_agent_records_cache", None)
+        rust = pathlib.Path(command["rust"])
+        rust.mkdir(parents=True)
+        shutil.copytree(runtime.root / "multi-server", rust / "multi-server")
+        shutil.copyfile(self.template / "analytics.sqlite3", rust / "analytics.sqlite3")
+        with sqlite3.connect(rust / "canvas.sqlite3") as db:
+            saved.backup(db)
+        before = snapshot(runtime.root)
+        assert snapshot(rust) == before, "pre-states differ"
+        python_error = None
+        try:
+            self.runtime = transition(runtime, case) or runtime
+        except Exception as error:
+            if not case.get("expectRefusal"): raise
+            python_error = type(error).__name__
+        if case.get("afterEventText"):
+            with self.runtime.db() as db:
+                db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
+        return {"before":before, "after":snapshot(self.runtime.root), "pythonRoot":str(self.runtime.root),"pythonError":python_error}
+
+    def close(self):
+        if self.runtime is not None:
+            self.runtime.close()
+            self.pristine.close()
+        for saved in self.seeds.values():
+            saved.close()
+
+
 def main():
     # No scheduler, archive, WAL, timer, pool worker or provider may execute.
     with patch.object(codex_accounts, "codex_home", lambda: pathlib.Path(os.environ["CODEX_HOME"])), \
          patch.object(codex_accounts, "auth_metadata", lambda *_: {"status":"signedOut","accountId":None,"email":None,"plan":None}), \
+         patch.object(concurrent.futures.ThreadPoolExecutor, "submit", lambda *_a, **_kw: concurrent.futures.Future()), \
          patch.object(threading.Thread, "start", lambda self: None), \
          patch.object(threading.Thread, "join", lambda self, *a, **k: None), \
          patch.object(codex_runtime, "_RuntimeWalKeeper", lambda *a: None):
         template = pathlib.Path(tempfile.mkdtemp(prefix="lifecycle-schema-"))
         initialized = QuietRuntime(template, lambda *_a, **_kw: None)
         initialized.close()
+        lifecycle = LifecycleCases(template)
         for line in sys.stdin:
             command = json.loads(line)
+            if command["command"] == "close":
+                break
             module_name = command.get("module", command.get("case", {}).get("module"))
             if module_name is not None:
                 assert module_name == "notification_dispatch", "unknown oracle module"
@@ -293,6 +428,10 @@ def main():
             try:
                 if command["command"] == "snapshot":
                     result = module.snapshot(command["root"])
+                elif module is sys.modules[__name__]:
+                    result = lifecycle.run(command)
+                elif hasattr(module, "run_case"):
+                    result = module.run_case(command, template, QuietRuntime)
                 else:
                     root = pathlib.Path(command["root"])
                     shutil.copytree(template, root)
@@ -317,6 +456,9 @@ def main():
             except Exception:
                 import traceback
                 print(json.dumps({"error": traceback.format_exc()}), flush=True)
+        lifecycle.close()
+        if "notification_dispatch" in sys.modules:
+            sys.modules["notification_dispatch"].close()
         shutil.rmtree(template)
 
 

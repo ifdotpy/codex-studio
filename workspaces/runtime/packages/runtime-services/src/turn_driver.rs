@@ -5,9 +5,9 @@ use crate::provider_session::{
     ProviderSessionInput,
 };
 use crate::scheduler::{
-    SchedulerError, TurnIntent, TurnStart, authorize_submission, claim_intent, recover_on_startup,
-    settle_start_outcome, settle_start_rejected_provider, settle_started_provider,
-    settle_terminal_attempt,
+    SchedulerError, TurnIntent, TurnStart, authorize_submission, claim_intent,
+    lifecycle_transaction, recover_on_startup, settle_start_outcome,
+    settle_start_rejected_provider, settle_started_provider, settle_terminal_attempt,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -380,7 +380,7 @@ impl AccountWorker {
             })?;
         let generation = process.generation();
         self.evidence = settlement_policy::EvidenceWindow::new(process.acknowledged_cursor());
-        let recovered = self.store.transaction(|tx| {
+        let recovered = lifecycle_transaction(&self.store, |tx| {
             SchedulerRepository::reconcile_generation(tx, &self.account, generation, now())?;
             SchedulerRepository::submitted_start_requests(tx, &self.account, Some(generation))
         });
@@ -585,7 +585,7 @@ impl AccountWorker {
             self.flush_unreplayable()?;
             self.sender.discard_quiesced_transport();
             if let Some(session) = &self.session {
-                self.store.transaction(|tx| {
+                lifecycle_transaction(&self.store, |tx| {
                     SchedulerRepository::disconnect_account(
                         tx,
                         &self.account,
@@ -692,7 +692,6 @@ impl AccountWorker {
             return Ok(());
         }
         if !authorize_submission(&self.store, &intent, &id_string(&id), session.generation())? {
-            settle_start_outcome(&self.store, &intent, TurnStart::NotSubmitted)?;
             return Ok(());
         }
         self.send(
@@ -805,8 +804,8 @@ impl AccountWorker {
             ProviderSessionEvent::Reply { ticket, body, .. }
                 if ticket.method == Method::TurnInterrupt =>
             {
-                self.store.transaction(|tx| {
-                    SchedulerRepository::settle_interrupt(
+                lifecycle_transaction(&self.store, |tx| {
+                    SchedulerRepository::settle_interrupt_result(
                         tx,
                         &id_string(&ticket.id),
                         ticket.generation,
@@ -814,6 +813,12 @@ impl AccountWorker {
                             "rejected"
                         } else {
                             "accepted"
+                        },
+                        match body {
+                            ResponseBody::Error(error) => {
+                                error.get("message").and_then(Value::as_str)
+                            }
+                            _ => None,
                         },
                     )
                 })?;
@@ -889,26 +894,17 @@ impl AccountWorker {
             ProviderSessionEvent::UnknownOutcome { ticket }
             | ProviderSessionEvent::NotSent { ticket } => {
                 if let Some(pending) = self.pending.get(&ticket.id) {
-                    let outcome = if matches!(event, ProviderSessionEvent::NotSent { .. }) {
-                        TurnStart::NotSubmitted
-                    } else if pending.method == Method::TurnStart {
-                        TurnStart::Unknown
-                    } else {
-                        TurnStart::Blocked {
-                            reason:
-                                "Provider thread resume outcome is unknown; input remains pending."
-                                    .into(),
-                        }
-                    };
+                    let (outcome, remove) = settlement_policy::start_delivery(
+                        pending.method,
+                        matches!(event, ProviderSessionEvent::NotSent { .. }),
+                    );
                     settle_start_outcome(&self.store, &pending.intent, outcome)?;
-                    if matches!(event, ProviderSessionEvent::NotSent { .. })
-                        || pending.method == Method::ThreadResume
-                    {
+                    if remove {
                         self.pending.remove(&ticket.id);
                     }
                 } else if matches!(ticket.method, Method::TurnInterrupt | Method::Initialize) {
                     if ticket.method == Method::TurnInterrupt {
-                        self.store.transaction(|tx| {
+                        lifecycle_transaction(&self.store, |tx| {
                             SchedulerRepository::settle_interrupt(
                                 tx,
                                 &id_string(&ticket.id),
@@ -985,17 +981,17 @@ impl AccountWorker {
         let Some((identity, bound)) = identity else {
             return Ok(true);
         };
-        if method == Method::TurnStarted {
-            if self
-                .store
-                .transaction(|tx| SchedulerRepository::observe_started(tx, &identity, turn))?
-                == Some(true)
+        let disposition = settlement_policy::event_disposition(method, true, bound);
+        if disposition == settlement_policy::EventDisposition::Observe {
+            if lifecycle_transaction(&self.store, |tx| {
+                SchedulerRepository::observe_started(tx, &identity, turn)
+            })? == Some(true)
             {
                 self.interrupt(&identity.agent_id, thread, turn)?;
             }
             return Ok(true);
         }
-        if !bound {
+        if disposition == settlement_policy::EventDisposition::Defer {
             return Ok(false);
         }
         settle_terminal_attempt(&self.store, &identity, params)?;
@@ -1038,7 +1034,7 @@ impl AccountWorker {
             Some(thread.to_owned()),
             false,
         )?;
-        if !self.store.transaction(|tx| {
+        if !lifecycle_transaction(&self.store, |tx| {
             SchedulerRepository::prepare_interrupt(
                 tx,
                 agent,
@@ -1088,8 +1084,9 @@ impl AccountWorker {
         Ok(())
     }
     fn clear_hold(&mut self) -> Result<(), TurnRuntimeError> {
-        self.store
-            .transaction(|tx| SchedulerRepository::clear_account_hold(tx, &self.account))?;
+        lifecycle_transaction(&self.store, |tx| {
+            SchedulerRepository::clear_account_hold(tx, &self.account)
+        })?;
         self.held = false;
         self.retry_at = None;
         for event in &mut self.settlements {
@@ -1102,12 +1099,10 @@ impl AccountWorker {
         self.retry_at = None;
         // If the database itself is unavailable, retain the frame and expose failure on stderr;
         // never acknowledge or pretend the failure receipt was committed.
-        if self
-            .store
-            .transaction(|tx| {
-                SchedulerRepository::hold_account(tx, &self.account, cursor, SETTLEMENT_HELD)
-            })
-            .is_err()
+        if lifecycle_transaction(&self.store, |tx| {
+            SchedulerRepository::hold_account(tx, &self.account, cursor, SETTLEMENT_HELD)
+        })
+        .is_err()
         {
             eprintln!("{SETTLEMENT_HELD} Durable error receipt unavailable.");
         }

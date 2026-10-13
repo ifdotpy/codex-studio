@@ -1,0 +1,1049 @@
+{
+  "description": "Lifecycle transition/state witnesses; phase selects the saved input authority and state selects its modifier. Callback states may be paused or deleted after submission. Replay and changed-content probes share the original Python pre-state.",
+  "sameStateComparisons": {
+    "accepted": "accepted",
+    "unknown": "unknown",
+    "rejected": "rejected",
+    "not_sent": "not_sent_after_submit",
+    "interrupted": "interrupted",
+    "denials": "denials",
+    "completed": "completed",
+    "failed": "failed",
+    "policy_interrupted": "policy_interrupted",
+    "saved_error": "saved_error",
+    "paused_failed": "paused_failed",
+    "deleted_accepted": "deleted_accepted",
+    "scope_accepted": "scope_accepted",
+    "startup_unknown": "startup_unknown",
+    "startup_paused_unknown": "startup_paused_unknown",
+    "startup_noattempt": "startup_noattempt",
+    "disconnected": "disconnected",
+    "generation_change": "generation_change",
+    "interrupted_answer": "interrupted_answer",
+    "not_sent_before_submit": "not_sent"
+  },
+  "reviewFindings": {
+    "A1": [
+      "submit_python_claim",
+      "claim_replay",
+      "submission_replay",
+      "submit_python_claim_conflict",
+      "claim_queued_conflict"
+    ],
+    "A2": ["existing_python_claim_identity"],
+    "A3": [
+      "accepted_replay",
+      "unknown_replay",
+      "rejected_replay",
+      "not_sent_replay",
+      "interrupted_replay",
+      "completed_replay",
+      "failed_replay",
+      "denials_replay",
+      "policy_interrupted_replay",
+      "saved_error_replay",
+      "paused_failed_replay",
+      "interrupted_answer_replay",
+      "claim_replay",
+      "submission_replay",
+      "interrupt_accepted",
+      "interrupt_rejected",
+      "interrupt_unknown",
+      "accepted_conflict",
+      "rejected_conflict",
+      "interrupted_conflict"
+    ],
+    "A4": [
+      "deleted_accepted",
+      "scope_accepted",
+      "completed_deleted",
+      "failed_deleted",
+      "interrupted_deleted",
+      "started_notice_deleted",
+      "unknown_deleted",
+      "rejected_deleted",
+      "not_sent_deleted"
+    ],
+    "A5": ["startup_unknown", "startup_paused_unknown", "startup_noattempt"],
+    "A6": [
+      "reattach_account_transfer",
+      "reattach_workspace_operation",
+      "reattach_native_thread_block",
+      "reattach_native_failure_hold",
+      "reattach_context_wait",
+      "reattach_running",
+      "reattach_restart"
+    ],
+    "A7": ["reattach_native_failure_hold"],
+    "A8": ["denials", "policy_interrupted", "saved_error"],
+    "A9": [
+      "paused_failed",
+      "accepted__paused",
+      "accepted__stopped",
+      "unknown__paused",
+      "unknown__stopped",
+      "rejected__paused",
+      "rejected__stopped",
+      "not_sent__paused",
+      "not_sent__stopped",
+      "started_notice__paused",
+      "started_notice__stopped",
+      "interrupted__paused",
+      "interrupted__stopped",
+      "failed__paused",
+      "failed__stopped",
+      "completed__paused",
+      "completed__stopped"
+    ],
+    "A10": ["accepted", "interrupted_answer", "started_notice"],
+    "A11": [
+      "unknown",
+      "rejected",
+      "not_sent",
+      "not_sent_after_submit",
+      "rejected_busy",
+      "unknown_busy",
+      "not_sent_busy"
+    ],
+    "A12": [
+      "malformed_agent_submission",
+      "malformed_agent_accepted",
+      "malformed_agent_unknown",
+      "malformed_agent_restart",
+      "malformed_interrupt",
+      "malformed_terminal_run"
+    ],
+    "A13": ["terminal_existing_result", "terminal_conflicts_with_saved_run"],
+    "B1": ["interrupted", "failed", "claim_queued"],
+    "B2": ["completed"],
+    "B3": [
+      "startup_unknown",
+      "startup_paused_unknown",
+      "disconnected",
+      "generation_change"
+    ],
+    "B4": [
+      "malformed_agent_accepted",
+      "accepted_python_fields",
+      "unknown_python_fields",
+      "started_notice_python_fields",
+      "interrupted_python_fields",
+      "failed_python_fields"
+    ],
+    "B5": ["malformed_agent_accepted"],
+    "B6": [
+      "started_notice",
+      "stop_queued",
+      "stop_claimed",
+      "stop_submitted",
+      "stop_accepted",
+      "accepted__native_failure_hold",
+      "accepted__last_answer",
+      "accepted__account_transfer",
+      "accepted__workspace_operation",
+      "accepted__native_thread_block",
+      "unknown__native_failure_hold",
+      "unknown__last_answer",
+      "unknown__account_transfer",
+      "unknown__workspace_operation",
+      "unknown__native_thread_block",
+      "rejected__native_failure_hold",
+      "rejected__last_answer",
+      "rejected__account_transfer",
+      "rejected__workspace_operation",
+      "rejected__native_thread_block",
+      "not_sent__native_failure_hold",
+      "not_sent__last_answer",
+      "not_sent__account_transfer",
+      "not_sent__workspace_operation",
+      "not_sent__native_thread_block",
+      "started_notice__native_failure_hold",
+      "started_notice__last_answer",
+      "started_notice__account_transfer",
+      "started_notice__workspace_operation",
+      "started_notice__native_thread_block",
+      "interrupted__native_failure_hold",
+      "interrupted__last_answer",
+      "interrupted__account_transfer",
+      "interrupted__workspace_operation",
+      "interrupted__native_thread_block",
+      "failed__native_failure_hold",
+      "failed__last_answer",
+      "failed__account_transfer",
+      "failed__workspace_operation",
+      "failed__native_thread_block",
+      "completed__native_failure_hold",
+      "completed__last_answer",
+      "completed__account_transfer",
+      "completed__workspace_operation",
+      "completed__native_thread_block",
+      "stop_accepted__native_failure_hold",
+      "stop_accepted__last_answer",
+      "stop_accepted__account_transfer",
+      "stop_accepted__workspace_operation",
+      "stop_accepted__native_thread_block",
+      "accepted__paused",
+      "accepted__stopped",
+      "unknown__paused",
+      "unknown__stopped",
+      "rejected__paused",
+      "rejected__stopped",
+      "not_sent__paused",
+      "not_sent__stopped",
+      "started_notice__paused",
+      "started_notice__stopped",
+      "interrupted__paused",
+      "interrupted__stopped",
+      "failed__paused",
+      "failed__stopped",
+      "completed__paused",
+      "completed__stopped",
+      "reattach_account_transfer",
+      "reattach_workspace_operation",
+      "reattach_native_thread_block",
+      "reattach_native_failure_hold",
+      "reattach_context_wait",
+      "stop_idle",
+      "stop_deleted",
+      "stop_account_transfer",
+      "stop_workspace_operation",
+      "stop_native_thread_block",
+      "stop_native_failure_hold",
+      "pause_idle",
+      "pause_deleted",
+      "pause_account_transfer",
+      "pause_workspace_operation",
+      "pause_native_thread_block",
+      "pause_native_failure_hold",
+      "claim_idle",
+      "claim_deleted",
+      "claim_account_transfer",
+      "claim_workspace_operation",
+      "claim_native_thread_block",
+      "claim_native_failure_hold",
+      "completed_deleted",
+      "failed_deleted",
+      "interrupted_deleted",
+      "started_notice_deleted",
+      "unknown_deleted",
+      "rejected_deleted",
+      "not_sent_deleted",
+      "stop_matrix_paused",
+      "stop_matrix_stopped",
+      "stop_matrix_python_attempt",
+      "stop_matrix_python_unknown",
+      "pause_matrix_queued_pending",
+      "pause_matrix_running",
+      "pause_matrix_paused",
+      "pause_matrix_stopped",
+      "pause_matrix_last_answer",
+      "pause_matrix_python_attempt",
+      "pause_matrix_python_unknown",
+      "claim_paused",
+      "claim_stopped",
+      "reattach_running",
+      "reattach_restart"
+    ]
+  },
+  "matrix": [
+    {
+      "transition": "accepted",
+      "state": "account_transfer",
+      "cases": ["scope_accepted", "accepted__account_transfer"]
+    },
+    {
+      "transition": "accepted",
+      "state": "deleted",
+      "cases": ["deleted_accepted"]
+    },
+    {
+      "transition": "accepted",
+      "state": "last_answer",
+      "cases": ["accepted__last_answer"]
+    },
+    {
+      "transition": "accepted",
+      "state": "malformed_rows",
+      "cases": ["malformed_agent_accepted"]
+    },
+    {
+      "transition": "accepted",
+      "state": "native_failure_hold",
+      "cases": ["accepted__native_failure_hold"]
+    },
+    {
+      "transition": "accepted",
+      "state": "native_thread_block",
+      "cases": ["accepted__native_thread_block"]
+    },
+    {
+      "transition": "accepted",
+      "state": "paused",
+      "cases": ["accepted__paused"]
+    },
+    {
+      "transition": "accepted",
+      "state": "python_unknown",
+      "cases": ["accepted_python_fields"]
+    },
+    {
+      "transition": "accepted",
+      "state": "queued_pending",
+      "cases": ["accepted", "accepted_replay", "accepted_conflict"]
+    },
+    {
+      "transition": "accepted",
+      "state": "stopped",
+      "cases": ["accepted__stopped"]
+    },
+    {
+      "transition": "accepted",
+      "state": "workspace_operation",
+      "cases": ["accepted__workspace_operation"]
+    },
+    {
+      "transition": "claim",
+      "state": "account_transfer",
+      "cases": ["claim_account_transfer"]
+    },
+    {
+      "transition": "claim",
+      "state": "deleted",
+      "cases": ["claim_deleted"]
+    },
+    {
+      "transition": "claim",
+      "state": "idle",
+      "cases": ["claim_idle"]
+    },
+    {
+      "transition": "claim",
+      "state": "native_failure_hold",
+      "cases": ["claim_native_failure_hold"]
+    },
+    {
+      "transition": "claim",
+      "state": "native_thread_block",
+      "cases": ["claim_native_thread_block"]
+    },
+    {
+      "transition": "claim",
+      "state": "paused",
+      "cases": ["claim_paused"]
+    },
+    {
+      "transition": "claim",
+      "state": "python_attempt",
+      "cases": ["existing_python_claim_identity"]
+    },
+    {
+      "transition": "claim",
+      "state": "queued_pending",
+      "cases": ["claim_queued", "claim_replay", "claim_queued_conflict"]
+    },
+    {
+      "transition": "claim",
+      "state": "stopped",
+      "cases": ["claim_stopped"]
+    },
+    {
+      "transition": "claim",
+      "state": "workspace_operation",
+      "cases": ["claim_workspace_operation"]
+    },
+    {
+      "transition": "completed",
+      "state": "account_transfer",
+      "cases": ["completed__account_transfer"]
+    },
+    {
+      "transition": "completed",
+      "state": "deleted",
+      "cases": ["completed_deleted"]
+    },
+    {
+      "transition": "completed",
+      "state": "last_answer",
+      "cases": ["completed__last_answer"]
+    },
+    {
+      "transition": "completed",
+      "state": "native_failure_hold",
+      "cases": ["completed__native_failure_hold"]
+    },
+    {
+      "transition": "completed",
+      "state": "native_thread_block",
+      "cases": ["completed__native_thread_block"]
+    },
+    {
+      "transition": "completed",
+      "state": "paused",
+      "cases": ["completed__paused"]
+    },
+    {
+      "transition": "completed",
+      "state": "running",
+      "cases": ["completed", "completed_replay"]
+    },
+    {
+      "transition": "completed",
+      "state": "stopped",
+      "cases": ["completed__stopped"]
+    },
+    {
+      "transition": "completed",
+      "state": "workspace_operation",
+      "cases": ["completed__workspace_operation"]
+    },
+    {
+      "transition": "disconnect",
+      "state": "queued_pending",
+      "cases": ["disconnected"]
+    },
+    {
+      "transition": "failed",
+      "state": "account_transfer",
+      "cases": ["failed__account_transfer"]
+    },
+    {
+      "transition": "failed",
+      "state": "deleted",
+      "cases": ["failed_deleted"]
+    },
+    {
+      "transition": "failed",
+      "state": "last_answer",
+      "cases": ["failed__last_answer"]
+    },
+    {
+      "transition": "failed",
+      "state": "native_failure_hold",
+      "cases": ["failed__native_failure_hold"]
+    },
+    {
+      "transition": "failed",
+      "state": "native_thread_block",
+      "cases": ["failed__native_thread_block"]
+    },
+    {
+      "transition": "failed",
+      "state": "paused",
+      "cases": ["paused_failed", "paused_failed_replay", "failed__paused"]
+    },
+    {
+      "transition": "failed",
+      "state": "python_unknown",
+      "cases": ["failed_python_fields"]
+    },
+    {
+      "transition": "failed",
+      "state": "running",
+      "cases": ["failed", "saved_error", "failed_replay", "saved_error_replay"]
+    },
+    {
+      "transition": "failed",
+      "state": "stopped",
+      "cases": ["failed__stopped"]
+    },
+    {
+      "transition": "failed",
+      "state": "workspace_operation",
+      "cases": ["failed__workspace_operation"]
+    },
+    {
+      "transition": "generation_change",
+      "state": "queued_pending",
+      "cases": ["generation_change"]
+    },
+    {
+      "transition": "interrupt_accepted",
+      "state": "malformed_rows",
+      "cases": ["malformed_interrupt"]
+    },
+    {
+      "transition": "interrupt_accepted",
+      "state": "paused",
+      "cases": ["interrupt_accepted"]
+    },
+    {
+      "transition": "interrupt_rejected",
+      "state": "paused",
+      "cases": ["interrupt_rejected"]
+    },
+    {
+      "transition": "interrupt_unknown",
+      "state": "paused",
+      "cases": ["interrupt_unknown"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "account_transfer",
+      "cases": ["interrupted__account_transfer"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "deleted",
+      "cases": ["interrupted_deleted"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "last_answer",
+      "cases": [
+        "interrupted_answer",
+        "interrupted_answer_replay",
+        "interrupted__last_answer"
+      ]
+    },
+    {
+      "transition": "interrupted",
+      "state": "malformed_rows",
+      "cases": ["malformed_terminal_run"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "native_failure_hold",
+      "cases": ["interrupted__native_failure_hold"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "native_thread_block",
+      "cases": ["interrupted__native_thread_block"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "paused",
+      "cases": ["interrupted__paused"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "python_unknown",
+      "cases": ["interrupted_python_fields"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "running",
+      "cases": [
+        "interrupted",
+        "denials",
+        "policy_interrupted",
+        "interrupted_replay",
+        "denials_replay",
+        "policy_interrupted_replay",
+        "interrupted_conflict"
+      ]
+    },
+    {
+      "transition": "interrupted",
+      "state": "stopped",
+      "cases": ["interrupted__stopped"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "terminal_execution_run",
+      "cases": ["terminal_existing_result", "terminal_conflicts_with_saved_run"]
+    },
+    {
+      "transition": "interrupted",
+      "state": "workspace_operation",
+      "cases": ["interrupted__workspace_operation"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "account_transfer",
+      "cases": ["not_sent__account_transfer"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "deleted",
+      "cases": ["not_sent_deleted"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "last_answer",
+      "cases": ["not_sent__last_answer"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "native_failure_hold",
+      "cases": ["not_sent__native_failure_hold"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "native_thread_block",
+      "cases": ["not_sent__native_thread_block"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "paused",
+      "cases": ["not_sent__paused"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "queued_pending",
+      "cases": ["not_sent", "not_sent_replay", "not_sent_after_submit"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "running",
+      "cases": ["not_sent_busy"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "stopped",
+      "cases": ["not_sent__stopped"]
+    },
+    {
+      "transition": "not_sent",
+      "state": "workspace_operation",
+      "cases": ["not_sent__workspace_operation"]
+    },
+    {
+      "transition": "pause",
+      "state": "account_transfer",
+      "cases": ["pause_account_transfer"]
+    },
+    {
+      "transition": "pause",
+      "state": "deleted",
+      "cases": ["pause_deleted"]
+    },
+    {
+      "transition": "pause",
+      "state": "idle",
+      "cases": ["pause_idle"]
+    },
+    {
+      "transition": "pause",
+      "state": "last_answer",
+      "cases": ["pause_matrix_last_answer"]
+    },
+    {
+      "transition": "pause",
+      "state": "native_failure_hold",
+      "cases": ["pause_native_failure_hold"]
+    },
+    {
+      "transition": "pause",
+      "state": "native_thread_block",
+      "cases": ["pause_native_thread_block"]
+    },
+    {
+      "transition": "pause",
+      "state": "paused",
+      "cases": ["pause_matrix_paused"]
+    },
+    {
+      "transition": "pause",
+      "state": "python_attempt",
+      "cases": ["pause_matrix_python_attempt"]
+    },
+    {
+      "transition": "pause",
+      "state": "python_unknown",
+      "cases": ["pause_matrix_python_unknown"]
+    },
+    {
+      "transition": "pause",
+      "state": "queued_pending",
+      "cases": ["pause_matrix_queued_pending"]
+    },
+    {
+      "transition": "pause",
+      "state": "running",
+      "cases": ["pause_matrix_running"]
+    },
+    {
+      "transition": "pause",
+      "state": "stopped",
+      "cases": ["pause_matrix_stopped"]
+    },
+    {
+      "transition": "pause",
+      "state": "workspace_operation",
+      "cases": ["pause_workspace_operation"]
+    },
+    {
+      "transition": "reattach",
+      "state": "account_transfer",
+      "cases": ["reattach_account_transfer"]
+    },
+    {
+      "transition": "reattach",
+      "state": "context_wait",
+      "cases": ["reattach_context_wait"]
+    },
+    {
+      "transition": "reattach",
+      "state": "native_failure_hold",
+      "cases": ["reattach_native_failure_hold"]
+    },
+    {
+      "transition": "reattach",
+      "state": "native_thread_block",
+      "cases": ["reattach_native_thread_block"]
+    },
+    {
+      "transition": "reattach",
+      "state": "running",
+      "cases": ["reattach_running", "reattach_restart"]
+    },
+    {
+      "transition": "reattach",
+      "state": "workspace_operation",
+      "cases": ["reattach_workspace_operation"]
+    },
+    {
+      "transition": "rejected",
+      "state": "account_transfer",
+      "cases": ["rejected__account_transfer"]
+    },
+    {
+      "transition": "rejected",
+      "state": "deleted",
+      "cases": ["rejected_deleted"]
+    },
+    {
+      "transition": "rejected",
+      "state": "last_answer",
+      "cases": ["rejected__last_answer"]
+    },
+    {
+      "transition": "rejected",
+      "state": "native_failure_hold",
+      "cases": ["rejected__native_failure_hold"]
+    },
+    {
+      "transition": "rejected",
+      "state": "native_thread_block",
+      "cases": ["rejected__native_thread_block"]
+    },
+    {
+      "transition": "rejected",
+      "state": "paused",
+      "cases": ["rejected__paused"]
+    },
+    {
+      "transition": "rejected",
+      "state": "queued_pending",
+      "cases": ["rejected", "rejected_replay", "rejected_conflict"]
+    },
+    {
+      "transition": "rejected",
+      "state": "running",
+      "cases": ["rejected_busy"]
+    },
+    {
+      "transition": "rejected",
+      "state": "stopped",
+      "cases": ["rejected__stopped"]
+    },
+    {
+      "transition": "rejected",
+      "state": "workspace_operation",
+      "cases": ["rejected__workspace_operation"]
+    },
+    {
+      "transition": "restart",
+      "state": "malformed_rows",
+      "cases": ["malformed_agent_restart"]
+    },
+    {
+      "transition": "restart",
+      "state": "paused",
+      "cases": ["startup_paused_unknown"]
+    },
+    {
+      "transition": "restart",
+      "state": "python_unknown",
+      "cases": ["startup_unknown"]
+    },
+    {
+      "transition": "restart",
+      "state": "running",
+      "cases": ["startup_noattempt"]
+    },
+    {
+      "transition": "started",
+      "state": "account_transfer",
+      "cases": ["started_notice__account_transfer"]
+    },
+    {
+      "transition": "started",
+      "state": "deleted",
+      "cases": ["started_notice_deleted"]
+    },
+    {
+      "transition": "started",
+      "state": "last_answer",
+      "cases": ["started_notice__last_answer"]
+    },
+    {
+      "transition": "started",
+      "state": "native_failure_hold",
+      "cases": ["started_notice__native_failure_hold"]
+    },
+    {
+      "transition": "started",
+      "state": "native_thread_block",
+      "cases": ["started_notice__native_thread_block"]
+    },
+    {
+      "transition": "started",
+      "state": "paused",
+      "cases": ["started_notice__paused"]
+    },
+    {
+      "transition": "started",
+      "state": "python_unknown",
+      "cases": ["started_notice_python_fields"]
+    },
+    {
+      "transition": "started",
+      "state": "running",
+      "cases": ["started_notice"]
+    },
+    {
+      "transition": "started",
+      "state": "stopped",
+      "cases": ["started_notice__stopped"]
+    },
+    {
+      "transition": "started",
+      "state": "workspace_operation",
+      "cases": ["started_notice__workspace_operation"]
+    },
+    {
+      "transition": "stop",
+      "state": "account_transfer",
+      "cases": ["stop_accepted__account_transfer", "stop_account_transfer"]
+    },
+    {
+      "transition": "stop",
+      "state": "deleted",
+      "cases": ["stop_deleted"]
+    },
+    {
+      "transition": "stop",
+      "state": "idle",
+      "cases": ["stop_idle"]
+    },
+    {
+      "transition": "stop",
+      "state": "last_answer",
+      "cases": ["stop_accepted__last_answer"]
+    },
+    {
+      "transition": "stop",
+      "state": "native_failure_hold",
+      "cases": [
+        "stop_accepted__native_failure_hold",
+        "stop_native_failure_hold"
+      ]
+    },
+    {
+      "transition": "stop",
+      "state": "native_thread_block",
+      "cases": [
+        "stop_accepted__native_thread_block",
+        "stop_native_thread_block"
+      ]
+    },
+    {
+      "transition": "stop",
+      "state": "paused",
+      "cases": ["stop_matrix_paused"]
+    },
+    {
+      "transition": "stop",
+      "state": "python_attempt",
+      "cases": ["stop_matrix_python_attempt"]
+    },
+    {
+      "transition": "stop",
+      "state": "python_unknown",
+      "cases": ["stop_matrix_python_unknown"]
+    },
+    {
+      "transition": "stop",
+      "state": "queued_pending",
+      "cases": ["stop_queued", "stop_claimed", "stop_submitted"]
+    },
+    {
+      "transition": "stop",
+      "state": "running",
+      "cases": ["stop_accepted"]
+    },
+    {
+      "transition": "stop",
+      "state": "stopped",
+      "cases": ["stop_matrix_stopped"]
+    },
+    {
+      "transition": "stop",
+      "state": "workspace_operation",
+      "cases": [
+        "stop_accepted__workspace_operation",
+        "stop_workspace_operation"
+      ]
+    },
+    {
+      "transition": "submission",
+      "state": "malformed_rows",
+      "cases": ["malformed_agent_submission"]
+    },
+    {
+      "transition": "submission",
+      "state": "python_attempt",
+      "cases": [
+        "submit_python_claim",
+        "submission_replay",
+        "submit_python_claim_conflict"
+      ]
+    },
+    {
+      "transition": "unknown",
+      "state": "account_transfer",
+      "cases": ["unknown__account_transfer"]
+    },
+    {
+      "transition": "unknown",
+      "state": "deleted",
+      "cases": ["unknown_deleted"]
+    },
+    {
+      "transition": "unknown",
+      "state": "last_answer",
+      "cases": ["unknown__last_answer"]
+    },
+    {
+      "transition": "unknown",
+      "state": "malformed_rows",
+      "cases": ["malformed_agent_unknown"]
+    },
+    {
+      "transition": "unknown",
+      "state": "native_failure_hold",
+      "cases": ["unknown__native_failure_hold"]
+    },
+    {
+      "transition": "unknown",
+      "state": "native_thread_block",
+      "cases": ["unknown__native_thread_block"]
+    },
+    {
+      "transition": "unknown",
+      "state": "paused",
+      "cases": ["unknown__paused"]
+    },
+    {
+      "transition": "unknown",
+      "state": "python_unknown",
+      "cases": ["unknown_python_fields"]
+    },
+    {
+      "transition": "unknown",
+      "state": "queued_pending",
+      "cases": ["unknown", "unknown_replay"]
+    },
+    {
+      "transition": "unknown",
+      "state": "running",
+      "cases": ["unknown_busy"]
+    },
+    {
+      "transition": "unknown",
+      "state": "stopped",
+      "cases": ["unknown__stopped"]
+    },
+    {
+      "transition": "unknown",
+      "state": "workspace_operation",
+      "cases": ["unknown__workspace_operation"]
+    },
+    {
+      "transition": "accepted",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "unknown",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "rejected",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "not_sent",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "started",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "completed",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "failed",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "interrupted",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "interrupt_accepted",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "interrupt_rejected",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "interrupt_unknown",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "submission",
+      "state": "idle_without_attempt_or_native_turn",
+      "applicability": "impossible",
+      "reason": "This callback requires a previously claimed/submitted input or a native turn identity. A never-started idle agent has neither; late callbacks belong to a stopped or deleted submitted-state case."
+    },
+    {
+      "transition": "claim_replay",
+      "state": "idle_without_receipt",
+      "applicability": "impossible",
+      "reason": "Replay requires an existing immutable claim identity; first claim is a different transition."
+    },
+    {
+      "transition": "submission_replay",
+      "state": "claimed_without_submission_receipt",
+      "applicability": "impossible",
+      "reason": "Replay requires a previously successful submission receipt; first submission is tested separately."
+    }
+  ]
+}

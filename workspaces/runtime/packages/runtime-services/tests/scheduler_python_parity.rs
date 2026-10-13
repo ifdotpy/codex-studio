@@ -166,7 +166,7 @@ fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     assert_eq!(counts, (3, 0));
 }
 #[test]
-fn proven_not_submitted_releases_projected_lifecycle() {
+fn proven_not_submitted_preserves_failed_projection_and_pending_input() {
     let (_state, store, agent, epoch, _) = fixture();
     let intent = claim_intent(&store, &agent, epoch, "unsent", 10.0)
         .expect("claim")
@@ -174,7 +174,7 @@ fn proven_not_submitted_releases_projected_lifecycle() {
     settle_start_outcome(&store, &intent, TurnStart::NotSubmitted).expect("unsent");
     let reader = store.read().expect("read");
     let projected:(String,bool,Option<String>)=reader.query_row("SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("projection");
-    assert_eq!(projected, ("queued".into(), false, None));
+    assert_eq!(projected, ("failed".into(), false, None));
     let pending: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='pending'",

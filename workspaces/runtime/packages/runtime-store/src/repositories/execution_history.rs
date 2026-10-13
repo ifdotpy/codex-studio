@@ -60,6 +60,13 @@ impl ExecutionHistoryRepository {
         input: Value,
         result: Value,
     ) -> StoreResult<()> {
+        if let Some(previous) = Self::replay(tx, id, kind, &input)? {
+            return if previous == result {
+                Ok(())
+            } else {
+                Err(Self::invalid("runtime_execution_attempts", id))
+            };
+        }
         let path = format!("$.receipts.{kind}");
         let changed = tx.execute(
             "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
@@ -86,6 +93,19 @@ impl ExecutionHistoryRepository {
             id: id.into(),
         }
     }
+    pub fn reject_attempt(tx: &Transaction<'_>, id: &str, error: &str) -> StoreResult<()> {
+        if let Some(mut saved) = Self::attempt(tx, id)?
+            && !matches!(saved["submission"].as_str(), Some("accepted" | "observed"))
+        {
+            saved["submission"] = json!("rejected");
+            saved["error"] = json!(error);
+            tx.execute(
+                "UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2",
+                params![saved.to_string(), id],
+            )?;
+        }
+        Ok(())
+    }
     pub fn save_claim(
         tx: &Transaction<'_>,
         id: &str,
@@ -102,7 +122,7 @@ impl ExecutionHistoryRepository {
             .get("startAttempt")
             .filter(|a| a["id"].is_string())
         else {
-            return Ok(());
+            return Self::record_recovery(tx, agent);
         };
         let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
         let account = attempt
@@ -203,6 +223,48 @@ impl ExecutionHistoryRepository {
             params![id,run["id"].as_str(),saved.to_string()])?;
         tx.execute("INSERT OR IGNORE INTO runtime_execution_inputs(run,event) SELECT ?1,value FROM json_each(?2)",
             params![run["id"].as_str(),attempt["events"].to_string()])?;
+        Ok(())
+    }
+    fn record_recovery(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT json_extract(record,'$.startAttempt.id') FROM runtime_agents WHERE id=?1",
+                [&agent.id.0],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let turn = agent
+            .extra
+            .get("turnId")
+            .or_else(|| agent.extra.get("lastCompletedTurn"))
+            .and_then(Value::as_str);
+        let row:Option<(String,String)> = tx.query_row("SELECT id,record FROM runtime_execution_runs WHERE id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (agent=?2 AND account=?3 AND thread IS ?4 AND turn=?5) ORDER BY created DESC LIMIT 1",params![previous,agent.id.0,agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default"),agent.extra.get("threadId").and_then(Value::as_str),turn],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let Some((id, raw)) = row else {
+            return Ok(());
+        };
+        let mut run = decode("runtime_execution_runs", &id, &raw)?;
+        let before = run.clone();
+        for field in [
+            "disconnectRecovery",
+            "restartRecovery",
+            "connectionRecovery",
+        ] {
+            if let Some(marker) = agent.extra.get(field)
+                && marker
+                    .get("turnId")
+                    .is_none_or(|v| v.is_null() || *v == run["turnId"])
+                && marker
+                    .get("accountKey")
+                    .is_none_or(|v| *v == run["accountKey"])
+                && marker.get("threadId").is_none_or(|v| *v == run["threadId"])
+            {
+                run[field] = marker.clone();
+            }
+        }
+        if run != before {
+            save_run(tx, &run)?;
+        }
         Ok(())
     }
     /// Native outcome is retained even when missing transcript support makes the agent fail.
