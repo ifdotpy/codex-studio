@@ -64,8 +64,11 @@ class RuntimePort:
 
 output = {"outcomes":[],"actions":[],"reviews":[],"rewrites":[],"commands":[],"cancellations":[],"forks":[]}
 for action in ("compact","review"):
-    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},{"note":"Unicode Ω 😀"}):
+    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},{"threadId":"thread Ω 😀"}):
         a=agent(); rt=RuntimePort(a)
+        if "threadId" in context:
+            a["threadId"] = context["threadId"]
+            rt.put(rt.connection,"agents",a)
         request=dict(requestId="action-request",agent="lead",action=action,context=context)
         with patch("codex_runtime.uid",return_value="attempt"), patch("time.time",return_value=NOW), patch("codex_budget.budget_admission"), patch("codex_agent_modes.assert_worker_input"):
             rt.native_action("lead",action,request_id="action-request",context=context)
