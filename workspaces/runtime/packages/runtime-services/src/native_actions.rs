@@ -210,7 +210,20 @@ pub fn reserve(
         .context
         .as_object()
         .ok_or(NativeError::Invalid("context"))?;
-    if context.iter().any(|(k, v)| identity.get(k) != Some(v)) {
+    if context.iter().any(|(key, value)| {
+        !identity.get(key).is_some_and(|expected| {
+            expected == value
+                || (key == "epoch"
+                    && expected.as_i64().is_some_and(|expected| {
+                        value.as_f64().is_some_and(|value| {
+                            value.is_finite()
+                                && value.fract() == 0.0
+                                && value as i128 == i128::from(expected)
+                                && (value as i128) as f64 == value
+                        })
+                    }))
+        })
+    }) {
         return Err(NativeError::Changed);
     }
     let receipt = json!({"requestId":request.request_id,"agentId":request.agent,"action":request.action,
