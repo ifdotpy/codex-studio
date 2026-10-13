@@ -179,6 +179,22 @@ fn records(store: &RuntimeStore, table: &str) -> Vec<Value> {
         .collect()
 }
 #[test]
+fn python_terminal_notification_count_decodes_without_changing_attempt_events() {
+    let record = corpus()["notification_counter"].clone();
+    let snapshot = RecoverySnapshot::from_record(record.clone()).expect("Python terminal record");
+    assert_eq!(snapshot.record(), &record);
+    assert_eq!(record["events"], 8);
+    assert_eq!(record["startAttempt"]["events"], json!(["event"]));
+    for value in [json!([]), json!(-1), json!(true), Value::Null] {
+        let mut invalid = record.clone();
+        invalid["events"] = value;
+        assert!(RecoverySnapshot::from_record(invalid).is_err());
+    }
+    let mut invalid = record;
+    invalid["startAttempt"]["events"] = json!(8);
+    assert!(RecoverySnapshot::from_record(invalid).is_err());
+}
+#[test]
 fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);

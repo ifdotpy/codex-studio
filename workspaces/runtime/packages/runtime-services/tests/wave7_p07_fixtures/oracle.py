@@ -32,6 +32,38 @@ class Runtime:
     def worker_continuation_pending(self, agent): return False
 
 
+def notification_counter():
+    # Real notification/scheduler terminal path and Python row writer; only
+    # unrelated analytics, parent delivery and account timers are inert.
+    from codex_sync_entities import register_functions
+    schema_path = Path(__file__).resolve().parents[3] / "runtime-store/tests/fixtures/live-state-schema.json"
+    schema = json.loads(schema_path.read_text())["canvas.sqlite3"]["sqlite_master"]
+    with sqlite3.connect(":memory:") as db:
+        register_functions(db)
+        db.row_factory = sqlite3.Row
+        for obj in sorted(schema, key=lambda row: ({"table":0,"index":1,"trigger":2,"view":3}[row["type"]], row["name"])):
+            if obj["name"] in {"runtime_search_next_config", "runtime_search_next_data", "runtime_search_next_docsize", "runtime_search_next_idx"}:
+                continue
+            db.execute(obj["sql"])
+        db.execute("INSERT INTO runtime_agent_record_generation VALUES (1,0)")
+        db.execute("INSERT INTO runtime_scheduler_agent_change_state VALUES (1,0,0,0,0)")
+        rootpage = db.execute("SELECT rootpage FROM sqlite_master WHERE name='runtime_items'").fetchone()[0]
+        db.execute("INSERT INTO runtime_turn_item_link_state_v1 VALUES (1,'fixture',?,NULL,NULL,1,0,0,0)", (rootpage,))
+        before = dict(id="agent", rootId="agent", epoch=0, status="running", provider="codex", accountKey="default", threadId="thread", turnId="turn", turnEpoch=0, inFlight=True, autoWake=True, events=7,
+                      startAttempt=dict(id="attempt", epoch=0, accountKey="default", threadId="thread", turnId="turn", submitted=True, events=["event"]))
+        exec(statement, dict(db=db, table="agents", record=before, json=json))
+        runtime = Runtime(db, object())
+        runtime.notification_db = runtime.db
+        runtime.changed = threading.Event()
+        for name in ("analytics_safe", "analytics_event", "record_task", "parent_event", "enforce_complaints", "store_completed_broadcasts", "capacity_completed", "usage_resume_completed", "_dispatch_token_rate_observation"):
+            setattr(runtime, name, lambda *args, **kwargs: None)
+        ProductionRuntime.notification(runtime, {"method":"turn/completed", "params":{"threadId":"thread", "turn":{"id":"turn", "status":"completed"}}}, "default", "connection")
+        after = runtime.agent("agent")
+        assert after["events"] == 8 and after["status"] == "completed"
+        assert after["startAttempt"]["events"] == ["event"]
+        return after
+
+
 def corpus():
     cases = []
     base = dict(id="agent", rootId="agent", epoch=0, status="interrupted", provider="codex", accountKey="default", threadId="thread", turnId="turn", inFlight=False, autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
@@ -70,6 +102,6 @@ def corpus():
                     row = dict(id="operation",agent="agent",turnId=scope,status=state,stage=state,outcome=state)
                     exec(statement,dict(db=db,table=table,record=row,json=json))
                     unresolved.append(dict(table=table,record=row,expected=connection.unresolved_turn_receipts(db,base,"turn")))
-    return dict(connection=cases,unresolved=unresolved)
+    return dict(connection=cases,unresolved=unresolved,notification_counter=notification_counter())
 
 if __name__ == "__main__": print(json.dumps(corpus()))

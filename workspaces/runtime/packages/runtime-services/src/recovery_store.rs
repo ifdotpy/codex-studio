@@ -525,7 +525,7 @@ fn valid_turn(turn: &Value, agent: &Value, exact: Option<&Value>) -> bool {
             .is_some_and(|items| items.len() <= 4096)
 }
 fn put_agent(tx: &Transaction<'_>, value: Value) -> Result<(), RecoveryError> {
-    RecoverySnapshot::from_record(value.clone()).map_err(|_| RecoveryError::CommitFailed)?;
+    RecoverySnapshot::from_record(value.clone())?;
     AgentRepository::put(
         tx,
         &serde_json::from_value::<AgentRecord>(value).map_err(|_| RecoveryError::CommitFailed)?,
