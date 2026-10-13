@@ -2,6 +2,7 @@
 //! journal transaction. No provider I/O occurs here; the account worker owns it.
 mod cards;
 mod model;
+mod projection;
 mod recovery;
 mod storage;
 mod tools;
@@ -9,6 +10,7 @@ pub use cards::{AnswerAuthority, answer, answer_value, expire, resolve};
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
 };
+pub use projection::project_tool_result;
 pub use recovery::recover_connection;
 use serde_json::{Value, json};
 pub use storage::{DeliveryOutcome, delivery};
