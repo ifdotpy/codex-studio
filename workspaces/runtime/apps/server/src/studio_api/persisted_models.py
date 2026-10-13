@@ -336,6 +336,7 @@ class PersistedTranscriptInput(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
+    id: StrictStr | None = None
     kind: StrictStr | None = None
     text: StrictStr | None = None
     truncated: StrictBool | None = None
@@ -344,6 +345,7 @@ class PersistedTranscriptInput(ContractModel):
 class PersistedTranscriptRecord(_OpenPersistedRecord):
     """Legacy parent text is hydrated from fulltext before response validation."""
 
+    role: StrictStr | None = None
     text: StrictStr | None = None
     inputs: list[PersistedTranscriptInput] | None = None
 
@@ -354,6 +356,7 @@ class RuntimeEventMetadataRecord(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
+    transcriptItemId: StrictStr | None = None
     assets: list[JsonValue] = Field(default_factory=list)
     timing: dict[StrictStr, JsonValue] | None = None
 

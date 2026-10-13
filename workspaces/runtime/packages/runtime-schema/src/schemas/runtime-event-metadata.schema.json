@@ -27,6 +27,17 @@
         }
       ],
       "title": "Timing"
+    },
+    "transcriptItemId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Transcriptitemid"
     }
   },
   "title": "RuntimeEventMetadataRecord",
