@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { it as test, vi } from "vitest";
+import { TOKEN_RATE_MAX_ENTRIES } from "../generated/api.ts";
 import {
   formatTokenRate,
   getTokenRate,
@@ -257,7 +258,10 @@ test("team events retain container and key limits without walking each rate shap
     {
       teamId: "guarded-team",
       rates: Object.fromEntries(
-        Array.from({ length: 1025 }, (_, index) => [`worker-${index}`, valid]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
+          `worker-${index}`,
+          valid,
+        ]),
       ),
     },
   ])
@@ -290,7 +294,10 @@ test("team batches accept exact member-count and identifier limits", () => {
     outputTokens: 1,
   };
   const rates = Object.fromEntries(
-    Array.from({ length: 1023 }, (_, index) => [`member-${index}`, valid]),
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES - 1 }, (_, index) => [
+      `member-${index}`,
+      valid,
+    ]),
   );
   rates[id] = valid;
   receiveTeamTokenRates("bounded-team", {
@@ -363,14 +370,17 @@ test("workspace snapshots validate shape and limits atomically", () => {
     {
       rates: {},
       teams: Object.fromEntries(
-        Array.from({ length: 1025 }, (_, index) => [`team-${index}`, {}]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
+          `team-${index}`,
+          {},
+        ]),
       ),
     },
     {
       rates: {},
       teams: {
         oversized: Object.fromEntries(
-          Array.from({ length: 1025 }, (_, index) => [
+          Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
             `worker-${index}`,
             valid,
           ]),
@@ -392,7 +402,10 @@ test("workspace snapshots validate shape and limits atomically", () => {
   assert.equal(
     receiveWorkspaceTokenRates({
       rates: Object.fromEntries(
-        Array.from({ length: 1024 }, (_, index) => [`rate-${index}`, valid]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+          `rate-${index}`,
+          valid,
+        ]),
       ),
       teams: {},
     }),
@@ -402,7 +415,10 @@ test("workspace snapshots validate shape and limits atomically", () => {
     receiveWorkspaceTokenRates({
       rates: {},
       teams: Object.fromEntries(
-        Array.from({ length: 1024 }, (_, index) => [`team-${index}`, {}]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+          `team-${index}`,
+          {},
+        ]),
       ),
     }),
     true,

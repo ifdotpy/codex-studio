@@ -42376,6 +42376,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/TokenRateValue"
             },
+            "maxProperties": 1024,
             "propertyNames": {
               "minLength": 1
             },
@@ -42393,11 +42394,13 @@
               "additionalProperties": {
                 "$ref": "#/components/schemas/TokenRateValue"
               },
+              "maxProperties": 1024,
               "propertyNames": {
                 "minLength": 1
               },
               "type": "object"
             },
+            "maxProperties": 1024,
             "propertyNames": {
               "minLength": 1
             },
@@ -51582,6 +51585,47 @@
           "kind"
         ],
         "title": "TerminalsResource",
+        "type": "object"
+      },
+      "TokenRateSnapshot": {
+        "additionalProperties": false,
+        "description": "Typed payload accepted from the token-rate producer boundary.",
+        "properties": {
+          "rates": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TokenRateValue"
+            },
+            "maxProperties": 1024,
+            "propertyNames": {
+              "minLength": 1
+            },
+            "title": "Rates",
+            "type": "object"
+          },
+          "teams": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "$ref": "#/components/schemas/TokenRateValue"
+              },
+              "maxProperties": 1024,
+              "propertyNames": {
+                "minLength": 1
+              },
+              "type": "object"
+            },
+            "maxProperties": 1024,
+            "propertyNames": {
+              "minLength": 1
+            },
+            "title": "Teams",
+            "type": "object"
+          }
+        },
+        "required": [
+          "rates",
+          "teams"
+        ],
+        "title": "TokenRateSnapshot",
         "type": "object"
       },
       "TokenRateValue": {

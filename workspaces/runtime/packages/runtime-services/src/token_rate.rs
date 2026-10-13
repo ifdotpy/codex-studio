@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use studio_runtime_schema::TOKEN_RATE_MAX_ENTRIES;
 use thiserror::Error;
 use tokio::sync::watch;
 
-const MAX_AGENTS: usize = 1024;
 const MAX_ID_BYTES: usize = 200;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -70,15 +70,15 @@ impl TokenRateSnapshot {
     pub fn from_value(value: serde_json::Value) -> Result<Self, TokenRateError> {
         let snapshot: Self =
             serde_json::from_value(value).map_err(|_| TokenRateError::InvalidSnapshot)?;
-        if snapshot.rates.len() > MAX_AGENTS
-            || snapshot.teams.len() > MAX_AGENTS
+        if snapshot.rates.len() > TOKEN_RATE_MAX_ENTRIES
+            || snapshot.teams.len() > TOKEN_RATE_MAX_ENTRIES
             || snapshot
                 .rates
                 .iter()
                 .any(|(id, rate)| !valid_id(id) || !valid_rate(rate))
             || snapshot.teams.iter().any(|(root, team)| {
                 !valid_id(root)
-                    || team.len() > MAX_AGENTS
+                    || team.len() > TOKEN_RATE_MAX_ENTRIES
                     || team
                         .iter()
                         .any(|(id, rate)| !valid_id(id) || !valid_rate(rate))
@@ -204,6 +204,14 @@ mod tests {
         assert!(
             TokenRateHub::new()
                 .publish(json!({"rates":rates,"teams":{}}))
+                .is_err()
+        );
+        let teams = (0..=1024)
+            .map(|index| (format!("t{index}"), serde_json::json!({})))
+            .collect::<serde_json::Map<_, _>>();
+        assert!(
+            TokenRateHub::new()
+                .publish(json!({"rates":{},"teams":teams}))
                 .is_err()
         );
         let team = (0..=1024)

@@ -6,13 +6,14 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from studio_api.sync.resources.models import MAX_TOKEN_RATE_ENTRIES
 
 if TYPE_CHECKING:
     from codex_runtime import Runtime
 
 MIN_DURATION = .25
 MAX_RATE = 1000.0
-MAX_RATE_ENTRIES = 1024
+MAX_RATE_ENTRIES = MAX_TOKEN_RATE_ENTRIES
 TOKEN_RATE_EXPIRY_SECONDS = 90
 TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
 TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0

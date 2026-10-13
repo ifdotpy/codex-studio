@@ -1,4 +1,5 @@
 import type { components } from "../generated/api";
+import { TOKEN_RATE_MAX_ENTRIES } from "../generated/api";
 
 // This cache receives volatile SSE events. It never enters the sync database.
 export type TokenRate = components["schemas"]["TokenRateValue"];
@@ -47,7 +48,10 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
     if (!isRecord(batch) || batch.teamId !== teamId || !isRecord(batch.rates))
       return;
     const entries = Object.entries(batch.rates);
-    if (entries.length > 1024 || entries.some(([id]) => id.length > 200))
+    if (
+      entries.length > TOKEN_RATE_MAX_ENTRIES ||
+      entries.some(([id]) => id.length > 200)
+    )
       return;
     const next = new Set(entries.map(([id]) => id));
     const previous = teamMembers.get(teamId);
@@ -80,7 +84,7 @@ function validRates(value: unknown): value is Record<string, TokenRate | null> {
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).length <= 1024 &&
+    Object.keys(value).length <= TOKEN_RATE_MAX_ENTRIES &&
     Object.entries(value).every(([id]) => id.length <= 200),
   );
 }
@@ -115,7 +119,7 @@ export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
     !value.teams ||
     typeof value.teams !== "object" ||
     Array.isArray(value.teams) ||
-    Object.keys(value.teams).length > 1024 ||
+    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES ||
     Object.entries(value.teams).some(
       ([id, rates]) => id.length > 200 || !validRates(rates),
     )

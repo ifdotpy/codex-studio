@@ -27,12 +27,44 @@ import codex_token_rate
 from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
 from codex_streaming import StreamBuffer
+from studio_api.sync.resources.models import MAX_TOKEN_RATE_ENTRIES, TokenRateSnapshot
 spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_pydantic_token_rate_contract_owns_all_three_entry_bounds(self):
+        schema = TokenRateSnapshot.model_json_schema()
+        properties = schema['properties']
+        self.assertEqual(properties['rates']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        teams = properties['teams']
+        self.assertEqual(teams['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        self.assertEqual(teams['additionalProperties']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        TokenRateSnapshot.model_validate({
+            'rates': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)},
+            'teams': {'team': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}},
+        })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)},
+                'teams': {},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {},
+                'teams': {f'team-{index}': {} for index in range(MAX_TOKEN_RATE_ENTRIES + 1)},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {},
+                'teams': {'team': {
+                    f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)
+                }},
+            })
+
     def test_event_producer_does_not_wait_for_snapshot_publication(self):
         class DeferredTimer:
             instances = []

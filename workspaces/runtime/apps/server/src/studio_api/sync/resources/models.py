@@ -10,6 +10,7 @@ from studio_api.models import ContractModel, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
+MAX_TOKEN_RATE_ENTRIES = 1024
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
 MAX_ENTITY_CHANGE_BYTES = 262_144
 ResourceRevision = Annotated[SafeInt, Field(ge=0, le=MAX_SAFE_REVISION)]
@@ -217,6 +218,16 @@ class TokenRateValue(ContractModel):
     outputTokens: NonNegativeFiniteNumber
 
 
+TokenRateMap = Annotated[
+    dict[NonEmptyIdentifier, TokenRateValue],
+    Field(max_length=MAX_TOKEN_RATE_ENTRIES),
+]
+TokenRateTeamsMap = Annotated[
+    dict[NonEmptyIdentifier, TokenRateMap],
+    Field(max_length=MAX_TOKEN_RATE_ENTRIES),
+]
+
+
 class ResourceTokenRatesEvent(ContractModel):
     """Named `token-rates` SSE payload; values come from workspace_snapshot()."""
 
@@ -224,8 +235,8 @@ class ResourceTokenRatesEvent(ContractModel):
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
-    rates: dict[NonEmptyIdentifier, TokenRateValue]
-    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+    rates: TokenRateMap
+    teams: TokenRateTeamsMap
 
 
 class ApiSchemaEvent(ContractModel):
@@ -238,5 +249,5 @@ class ApiSchemaEvent(ContractModel):
 class TokenRateSnapshot(ContractModel):
     """Typed payload accepted from the token-rate producer boundary."""
 
-    rates: dict[NonEmptyIdentifier, TokenRateValue]
-    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+    rates: TokenRateMap
+    teams: TokenRateTeamsMap

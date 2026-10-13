@@ -32,6 +32,7 @@ from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 ROOT = REPOSITORY_ROOT
 OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
 SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
+TOKEN_RATE_LIMITS_OUTPUT = ROOT / "workspaces/runtime/packages/runtime-schema/src/token_rate_limits.rs"
 OPENAPI_AUTHORITY = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
@@ -52,6 +53,35 @@ def _entity_aliases(names: list[str], include_sync_entity_payload: bool = False)
     if include_sync_entity_payload:
         aliases += '\nexport type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];'
     return aliases
+
+
+def _token_rate_max_entries(document: dict[str, JsonValue]) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    snapshot = schemas.get("TokenRateSnapshot") if isinstance(schemas, dict) else None
+    properties = snapshot.get("properties") if isinstance(snapshot, dict) else None
+    rates = properties.get("rates") if isinstance(properties, dict) else None
+    teams = properties.get("teams") if isinstance(properties, dict) else None
+    team_members = teams.get("additionalProperties") if isinstance(teams, dict) else None
+    limits = (
+        rates.get("maxProperties") if isinstance(rates, dict) else None,
+        teams.get("maxProperties") if isinstance(teams, dict) else None,
+        team_members.get("maxProperties") if isinstance(team_members, dict) else None,
+    )
+    maximum = limits[0]
+    if (
+        not isinstance(maximum, int)
+        or isinstance(maximum, bool)
+        or maximum <= 0
+        or any(type(limit) is not int or limit != maximum for limit in limits[1:])
+    ):
+        raise ValueError("TokenRateSnapshot must define one shared positive maxProperties limit")
+    return maximum
+
+
+def render_token_rate_limits(document: dict[str, JsonValue]) -> str:
+    maximum = _token_rate_max_entries(document)
+    return f"// Generated from the Pydantic TokenRateSnapshot contract.\npub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
 
 
 def _normalize_recursive_json_value(generated: str) -> str:
@@ -79,6 +109,7 @@ def render(document: dict[str, JsonValue]) -> str:
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)
+    token_rate_max_entries = _token_rate_max_entries(document)
     components = document.get("components")
     schemas = components.get("schemas") if isinstance(components, dict) else None
     include_sync_entity_payload = isinstance(schemas, dict) and "SyncEntityPayload" in schemas
@@ -131,7 +162,8 @@ def render(document: dict[str, JsonValue]) -> str:
             check=True,
             text=True,
         )
-        return output_path.read_text(encoding="utf-8")
+        return (output_path.read_text(encoding="utf-8")
+                + f"\nexport const TOKEN_RATE_MAX_ENTRIES = {token_rate_max_entries} as const;\n")
 
 
 def _agent_limit(document: dict[str, JsonValue], model: str, field: str, key: str) -> int:
@@ -202,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_files = {
             OUTPUT: render(document),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash, document),
+            TOKEN_RATE_LIMITS_OUTPUT: render_token_rate_limits(document),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"API type generation failed: {error}", file=sys.stderr)

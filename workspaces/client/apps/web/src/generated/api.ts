@@ -22579,6 +22579,22 @@ export interface components {
      */
     TerminalState: "running" | "exited" | "closed";
     /**
+     * TokenRateSnapshot
+     * @description Typed payload accepted from the token-rate producer boundary.
+     */
+    TokenRateSnapshot: {
+      /** Rates */
+      rates: {
+        [key: string]: components["schemas"]["TokenRateValue"];
+      };
+      /** Teams */
+      teams: {
+        [key: string]: {
+          [key: string]: components["schemas"]["TokenRateValue"];
+        };
+      };
+    };
+    /**
      * TokenRateValue
      * @description One active or completed agent turn's volatile token-rate snapshot.
      */
@@ -36411,3 +36427,5 @@ export type TaskEntityDto = components["schemas"]["TaskEntityDto"];
 export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
+
+export const TOKEN_RATE_MAX_ENTRIES = 1024 as const;
