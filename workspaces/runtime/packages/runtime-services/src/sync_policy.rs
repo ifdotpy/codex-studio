@@ -336,7 +336,7 @@ fn maintain_task_window(
     Ok(())
 }
 
-fn maintain_monitor_window(
+pub fn maintain_monitor_window(
     transaction: &Transaction<'_>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
