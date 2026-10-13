@@ -33,7 +33,15 @@ def database_snapshot(state: Path):
         }
 
 
-def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, location_outbox=False):
+
+def normalized(value):
+    value=json.loads(json.dumps(value))
+    for key in ("updated","finished"):
+        if key in value: value[key]="timestamp"
+    if "handlerEndedAt" in value.get("timing",{}): value["timing"]["handlerEndedAt"]="monotonic timestamp"
+    return value
+
+def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, location_outbox=False, saved_results=None):
     backend.stop()
     spec = importlib.util.spec_from_file_location(
         "tool_requests_runtime_fixture", Path(__file__).with_name("runtime-contract.py")
@@ -64,6 +72,10 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
             for record in records:
                 runtime.put(database, "tool_requests", record)
                 saved.append(database.execute("SELECT id,record FROM runtime_tool_requests WHERE id=?", (record["id"],)).fetchone())
+            for key, result in (saved_results or {}).items():
+                from codex_payloads import externalize_result
+                stored = externalize_result(runtime.root, database, result)
+                database.execute("INSERT INTO runtime_tool_results VALUES (?,?)", (key, json.dumps(stored)))
             if service:
                 for record in records:
                     key=identity("project-location",record["agent"],record["id"])
@@ -71,7 +83,7 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
             if settlement_oracle:
                 database.execute("SAVEPOINT reference_settlement")
                 for record in records:
-                    expected[record["id"]] = json.loads(json.dumps(runtime.finish_tool_request(record["id"], record["result"], db=database)))
+                    expected[record["id"]] = json.loads(json.dumps(runtime.finish_tool_request(record["id"], (saved_results or {}).get(record["id"], record["result"]), db=database)))
                 database.execute("ROLLBACK TO reference_settlement")
                 database.execute("RELEASE reference_settlement")
             for alias in aliases:
@@ -330,15 +342,25 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 actual=json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",(identity,)).fetchone()[0])
             self.assertLessEqual(started,actual["timing"]["handlerEndedAt"])
             self.assertLessEqual(actual["timing"]["handlerEndedAt"],time.monotonic_ns())
-            def normalized(value):
-                value=json.loads(json.dumps(value))
-                for key in ("updated","finished"):
-                    if key in value: value[key]="timestamp"
-                if "handlerEndedAt" in value.get("timing",{}): value["timing"]["handlerEndedAt"]="monotonic timestamp"
-                return value
             self.assertEqual(normalized(actual),normalized(expected[identity]))
             if "True" in identity and action!="list":
                 self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
+
+    def test_saved_expired_result_list_settles_original_applied_evidence(self):
+        record=receipt("saved-expired-list",self.lead_id,stage="queued",outcome="pending",
+                       tool="orchestration_servers",result=None)
+        result={"success":True,"serverOutputExpiresAt":1,"contentItems":[
+            {"type":"inputText","text":json.dumps({"outcome":"applied"})}]}
+        expected=write_receipts(self.backend,[record],settlement_oracle=True,
+                                saved_results={record["id"]:result})
+        response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id}),headers=self.headers())
+        self.assertEqual(response.status,200,response.body)
+        listed=next(row for row in response.json()["requests"] if row["id"]==record["id"])
+        self.assertEqual((listed["stage"],listed["outcome"]),("completed","applied"))
+        self.assertNotIn("result",listed)
+        with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
+            actual=json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",(record["id"],)).fetchone()[0])
+        self.assertEqual(normalized(actual),normalized(expected[record["id"]]))
 
     def test_project_location_outbox_evidence_never_returns_stale_receipt(self):
         from codex_multi_server_orchestration import identity

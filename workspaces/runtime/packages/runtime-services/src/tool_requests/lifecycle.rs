@@ -55,13 +55,17 @@ fn state(record: &Value) -> Result<State, ToolRequestError> {
     })
 }
 
-fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
-    let operation = state
+fn operation(state: &State) -> Result<&Operation, ToolRequestError> {
+    state
         .operation
         .as_ref()
         .ok_or(ToolRequestError::InvalidRequest(
             "Invalid request lifecycle",
-        ))?;
+        ))
+}
+
+fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
+    let operation = operation(state)?;
     let (stage, outcome, cancel) = match operation.state {
         OperationState::Reserved => ("queued", "pending", false),
         OperationState::Dispatched => ("running", "pending", false),
@@ -79,12 +83,7 @@ fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
 
 pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
     let state = state(record)?;
-    let operation = state
-        .operation
-        .as_ref()
-        .ok_or(ToolRequestError::InvalidRequest(
-            "Invalid request lifecycle",
-        ))?;
+    let operation = operation(&state)?;
     let decision = transition(
         &state,
         &Event {
