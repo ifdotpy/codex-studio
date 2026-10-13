@@ -114,13 +114,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"room": "$room"}, "expected": "501"},
     },
     ("GET", "/api/agents/finder-view"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/analytics"): {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/changes"): {
         "primary": {
@@ -231,7 +231,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"protocol": "3", "resources": "[{\"kind\":\"state\"}]", "apiSchema": "$schemaHash"}, "expected": "2xx"},
     },
     ("GET", "/api/skills"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/tool-requests"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -533,6 +533,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$terminal", "title": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/native-command"): {
+        "primary": {
+            "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires turn-path/native-command-input",
+            "assert_no_write": True,
+        },
+    },
+    ("POST", "/api/sync/notify"): {
+        "primary": {
+            "body": {"requestId": "ledger-sync-notify", "resources": [{"kind": "state"}]},
+            "expected": "501",
+            "expected_error": "Not implemented: requires sync-policy/resource-notify",
+            "assert_no_write": True,
+        },
+    },
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
         "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
@@ -812,6 +828,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     agent_id = "ledger-probe-agent"
     image_agent_id = "ledger-probe-image-agent"
     task_id = "ledger-probe-task"
+    active_command_id = "ledger-probe-active-command"
     work_id = "ledger-probe-work"
     complaint_id = "ledger-probe-complaint"
     room_id = "ledger-probe-room"
@@ -876,6 +893,11 @@ try:
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
             "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {active_command_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "running", "processId": "44", "itemId": "ledger-command-item",
+            "created": 1.0,
         }}, sync_rooms=False)
         runtime.put(db, "work", {{
             "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
@@ -1033,6 +1055,7 @@ finally:
         "agent": agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
+        "activeCommand": active_command_id,
         "complaint": complaint_id,
         "room": room_id,
         "checkpoint": terminal_identifiers["checkpoint"],

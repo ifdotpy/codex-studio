@@ -1,5 +1,6 @@
 //! Bounded, process-local model catalog reads for display.
 
+use crate::provider_exchange;
 use crate::provider_session_task::{
     RequestSpec, SessionHandle, SessionOutcome, SessionTaskError, WriteOutcome,
 };
@@ -18,9 +19,6 @@ use studio_runtime_process::{
 };
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
-
-#[path = "provider_exchange.rs"]
-pub(crate) mod provider_exchange;
 
 const MAX_REFRESHES: usize = 4;
 const CATALOG_TTL: Duration = Duration::from_secs(300);
@@ -290,13 +288,15 @@ async fn read_provider_catalog(
         executable,
         home,
         isolated,
-        CATALOG_TIMEOUT,
-        stop,
-        OperationId("catalog-initialize".into()),
-        json!({
-            "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-            "capabilities": {"experimentalApi": true}
-        }),
+        provider_exchange::ExchangeSpec {
+            timeout: CATALOG_TIMEOUT,
+            shutdown: stop,
+            initialize_operation: OperationId("catalog-initialize".into()),
+            initialize_params: json!({
+                "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
+                "capabilities": {"experimentalApi": true}
+            }),
+        },
         |session, started| Box::pin(read_pages(session, started)),
     )
     .await
@@ -321,13 +321,15 @@ async fn read_session_with_shutdown(
         factory,
         launch,
         started,
-        CATALOG_TIMEOUT,
-        shutdown,
-        OperationId("catalog-initialize".into()),
-        json!({
-            "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-            "capabilities": {"experimentalApi": true}
-        }),
+        provider_exchange::ExchangeSpec {
+            timeout: CATALOG_TIMEOUT,
+            shutdown,
+            initialize_operation: OperationId("catalog-initialize".into()),
+            initialize_params: json!({
+                "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
+                "capabilities": {"experimentalApi": true}
+            }),
+        },
         |session, started| Box::pin(read_pages(session, started)),
     )
     .await

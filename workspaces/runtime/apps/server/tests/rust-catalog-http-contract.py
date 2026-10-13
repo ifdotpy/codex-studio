@@ -8,6 +8,7 @@ from test_isolation import isolate_supervisor_environment
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -64,6 +65,7 @@ def fixture_registry(codex_home: Path, missing_home: Path, malformed_home: Path)
 class RustCatalogHttpContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         scratch = os.environ.get("TMPDIR")
         if not scratch:
             raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
@@ -86,6 +88,27 @@ class RustCatalogHttpContract(unittest.TestCase):
         # Python creates the existing schema; Rust only opens it in place.
         runtime = make_runtime(Runtime, cls.backend)
         try:
+            agent = {
+                "id": "catalog-http-agent", "rootId": "catalog-http-agent", "epoch": 0,
+                "status": "idle", "name": "Catalog HTTP probe", "role": "orchestrator",
+                "cwd": str(cls.backend.root), "isLead": True, "autoWake": False,
+                "approvalPolicy": "never", "worktreeReady": True,
+                "accountKey": "default", "threadId": "catalog-http-thread",
+                "model": "fixture-model", "executionMode": "native",
+                "frozenNativeParams": {"dynamicTools": []},
+            }
+            vm_agent = {
+                **agent, "id": "catalog-http-vm-agent", "name": "Catalog VM probe",
+                "executionMode": "vm",
+            }
+            with runtime.lock, runtime.db() as connection:
+                runtime.put(connection, "agents", agent, sync_rooms=False)
+                runtime.put(connection, "agents", vm_agent, sync_rooms=False)
+                runtime.put(connection, "tasks", {
+                    "id": "catalog-http-active-command", "agent": agent["id"],
+                    "kind": "command", "status": "running", "processId": "44",
+                    "itemId": "catalog-http-command-item", "created": 1.0,
+                }, sync_rooms=False)
             runtime.set_rate_limits(
                 "default",
                 {
@@ -268,6 +291,155 @@ class RustCatalogHttpContract(unittest.TestCase):
         )
         assert_status(result, 200)
         self.assertEqual(result.json()["data"]["accountId"], "cached-only")
+
+    def test_skills_reads_scripted_provider_without_caching(self) -> None:
+        path = "/api/skills?agent=catalog-http-agent"
+        first = self.backend.request("GET", path)
+        assert_status(first, 200)
+        self.assertEqual(first.json(), {"skills": [], "errors": []})
+        first_count = sum(
+            frame.get("method") == "skills/list"
+            for frame in self.backend.received_provider_frames()
+        )
+        second = self.backend.request("GET", path)
+        assert_status(second, 200)
+        self.assertEqual(second.json(), {"skills": [], "errors": []})
+        second_count = sum(
+            frame.get("method") == "skills/list"
+            for frame in self.backend.received_provider_frames()
+        )
+        self.assertEqual(second_count, first_count + 1)
+
+    def test_capabilities_reads_scripted_skills_and_mcp_and_caches_per_agent(self) -> None:
+        path = "/api/capabilities?agent=catalog-http-agent"
+        if self.rust_backend:
+            frames_before = self.backend.received_provider_frames()
+            for _ in range(2):
+                response = self.backend.request("GET", path)
+                assert_status(response, 501)
+                self.assertEqual(response.json(), {
+                    "error": "Not implemented: requires thread-preparation/tool-catalog",
+                })
+            self.assertEqual(self.backend.received_provider_frames(), frames_before)
+            return
+        first = self.backend.request("GET", path)
+        assert_status(first, 200)
+        body = first.json()
+        self.assertEqual(body["agent"], "catalog-http-agent")
+        self.assertEqual(body["skills"], [])
+        self.assertEqual(body["servers"], [])
+        self.assertEqual(body["mcp"], [])
+        frames_before = self.backend.received_provider_frames()
+        methods_before = [
+            frame.get("method")
+            for frame in frames_before
+        ]
+        self.assertIn("skills/list", methods_before)
+        self.assertIn("mcpServerStatus/list", methods_before)
+
+        second = self.backend.request("GET", path)
+        assert_status(second, 200)
+        frames_after = self.backend.received_provider_frames()
+        self.assertEqual(
+            [frame.get("method") for frame in frames_after if frame.get("method") in {
+                "skills/list", "mcpServerStatus/list",
+            }],
+            [frame.get("method") for frame in frames_before if frame.get("method") in {
+                "skills/list", "mcpServerStatus/list",
+            }],
+        )
+
+    def test_finder_view_uses_host_record_and_refuses_vm_dependency(self) -> None:
+        host = self.backend.request(
+            "GET", "/api/agents/finder-view?agent=catalog-http-agent",
+        )
+        assert_status(host, 200)
+        self.assertEqual(host.json(), {
+            "kind": "native", "path": str(self.backend.root),
+        })
+        vm = self.backend.request(
+            "GET", "/api/agents/finder-view?agent=catalog-http-vm-agent",
+        )
+        if self.rust_backend:
+            assert_status(vm, 501)
+            self.assertEqual(vm.json(), {
+                "error": "Not implemented: requires vm-agents/finder-view",
+            })
+        else:
+            assert_status(vm, 200)
+            self.assertEqual(vm.json(), {
+                "kind": "vm", "state": "unmounted", "path": None, "error": None,
+            })
+
+    def test_native_command_input_and_sync_notify_refuse_without_provider_or_writes(self) -> None:
+        before = self.backend.received_provider_frames()
+        if not self.rust_backend:
+            self.skipTest("Python native-command input uses its existing event driver")
+        command = self.backend.request(
+            "POST", "/api/native-command",
+            body={"id": "catalog-http-active-command", "action": "input", "text": "x"},
+            headers={
+                "Origin": self.backend.origin or "",
+                "X-Canvas-Token": self.backend.session["token"],
+            },
+        )
+        assert_status(command, 501)
+        self.assertEqual(command.json(), {
+            "error": "Not implemented: requires turn-path/native-command-input",
+        })
+        self.assertEqual(self.backend.received_provider_frames(), before)
+        with sqlite3.connect(
+            f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True,
+        ) as connection:
+            row = connection.execute(
+                "SELECT record FROM runtime_tasks WHERE id=?",
+                ("catalog-http-active-command",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        task = json.loads(row[0])
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["processId"], "44")
+
+    def test_native_command_cancel_uses_the_exact_scripted_session(self) -> None:
+        if not self.rust_backend:
+            self.skipTest(
+                "Python startup recovery marks the seeded command lost before the request"
+            )
+        response = self.backend.request(
+            "POST", "/api/native-command",
+            body={"id": "catalog-http-active-command", "action": "cancel"},
+            headers={
+                "Origin": self.backend.origin or "",
+                "X-Canvas-Token": self.backend.session["token"],
+            },
+        )
+        assert_status(response, 200)
+        self.assertEqual(response.json(), {"terminated": True})
+        methods = [
+            frame.get("method") for frame in self.backend.received_provider_frames()
+        ]
+        self.assertIn("thread/backgroundTerminals/list", methods)
+        self.assertIn("thread/backgroundTerminals/terminate", methods)
+
+    def test_sync_notify_contract(self) -> None:
+        notify = self.backend.request(
+            "POST", "/api/sync/notify",
+            body={"requestId": "catalog-http-notify", "resources": [{"kind": "state"}]},
+            headers={
+                "Origin": self.backend.origin or "",
+                "X-Canvas-Token": self.backend.session["token"],
+            },
+        )
+        if self.rust_backend:
+            assert_status(notify, 501)
+            self.assertEqual(notify.json(), {
+                "error": "Not implemented: requires sync-policy/resource-notify",
+            })
+        else:
+            assert_status(notify, 200)
+            self.assertEqual(notify.json(), {
+                "requestId": "catalog-http-notify", "accepted": True,
+            })
 
     def test_limits_repeated_scalar_query_returns_located_400(self) -> None:
         result = self.backend.request(

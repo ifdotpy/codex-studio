@@ -1,0 +1,28 @@
+[
+  {
+    "id": "CR1",
+    "description": "filter-skills-without-enabled-false",
+    "file": "workspaces/runtime/packages/runtime-services/src/catalog_reads.rs",
+    "edits": [
+      {
+        "before": "if item.get(\"enabled\") == Some(&Value::Bool(false)) {",
+        "after": "if item.get(\"enabled\") != Some(&Value::Bool(false)) {"
+      }
+    ],
+    "witnesses": ["skills_match_cwd_filter_disabled_dedup_and_error_projection"]
+  },
+  {
+    "id": "CR2",
+    "description": "cancel-a-reused-process-id-without-item-match",
+    "file": "workspaces/runtime/packages/runtime-services/src/catalog_reads.rs",
+    "edits": [
+      {
+        "before": "entry.get(\"processId\").and_then(Value::as_str) == Some(process_id.as_str())",
+        "after": "true"
+      }
+    ],
+    "witnesses": [
+      "scripted_cancel_does_not_terminate_a_different_process_for_the_same_item"
+    ]
+  }
+]
