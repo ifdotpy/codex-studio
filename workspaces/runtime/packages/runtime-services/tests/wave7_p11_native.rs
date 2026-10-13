@@ -687,11 +687,24 @@ fn commands_commit_before_send_and_reject_changed_input() {
 #[test]
 fn stored_native_action_errors_name_the_table_and_row() {
     let case = &corpus()["actions"][0];
-    let db = db(case);
+    let mut db = db(case);
+    db.execute(
+        r#"UPDATE runtime_agents SET record='{"id":"lead"}' WHERE id='lead'"#,
+        [],
+    )
+    .expect("corrupt agent fixture");
+    let request: Request = serde_json::from_value(case["request"].clone()).expect("request");
+    let tx = db.unchecked_transaction().expect("begin");
     assert!(matches!(
-        checked_agent(&json!({"id":"broken-agent"})),
-        Err(NativeError::InvalidStored { table: "runtime_agents", ref id, .. }) if id == "broken-agent"
+        reserve(&tx, &request, "attempt", 1.0, &Gate),
+        Err(NativeError::InvalidStored { table: "runtime_agents", ref id, .. }) if id == "lead"
     ));
+    drop(tx);
+    db.execute(
+        "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
+        [case["agent"].to_string()],
+    )
+    .expect("restore valid agent");
     db.execute(
         "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES('broken-receipt','sig','{','{}')",
         [],
