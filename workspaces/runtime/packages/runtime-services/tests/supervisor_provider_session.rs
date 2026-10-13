@@ -130,10 +130,14 @@ def handle(client):
    if response is None: return
    action = value.get('action')
    method = value.get('message', {}).get('method')
+   if action == 'next' and json.loads(response).get('result', {}).get('event') is not None:
+    with open(os.path.join(root, 'proxy-actions.log'), 'a', encoding='utf-8') as audit:
+     audit.write('next-event\n')
    with open(os.path.join(root, 'proxy-actions.log'), 'a', encoding='utf-8') as audit:
     audit.write(str(action) + ' ' + str(method) + '\n')
    should_drop = (mode == 'ack' and action == 'ack' and int(value.get('sequence', 0)) >= 1)
    should_drop = should_drop or (mode == 'write' and action == 'write' and method == 'model/list')
+   should_drop = should_drop or (mode == 'status' and action == 'status')
    if should_drop:
     with lock:
      if not dropped:
@@ -323,8 +327,15 @@ fn factory(
 }
 
 fn connect(factory: &impl ProviderProcessFactory, handle: &ProviderHandle) -> ProviderSession {
+    connect_with_config(factory, handle, ProviderSessionConfig::new())
+}
+
+fn connect_with_config(
+    factory: &impl ProviderProcessFactory,
+    handle: &ProviderHandle,
+    mut config: ProviderSessionConfig,
+) -> ProviderSession {
     let process = factory.start_or_reattach(handle).unwrap();
-    let mut config = ProviderSessionConfig::new();
     config.request_timeout_ms = 5_000;
     ProviderSession::connect(process, config).unwrap()
 }
@@ -439,6 +450,121 @@ fn provider_session_defers_initialization_notifications_and_reattaches_backlog()
 }
 
 #[test]
+fn stderr_and_exit_journal_events_wait_for_consumer_acknowledgement() {
+    let harness = DisposableSupervisor::new();
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let handle = ProviderHandle::for_account("stderr-exit-settlement");
+    let script = r#"import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method')
+ if method=='initialize': print(json.dumps({'id':m['id'],'result':{'ok':True}}),flush=True)
+ elif method=='initialized':
+  print('diagnostic',file=sys.stderr,flush=True)
+  sys.exit(7)
+"#;
+    let factory = factory(
+        &harness,
+        handle.clone(),
+        ProviderLaunchSpec::new(
+            vec![python_executable(), "-u".into(), "-c".into(), script.into()],
+            BTreeMap::from([("PATH".into(), "/usr/bin".into())]),
+            workspace,
+        ),
+    );
+    let mut session = connect(&factory, &handle);
+    let (stderr, stderr_cursor) = session.receive_event().unwrap();
+    let stderr_cursor = stderr_cursor.unwrap();
+    assert!(matches!(
+        stderr,
+        ProviderSessionEvent::Inbound(Inbound::Notification(Frame::UnknownMethod(ref frame)))
+            if frame.method == "codex/supervisorEvent"
+                && frame.fields["params"]["kind"] == "stderr"
+    ));
+    let (exit, exit_cursor) = session.receive_event().unwrap();
+    let exit_cursor = exit_cursor.unwrap();
+    assert!(matches!(
+        exit,
+        ProviderSessionEvent::Inbound(Inbound::Notification(Frame::UnknownMethod(ref frame)))
+            if frame.method == "codex/supervisorEvent"
+                && frame.fields["params"]["kind"] == "exit"
+    ));
+    assert_eq!(session.handled_cursor(), 1);
+    session.acknowledge_handled(exit_cursor).unwrap();
+    assert_eq!(
+        session.handled_cursor(),
+        1,
+        "cursor 3 cannot skip stderr cursor 2"
+    );
+    session.acknowledge_handled(stderr_cursor).unwrap();
+    assert_eq!(session.handled_cursor(), exit_cursor);
+    session.close().unwrap();
+}
+
+#[test]
+fn claude_initialize_reuses_cached_child_and_deduplicates_initialized() {
+    let mut harness = DisposableSupervisor::new();
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let audit = workspace.join("claude-methods.log");
+    let handle = ProviderHandle::for_account("claude-reattach");
+    let factory = factory(
+        &harness,
+        handle.clone(),
+        launch_spec(&workspace, &audit, false),
+    );
+    let mut config = ProviderSessionConfig::new();
+    config.claude = true;
+    let first = connect_with_config(&factory, &handle, config);
+    let status = harness
+        .client()
+        .status(HandleRequest {
+            handle: SupervisorHandle(handle.as_str().to_owned()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    harness.own_child(status.pid);
+    first.close().unwrap();
+    let mut config = ProviderSessionConfig::new();
+    config.claude = true;
+    let second = connect_with_config(&factory, &handle, config);
+    assert_eq!(second.generation(), 1);
+    second.close().unwrap();
+    assert_eq!(
+        fs::read_to_string(audit)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["initialize", "initialized"]
+    );
+}
+
+#[test]
+fn resumed_child_is_refused_when_status_cannot_be_verified() {
+    let mut harness = DisposableSupervisor::new();
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let handle = ProviderHandle::for_account("unverifiable-status");
+    let launch = launch_spec(&workspace, &workspace.join("unused"), false);
+    let factory = factory(&harness, handle.clone(), launch);
+    let first = connect(&factory, &handle);
+    let status = harness
+        .client()
+        .status(HandleRequest {
+            handle: SupervisorHandle(handle.as_str().to_owned()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    harness.own_child(status.pid);
+    first.close().unwrap();
+    harness.install_drop_proxy("status");
+    assert!(matches!(
+        factory.start_or_reattach(&handle),
+        Err(studio_runtime_process::ProviderFactoryError::Launch)
+    ));
+}
+
+#[test]
 #[cfg(not(target_os = "linux"))]
 fn retained_child_environment_change_fails_closed() {
     let mut harness = DisposableSupervisor::new();
@@ -488,6 +614,7 @@ fn retained_child_environment_change_fails_closed() {
 #[test]
 fn stop_unblocks_a_provider_reader_blocked_by_a_full_output_channel() {
     let mut harness = DisposableSupervisor::new();
+    harness.install_drop_proxy("none");
     let workspace = harness.root.join("provider-workspace");
     fs::create_dir_all(&workspace).unwrap();
     let handle = ProviderHandle::for_account("blocked-reader");
@@ -507,24 +634,30 @@ fn stop_unblocks_a_provider_reader_blocked_by_a_full_output_channel() {
         .unwrap();
     writer.flush().unwrap();
     let mut client = harness.client();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let pid = loop {
-        let status = client
-            .status(HandleRequest {
-                handle: SupervisorHandle(handle.as_str().to_owned()),
-                extra: BTreeMap::new(),
-            })
-            .unwrap();
-        if status.sequence >= 70 {
-            break status.pid;
+    let status = client
+        .status(HandleRequest {
+            handle: SupervisorHandle(handle.as_str().to_owned()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    let pid = status.pid;
+    harness.own_child(pid);
+    // The proxy sees the 65th event query only after the adapter has queued the
+    // previous 64 events into its 64-slot output queue. That is the observable
+    // barrier proving the next output is blocked by full capacity.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let actions =
+            fs::read_to_string(harness.root.join("proxy-actions.log")).unwrap_or_default();
+        if actions.lines().filter(|line| *line == "next-event").count() >= 65 {
+            break;
         }
         assert!(
             Instant::now() < deadline,
-            "burst did not fill the adapter output queue"
+            "adapter did not reach its full output queue barrier"
         );
         thread::yield_now();
-    };
-    harness.own_child(pid);
+    }
     let started = Instant::now();
     process.stop().unwrap();
     assert!(
@@ -559,6 +692,91 @@ fn stop_unblocks_a_provider_reader_blocked_by_a_full_output_channel() {
         lease_released,
         "stop must release the supervisor backend lease"
     );
+}
+
+#[test]
+fn stop_fences_reader_from_reconnecting_after_cancellation() {
+    let mut harness = DisposableSupervisor::new();
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let handle = ProviderHandle::for_account("stop-reconnect-fence");
+    let factory = factory(
+        &harness,
+        handle.clone(),
+        launch_spec(&workspace, &workspace.join("unused"), false),
+    );
+    let mut process = factory.start_or_reattach(&handle).unwrap();
+    let mut client = harness.client();
+    let status = client
+        .status(HandleRequest {
+            handle: SupervisorHandle(handle.as_str().to_owned()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    harness.own_child(status.pid);
+    harness.install_drop_proxy("none");
+    process.stop().unwrap();
+    let actions = fs::read_to_string(harness.root.join("proxy-actions.log")).unwrap_or_default();
+    assert!(
+        !actions.lines().any(|line| line.starts_with("status ")),
+        "cancelled reader must not establish a replacement connection"
+    );
+}
+
+#[test]
+fn raw_writer_does_not_retry_after_an_unknown_write() {
+    let mut harness = DisposableSupervisor::new();
+    harness.install_drop_proxy("write");
+    let workspace = harness.root.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let audit = workspace.join("raw-writer-methods.log");
+    let handle = ProviderHandle::for_account("raw-writer-poison");
+    let factory = factory(
+        &harness,
+        handle.clone(),
+        uncertain_write_spec(&workspace, &audit),
+    );
+    let mut process = factory.start_or_reattach(&handle).unwrap();
+    let (mut reader, mut writer) = process.split().unwrap();
+    writer
+        .write_all(b"{\"id\":1,\"method\":\"initialize\"}\n")
+        .unwrap();
+    writer.flush().unwrap();
+    let mut initialize_reply = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    while !initialize_reply.contains(&b'\n') {
+        let count = reader.read(&mut chunk).unwrap();
+        assert_ne!(count, 0, "initialize reply must arrive");
+        initialize_reply.extend_from_slice(&chunk[..count]);
+    }
+    writer
+        .write_all(b"{\"id\":2,\"method\":\"model/list\"}\n")
+        .unwrap();
+    assert!(writer.flush().is_err(), "first receipt is unknown");
+    assert!(writer.flush().is_err(), "poisoned writer cannot resend");
+    assert!(
+        writer
+            .write_all(b"{\"id\":2,\"method\":\"model/list\"}\n")
+            .is_err()
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fs::metadata(&audit).map_or(true, |metadata| metadata.len() == 0) {
+        assert!(
+            Instant::now() < deadline,
+            "provider did not receive the write"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(fs::read_to_string(audit).unwrap().lines().count(), 1);
+    let actions = fs::read_to_string(harness.root.join("proxy-actions.log")).unwrap();
+    assert_eq!(
+        actions
+            .lines()
+            .filter(|line| *line == "write model/list")
+            .count(),
+        1
+    );
+    process.stop().unwrap();
 }
 
 #[test]

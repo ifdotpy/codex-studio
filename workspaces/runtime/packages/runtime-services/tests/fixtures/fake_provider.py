@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import time
 
 
 def send(frame):
@@ -24,5 +23,4 @@ for line in sys.stdin:
         send({"method": "turn/started", "params": {"threadId": "fake-thread"}})
         send({"id": request["id"], "result": {"models": []}})
     elif mode == "late":
-        time.sleep(0.05)
         send({"id": request["id"], "result": {"late": True}})

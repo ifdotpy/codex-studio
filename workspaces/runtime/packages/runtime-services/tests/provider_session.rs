@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::result_large_err)]
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -11,7 +13,8 @@ use serde_json::{Value, json};
 use studio_runtime_process::{ProviderProcess, ProviderProcessReader};
 use studio_runtime_providers::{Frame, Method, RequestId, RequestTicket, ResponseBody};
 use studio_runtime_services::provider_session::{
-    ProviderSession, ProviderSessionConfig, ProviderSessionEvent, ProviderSessionInput,
+    ProviderSession, ProviderSessionConfig, ProviderSessionError, ProviderSessionEvent,
+    ProviderSessionInput, ProviderSessionInputSendError,
 };
 
 struct FakeReader(ChildStdout);
@@ -362,28 +365,41 @@ fn lost_reply_is_unknown_and_is_not_retried() {
 }
 
 #[test]
-fn reply_after_deadline_is_reported_as_late_evidence() {
-    let mut session = connect("late");
-    let ticket = session
+fn receive_returns_deadline_outcomes_before_waiting_for_more_input() {
+    let mut session = connect("stall");
+    let timed = session
         .send_request(Method::ModelList, json!({}), None, false, 0)
-        .expect("request should be submitted once");
-    assert_eq!(
-        session
-            .handle_deadline()
-            .into_iter()
-            .map(|(event, _)| event)
-            .collect::<Vec<_>>(),
-        vec![ProviderSessionEvent::UnknownOutcome {
-            ticket: ticket.clone()
-        }]
-    );
-    assert_eq!(
-        receive_result(&mut session).expect("late evidence").0,
-        ProviderSessionEvent::Reply {
-            ticket,
-            body: ResponseBody::Result(json!({"late": true})),
-            late: true
+        .expect("first request is submitted");
+    let next_timed = session
+        .send_request(Method::ThreadStart, json!({}), None, false, 0)
+        .expect("second request is submitted");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut saw_first = false;
+    while !saw_first {
+        let (event, _) = session
+            .receive_event_timeout(std::time::Duration::from_secs(60))
+            .expect("receive should return before its distant caller timeout")
+            .expect("a write or deadline event should arrive");
+        match event {
+            ProviderSessionEvent::WriteCompleted { .. } => {}
+            ProviderSessionEvent::UnknownOutcome { ticket } if ticket == timed => {
+                saw_first = true;
+            }
+            other => panic!("unexpected first deadline event: {other:?}"),
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "request deadline must take precedence over the caller timeout"
+        );
+    }
+
+    assert_eq!(
+        receive_result(&mut session)
+            .expect("queued deadline outcome")
+            .0,
+        ProviderSessionEvent::UnknownOutcome { ticket: next_timed },
+        "receive_event must return queued deadline outcomes without waiting for input"
     );
     session.close().expect("provider shutdown");
 }
@@ -495,8 +511,9 @@ fn initialization_acknowledgement_failure_emits_one_terminal_event() {
     process.stopped = Arc::clone(&stopped);
     process.fail_acknowledge = true;
     let (sender, receiver) = mpsc::channel();
-    let sink: ProviderSessionInputSink = Arc::new(move |input| {
-        let _ignored = sender.send(input);
+    let sink: ProviderSessionInputSink = Arc::new(move |input| match sender.send(input) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(ProviderSessionInputSendError::Closed { input: error.0 }),
     });
     let mut session = ProviderSession::begin_connect_recovering(
         Box::new(process),
@@ -594,6 +611,48 @@ fn duplicate_reply_and_already_acknowledged_cursor_are_dropped() {
     ));
     assert_eq!(acknowledged.load(Ordering::Acquire), 12);
     session.close().unwrap();
+}
+
+#[test]
+fn recovered_request_ids_can_be_preflighted_before_opening_the_process() {
+    let config = ProviderSessionConfig::new();
+    let recovered = vec![
+        (RequestId::Number(7), Method::ModelList, None),
+        (RequestId::Number(7), Method::ThreadStart, None),
+    ];
+    assert!(matches!(
+        ProviderSession::validate_recovered(&config, &recovered),
+        Err(ProviderSessionError::Session(_))
+    ));
+}
+
+#[test]
+fn rejected_recovery_completes_initialize_before_detaching_the_child() {
+    let acknowledged = Arc::new(AtomicU64::new(0));
+    let (process, request_ids) = scripted_process_with_ids(
+        Arc::clone(&acknowledged),
+        vec![(json!({"id":"__initialize__","result":{}}), Some(1))],
+    );
+    let stopped = Arc::clone(&process.stopped);
+    let result = ProviderSession::connect_recovering(
+        Box::new(process),
+        ProviderSessionConfig::new(),
+        vec![
+            (RequestId::Number(5), Method::ModelList, None),
+            (RequestId::Number(5), Method::ThreadStart, None),
+        ],
+    );
+
+    assert!(matches!(result, Err(ProviderSessionError::Session(_))));
+    assert_eq!(
+        request_ids.lock().unwrap().as_slice(),
+        &[RequestId::Number(1)],
+        "constructor refusal must happen only after the supervisor caches initialize"
+    );
+    assert!(
+        stopped.load(Ordering::Acquire),
+        "child must be detached after initialize"
+    );
 }
 
 #[test]
@@ -747,9 +806,24 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
     process.output_capacity = 64;
     process.resumed = true;
     process.progress_sender = Some(progress_sender);
+    let waiters = Arc::new(Mutex::new(VecDeque::<Sender<()>>::new()));
+    let sink_waiters = Arc::clone(&waiters);
     let sink: ProviderSessionInputSink = Arc::new(move |input: ProviderSessionInput| {
         let _ignored = attempt_sender.send(());
-        let _ignored = input_sender.send(input);
+        match input_sender.try_send(input) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(input)) => {
+                let (available_sender, capacity_available) = mpsc::channel();
+                sink_waiters.lock().unwrap().push_back(available_sender);
+                Err(ProviderSessionInputSendError::Full {
+                    input,
+                    capacity_available,
+                })
+            }
+            Err(mpsc::TrySendError::Disconnected(input)) => {
+                Err(ProviderSessionInputSendError::Closed { input })
+            }
+        }
     });
     let mut session = ProviderSession::begin_connect_recovering(
         Box::new(process),
@@ -775,6 +849,9 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
     let initialize = input_receiver
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("cached initialize reply remains available ahead of the replay backlog");
+    if let Some(waiter) = waiters.lock().unwrap().pop_front() {
+        let _ignored = waiter.send(());
+    }
     session.handle_input(initialize).unwrap();
     assert!(session.is_ready());
 
@@ -783,6 +860,9 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
         let input = input_receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("startup must keep draining while replay backlog is full");
+        if let Some(waiter) = waiters.lock().unwrap().pop_front() {
+            let _ignored = waiter.send(());
+        }
         for (event, cursor) in session.handle_input(input).unwrap() {
             if matches!(event, ProviderSessionEvent::Inbound(_)) {
                 replayed += 1;
@@ -798,6 +878,9 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
         let input = input_receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("reader should finish after draining the replay backlog");
+        if let Some(waiter) = waiters.lock().unwrap().pop_front() {
+            let _ignored = waiter.send(());
+        }
         let ended = matches!(input, ProviderSessionInput::End);
         let _events = session.handle_input(input).unwrap();
         if ended {
@@ -963,8 +1046,9 @@ fn queue_saturation_reports_not_sent_unknowns_and_one_terminal_before_quiesce_ba
         wake: Condvar::new(),
     });
     let (input_sender, input_receiver) = mpsc::channel();
-    let sink = Arc::new(move |input| {
-        let _ignored = input_sender.send(input);
+    let sink = Arc::new(move |input| match input_sender.send(input) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(ProviderSessionInputSendError::Closed { input: error.0 }),
     });
     let mut session = ProviderSession::begin_connect_recovering(
         Box::new(QueuePressureProcess(Arc::clone(&gate))),

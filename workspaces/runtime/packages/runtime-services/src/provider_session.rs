@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,8 @@ use thiserror::Error;
 
 const WRITER_QUEUE_CAPACITY: usize = 128;
 const WORKER_JOIN_LIMIT: Duration = Duration::from_secs(2);
+const LOCAL_INPUT_CAPACITY: usize = 64;
+const COMPLETED_ID_LIMIT: usize = 4096;
 
 /// Session input produced by the supervisor byte-reader and the write worker.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,8 +44,153 @@ pub enum ProviderSessionInput {
     Quiesced,
 }
 
-/// Nonblocking callback into the account actor's single input channel.
-pub type ProviderSessionInputSink = Arc<dyn Fn(ProviderSessionInput) + Send + Sync + 'static>;
+/// A bounded account mailbox rejected this input or has closed.
+#[derive(Debug)]
+pub enum ProviderSessionInputSendError {
+    /// The producer retains the input and waits until one queue slot is free.
+    Full {
+        input: ProviderSessionInput,
+        capacity_available: Receiver<()>,
+    },
+    /// The mailbox is shutting down; the unacknowledged input remains replayable.
+    Closed { input: ProviderSessionInput },
+}
+
+/// Nonblocking callback into the account actor's bounded input channel.
+/// `Full` carries a one-shot notification so I/O workers can wait without
+/// polling or buffering additional input.
+pub type ProviderSessionInputSink = Arc<
+    dyn Fn(ProviderSessionInput) -> Result<(), ProviderSessionInputSendError>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+fn send_input(sink: &ProviderSessionInputSink, mut input: ProviderSessionInput) -> io::Result<()> {
+    loop {
+        match sink(input) {
+            Ok(()) => return Ok(()),
+            Err(ProviderSessionInputSendError::Full {
+                input: pending,
+                capacity_available,
+            }) => {
+                capacity_available.recv().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "provider input mailbox closed while waiting for capacity",
+                    )
+                })?;
+                input = pending;
+            }
+            Err(ProviderSessionInputSendError::Closed { .. }) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "provider input mailbox is closed",
+                ));
+            }
+        }
+    }
+}
+
+struct LocalInputState {
+    queue: VecDeque<ProviderSessionInput>,
+    waiters: VecDeque<mpsc::Sender<()>>,
+    closed: bool,
+}
+
+/// Bounded mailbox used by the synchronous convenience API and tests.
+struct LocalInputMailbox {
+    state: Mutex<LocalInputState>,
+    ready: Condvar,
+}
+
+impl LocalInputMailbox {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(LocalInputState {
+                queue: VecDeque::new(),
+                waiters: VecDeque::new(),
+                closed: false,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn send(&self, input: ProviderSessionInput) -> Result<(), ProviderSessionInputSendError> {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(ProviderSessionInputSendError::Closed { input }),
+        };
+        if state.closed && !matches!(input, ProviderSessionInput::Quiesced) {
+            return Err(ProviderSessionInputSendError::Closed { input });
+        }
+        if state.queue.len() >= LOCAL_INPUT_CAPACITY
+            && !matches!(input, ProviderSessionInput::Quiesced)
+        {
+            let (sender, capacity_available) = mpsc::channel();
+            state.waiters.push_back(sender);
+            return Err(ProviderSessionInputSendError::Full {
+                input,
+                capacity_available,
+            });
+        }
+        state.queue.push_back(input);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<ProviderSessionInput, mpsc::RecvTimeoutError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected)?;
+        let (mut state, _wait_result) = self
+            .ready
+            .wait_timeout_while(state, timeout, |state| {
+                state.queue.is_empty() && !state.closed
+            })
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected)?;
+        if let Some(input) = state.queue.pop_front() {
+            if let Some(waiter) = state.waiters.pop_front() {
+                let _ignored = waiter.send(());
+            }
+            return Ok(input);
+        }
+        if state.closed {
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        } else {
+            Err(mpsc::RecvTimeoutError::Timeout)
+        }
+    }
+
+    fn recv(&self) -> Result<ProviderSessionInput, ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        loop {
+            if let Some(input) = state.queue.pop_front() {
+                if let Some(waiter) = state.waiters.pop_front() {
+                    let _ignored = waiter.send(());
+                }
+                return Ok(input);
+            }
+            if state.closed {
+                return Err(());
+            }
+            state = self.ready.wait(state).map_err(|_| ())?;
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            state.waiters.clear();
+            self.ready.notify_all();
+        }
+    }
+}
 
 /// Configuration for one JSONL provider session.
 pub struct ProviderSessionConfig {
@@ -133,14 +280,16 @@ pub struct ProviderSession {
     process: Option<Box<dyn ProviderProcess>>,
     state: SessionState,
     writer: Option<SyncSender<WriteCommand>>,
-    writer_thread: Option<JoinHandle<()>>,
-    reader_thread: Option<JoinHandle<()>>,
-    input_receiver: Option<Receiver<ProviderSessionInput>>,
+    writer_thread: Option<WorkerHandle>,
+    reader_thread: Option<WorkerHandle>,
+    input_receiver: Option<Arc<LocalInputMailbox>>,
     input_sink: ProviderSessionInputSink,
     deadlines: BTreeMap<RequestId, u64>,
     queued: VecDeque<(ProviderSessionEvent, Option<u64>)>,
     tickets: BTreeMap<RequestId, RequestTicket>,
+    ticket_cursors: BTreeMap<u64, RequestId>,
     completed_ids: BTreeSet<RequestId>,
+    completed_order: VecDeque<RequestId>,
     seen_cursors: BTreeSet<u64>,
     delivered_cursors: BTreeSet<u64>,
     settled_cursors: BTreeSet<u64>,
@@ -154,6 +303,25 @@ pub struct ProviderSession {
 }
 
 impl ProviderSession {
+    /// Validate recovered request identities and initialization encoding before
+    /// opening a supervisor child. Constructors repeat this check defensively.
+    pub fn validate_recovered(
+        config: &ProviderSessionConfig,
+        recovered: &[(RequestId, Method, Option<String>)],
+    ) -> Result<(), ProviderSessionError> {
+        SessionState::new_with_recovered_and_prefix(
+            config.generation,
+            config.claude,
+            0,
+            config.request_timeout_ms,
+            config.initialize_params.clone(),
+            recovered.to_vec(),
+            None,
+        )
+        .map(|_| ())
+        .map_err(ProviderSessionError::Session)
+    }
+
     pub fn connect(
         process: Box<dyn ProviderProcess>,
         config: ProviderSessionConfig,
@@ -168,16 +336,18 @@ impl ProviderSession {
         config: ProviderSessionConfig,
         recovered: Vec<(RequestId, Method, Option<String>)>,
     ) -> Result<Self, ProviderSessionError> {
-        let (sender, receiver) = mpsc::channel();
-        let sink: ProviderSessionInputSink = Arc::new(move |input| {
-            let _ignored = sender.send(input);
-        });
+        let mailbox = Arc::new(LocalInputMailbox::new());
+        let sink_mailbox = Arc::clone(&mailbox);
+        #[allow(clippy::result_large_err)]
+        let sink: ProviderSessionInputSink = Arc::new(move |input| sink_mailbox.send(input));
         let mut session = Self::begin_connect_recovering(process, config, recovered, sink)?;
-        session.input_receiver = Some(receiver);
+        session.input_receiver = Some(mailbox);
         let mut deferred = VecDeque::new();
         let startup = (|| {
             while !session.ready {
-                let input = session.recv_input_until_deadline()?;
+                let Some(input) = session.recv_input_until_deadline()? else {
+                    continue;
+                };
                 let events = session.process_input(input)?;
                 if events
                     .iter()
@@ -206,6 +376,11 @@ impl ProviderSession {
         recovered: Vec<(RequestId, Method, Option<String>)>,
         input_sink: ProviderSessionInputSink,
     ) -> Result<Self, ProviderSessionError> {
+        if let Err(error) = Self::validate_recovered(&config, &recovered) {
+            let initialized = Self::connect_recovering(process, config, Vec::new())?;
+            initialized.close()?;
+            return Err(error);
+        }
         let process_generation = process.generation();
         let generation = if process_generation == 0 {
             config.generation
@@ -250,10 +425,9 @@ impl ProviderSession {
         };
         let started = Instant::now();
         let reader_sink = Arc::clone(&input_sink);
-        let reader_thread = match thread::Builder::new()
-            .name("provider-session-reader".into())
-            .spawn(move || spawn_reader(reader, reader_sink, started))
-        {
+        let reader_thread = match spawn_worker("provider-session-reader", move || {
+            spawn_reader(reader, reader_sink, started);
+        }) {
             Ok(thread) => thread,
             Err(error) => {
                 let _ignored = process.cancel();
@@ -263,10 +437,9 @@ impl ProviderSession {
         };
         let (writer_sender, writer_receiver) = mpsc::sync_channel(WRITER_QUEUE_CAPACITY);
         let writer_sink = Arc::clone(&input_sink);
-        let writer_thread = match thread::Builder::new()
-            .name("provider-session-writer".into())
-            .spawn(move || spawn_writer(writer, writer_receiver, writer_sink))
-        {
+        let writer_thread = match spawn_worker("provider-session-writer", move || {
+            spawn_writer(writer, writer_receiver, writer_sink);
+        }) {
             Ok(thread) => thread,
             Err(error) => {
                 let _ignored = process.cancel();
@@ -303,7 +476,9 @@ impl ProviderSession {
             )]),
             queued: VecDeque::new(),
             tickets,
+            ticket_cursors: BTreeMap::new(),
             completed_ids: BTreeSet::new(),
+            completed_order: VecDeque::new(),
             seen_cursors: BTreeSet::new(),
             delivered_cursors: BTreeSet::new(),
             settled_cursors: BTreeSet::new(),
@@ -527,9 +702,12 @@ impl ProviderSession {
                 }
                 Action::Resolve { ticket, outcome } => {
                     self.deadlines.remove(&ticket.id);
+                    if let Some(cursor) = cursor {
+                        self.ticket_cursors.insert(cursor, ticket.id.clone());
+                    }
                     match outcome {
                         RequestOutcome::Reply { body, late } => {
-                            self.completed_ids.insert(ticket.id.clone());
+                            self.remember_completed(ticket.id.clone());
                             if ticket.method == Method::Initialize {
                                 self.ready = matches!(body, ResponseBody::Result(_));
                                 let initialized = self.settle_internal_opt(cursor);
@@ -610,6 +788,17 @@ impl ProviderSession {
         }
     }
 
+    fn remember_completed(&mut self, id: RequestId) {
+        if self.completed_ids.insert(id.clone()) {
+            self.completed_order.push_back(id);
+        }
+        while self.completed_order.len() > COMPLETED_ID_LIMIT {
+            if let Some(oldest) = self.completed_order.pop_front() {
+                self.completed_ids.remove(&oldest);
+            }
+        }
+    }
+
     fn fail_transport(
         &mut self,
         not_sent: Option<RequestId>,
@@ -679,7 +868,19 @@ impl ProviderSession {
                 .acknowledge(target)
                 .map_err(ProviderSessionError::Process)?;
             self.handled_cursor = self.handled_cursor.max(process.acknowledged_cursor());
+            let settled_ids = self
+                .ticket_cursors
+                .range(..=self.handled_cursor)
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>();
+            self.ticket_cursors
+                .retain(|cursor, _| *cursor > self.handled_cursor);
+            for id in settled_ids {
+                self.tickets.remove(&id);
+            }
             self.seen_cursors
+                .retain(|cursor| *cursor > self.handled_cursor);
+            self.delivered_cursors
                 .retain(|cursor| *cursor > self.handled_cursor);
             self.settled_cursors
                 .retain(|cursor| *cursor > self.handled_cursor);
@@ -743,7 +944,9 @@ impl ProviderSession {
             if self.terminal {
                 return Err(ProviderSessionError::Closed);
             }
-            let input = self.recv_input_until_deadline()?;
+            let Some(input) = self.recv_input_until_deadline()? else {
+                continue;
+            };
             let events = self.process_input(input)?;
             self.queued.extend(events);
         }
@@ -767,13 +970,17 @@ impl ProviderSession {
             if remaining.is_zero() {
                 return Ok(None);
             }
-            let Some(input) = self.recv_input(remaining)? else {
-                let events = self.handle_deadline();
-                self.queued.extend(events);
-                if self.queued.is_empty() {
-                    return Ok(None);
+            let request_deadline = self.next_deadline();
+            let wait = request_deadline.map_or(remaining, |value| value.min(remaining));
+            let Some(input) = self.recv_input(wait)? else {
+                if request_deadline.is_some_and(|value| value <= remaining) {
+                    let events = self.handle_deadline();
+                    self.queued.extend(events);
+                    if !self.queued.is_empty() {
+                        continue;
+                    }
                 }
-                continue;
+                return Ok(None);
             };
             let events = self.process_input(input)?;
             self.queued.extend(events);
@@ -788,26 +995,28 @@ impl ProviderSession {
         Some(event)
     }
 
-    fn recv_input_until_deadline(&mut self) -> Result<ProviderSessionInput, ProviderSessionError> {
+    fn recv_input_until_deadline(
+        &mut self,
+    ) -> Result<Option<ProviderSessionInput>, ProviderSessionError> {
         let receiver = self
             .input_receiver
             .as_ref()
             .ok_or(ProviderSessionError::EventSourceUnavailable)?;
-        let timeout = self.next_deadline().unwrap_or(Duration::from_secs(60));
-        let received = receiver.recv_timeout(timeout);
+        let received = match self.next_deadline() {
+            Some(timeout) => receiver.recv_timeout(timeout),
+            None => receiver
+                .recv()
+                .map_err(|()| mpsc::RecvTimeoutError::Disconnected),
+        };
         match received {
-            Ok(input) => Ok(input),
+            Ok(input) => Ok(Some(input)),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let events = self.handle_deadline();
                 self.queued.extend(events);
-                if self.ready {
-                    self.input_receiver
-                        .as_ref()
-                        .ok_or(ProviderSessionError::EventSourceUnavailable)?
-                        .recv()
-                        .map_err(|_| ProviderSessionError::Closed)
-                } else {
+                if !self.ready && self.terminal {
                     Err(ProviderSessionError::InitializeUnknown)
+                } else {
+                    Ok(None)
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(ProviderSessionError::Closed),
@@ -839,6 +1048,9 @@ impl ProviderSession {
             return Err(ProviderSessionError::CleanupTimedOut);
         }
         self.writer.take();
+        if let Some(receiver) = &self.input_receiver {
+            receiver.close();
+        }
         let mut stop_error = None;
         if let Some(process) = self.process.as_mut() {
             if let Err(error) = process.cancel() {
@@ -855,7 +1067,7 @@ impl ProviderSession {
             return Err(ProviderSessionError::CleanupTimedOut);
         }
         self.quiesced = true;
-        (self.input_sink)(ProviderSessionInput::Quiesced);
+        let _ignored = send_input(&self.input_sink, ProviderSessionInput::Quiesced);
         if let Some(error) = stop_error {
             return Err(ProviderSessionError::Process(error));
         }
@@ -915,7 +1127,7 @@ fn spawn_reader(
     loop {
         match reader.read(&mut bytes) {
             Ok(0) => {
-                sink(ProviderSessionInput::End);
+                let _ignored = send_input(&sink, ProviderSessionInput::End);
                 return;
             }
             Ok(count) => match decoder.push(&bytes[..count]) {
@@ -927,24 +1139,31 @@ fn spawn_reader(
                     } else if cursors.is_empty() {
                         vec![None; frames.len()]
                     } else {
-                        sink(ProviderSessionInput::End);
+                        let _ignored = send_input(&sink, ProviderSessionInput::End);
                         return;
                     };
                     for (frame, cursor) in frames.into_iter().zip(cursors) {
-                        sink(ProviderSessionInput::Frame {
-                            frame,
-                            cursor,
-                            received_at_ms,
-                        });
+                        if send_input(
+                            &sink,
+                            ProviderSessionInput::Frame {
+                                frame,
+                                cursor,
+                                received_at_ms,
+                            },
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
                     }
                 }
                 Err(_) => {
-                    sink(ProviderSessionInput::End);
+                    let _ignored = send_input(&sink, ProviderSessionInput::End);
                     return;
                 }
             },
             Err(_) => {
-                sink(ProviderSessionInput::End);
+                let _ignored = send_input(&sink, ProviderSessionInput::End);
                 return;
             }
         }
@@ -962,14 +1181,19 @@ fn spawn_writer(
             .write_all(&command.bytes)
             .and_then(|()| writer.flush())
         {
-            sink(ProviderSessionInput::WriteFailed {
-                ticket,
-                message: error.to_string(),
-            });
+            let _ignored = send_input(
+                &sink,
+                ProviderSessionInput::WriteFailed {
+                    ticket,
+                    message: error.to_string(),
+                },
+            );
             return;
         }
-        if let Some(ticket) = ticket {
-            sink(ProviderSessionInput::WriteCompleted { ticket });
+        if let Some(ticket) = ticket
+            && send_input(&sink, ProviderSessionInput::WriteCompleted { ticket }).is_err()
+        {
+            return;
         }
     }
 }
@@ -984,18 +1208,28 @@ fn to_inbound(frame: Frame) -> Inbound {
     }
 }
 
-fn bounded_join(worker: Option<JoinHandle<()>>) -> bool {
+struct WorkerHandle {
+    join: JoinHandle<()>,
+    finished: Receiver<()>,
+}
+
+fn spawn_worker(name: &str, worker: impl FnOnce() + Send + 'static) -> io::Result<WorkerHandle> {
+    let (finished_sender, finished) = mpsc::channel();
+    let join = thread::Builder::new().name(name.into()).spawn(move || {
+        worker();
+        let _ignored = finished_sender.send(());
+    })?;
+    Ok(WorkerHandle { join, finished })
+}
+
+fn bounded_join(worker: Option<WorkerHandle>) -> bool {
     let Some(worker) = worker else {
         return true;
     };
-    let deadline = Instant::now() + WORKER_JOIN_LIMIT;
-    while !worker.is_finished() && Instant::now() < deadline {
-        thread::yield_now();
-    }
-    if worker.is_finished() {
-        worker.join().is_ok()
+    if worker.finished.recv_timeout(WORKER_JOIN_LIMIT).is_ok() {
+        worker.join.join().is_ok()
     } else {
-        drop(worker);
+        drop(worker.join);
         false
     }
 }

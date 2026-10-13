@@ -79,6 +79,29 @@ fn initialize_handshake_and_python_caller_request_shapes() {
 }
 
 #[test]
+fn recovered_requests_keep_a_finite_configured_deadline() {
+    let recovered_id = RequestId::Number(88);
+    let (mut state, _) = SessionState::new_with_recovered(
+        9,
+        false,
+        10,
+        5,
+        serde_json::from_str(INIT).expect("scripted test operation"),
+        vec![(recovered_id.clone(), Method::ModelList, None)],
+    )
+    .expect("recovered request should register");
+    assert!(state.expire(14).1.is_empty());
+    let (_, actions) = state.expire(15);
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::Resolve {
+            ticket: RequestTicket { id, .. },
+            outcome: RequestOutcome::Unknown,
+        } if id == &recovered_id
+    )));
+}
+
+#[test]
 fn injected_deadline_marks_only_one_request_unknown_and_late_reply_is_positive_evidence() {
     let mut session = state(false);
     let (first, _) = session
