@@ -260,7 +260,7 @@ impl TranscriptRepository {
         if record.get("id").and_then(Value::as_str) != Some(id)
             || !matches!(
                 record.get("role").and_then(Value::as_str),
-                Some("assistant" | "user")
+                Some("assistant" | "user" | "system")
             )
         {
             return Err(TranscriptStoreError::InvalidStoredObject("runtime_items"));
