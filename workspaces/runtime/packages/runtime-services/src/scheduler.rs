@@ -7,7 +7,7 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnEvent {
     pub id: String,
     pub kind: String,
@@ -18,7 +18,7 @@ pub struct TurnEvent {
     pub metadata: Value,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnIntent {
     pub agent_id: String,
     pub epoch: i64,
@@ -55,11 +55,18 @@ pub fn lifecycle_transaction<T>(
     store: &RuntimeStore,
     change: impl FnOnce(&rusqlite::Transaction<'_>) -> studio_runtime_store::StoreResult<T>,
 ) -> studio_runtime_store::StoreResult<T> {
-    store.transaction(|tx| {
-        let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0))?;
+    lifecycle_transaction_with(store, change)
+}
+
+pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
+    store: &RuntimeStore,
+    change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, E>,
+) -> Result<T, E> {
+    store.transaction_with(|tx| {
+        let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0)).map_err(StoreError::from)?;
         let result = change(tx)?;
-        let mut statement = tx.prepare("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id")?;
-        let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let mut statement = tx.prepare("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id").map_err(StoreError::from)?;
+        let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(StoreError::from)?;
         let server_id = crate::sync_entity_context::local_server_id(&store.root().to_string_lossy())?;
         for (id,raw) in rows {
             let agent: Value = serde_json::from_str(&raw).map_err(|_|StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
@@ -130,67 +137,71 @@ pub fn settle_start_rejected_provider(
     })?)
 }
 
-pub(crate) const HISTORY_UNAVAILABLE: &str = "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored.";
-
 pub fn settle_terminal_attempt(
     store: &RuntimeStore,
     identity: &TurnAttemptIdentity,
     params: &Value,
 ) -> Result<bool, SchedulerError> {
+    Ok(lifecycle_transaction(store, |tx| {
+        settle_terminal_in_transaction(tx, identity, params)
+    })?)
+}
+
+pub(crate) fn settle_terminal_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    identity: &TurnAttemptIdentity,
+    params: &Value,
+) -> studio_runtime_store::StoreResult<bool> {
     let Some(turn_id) = params["turn"]["id"].as_str() else {
         return Ok(false);
     };
-    Ok(lifecycle_transaction(store, |transaction| {
-        let input =
-            serde_json::json!({"agent":identity.agent_id,"epoch":identity.epoch,"params":params});
-        if let Some(saved) = ExecutionHistoryRepository::replay(
-            transaction,
-            &identity.attempt_id,
-            "terminalInput",
-            &input,
-        )? {
-            return saved
-                .as_bool()
-                .ok_or_else(|| StoreError::InvalidSyncObject {
-                    scope: "runtime_execution_attempts".into(),
-                    id: identity.attempt_id.clone(),
-                });
-        }
-        let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
-            .map_err(|_| StoreError::InvalidSyncObject {
+
+    let input =
+        serde_json::json!({"agent":identity.agent_id,"epoch":identity.epoch,"params":params});
+    if let Some(saved) = ExecutionHistoryRepository::replay(
+        transaction,
+        &identity.attempt_id,
+        "terminalInput",
+        &input,
+    )? {
+        return saved
+            .as_bool()
+            .ok_or_else(|| StoreError::InvalidSyncObject {
+                scope: "runtime_execution_attempts".into(),
+                id: identity.attempt_id.clone(),
+            });
+    }
+    let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
+        .map_err(|_| StoreError::InvalidSyncObject {
             scope: "runtime_agents".into(),
             id: identity.agent_id.clone(),
         })?;
-        let saved_error = agent.as_ref().and_then(|a| a.extra.get("nativeTurnError"));
-        let Some((native_status, status, error)) = terminal_outcome(&params["turn"], saved_error)
-        else {
-            return Ok(false);
-        };
-        // NOTIFICATION-DISPATCH INTEGRATION: invoke dispatch(transaction, identity, params)
-        // here. Until its history writes are available, successful native turns use the
-        // named HISTORY_UNAVAILABLE failure; acknowledgment follows this transaction.
-        let result = SchedulerRepository::settle_terminal(
+    let saved_error = agent.as_ref().and_then(|a| a.extra.get("nativeTurnError"));
+    let Some((native_status, status, error)) = terminal_outcome(&params["turn"], saved_error)
+    else {
+        return Ok(false);
+    };
+    let result = SchedulerRepository::settle_terminal(
+        transaction,
+        &identity.agent_id,
+        identity.epoch,
+        &identity.attempt_id,
+        turn_id,
+        status,
+        error,
+        native_status,
+        params["turn"].get("error"),
+    )?;
+    if result {
+        ExecutionHistoryRepository::save_receipt(
             transaction,
-            &identity.agent_id,
-            identity.epoch,
             &identity.attempt_id,
-            turn_id,
-            status,
-            error,
-            native_status,
-            params["turn"].get("error"),
+            "terminalInput",
+            input,
+            serde_json::json!(result),
         )?;
-        if result {
-            ExecutionHistoryRepository::save_receipt(
-                transaction,
-                &identity.attempt_id,
-                "terminalInput",
-                input,
-                serde_json::json!(result),
-            )?;
-        }
-        Ok(result)
-    })?)
+    }
+    Ok(result)
 }
 
 // Pure native/visible classification is shared with the future asynchronous worker.
@@ -218,10 +229,7 @@ fn terminal_outcome<'a>(
     });
     let visible = if refusal { "failed" } else { native };
     let (status, error) = match visible {
-        "completed" => (
-            AgentStatus::Failed,
-            Some(serde_json::json!({"message":HISTORY_UNAVAILABLE})),
-        ),
+        "completed" => (AgentStatus::Completed, None),
         "failed" => (
             AgentStatus::Failed,
             Some(visible_error.cloned().unwrap_or_else(

@@ -1,6 +1,6 @@
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
-use crate::scheduler::HISTORY_UNAVAILABLE;
+
 use crate::scheduler::mark_submitted_for_provider;
 use std::fs;
 use std::io::{self, Write};
@@ -483,10 +483,7 @@ fn python_completed_ledger_rejects_old_notices_without_eviction() {
         .expect("fixture operation succeeds");
     assert_eq!(count, 261);
     assert!(!h.record(0).extra.contains_key("lastAnswer"));
-    assert_eq!(
-        h.record(0).extra["lastCompletedTurnError"]["message"],
-        HISTORY_UNAVAILABLE
-    );
+    assert_eq!(h.record(0).extra["lastCompletedTurnStatus"], "completed");
 }
 #[test]
 fn completion_before_correlated_reply_retains_cursor_then_commits() {

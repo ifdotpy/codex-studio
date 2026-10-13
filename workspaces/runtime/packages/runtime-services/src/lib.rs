@@ -9,6 +9,7 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod account_worker;
 pub mod agents_create;
 pub mod coordination;
 pub mod event_write;
