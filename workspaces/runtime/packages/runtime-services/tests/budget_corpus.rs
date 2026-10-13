@@ -156,11 +156,12 @@ fn stored(connection: &Connection) -> Value {
     );
     state
 }
-fn run(case: &Value, records: &Value) -> Value {
+fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
     let mut connection = db(records, case);
     let mut denial = None;
-    let mut outputs = Vec::new();
-    for step in case["steps"].as_array().expect("steps") {
+    let mut outputs: Vec<Value> = Vec::new();
+    let changed_replay_step = changed_response_replay_step(case);
+    for (step_index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
         let tx = connection.transaction().expect("transaction");
         let id = step["agent"].as_str().unwrap_or("a");
         let now = step["now"].as_f64().unwrap_or(100.);
@@ -169,21 +170,27 @@ fn run(case: &Value, records: &Value) -> Value {
                 let mut agent = step.get("historical_agent").cloned().unwrap_or_else(|| {
                     studio_runtime_store::budget::BudgetRepository::agent(&tx, id).expect("agent")
                 });
-                json!(
-                    budget_service::capture(
-                        &tx,
-                        &mut agent,
-                        &step["params"],
-                        step["at"].as_f64().unwrap_or(now),
-                        if step["source"] == "history" {
-                            CaptureSource::History
-                        } else {
-                            CaptureSource::Live
-                        },
-                        now
-                    )
-                    .expect("capture")
-                )
+                match budget_service::capture(
+                    &tx,
+                    &mut agent,
+                    &step["params"],
+                    step["at"].as_f64().unwrap_or(now),
+                    if step["source"] == "history" {
+                        CaptureSource::History
+                    } else {
+                        CaptureSource::Live
+                    },
+                    now,
+                ) {
+                    Ok(tokens) => json!(tokens),
+                    Err(studio_runtime_services::budget::BudgetError::Invalid(location))
+                        if Some(step_index) == changed_replay_step
+                            && location == "runtime_budget_usage/responseReplayConflict" =>
+                    {
+                        json!({"rustRefusal":"responseReplayConflict"})
+                    }
+                    Err(error) => panic!("{}: {error}", case["name"]),
+                }
             }
             "update" => {
                 let mut agent =
@@ -295,7 +302,31 @@ fn run(case: &Value, records: &Value) -> Value {
             _ => panic!("unknown operation"),
         };
         tx.commit().expect("commit");
-        outputs.push(json!({"result":result,"stored":stored(&connection)}));
+        let output = json!({"result":result,"stored":stored(&connection)});
+        if Some(step_index) == changed_replay_step {
+            let python_output = &expected_outputs[step_index];
+            assert_eq!(
+                output["result"],
+                json!({"rustRefusal":"responseReplayConflict"}),
+                "{}: Rust refuses changed-content replay",
+                case["name"]
+            );
+            assert!(
+                python_output["result"].is_number(),
+                "{}: Python accepts and saves changed replay",
+                case["name"]
+            );
+            assert_eq!(
+                output["stored"],
+                outputs.last().expect("prior Rust output")["stored"],
+                "Rust conflict refusal writes nothing"
+            );
+            // The intentional compatibility difference is isolated to this
+            // replay. Seed the Python post-replay snapshot so later admission
+            // and claim steps still compare the same behavior as the oracle.
+            restore_stored(&connection, &python_output["stored"]);
+        }
+        outputs.push(output);
     }
     json!(outputs)
 }
@@ -305,12 +336,147 @@ fn budget_python_corpus() {
     let mut oracle = Oracle::new();
     for case in cases.as_array().expect("cases") {
         let expected = oracle.call(case);
-        compare(
-            &run(case, &expected["records"]),
+        let actual = run(case, &expected["records"], &expected["outputs"]);
+        compare_case_outputs(
+            &actual,
             &expected["outputs"],
+            changed_response_replay_step(case),
             case["name"].as_str().expect("name"),
         );
     }
+}
+
+fn changed_response_replay_step(case: &Value) -> Option<usize> {
+    let mut responses = BTreeMap::new();
+    case["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, step)| step["op"] == "capture")
+        .find_map(|(index, step)| {
+            let response_id = step["params"]["responseId"].as_str()?;
+            let tokens = step["params"]["requestUsage"]["totalTokens"].as_u64()?;
+            responses
+                .insert(response_id.to_owned(), tokens)
+                .and_then(|previous| (previous != tokens).then_some(index))
+        })
+}
+
+fn restore_stored(connection: &Connection, state: &Value) {
+    connection
+        .execute_batch(
+            "DELETE FROM runtime_agents;DELETE FROM runtime_budget;DELETE FROM runtime_budget_usage;DELETE FROM runtime_events;",
+        )
+        .expect("reset corpus state");
+    for (id, record) in state["agents"].as_object().expect("agents") {
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES (?1,?2)",
+                params![id, record.to_string()],
+            )
+            .expect("restore agent");
+    }
+    for (id, record) in state["states"].as_object().expect("states") {
+        connection
+            .execute(
+                "INSERT INTO runtime_budget VALUES (?1,?2)",
+                params![id, record.to_string()],
+            )
+            .expect("restore budget");
+    }
+    for usage in state["usage"].as_array().expect("usage") {
+        connection
+            .execute(
+                "INSERT INTO runtime_budget_usage VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    usage["id"].as_str(),
+                    usage["agent"].as_str(),
+                    usage["kind"].as_str(),
+                    usage["tokens"].as_i64(),
+                    usage["at"].as_f64()
+                ],
+            )
+            .expect("restore usage");
+    }
+    for event in state["events"].as_array().expect("events") {
+        connection
+            .execute(
+                "INSERT INTO runtime_events VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![
+                    event["id"].as_str(),
+                    event["agent"].as_str(),
+                    event["kind"].as_str(),
+                    event["text"].as_str(),
+                    event["status"].as_str(),
+                    event["created"].as_f64(),
+                    event["epoch"].as_i64(),
+                    event["turnId"].as_str(),
+                    event["error"].as_str()
+                ],
+            )
+            .expect("restore event");
+    }
+}
+
+fn compare_case_outputs(actual: &Value, expected: &Value, replay: Option<usize>, name: &str) {
+    let actual = actual.as_array().expect("Rust outputs");
+    let expected = expected.as_array().expect("Python outputs");
+    assert_eq!(actual.len(), expected.len(), "{name}: output count");
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        if Some(index) != replay {
+            compare(actual, expected, &format!("{name}/{index}"));
+        }
+    }
+}
+
+#[test]
+fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes() {
+    let (case, records) = fixture();
+    let mut connection = db(&records, &case);
+    sync_fixture(&connection);
+    let params = &case["steps"][0]["params"];
+    let tx = connection.transaction().expect("initial transaction");
+    let mut agent = records["agents"]["a"].clone();
+    assert_eq!(
+        budget_service::capture(&tx, &mut agent, params, 101., CaptureSource::Live, 100.)
+            .expect("initial response capture"),
+        20
+    );
+    tx.commit().expect("initial commit");
+
+    let before_replay = all_stored(&connection);
+    let tx = connection.transaction().expect("replay transaction");
+    let mut agent =
+        studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
+    assert_eq!(
+        budget_service::capture(&tx, &mut agent, params, 101., CaptureSource::Live, 100.)
+            .expect("identical replay"),
+        20
+    );
+    tx.commit().expect("replay commit");
+    assert_eq!(
+        all_stored(&connection),
+        before_replay,
+        "identical replay writes nothing"
+    );
+
+    let before_conflict = all_stored(&connection);
+    let tx = connection.transaction().expect("conflict transaction");
+    let mut agent =
+        studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
+    let mut changed = params.clone();
+    changed["requestUsage"]["totalTokens"] = json!(21);
+    assert!(
+        budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.)
+            .is_err()
+    );
+    tx.commit().expect("commit conflict refusal");
+    assert_eq!(
+        all_stored(&connection),
+        before_conflict,
+        "conflicting replay writes nothing"
+    );
 }
 
 fn compare(actual: &Value, expected: &Value, path: &str) {
@@ -709,7 +875,7 @@ fn budget_full_matrix() {
                             };
                             let expected = oracle.call(&case);
                             compare(
-                                &run(&case, &expected["records"]),
+                                &run(&case, &expected["records"], &expected["outputs"]),
                                 &expected["outputs"],
                                 &format!(
                                     "matrix floor={floor} amount={amount} at={at} history={history} estimated={estimated} response_first={response_first}"
@@ -871,6 +1037,9 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
         size: 100,
         final_size: 100,
         tail: "{}\n".into(),
+        modified_seconds: 0,
+        modified_nanos: 0,
+        content_hash: String::new(),
     };
     let observation =
         HistoryObservation::from_records(&agent, Some(&history), Some(&file)).expect("observation");

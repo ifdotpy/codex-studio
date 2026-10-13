@@ -17,6 +17,8 @@ pub enum BudgetError {
     Invalid(String),
     #[error("budget-policy/token-overflow")]
     Overflow,
+    #[error("budget/admission/staleHistory; pre-read histories and retry admission")]
+    StaleHistory,
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
 }
@@ -318,6 +320,7 @@ pub use studio_runtime_store::budget::BudgetUsageRow as UsageRow;
 pub struct CaptureDecision {
     pub state: BudgetState,
     pub usage: Option<UsageRow>,
+    pub changed: bool,
 }
 
 pub fn capture(
@@ -336,8 +339,15 @@ pub fn capture(
             if !p.exact && p.response {
                 state.ambiguous_notices.retain(|key| key != &p.key);
             }
-            if p.exact && p.amount.is_some_and(|n| n != previous.tokens) {
-                state.fault("conflictingResponseUsage");
+            if p.exact {
+                if previous.kind != "response" || p.amount != Some(previous.tokens) {
+                    return Err(invalid("runtime_budget_usage/responseReplayConflict"));
+                }
+                return Ok(CaptureDecision {
+                    state: snapshot.state.clone(),
+                    usage: None,
+                    changed: false,
+                });
             }
         } else if let Some(amount) = p.amount {
             inserted = Some(UsageRow {
@@ -395,6 +405,7 @@ pub fn capture(
     Ok(CaptureDecision {
         state,
         usage: inserted,
+        changed: true,
     })
 }
 
@@ -406,6 +417,12 @@ pub struct HistoryFileObservation {
     pub size: u64,
     pub final_size: u64,
     pub tail: String,
+    #[serde(default)]
+    pub modified_seconds: u64,
+    #[serde(default)]
+    pub modified_nanos: u32,
+    #[serde(default)]
+    pub content_hash: String,
 }
 #[derive(Clone, Debug)]
 pub struct HistoryObservation {
@@ -414,6 +431,15 @@ pub struct HistoryObservation {
     thread: Option<String>,
     reason: Option<String>,
     request_usage: bool,
+    runtime_binding: Option<HistoryRuntimeBinding>,
+}
+#[derive(Clone, Debug)]
+pub struct HistoryRuntimeBinding {
+    pub agent: Value,
+    pub budget: Option<Value>,
+    pub checkpoint_id: String,
+    pub checkpoint_record: Option<String>,
+    pub file: Option<HistoryFileObservation>,
 }
 impl HistoryObservation {
     pub fn from_records(
@@ -432,6 +458,7 @@ impl HistoryObservation {
             thread: a.thread_id,
             reason: None,
             request_usage: false,
+            runtime_binding: None,
         };
         let Some(history) = history else {
             observation.reason = Some("Native usage history is unavailable".into());
@@ -510,6 +537,12 @@ impl HistoryObservation {
         };
         observation.reason = reason.map(str::to_owned);
         Ok(observation)
+    }
+    pub fn bind_runtime(&mut self, binding: HistoryRuntimeBinding) {
+        self.runtime_binding = Some(binding);
+    }
+    pub(crate) fn runtime_binding(&self) -> Option<&HistoryRuntimeBinding> {
+        self.runtime_binding.as_ref()
     }
 }
 fn coverage(snapshot: &BudgetSnapshot, observation: Option<&HistoryObservation>) -> Option<String> {
