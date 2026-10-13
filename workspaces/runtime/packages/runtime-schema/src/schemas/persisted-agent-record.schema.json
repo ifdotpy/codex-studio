@@ -1,12 +1,159 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "PersistedActiveTool": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Id"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Type"
+        }
+      },
+      "title": "PersistedActiveTool",
+      "type": "object"
+    },
+    "PersistedNotificationStatus": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Open native activity state consumed by notification transitions.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "At"
+        },
+        "dismissed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dismissed"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Phase"
+        },
+        "responseStarted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Responsestarted"
+        },
+        "showBufferingUi": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Showbufferingui"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnid"
+        }
+      },
+      "title": "PersistedNotificationStatus",
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
   "description": "Persisted agent identity plus the extensible state written by the runtime.",
   "properties": {
+    "activeTools": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/PersistedActiveTool"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Activetools"
+    },
+    "activity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedNotificationStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "approvalPolicy": {
       "anyOf": [
         {
@@ -17,6 +164,19 @@
         }
       ],
       "title": "Approvalpolicy"
+    },
+    "compactions": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Compactions"
     },
     "cwd": {
       "anyOf": [
@@ -35,6 +195,19 @@
       "title": "Epoch",
       "type": "integer"
     },
+    "events": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Events"
+    },
     "id": {
       "title": "Id",
       "type": "string"
@@ -49,6 +222,37 @@
         }
       ],
       "title": "Name"
+    },
+    "nativeResponseTurn": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativeresponseturn"
+    },
+    "nativeSafetyBuffering": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedNotificationStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nativeStatus": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedNotificationStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "rootId": {
       "title": "Rootid",
