@@ -2,7 +2,7 @@
 mod common;
 use common::*;
 use serde_json::{Value, json};
-use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize};
+use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
 
 fn full_matrix() -> bool {
@@ -21,25 +21,77 @@ fn python_authentication_outputs_match_complete_principal_and_writes() {
                 case["invite"].as_str(),
                 true,
             )?;
-            let mut whois = data["whois"].clone();
-            whois["UserProfile"]["LoginName"] = case["owner"].clone();
-            let owner = OwnerObservation::from_json("100.64.0.2", &[], &data["status"], &whois)?;
-            authorize(
+            let logins: Vec<String> =
+                serde_json::from_value(case["logins"].clone()).expect("logins");
+            let owner = OwnerObservation::from_json(
+                case["address"].as_str().expect("address"),
+                &logins,
+                &data["status"],
+                &case["whois"],
+            )?;
+            authorize_at(
                 &snapshot,
                 &request,
                 "local-server",
                 &owner,
                 case.get("probe"),
-                data["now"].as_i64().expect("now"),
+                case["now"].as_f64().expect("now"),
             )
         })();
-        if let Some(status) = case["status"].as_u64() {
+        if let Some(expected) = case.get("refusal") {
             assert_eq!(
-                result.err().expect("refused").status(),
-                status as u16,
+                refusal(result.err().expect("refused")),
+                *expected,
                 "{}",
                 case["name"]
             );
+            assert_eq!(case["noWrite"], true);
+            let (_root, store) = store();
+            store
+                .transaction(|tx| {
+                    tx.execute("DELETE FROM runtime_access_clients", [])?;
+                    if let Some(client) = case["client"].as_str() {
+                        tx.execute(
+                            "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                            rusqlite::params![case["clientId"].as_str().expect("client"), client],
+                        )?;
+                    }
+                    tx.execute(
+                        "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
+                        rusqlite::params![
+                            case["invite"].as_str().expect("invite"),
+                            case["inviteId"].as_str().expect("id")
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .expect("install exact Python precondition");
+            let before = rows(&store);
+            let lookup = CountingOwner::new(case.clone());
+            let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+                data["identity"].clone(),
+                lookup,
+            )
+            .expect("boundary");
+            let incoming = (|| {
+                let request = request(case)?;
+                let logins: Vec<String> =
+                    serde_json::from_value(case["logins"].clone()).expect("logins");
+                boundary.handle_incoming(
+                    &store,
+                    &request,
+                    case["address"].as_str().expect("address"),
+                    &logins,
+                    case["now"].as_f64().expect("now"),
+                )
+            })();
+            assert_eq!(
+                refusal(incoming.expect_err("refused at boundary")),
+                *expected,
+                "{}",
+                case["name"]
+            );
+            assert_eq!(rows(&store), before, "{}: refusal writes", case["name"]);
         } else {
             let actual = result.unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
             assert_eq!(
@@ -226,6 +278,8 @@ fn multi_server_corpus_witness() {
     orchestration_claims_survive_lost_receipts_and_reject_changed_content();
     python_receipt_states_preserve_completed_results_and_uncertainty();
     nonce_capacity_is_rate_limited_without_committing_access_writes();
+    signatures_precede_owner_lookups_and_probes();
+    fractional_invitation_boundary_matches_python();
 }
 
 fn orchestration_claims_survive_lost_receipts_and_reject_changed_content() {
@@ -240,7 +294,7 @@ fn orchestration_claims_survive_lost_receipts_and_reject_changed_content() {
     struct Effects(Arc<AtomicUsize>);
     impl OrchestrationEffects for Effects {
         fn supports(&self, action: &str) -> bool {
-            action == "fixture"
+            action == "fixture" || action == "input"
         }
         fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -336,6 +390,99 @@ fn orchestration_claims_survive_lost_receipts_and_reject_changed_content() {
             };
             assert_eq!(changed.expect_err("conflict").status(), 409);
         }
+    }
+    for case in fixture().data["deliveryStates"].as_array().expect("states") {
+        let (root, store) = store();
+        // Template rows come from Python receive(), including waiting's proof
+        // that no effect crossed the boundary. Reopen before attempting it.
+        drop(store);
+        let store =
+            Arc::new(studio_runtime_store::RuntimeStore::open(Some(root.path())).expect("restart"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let driver = OrchestrationDriver::new(
+            store.clone(),
+            Arc::new(Transport(calls.clone(), false)),
+            Arc::new(Effects(calls.clone())),
+        );
+        let result = driver
+            .receive("peer-server", &case["envelope"], now)
+            .expect("Python receipt state");
+        let actual = match result {
+            ExchangeOutcome::Applied(value) => {
+                json!({"requestId":case["envelope"]["requestId"],"outcome":"applied","value":value})
+            }
+            ExchangeOutcome::Unknown => {
+                json!({"requestId":case["envelope"]["requestId"],"outcome":"unknown"})
+            }
+            other => panic!("unexpected {other:?}"),
+        };
+        assert_eq!(actual, case["result"], "{}", case["state"]);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            case["calls"].as_u64().expect("calls") as usize
+        );
+        driver
+            .receive("peer-server", &case["envelope"], now)
+            .expect("replay");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            case["calls"].as_u64().expect("calls") as usize
+        );
+    }
+    for stage in if full_matrix() {
+        &["claim", "finish"][..]
+    } else {
+        &["claim"][..]
+    } {
+        let (root, store) = store();
+        let case = fixture().data["deliveryStates"]
+            .as_array()
+            .expect("states")
+            .iter()
+            .find(|c| c["state"] == "waiting")
+            .expect("waiting");
+        let state = if *stage == "claim" {
+            "running"
+        } else {
+            "complete"
+        };
+        store.transaction(|tx| { tx.execute_batch(&format!("CREATE TRIGGER waiting_fail BEFORE UPDATE ON runtime_server_inbox WHEN NEW.state='{state}' BEGIN SELECT RAISE(ABORT,'waiting failpoint'); END"))?; Ok(()) }).expect("failpoint");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let run = |store: Arc<studio_runtime_store::RuntimeStore>| {
+            OrchestrationDriver::new(
+                store,
+                Arc::new(Transport(calls.clone(), false)),
+                Arc::new(Effects(calls.clone())),
+            )
+            .receive("peer-server", &case["envelope"], now)
+        };
+        assert!(run(store.clone()).is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(*stage == "finish")
+        );
+        store
+            .transaction(|tx| {
+                tx.execute_batch("DROP TRIGGER waiting_fail")?;
+                Ok(())
+            })
+            .expect("remove failpoint");
+        drop(store);
+        let store =
+            Arc::new(studio_runtime_store::RuntimeStore::open(Some(root.path())).expect("restart"));
+        assert_eq!(
+            run(store).expect("recovery"),
+            if *stage == "claim" {
+                ExchangeOutcome::Applied(json!({"applied":true}))
+            } else {
+                ExchangeOutcome::Unknown
+            }
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "waiting claim never executes twice"
+        );
     }
     let (_root, store) = store();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -477,5 +624,116 @@ fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
             .expect_err("capacity refusal");
         assert_eq!(error.status(), 429);
         assert_eq!(rows(&store), before, "rate refusal must not commit writes");
+    }
+}
+
+fn fractional_invitation_boundary_matches_python() {
+    let data = &fixture().data;
+    for case in data["auth"].as_array().expect("cases").iter().filter(|c| {
+        c["name"]
+            .as_str()
+            .expect("name")
+            .starts_with("invite-expiry-")
+    }) {
+        let (_root, store) = store();
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_access_invites SET record=?1 WHERE id=?2",
+                    rusqlite::params![
+                        case["invite"].as_str().expect("invite"),
+                        case["inviteId"].as_str().expect("id")
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("Python fractional expiry");
+        let before = rows(&store);
+        let result = boundary().handle_at(
+            &store,
+            &request(case).expect("request"),
+            &owner(),
+            None,
+            case["now"].as_f64().expect("time"),
+        );
+        if let Some(expected) = case.get("refusal") {
+            assert_eq!(refusal(result.expect_err("expired")), *expected);
+            assert_eq!(rows(&store), before);
+        } else {
+            assert_eq!(result.expect("not expired")["paired"], true);
+        }
+    }
+}
+
+fn signatures_precede_owner_lookups_and_probes() {
+    use std::sync::atomic::Ordering;
+    use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
+    let data = &fixture().data;
+    for (bad, good) in [
+        ("bad-signature", "pair-ui"),
+        ("bad-auto-signature", "auto-pair"),
+    ] {
+        let (_root, store) = store();
+        let case = data["auth"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|c| c["name"] == bad)
+            .expect("bad signature");
+        let lookup = CountingOwner::new(case.clone());
+        let boundary =
+            MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+        let before = rows(&store);
+        let error = boundary
+            .handle_incoming(
+                &store,
+                &request(case).expect("request"),
+                "100.64.0.2",
+                &[],
+                case["now"].as_f64().expect("now"),
+            )
+            .expect_err("signature rejected");
+        assert_eq!(refusal(error), case["refusal"]);
+        assert_eq!(
+            lookup.calls.load(Ordering::SeqCst),
+            0,
+            "invalid signature must not invoke owner lookup"
+        );
+        assert_eq!(
+            lookup.probes.load(Ordering::SeqCst),
+            0,
+            "invalid signature must not probe caller origin"
+        );
+        assert_eq!(rows(&store), before);
+        let good = data["auth"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|c| c["name"] == good)
+            .expect("good signature");
+        boundary
+            .handle_incoming(
+                &store,
+                &request(good).expect("request"),
+                "100.64.0.2",
+                &[],
+                good["now"].as_f64().expect("now"),
+            )
+            .expect("valid signature uses host");
+        assert_eq!(lookup.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lookup.probes.load(Ordering::SeqCst),
+            usize::from(bad == "bad-auto-signature")
+        );
+    }
+}
+fn refusal(error: studio_runtime_services::multi_server_auth::AccessError) -> Value {
+    match error {
+        studio_runtime_services::multi_server_auth::AccessError::Refused {
+            status,
+            code,
+            message,
+        } => serde_json::json!({"status":status,"code":code,"error":message}),
+        other => panic!("expected stable refusal, got {other}"),
     }
 }

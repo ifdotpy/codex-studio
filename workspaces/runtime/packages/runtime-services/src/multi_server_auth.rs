@@ -197,7 +197,7 @@ impl SignedRequest {
         &self.nonce
     }
     pub fn is_status(&self) -> bool {
-        self.method == "GET" && self.target == STATUS_PATH
+        self.method == "GET" && self.target.split('?').next() == Some(STATUS_PATH)
     }
     pub fn is_pairing(&self) -> bool {
         self.method == "POST" && self.target == PAIR_PATH
@@ -289,12 +289,18 @@ impl OwnerObservation {
             return Err(unavailable());
         }
         let login = login.trim().to_lowercase();
-        if owner.trim().to_lowercase() != login
-            || supplied_logins.len() > 1
+        if supplied_logins.len() > 1
             || supplied_logins
                 .first()
                 .is_some_and(|v| v.trim().to_lowercase() != login)
         {
+            return Err(refused(
+                403,
+                "owner_mismatch",
+                "The Tailscale identity does not match",
+            ));
+        }
+        if owner.trim().to_lowercase() != login {
             return Err(refused(
                 403,
                 "owner_mismatch",
@@ -479,138 +485,58 @@ pub fn authorize(
     auto_probe: Option<&Value>,
     now: i64,
 ) -> Result<AuthDecision, AccessError> {
-    if request.server != local_server {
-        return Err(refused(
-            401,
-            "server_mismatch",
-            "The target server identity does not match",
-        ));
-    }
-    let timestamp = request.timestamp.parse::<i64>().map_err(|_| {
-        refused(
-            401,
-            "clock_difference",
-            "The request timestamp is outside the allowed clock difference",
-        )
-    })?;
-    if request.timestamp.len() > 12
-        || !request.timestamp.bytes().all(|b| b.is_ascii_digit())
-        || remote_transport::validate_multi_server_nonce(&request.nonce, timestamp, now).is_err()
-    {
-        return Err(refused(
-            401,
-            "invalid_nonce",
-            "The request timestamp or nonce is invalid",
-        ));
-    }
+    authorize_at(
+        snapshot,
+        request,
+        local_server,
+        owner,
+        auto_probe,
+        now as f64,
+    )
+}
+
+pub fn authorize_at(
+    snapshot: &AccessSnapshot,
+    request: &SignedRequest,
+    local_server: &str,
+    owner: &OwnerObservation,
+    auto_probe: Option<&Value>,
+    now: f64,
+) -> Result<AuthDecision, AccessError> {
+    let (key, kind, recovery) = verify_access(snapshot, request, local_server, now)?;
+    let client = snapshot.client.as_ref();
     let pairing = request.is_pairing();
     let auto = request.is_auto_pairing();
-    let client = snapshot.client.as_ref();
-    if client.is_some_and(|v| text(v, "status") == "revoked") {
-        return Err(refused(403, "client_revoked", "The client is revoked"));
-    }
     let fingerprint = request.fingerprint();
-    let recovery = pairing
-        && client.is_some_and(|v| {
-            text(v, "pairingRequestId") == request.request && text(v, "pairingHash") == fingerprint
-        });
-    let (key, kind) = if pairing || auto {
-        let field = if pairing { "clientId" } else { "serverId" };
-        if text(&request.body, field) != request.client
-            || text(&request.body, "requestId") != request.request
+    if auto {
+        let probe = auto_probe.ok_or_else(|| {
+            refused(
+                501,
+                "owner_lookup",
+                "Not implemented: requires remote-transport/owner-lookup",
+            )
+        })?;
+        schema("DiscoveryIdentity", probe)?;
+        if owner.dns.as_deref() != Some(origin_host(text(&request.body, "origin"))?.as_str())
+            || text(probe, "serverId") != request.client
+            || text(probe, "publicKey") != text(&request.body, "publicKey")
+            || text(probe, "origin") != text(&request.body, "origin")
+            || text(probe, "tailscaleUser").trim().to_lowercase() != owner.login
         {
             return Err(refused(
-                400,
-                "invalid_pairing",
-                "The pairing identity or protocol does not match",
+                403,
+                "identity_mismatch",
+                "The caller identity does not match its proof",
             ));
         }
-        let kind = if auto {
-            "server"
-        } else {
-            text(&request.body, "kind")
-        };
-        if kind == "server" {
-            origin_host(text(&request.body, "origin"))?;
+        if probe.get("autoPair") != Some(&Value::Bool(true)) {
+            return Err(refused(
+                403,
+                "auto_pair_disabled",
+                "Automatic server pairing is disabled on the caller",
+            ));
         }
-        if pairing && !recovery {
-            check_invite(snapshot.invite.as_ref(), &request.body, None, now)?;
-        }
-        if auto {
-            if !snapshot.auto_pair {
-                return Err(refused(
-                    403,
-                    "auto_pair_disabled",
-                    "Automatic server pairing is disabled",
-                ));
-            }
-            if client.is_some_and(|v| {
-                text(v, "publicKey") != text(&request.body, "publicKey")
-                    || text(v, "kind") != "server"
-                    || text(v, "origin") != text(&request.body, "origin")
-            }) {
-                return Err(refused(
-                    403,
-                    "identity_mismatch",
-                    "The registered server identity differs",
-                ));
-            }
-            let probe = auto_probe.ok_or_else(|| {
-                refused(
-                    501,
-                    "owner_lookup",
-                    "Not implemented: requires remote-transport/owner-lookup",
-                )
-            })?;
-            schema("DiscoveryIdentity", probe)?;
-            if owner.dns.as_deref() != Some(origin_host(text(&request.body, "origin"))?.as_str())
-                || text(probe, "serverId") != request.client
-                || text(probe, "publicKey") != text(&request.body, "publicKey")
-                || text(probe, "origin") != text(&request.body, "origin")
-                || text(probe, "tailscaleUser").trim().to_lowercase() != owner.login
-            {
-                return Err(refused(
-                    403,
-                    "identity_mismatch",
-                    "The caller identity does not match its proof",
-                ));
-            }
-            if probe.get("autoPair") != Some(&Value::Bool(true)) {
-                return Err(refused(
-                    403,
-                    "auto_pair_disabled",
-                    "Automatic server pairing is disabled on the caller",
-                ));
-            }
-        }
-        (text(&request.body, "publicKey"), kind)
-    } else {
-        let c = client
-            .filter(|v| text(v, "status") == "paired")
-            .ok_or_else(|| {
-                refused(
-                    403,
-                    "client_revoked",
-                    "The client is not paired or is revoked",
-                )
-            })?;
-        (text(c, "publicKey"), text(c, "kind"))
-    };
-    remote_transport::verify_signature(
-        key,
-        &remote_transport::multi_server_signing_bytes(MultiServerSigningInput {
-            method: &request.method,
-            target: &request.target,
-            server_id: &request.server,
-            client_id: &request.client,
-            timestamp: &request.timestamp,
-            nonce: &request.nonce,
-            request_id: &request.request,
-            body: &request.raw,
-        }),
-        &request.signature,
-    )
-    .map_err(|_| refused(401, "invalid_signature", "The request signature is invalid"))?;
+    }
     if client
         .and_then(|v| v.get("tailscaleUser"))
         .and_then(Value::as_str)
@@ -669,18 +595,173 @@ pub fn authorize(
         unpaired_attempt: (pairing || auto) && !recovery,
     })
 }
+pub(crate) fn verify_before_observe(
+    snapshot: &AccessSnapshot,
+    request: &SignedRequest,
+    local_server: &str,
+    now: f64,
+) -> Result<(), AccessError> {
+    verify_access(snapshot, request, local_server, now).map(|_| ())
+}
+fn verify_access<'a>(
+    snapshot: &'a AccessSnapshot,
+    request: &'a SignedRequest,
+    local_server: &str,
+    now: f64,
+) -> Result<(&'a str, &'a str, bool), AccessError> {
+    if request.server != local_server {
+        return Err(refused(
+            401,
+            "server_mismatch",
+            "The target server identity does not match",
+        ));
+    }
+    let timestamp = request.timestamp.parse::<i64>().map_err(|_| {
+        refused(
+            401,
+            "clock_difference",
+            "The request timestamp is outside the allowed clock difference",
+        )
+    })?;
+    if request.timestamp.len() > 12
+        || !request.timestamp.bytes().all(|b| b.is_ascii_digit())
+        || (now as i64).abs_diff(timestamp) > 300
+    {
+        return Err(refused(
+            401,
+            "clock_difference",
+            "The request timestamp is outside the allowed clock difference",
+        ));
+    }
+    if request.nonce.len() != 32
+        || !request
+            .nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(refused(
+            401,
+            "invalid_nonce",
+            "The request nonce is invalid",
+        ));
+    }
+    let pairing = request.is_pairing();
+    let auto = request.is_auto_pairing();
+    let client = snapshot.client.as_ref();
+    if client.is_some_and(|v| text(v, "status") == "revoked") {
+        return Err(refused(
+            403,
+            "client_revoked",
+            if request.is_auto_pairing() {
+                "The server is revoked"
+            } else if request.is_pairing() {
+                "The client is revoked"
+            } else {
+                "The client is not paired or is revoked"
+            },
+        ));
+    }
+    let fingerprint = request.fingerprint();
+    let recovery = pairing
+        && client.is_some_and(|v| {
+            text(v, "pairingRequestId") == request.request && text(v, "pairingHash") == fingerprint
+        });
+    let (key, kind) = if pairing || auto {
+        let field = if pairing { "clientId" } else { "serverId" };
+        if text(&request.body, field) != request.client
+            || text(&request.body, "requestId") != request.request
+        {
+            return Err(refused(
+                400,
+                "invalid_pairing",
+                "The pairing identity or protocol does not match",
+            ));
+        }
+        let kind = if auto {
+            "server"
+        } else {
+            text(&request.body, "kind")
+        };
+        if kind == "server" {
+            origin_host(text(&request.body, "origin"))?;
+        }
+        if pairing && !recovery {
+            check_invite(snapshot.invite.as_ref(), &request.body, None, now)?;
+        }
+        if auto {
+            if !snapshot.auto_pair {
+                return Err(refused(
+                    403,
+                    "auto_pair_disabled",
+                    "Automatic server pairing is disabled",
+                ));
+            }
+            if client.is_some_and(|v| {
+                text(v, "publicKey") != text(&request.body, "publicKey")
+                    || text(v, "kind") != "server"
+                    || text(v, "origin") != text(&request.body, "origin")
+            }) {
+                return Err(refused(
+                    403,
+                    "identity_mismatch",
+                    "The registered server identity differs",
+                ));
+            }
+        }
+        (text(&request.body, "publicKey"), kind)
+    } else {
+        let c = client
+            .filter(|v| text(v, "status") == "paired")
+            .ok_or_else(|| {
+                refused(
+                    403,
+                    "client_revoked",
+                    "The client is not paired or is revoked",
+                )
+            })?;
+        (text(c, "publicKey"), text(c, "kind"))
+    };
+    verify_request_signature(request, client)?;
+    Ok((key, kind, recovery))
+}
+fn verify_request_signature(
+    request: &SignedRequest,
+    client: Option<&Value>,
+) -> Result<(), AccessError> {
+    let key = if request.is_pairing() || request.is_auto_pairing() {
+        text(request.body(), "publicKey")
+    } else {
+        client.map(|v| text(v, "publicKey")).unwrap_or_default()
+    };
+    remote_transport::verify_signature(
+        key,
+        &remote_transport::multi_server_signing_bytes(MultiServerSigningInput {
+            method: &request.method,
+            target: &request.target,
+            server_id: &request.server,
+            client_id: &request.client,
+            timestamp: &request.timestamp,
+            nonce: &request.nonce,
+            request_id: &request.request,
+            body: &request.raw,
+        }),
+        &request.signature,
+    )
+    .map_err(|_| refused(401, "invalid_signature", "The request signature is invalid"))?;
+    Ok(())
+}
 pub(crate) fn check_invite(
     invite: Option<&Value>,
     body: &Value,
     owner: Option<&str>,
-    now: i64,
+    now: f64,
 ) -> Result<(), AccessError> {
     let invite = invite
         .filter(|v| {
             text(v, "status") == "open"
                 && v.get("expires")
                     .and_then(Value::as_f64)
-                    .is_some_and(|v| v >= now as f64)
+                    .is_some_and(|v| v >= now)
         })
         .ok_or_else(|| {
             refused(
