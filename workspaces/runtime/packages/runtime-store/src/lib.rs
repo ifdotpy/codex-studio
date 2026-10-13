@@ -17,7 +17,9 @@ pub use repositories::analytics::{
 pub use repositories::checkpoints::{
     CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
-pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
+pub use repositories::remote_transport::{
+    AccessNonceOutcome, OutboundReservation, RemoteTransportRepository,
+};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
