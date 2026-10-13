@@ -302,6 +302,11 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
     {
         return Ok(Decision::default());
     }
+    if limits.account_key() != account(&s.agent) || limits.account_key() != account(r) {
+        return Err(ContinuationError::Unavailable(
+            "usage-policy/limits-account-mismatch",
+        ));
+    }
     let reset = limits.reset_at();
     let mut r = r.clone();
     patch(

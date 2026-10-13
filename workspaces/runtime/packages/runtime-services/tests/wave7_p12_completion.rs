@@ -5,17 +5,20 @@ use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use studio_runtime_services::{
-    continuation::ContinuationError,
+    continuation::{ContinuationError, Snapshot},
     continuation_runtime::{
         self, ClaudeAccountPin, ClaudeAttemptIdentity, ClaudeAuthObservation, Completion,
         PreparationSettings, WakePort,
     },
-    usage_resume::LimitsObservation,
+    usage_resume::{self, LimitsObservation},
 };
-use studio_runtime_store::{RuntimeStore, StoreError};
+use studio_runtime_store::{ContinuationRepository, ContinuationTable, RuntimeStore, StoreError};
 
 fn template() -> tempfile::TempDir {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -84,6 +87,65 @@ fn all_usage_rows(store: &RuntimeStore) -> Vec<Value> {
         .collect()
 }
 
+fn complete_continuation_rows(store: &RuntimeStore) -> Value {
+    let db = store.read().expect("reader");
+    let table_exists = |table: &str| -> bool {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .expect("table lookup")
+    };
+    let rows = |table: &str| -> Vec<Value> {
+        if !table_exists(table) {
+            return Vec::new();
+        }
+        let mut stmt = db
+            .prepare(&format!("SELECT id,record FROM {table} ORDER BY id"))
+            .expect("continuation rows");
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("rows")
+        .map(|row| {
+            let (id, record) = row.expect("record row");
+            json!({"id":id,"record":serde_json::from_str::<Value>(&record).expect("record JSON")})
+        })
+        .collect()
+    };
+    let events = if table_exists("runtime_events") {
+        let mut stmt = db
+            .prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id")
+            .expect("event rows");
+        stmt.query_map([], |row| {
+            Ok(json!({
+                "id":row.get::<_,String>(0)?,
+                "agent":row.get::<_,String>(1)?,
+                "kind":row.get::<_,String>(2)?,
+                "text":row.get::<_,String>(3)?,
+                "status":row.get::<_,String>(4)?,
+                "created":row.get::<_,f64>(5)?,
+                "epoch":row.get::<_,i64>(6)?,
+                "turnId":row.get::<_,Option<String>>(7)?,
+                "error":row.get::<_,Option<String>>(8)?,
+            }))
+        })
+        .expect("events")
+        .map(|row| row.expect("event row"))
+        .collect()
+    } else {
+        Vec::new()
+    };
+    json!({
+        "agents": rows("runtime_agents"),
+        "capacity": rows("runtime_capacity_retries"),
+        "events": events,
+        "eventMetadata": rows("runtime_event_meta"),
+        "usage": rows("runtime_usage_resumes"),
+    })
+}
+
 struct WakeCounter(AtomicUsize, AtomicUsize);
 
 impl WakePort for WakeCounter {
@@ -94,6 +156,29 @@ impl WakePort for WakeCounter {
 
     fn wake_events(&self, _: &str, _: i64) -> Result<(), ContinuationError> {
         self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct FailingFirstWake(Mutex<Vec<String>>);
+
+impl WakePort for FailingFirstWake {
+    fn wake_account(&self, agent_id: &str, _: i64) -> Result<(), ContinuationError> {
+        let mut attempts = self.0.lock().expect("wake attempts");
+        attempts.push(agent_id.to_owned());
+        if attempts.len() == 1 {
+            Err(ContinuationError::Unavailable("test/account-wake"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn wake_events(&self, agent_id: &str, _: i64) -> Result<(), ContinuationError> {
+        self.0
+            .lock()
+            .expect("wake attempts")
+            .push(format!("events:{agent_id}"));
         Ok(())
     }
 }
@@ -120,7 +205,7 @@ fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
         .expect("stage completion transaction");
     assert!(staged.changed());
     assert_eq!(usage_rows(&store), (2, Some("scheduled".into())));
-    let rows_after_stage = all_usage_rows(&store);
+    let rows_after_stage = complete_continuation_rows(&store);
 
     let wake = WakeCounter(AtomicUsize::new(0), AtomicUsize::new(0));
     continuation_runtime::committed(&staged, &wake).expect("post-commit wake");
@@ -136,7 +221,7 @@ fn terminal_failure_commits_one_resume_before_the_scheduler_wake() {
     assert_eq!(wake.1.load(Ordering::SeqCst), 0);
     assert_eq!(usage_rows(&store), (2, Some("scheduled".into())));
     assert_eq!(
-        all_usage_rows(&store),
+        complete_continuation_rows(&store),
         rows_after_stage,
         "replay preserves complete rows"
     );
@@ -220,7 +305,7 @@ fn foreign_account_limits_refuse_before_any_completion_write() {
     let template = template();
     let root = clone_template(template.path());
     let store = RuntimeStore::open(Some(root.path())).expect("store");
-    let before = all_usage_rows(&store);
+    let before = complete_continuation_rows(&store);
     let foreign = LimitsObservation::from_record(
         json!({
             "accountKey":"other","at":1000.0,
@@ -239,7 +324,36 @@ fn foreign_account_limits_refuse_before_any_completion_write() {
             "usage-policy/limits-account-mismatch"
         ))
     ));
-    assert_eq!(all_usage_rows(&store), before);
+    assert_eq!(complete_continuation_rows(&store), before);
+}
+
+#[test]
+fn limits_changed_refuses_foreign_account_without_changing_complete_rows() {
+    let template = template();
+    let root = clone_template(template.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = complete_continuation_rows(&store);
+    let foreign = LimitsObservation::from_record(
+        json!({
+            "accountKey":"other","at":1000.0,
+            "data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":9000.0}}}
+        }),
+        Some("refresh-x".into()),
+    )
+    .expect("typed observation");
+    let result = store.transaction_with(|tx| {
+        let raw =
+            ContinuationRepository::snapshot(tx, "a", ContinuationTable::Usage, Some("resume"))?;
+        let snapshot = Snapshot::from_records(raw)?;
+        usage_resume::limits_changed(&snapshot, &foreign, 1000.0)
+    });
+    assert!(matches!(
+        result,
+        Err(ContinuationError::Unavailable(
+            "usage-policy/limits-account-mismatch"
+        ))
+    ));
+    assert_eq!(complete_continuation_rows(&store), before);
 }
 
 #[test]
@@ -262,13 +376,13 @@ fn ineligible_terminal_failure_does_not_require_limits() {
             Ok(())
         })
         .expect("disable auto wake");
-    let before = all_usage_rows(&store);
+    let before = complete_continuation_rows(&store);
     let staged = store.transaction_with(|tx| continuation_runtime::stage(tx, Completion::TerminalTurn {
         agent_id:"a", turn:&json!({"id":"turn-new","status":"failed","error":{"codexErrorInfo":"usageLimitExceeded"}}),
         known:true, now:1000.0, limits:None, claude_auth:None,
     })).expect("ineligible failure returns quietly");
     assert!(!staged.changed());
-    assert_eq!(all_usage_rows(&store), before);
+    assert_eq!(complete_continuation_rows(&store), before);
 }
 
 #[test]
@@ -301,7 +415,7 @@ fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
         attempt_id: "attempt-old".into(),
         epoch: 1,
     };
-    let before = all_usage_rows(&store);
+    let before = complete_continuation_rows(&store);
     let staged = store
         .transaction_with(|tx| {
             continuation_runtime::stage(
@@ -316,82 +430,169 @@ fn stale_claude_timeout_identity_does_not_attach_to_current_attempt() {
         })
         .expect("stale timeout ignored");
     assert!(!staged.changed());
-    assert_eq!(all_usage_rows(&store), before);
+    assert_eq!(complete_continuation_rows(&store), before);
 }
 
 #[test]
-fn auth_completion_proof_fanout_is_bounded_and_resumes_from_durable_tick_cursor() {
+fn auth_proof_cursors_survive_two_accounts_and_wake_errors_do_not_drop_later_agents() {
     let template = template();
     let root = clone_template(template.path());
     let store = RuntimeStore::open(Some(root.path())).expect("store");
-    let turn = json!({"id":"turn-complete","status":"completed"});
-    let staged = store
-        .transaction_with(|tx| {
+    let (first, second) = store
+        .transaction_with(|tx| -> std::result::Result<_, ContinuationError> {
             let base: String = tx
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='a'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StoreError::from)?;
+            let base_agent: Value = serde_json::from_str(&base).map_err(StoreError::from)?;
+            let base_resume: String = tx
                 .query_row(
                     "SELECT record FROM runtime_usage_resumes WHERE id='resume'",
                     [],
                     |row| row.get(0),
                 )
                 .map_err(StoreError::from)?;
-            let mut record: Value = serde_json::from_str(&base).map_err(StoreError::from)?;
-            for index in 0..34 {
-                let id = format!("auth-wait-{index:02}");
-                record["id"] = json!(id);
-                record["cause"] = json!("auth");
-                record["failedAt"] = json!(900.0);
-                record
-                    .as_object_mut()
-                    .expect("record object")
-                    .remove("proofAt");
-                tx.execute(
-                    "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,'a',?2)",
-                    rusqlite::params![id, record.to_string()],
-                )
-                .map_err(StoreError::from)?;
+            let base_resume: Value =
+                serde_json::from_str(&base_resume).map_err(StoreError::from)?;
+            for (prefix, account_key) in [("alpha", "default"), ("beta", "other")] {
+                for index in 0..34 {
+                    let agent_id = format!("{prefix}-agent-{index:02}");
+                    let mut agent = base_agent.clone();
+                    agent["id"] = json!(agent_id);
+                    agent["rootId"] = json!(agent_id);
+                    agent["accountKey"] = json!(account_key);
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        rusqlite::params![agent_id, agent.to_string()],
+                    )
+                    .map_err(StoreError::from)?;
+
+                    let id = format!("{prefix}-wait-{index:02}");
+                    let mut record = base_resume.clone();
+                    record["id"] = json!(id);
+                    record["accountKey"] = json!(account_key);
+                    record["cause"] = json!("auth");
+                    record["failedAt"] = json!(900.0);
+                    record
+                        .as_object_mut()
+                        .ok_or_else(|| StoreError::InvalidStoredObject {
+                            table: "runtime_usage_resumes",
+                            id: id.clone(),
+                        })?
+                        .remove("proofAt");
+                    tx.execute(
+                        "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
+                        rusqlite::params![id, agent_id, record.to_string()],
+                    )
+                    .map_err(StoreError::from)?;
+                }
             }
-            continuation_runtime::stage(
+            let first = continuation_runtime::stage(
                 tx,
                 Completion::TerminalTurn {
                     agent_id: "a",
-                    turn: &turn,
+                    turn: &json!({"id":"done-a","status":"completed"}),
                     known: true,
                     now: 1000.0,
                     limits: None,
                     claude_auth: None,
                 },
+            )?;
+            let owner_raw: String = tx
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='a'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StoreError::from)?;
+            let mut owner: Value = serde_json::from_str(&owner_raw).map_err(StoreError::from)?;
+            owner["accountKey"] = json!("other");
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id='a'",
+                [owner.to_string()],
             )
+            .map_err(StoreError::from)?;
+            let second = continuation_runtime::stage(
+                tx,
+                Completion::TerminalTurn {
+                    agent_id: "a",
+                    turn: &json!({"id":"done-b","status":"completed"}),
+                    known: true,
+                    now: 1001.0,
+                    limits: None,
+                    claude_auth: None,
+                },
+            )?;
+            Ok((first, second))
         })
-        .expect("bounded completion fanout");
-    assert!(staged.changed());
+        .expect("two bounded completion fanouts");
+    assert!(first.changed());
+    assert!(second.changed());
     {
         let db = store.read().expect("reader");
-        let proved: i64 = db
-            .query_row("SELECT count(*) FROM runtime_usage_resumes WHERE json_extract(record,'$.cause')='auth' AND json_extract(record,'$.proofAt') IS NOT NULL", [], |row| row.get(0))
-            .expect("proved count");
-        assert_eq!(
-            proved, 32,
-            "completion transaction processes one bounded page"
-        );
-        let pending: String = db
-            .query_row("SELECT json_extract(record,'$.authResumeProofPending.afterId') FROM runtime_agents WHERE id='a'", [], |row| row.get(0))
-            .expect("durable cursor");
-        assert_eq!(pending, "auth-wait-31");
+        let alpha_cursor: Option<String> = db
+            .query_row("SELECT json_extract(record,'$.authResumeProofPending.default.afterId') FROM runtime_agents WHERE id='a'", [], |row| row.get(0))
+            .expect("alpha cursor");
+        let beta_cursor: Option<String> = db
+            .query_row("SELECT json_extract(record,'$.authResumeProofPending.other.afterId') FROM runtime_agents WHERE id='a'", [], |row| row.get(0))
+            .expect("beta cursor");
+        assert_eq!(alpha_cursor.as_deref(), Some("alpha-wait-31"));
+        assert_eq!(beta_cursor.as_deref(), Some("beta-wait-31"));
     }
-    let limits = limits();
-    let resumed = store
-        .transaction_with(|tx| continuation_runtime::stage_tick(tx, "a", 1001.0, Some(&limits)))
-        .expect("tick resumes bounded proof page");
-    assert!(resumed.changed());
-    let db = store.read().expect("reader");
-    let proved: i64 = db
-        .query_row("SELECT count(*) FROM runtime_usage_resumes WHERE json_extract(record,'$.cause')='auth' AND json_extract(record,'$.proofAt') IS NOT NULL", [], |row| row.get(0))
-        .expect("all proofs");
-    assert_eq!(proved, 34);
-    let marker: Option<String> = db
-        .query_row("SELECT json_extract(record,'$.authResumeProofPending') FROM runtime_agents WHERE id='a'", [], |row| row.get(0))
-        .expect("cursor cleared");
-    assert_eq!(marker, None);
+    let wake = FailingFirstWake::default();
+    let wake_error =
+        continuation_runtime::committed(&first, &wake).expect_err("all wake errors are aggregated");
+    assert!(matches!(wake_error, ContinuationError::WakeFailures(ref errors) if errors.len() == 1));
+    let attempts = wake.0.lock().expect("wake attempts");
+    assert_eq!(
+        attempts.len(),
+        33,
+        "one failed wake does not stop later wakes"
+    );
+    for index in 0..32 {
+        assert!(attempts.contains(&format!("alpha-agent-{index:02}")));
+    }
+    drop(attempts);
+
+    let rows_after_completions = complete_continuation_rows(&store);
+    let before_ticks = all_usage_rows(&store);
+    assert_eq!(
+        before_ticks
+            .iter()
+            .filter(|r| r["proofAt"].as_f64().is_some())
+            .count(),
+        64
+    );
+    for owner in ["a", "a"] {
+        let tick = store
+            .transaction_with(|tx| continuation_runtime::stage_tick(tx, owner, 1002.0, None))
+            .expect("tick resumes one account cursor");
+        assert!(tick.changed());
+    }
+    let rows_after_ticks = all_usage_rows(&store);
+    assert_eq!(rows_after_ticks.len(), 69, "existing row plus 68 waits");
+    assert_eq!(
+        rows_after_ticks
+            .iter()
+            .filter(|r| r["proofAt"].as_f64().is_some())
+            .count(),
+        68
+    );
+    {
+        let db = store.read().expect("reader");
+        let marker: Option<String> = db
+            .query_row(
+                "SELECT json_extract(record,'$.authResumeProofPending') FROM runtime_agents WHERE id='a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cursor cleared");
+        assert_eq!(marker, None);
+    }
+    assert_ne!(rows_after_completions, complete_continuation_rows(&store));
 }
 
 #[test]

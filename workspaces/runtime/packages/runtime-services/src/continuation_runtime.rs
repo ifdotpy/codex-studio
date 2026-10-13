@@ -308,11 +308,18 @@ fn stage_terminal(
         if pending.len() > 32 {
             // A durable cursor lets bounded timer ticks finish the account-wide proof fanout.
             let mut agent = load(tx, agent_id, ContinuationTable::Usage, None)?.agent;
-            agent["authResumeProofPending"] = json!({
-                "accountKey": account_key,
-                "proofAt": proof_at,
-                "afterId": pending[31].0,
-            });
+            let pending_by_account = agent
+                .as_object_mut()
+                .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?
+                .entry("authResumeProofPending")
+                .or_insert_with(|| json!({}));
+            let pending_by_account = pending_by_account.as_object_mut().ok_or_else(|| {
+                ContinuationError::Invalid("/agent/authResumeProofPending".into())
+            })?;
+            pending_by_account.insert(
+                account_key.to_owned(),
+                json!({"proofAt":proof_at,"afterId":pending[31].0}),
+            );
             ContinuationRepository::put_agent(tx, &agent)?;
             staged.changed = true;
             let wake_epoch = staged.epoch;
@@ -463,14 +470,17 @@ pub fn stage_tick(
 ) -> Result<Staged> {
     let mut staged = empty_stage(tx, agent_id)?;
     let owner = load(tx, agent_id, ContinuationTable::Usage, None)?;
-    if let Some(pending) = owner
+    if let Some(pending_by_account) = owner
         .agent
         .get("authResumeProofPending")
-        .filter(|v| v.is_object())
+        .and_then(Value::as_object)
+        .filter(|pending| !pending.is_empty())
     {
-        let key = pending["accountKey"].as_str().ok_or_else(|| {
-            ContinuationError::Invalid("/agent/authResumeProofPending/accountKey".into())
-        })?;
+        // One account cursor per bounded tick keeps both cursor fanout and row work bounded.
+        let (key, pending) = pending_by_account
+            .iter()
+            .next()
+            .ok_or_else(|| ContinuationError::Invalid("/agent/authResumeProofPending".into()))?;
         let proof_at = pending["proofAt"].as_f64().ok_or_else(|| {
             ContinuationError::Invalid("/agent/authResumeProofPending/proofAt".into())
         })?;
@@ -492,12 +502,20 @@ pub fn stage_tick(
         let remaining = auth_wait_ids_after(tx, key, after, 33)?;
         let mut agent = load(tx, agent_id, ContinuationTable::Usage, None)?.agent;
         if remaining.len() > 32 {
-            agent["authResumeProofPending"]["afterId"] = json!(remaining[31].0);
+            agent["authResumeProofPending"][key]["afterId"] = json!(remaining[31].0);
         } else {
-            agent
+            let pending = agent["authResumeProofPending"]
                 .as_object_mut()
-                .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?
-                .remove("authResumeProofPending");
+                .ok_or_else(|| {
+                    ContinuationError::Invalid("/agent/authResumeProofPending".into())
+                })?;
+            pending.remove(key);
+            if pending.is_empty() {
+                agent
+                    .as_object_mut()
+                    .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?
+                    .remove("authResumeProofPending");
+            }
         }
         if agent != owner.agent {
             ContinuationRepository::put_agent(tx, &agent)?;
@@ -698,19 +716,30 @@ fn add_account_wake(staged: &mut Staged, agent_id: &str, epoch: i64) {
 
 /// The only post-commit action: signal the existing scheduler owner.
 pub fn committed(staged: &Staged, port: &dyn WakePort) -> Result<()> {
+    let mut failures = Vec::new();
     if staged.changed {
         if staged.account_wakes.is_empty() {
-            port.wake_account(&staged.agent_id, staged.epoch)?;
+            if let Err(error) = port.wake_account(&staged.agent_id, staged.epoch) {
+                failures.push(format!("account {}: {error}", staged.agent_id));
+            }
         } else {
             for (agent_id, epoch) in &staged.account_wakes {
-                port.wake_account(agent_id, *epoch)?;
+                if let Err(error) = port.wake_account(agent_id, *epoch) {
+                    failures.push(format!("account {agent_id}: {error}"));
+                }
             }
         }
-        if staged.event_wake {
-            port.wake_events(&staged.agent_id, staged.epoch)?;
+        if staged.event_wake
+            && let Err(error) = port.wake_events(&staged.agent_id, staged.epoch)
+        {
+            failures.push(format!("events {}: {error}", staged.agent_id));
         }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ContinuationError::WakeFailures(failures))
+    }
 }
 
 fn capacity_failure(error: &Value) -> Option<CapacityFailure> {
