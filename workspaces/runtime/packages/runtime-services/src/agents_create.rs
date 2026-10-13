@@ -52,6 +52,47 @@ pub fn new_id() -> Result<String, CreateError> {
         .to_string())
 }
 
+/// Normalize the persisted mode fields using the same rules as Python mode_fields.
+pub fn mode_fields(record: &mut Value) {
+    if record.get("isLead").and_then(Value::as_bool) != Some(true) {
+        if let Some(fields) = record.as_object_mut() {
+            fields.remove("concurrency");
+        }
+        return;
+    }
+    let single = record.get("agentMode").and_then(Value::as_str) == Some("single");
+    let limit = if single
+        && record
+            .get("subagentConcurrencyVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            < 2
+    {
+        0
+    } else {
+        record
+            .get("concurrency")
+            .and_then(Value::as_i64)
+            .unwrap_or(if single { 0 } else { 32 })
+    };
+    record["concurrency"] = json!(limit);
+    record["subagentConcurrencyVersion"] = json!(2);
+    record["agentMode"] = json!(if limit == 0 { "single" } else { "multi" });
+    record["agentModeSupported"] = json!(true);
+    if record.get("agentModeRevision").is_none() {
+        record["agentModeRevision"] = json!(0);
+    }
+    if record.get("maxAgentsExplicit").is_none() {
+        record["maxAgentsExplicit"] = json!(
+            record
+                .get("maxAgents")
+                .and_then(Value::as_i64)
+                .unwrap_or(64)
+                != 64
+        );
+    }
+}
+
 const AGENT_ENTITY_FIELDS: &[&str] = &[
     "accountKey",
     "accountTransfer",
@@ -186,6 +227,7 @@ pub fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let mut view = record.clone();
+    mode_fields(&mut view);
     let object = view.as_object_mut().ok_or_else(|| {
         StoreError::SchemaMismatch("agent sync projection is not an object".to_owned())
     })?;
@@ -209,37 +251,6 @@ pub fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<
     object.insert("nextTurnSettingsSupported".into(), json!(true));
     object.insert("readStateSupported".into(), json!(true));
     if record.get("isLead").and_then(Value::as_bool) == Some(true) {
-        let concurrency = if record
-            .get("subagentConcurrencyVersion")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            < 2
-        {
-            if record.get("agentMode").and_then(Value::as_str) == Some("single") {
-                0
-            } else {
-                record
-                    .get("concurrency")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(32)
-            }
-        } else {
-            record
-                .get("concurrency")
-                .and_then(Value::as_i64)
-                .unwrap_or(32)
-        };
-        object.insert("concurrency".into(), json!(concurrency));
-        object.insert("subagentConcurrencyVersion".into(), json!(2));
-        object.insert(
-            "agentMode".into(),
-            json!(if concurrency == 0 { "single" } else { "multi" }),
-        );
-        object.insert(
-            "agentModeRevision".into(),
-            record.get("agentModeRevision").cloned().unwrap_or(json!(0)),
-        );
-        object.insert("agentModeSupported".into(), json!(true));
         let has_event: bool = transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1)",
@@ -648,42 +659,7 @@ pub fn configure_limits(
     {
         return Err(SettingsError::LeadRequired);
     }
-    let concurrency = if root_value
-        .get("subagentConcurrencyVersion")
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
-        < 2
-    {
-        if root_value.get("agentMode").and_then(Value::as_str) == Some("single") {
-            0
-        } else {
-            root_value
-                .get("concurrency")
-                .and_then(Value::as_i64)
-                .unwrap_or(32)
-        }
-    } else {
-        root_value
-            .get("concurrency")
-            .and_then(Value::as_i64)
-            .unwrap_or(32)
-    };
-    root_value["concurrency"] = json!(concurrency);
-    root_value["subagentConcurrencyVersion"] = json!(2);
-    root_value["agentMode"] = json!(if concurrency == 0 { "single" } else { "multi" });
-    root_value["agentModeSupported"] = json!(true);
-    if root_value.get("agentModeRevision").is_none() {
-        root_value["agentModeRevision"] = json!(0);
-    }
-    if root_value.get("maxAgentsExplicit").is_none() {
-        root_value["maxAgentsExplicit"] = json!(
-            root_value
-                .get("maxAgents")
-                .and_then(Value::as_i64)
-                .unwrap_or(64)
-                != 64
-        );
-    }
+    mode_fields(&mut root_value);
     let team_max_agents =
         max_agents.or_else(|| root_value.get("maxAgents").and_then(Value::as_i64));
     let team_token_budget =
@@ -715,19 +691,12 @@ pub fn configure_limits(
             continue;
         }
         if agent_id == id {
-            record["concurrency"] = json!(concurrency);
-            record["subagentConcurrencyVersion"] = json!(2);
-            record["agentMode"] = json!(if concurrency == 0 { "single" } else { "multi" });
-            record["agentModeSupported"] = json!(true);
-            if record.get("agentModeRevision").is_none() {
-                record["agentModeRevision"] = json!(0);
-            }
-            if record.get("maxAgentsExplicit").is_none() {
-                record["maxAgentsExplicit"] = root_value["maxAgentsExplicit"].clone();
-            }
+            record = root_value.clone();
             if let Some(max_agents) = max_agents {
                 record["maxAgents"] = json!(max_agents);
-                record["maxAgentsExplicit"] = json!(true);
+                if record.get("isLead").and_then(Value::as_bool) == Some(true) {
+                    record["maxAgentsExplicit"] = json!(true);
+                }
             }
             if let Some(token_budget) = token_budget {
                 record["tokenBudget"] = token_budget.map_or(Value::Null, |value| json!(value));

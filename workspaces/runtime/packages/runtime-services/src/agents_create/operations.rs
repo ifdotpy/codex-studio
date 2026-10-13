@@ -155,12 +155,12 @@ fn create(
     let yolo = non_null(request.yolo, true)?;
     let concurrency = non_null(request.concurrency, DEFAULT_CONCURRENCY)?;
     let requested_max_agents = non_null(request.max_agents, DEFAULT_MAX_AGENTS)?;
-    let max_agents = if request.max_agents.is_some() {
+    let role = request.role.as_deref().unwrap_or("orchestrator");
+    let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
     } else {
         requested_max_agents.max(concurrency + 2)
     };
-    let role = request.role.as_deref().unwrap_or("orchestrator");
     let prompt = request.prompt.trim();
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
     let mut record = build_agent_record(
@@ -189,6 +189,7 @@ fn create(
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
     }
+    mode_fields(&mut record);
     record["profileId"] = json!(request.profile);
     if !draft {
         record["creationIntent"] = request.intent;
