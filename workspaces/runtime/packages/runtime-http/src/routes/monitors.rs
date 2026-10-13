@@ -260,6 +260,11 @@ fn byte_range(value: &str, size: u64) -> Option<(u64, u64)> {
     // requests the complete file, though the parser crate marks it unsatisfiable.
     if value
         .strip_prefix("bytes=-")
+        .filter(|suffix| {
+            !suffix.is_empty()
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                && (suffix.len() == 1 || !suffix.starts_with('0'))
+        })
         .and_then(|suffix| suffix.parse::<u64>().ok())
         .is_some_and(|suffix| suffix > size)
     {
@@ -308,8 +313,15 @@ mod tests {
         assert_eq!(byte_range("bytes=2-", 10), Some((2, 10)));
         assert_eq!(byte_range("bytes=-3", 10), Some((7, 10)));
         assert_eq!(byte_range("bytes=-100", 10), Some((0, 10)));
-        // The crate rejects leading zeroes; the previous parser accepted them.
+        // Leading zeroes are outside the strict Range syntax accepted here.
         assert_eq!(byte_range("bytes=00-2", 10), None);
+        assert_eq!(byte_range("bytes=-+100", 10), None);
+        assert_eq!(byte_range("bytes=-0100", 10), None);
+        assert_eq!(byte_range("bytes=-0", 10), None);
+        assert_eq!(byte_range("bytes=10-", 10), None);
+        assert_eq!(byte_range("bytes=4-2", 10), None);
+        assert_eq!(byte_range("bytes=0-99", 10), Some((0, 10)));
+        assert_eq!(byte_range("bytes=18446744073709551616-", 10), None);
         assert_eq!(byte_range("bytes=0-2,4-5", 10), None);
         assert_eq!(byte_range("bytes=0-2", 0), None);
     }
