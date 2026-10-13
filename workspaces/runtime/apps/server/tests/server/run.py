@@ -1002,14 +1002,29 @@ def _cleanup_suite_scratch(scratch):
 
 
 def _scratch_holder_report(path):
-    """Name live processes whose working directory or open files are inside path."""
+    """Name holders in our process tree without inspecting unrelated open files."""
     target = os.path.realpath(path)
     holders = {}
+    try:
+        snapshot = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True,
+                                  text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not list our process tree: {error}"
+    parents = {}
+    for line in snapshot.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and all(field.isdigit() for field in fields):
+            parents[int(fields[0])] = int(fields[1])
+    owned = {os.getpid()}
+    while True:
+        children = {pid for pid, parent in parents.items() if parent in owned}
+        if children <= owned:
+            break
+        owned.update(children)
     proc = Path("/proc")
     if proc.is_dir():
-        for entry in proc.iterdir():
-            if not entry.name.isdigit():
-                continue
+        for pid in sorted(owned):
+            entry = proc / str(pid)
             try:
                 links = [entry / "cwd", *(entry / "fd").iterdir()]
             except OSError:
@@ -1030,7 +1045,8 @@ def _scratch_holder_report(path):
         if not lsof:
             return "could not list processes using it: no /proc and no lsof"
         try:
-            listing = subprocess.run([lsof, "-n", "-P", "-F", "pc", "+D", target],
+            listing = subprocess.run([lsof, "-n", "-P", "-F", "pc", "-a", "-p",
+                                      ",".join(map(str, sorted(owned))), "+D", target],
                                      capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError) as error:
             return f"could not list processes using it: {error}"
