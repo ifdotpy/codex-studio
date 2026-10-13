@@ -455,10 +455,15 @@ fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>>
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot> {
     let (_, receipt, outcome) = row(tx, id)?.ok_or(NativeError::Invalid("receipt.id"))?;
-    let id = receipt["agentId"]
+    let agent_id = receipt["agentId"]
         .as_str()
-        .ok_or(NativeError::Invalid("receipt.agentId"))?;
-    Snapshot::from_records(agent(tx, id)?, receipt, outcome)
+        .ok_or_else(|| NativeError::InvalidStored {
+            table: "runtime_native_action_receipts",
+            id: id.to_owned(),
+            location: "receipt.agentId".into(),
+        })?
+        .to_owned();
+    Snapshot::from_records(agent(tx, &agent_id)?, receipt, outcome)
         .map_err(|error| located(error, "runtime_native_action_receipts", id))
 }
 fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()> {
