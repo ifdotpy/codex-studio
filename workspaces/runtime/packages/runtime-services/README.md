@@ -7,10 +7,12 @@
   per service.
 - **Public interface:** each service module's functions and port traits.
 - **Allowed dependencies:** `studio-runtime-store`, `studio-runtime-providers`,
-  `studio-runtime-process`, `studio-operations`.
-- **Forbidden dependencies:** `studio-runtime-http`, Axum, Tokio, the server
+  `studio-runtime-process`, `studio-operations`; Tokio and the existing
+  `futures-util` for the provider session task.
+- **Forbidden dependencies:** `studio-runtime-http`, Axum, the server
   application, the Python runtime.
-- **Invariants:** synchronous code only; no service holds a store transaction
+- **Invariants:** application decisions remain synchronous; the provider session
+  task owns asynchronous orchestration. No service holds a store transaction
   across a call into a provider or process port; an outcome that cannot be
   observed is reported as unknown and never retried here.
 - **Focused check:** `cargo nextest run -p studio-runtime-services`.
@@ -211,3 +213,48 @@ On macOS, Rust currently reports the named reason
 unchanged. Python can read passive Keychain authentication through its
 Security.framework helper; this slice does not add platform APIs or a new
 dependency to reproduce that behavior.
+
+## Provider session task
+
+`provider_session_task::SessionHandle::open(factory, handle, options, config)`
+validates the recovered book and the actual initialize command before opening
+anything. It returns before socket startup. No routes, account workers, or old
+thread-based session callers use this module yet.
+
+The handle owns `events: mpsc::Receiver<SessionEvent>`,
+`status: watch::Receiver<SessionStatus>`, and a cloneable `control: SessionControl`.
+Clone control to select admission futures alongside event reception. Control has:
+
+- `prepare(RequestSpec).await -> Result<PreparedRequest, SessionTaskError>`;
+- `submit(PreparedRequest).await -> Result<RequestTicket, SessionTaskError>`;
+- `prepare_frame(OperationId, &Frame)` and `submit_frame(PreparedFrame).await`
+  for callback responses and recognized notifications;
+- `settled(EventCursor).await` after the consumer commits durable settlement;
+- `cancel()` to signal shutdown independently of every bounded lane.
+
+The account supplies durable, unique request/operation identities, prepares before
+committing Submitted, then submits once. `AdmissionUnknown` means the admission
+receipt was lost; never resubmit. Other admission errors mean no write was admitted.
+Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
+Replies and deadlines are pure `RequestOutcome` decisions. The shared clock in
+OpenOptions timestamps arrival before the session consumes a journal entry;
+`receive_at` keeps lateness independent of timer/consumer scheduling.
+
+Each `SessionEvent` contains at most one original journal entry (including raw
+stdout, stderr, exit, initialization and orphan replies) plus bounded outcomes.
+Never settle a cursor just because it was read. Only a contiguous prefix of
+consumer-settled entries is ACKed. Control.settled success records that intent;
+it does not claim the supervisor already accepted the ACK. The settlement window
+is 64 entries, unresolved requests 32, each external lane 16, and pending writes 34. There are two retained event slots; no startup deferral collection exists.
+
+Readiness is AwaitingReply, then InitializedWritePending, then Ready only after
+the initialized write receipt. The initialized operation is scoped to the actual
+child generation. The session owns the one SessionState and its deadline source.
+
+`shutdown().await` on the handle signals stop and joins the adapter before returning
+`SessionExit`. `completion().await` joins without initiating stop; cancelling either
+wait retains the join owner. Persist `exit.adapter.recovery_needed`, final outcomes,
+and the at-most-two `undelivered` transition batches; also drain buffered events.
+Shutdown never ACKs or waits for room in the consumer lane. The adapter's documented
+blocking-job cleanup limitation still applies. Dropping a handle only signals
+cancellation; explicit shutdown/completion is required for the join barrier.
