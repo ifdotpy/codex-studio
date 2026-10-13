@@ -62,6 +62,7 @@ pub mod progress_panel;
 pub mod progress_watch;
 pub mod project_locations;
 pub mod projects;
+pub mod provider_binaries;
 pub mod provider_session;
 pub mod questions_reads;
 pub mod questions_write;
