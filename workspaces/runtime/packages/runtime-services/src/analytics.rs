@@ -2,7 +2,7 @@
 use crate::event_write::python_json_compact;
 pub use repo::{AnalyticsError, AnalyticsOptions, SessionCostError};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -320,6 +320,7 @@ struct CostSource {
     usage: repo::UsageState,
     pricing_signature: Option<String>,
     agents_signature: String,
+    account_providers_signature: String,
     claude_signature: String,
     cost_projection: Option<CostProjection>,
 }
@@ -363,6 +364,14 @@ pub fn persisted_session_cost(
     store: &RuntimeStore,
     agent_id: &str,
 ) -> Result<Option<Value>, SessionCostError> {
+    persisted_session_cost_with_accounts(store, agent_id, &BTreeMap::new())
+}
+
+pub fn persisted_session_cost_with_accounts(
+    store: &RuntimeStore,
+    agent_id: &str,
+    account_providers: &BTreeMap<String, String>,
+) -> Result<Option<Value>, SessionCostError> {
     if !store.root().join("analytics.sqlite3").is_file() {
         return Err(SessionCostError::RefreshRequired);
     }
@@ -370,7 +379,17 @@ pub fn persisted_session_cost(
     let tx = db.transaction()?;
     let root = repo::cost_root(&tx, agent_id)?;
     let members = repo::cost_agents(&tx, agent_id, &root)?;
-    if members.iter().any(|(_, r)| has_claude_history(r)) {
+    if members.iter().any(|(_, r)| {
+        has_claude_history(r)
+            || r.get("provider").and_then(Value::as_str).is_none()
+                && account_providers
+                    .get(
+                        r.get("accountKey")
+                            .and_then(Value::as_str)
+                            .unwrap_or("default"),
+                    )
+                    .is_some_and(|provider| provider == "claude")
+    }) {
         return Ok(None);
     }
     let cost_projection = repo::cost_projection(&tx, &root)?
@@ -396,6 +415,7 @@ pub fn persisted_session_cost(
                 })
                 .collect::<Vec<_>>(),
         )?,
+        account_providers_signature: signature(account_providers)?,
         claude_signature: signature(ClaudeSignature {
             configs: [],
             files: [],

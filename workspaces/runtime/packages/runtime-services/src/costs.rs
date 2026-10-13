@@ -35,7 +35,17 @@ pub enum CostsError {
 
 /// Return a current estimate, using the existing Python-published cache when valid.
 pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, CostsError> {
-    if let Some(value) = crate::analytics::persisted_session_cost(store, agent_id)? {
+    session_cost_with_accounts(store, agent_id, &BTreeMap::new())
+}
+
+pub fn session_cost_with_accounts(
+    store: &RuntimeStore,
+    agent_id: &str,
+    account_providers: &BTreeMap<String, String>,
+) -> Result<Value, CostsError> {
+    if let Some(value) =
+        crate::analytics::persisted_session_cost_with_accounts(store, agent_id, account_providers)?
+    {
         return Ok(value);
     }
     let repository = AnalyticsRepository::new(store.root());
@@ -47,8 +57,25 @@ pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, Costs
     let mut providers_by_account = BTreeMap::new();
     let mut has_claude_history = false;
     for (_, record) in &members {
-        let provider = record.get("provider").and_then(Value::as_str);
+        let provider = record
+            .get("provider")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
         has_claude_history |= provider == Some("claude");
+        let account_key = record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let resolved_provider = provider.or_else(|| {
+            account_providers
+                .get(account_key)
+                .map(String::as_str)
+                .filter(|value| !value.is_empty())
+        });
+        has_claude_history |= resolved_provider == Some("claude");
+        if let Some(resolved) = resolved_provider.and_then(pricing_provider) {
+            providers_by_account.insert(account_key.to_owned(), resolved.to_owned());
+        }
         if let (Some(key), Some(provider)) =
             (record.get("accountKey").and_then(Value::as_str), provider)
             && let Some(provider) = pricing_provider(provider)
