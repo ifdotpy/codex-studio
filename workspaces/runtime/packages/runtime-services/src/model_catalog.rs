@@ -1,23 +1,26 @@
 //! Bounded, process-local model catalog reads for display.
 
 use crate::provider_session_task::{
-    RequestSpec, SessionHandle, SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
+    RequestSpec, SessionHandle, SessionOutcome, SessionTaskError, WriteOutcome,
 };
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-#[cfg(unix)]
-use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+#[cfg(test)]
+use studio_runtime_process::provider_seam::ProviderTaskFactory;
+#[cfg(test)]
+use studio_runtime_process::{Generation, ProviderHandle, ProviderLaunchSpec};
 use studio_runtime_process::{
-    Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{
-        InitializationStatus, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown,
-    },
+    OperationId,
+    provider_seam::{InitializationStatus, Shutdown},
 };
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
+
+#[path = "provider_exchange.rs"]
+pub(crate) mod provider_exchange;
 
 const MAX_REFRESHES: usize = 4;
 const CATALOG_TTL: Duration = Duration::from_secs(300);
@@ -283,41 +286,20 @@ async fn read_provider_catalog(
     isolated: bool,
     stop: Shutdown,
 ) -> Result<Value, ()> {
-    let started = Instant::now();
-    let executable = executable.unwrap_or_else(|| std::path::Path::new("codex"));
-    let mut command = vec![
-        executable.to_string_lossy().into_owned(),
-        "app-server".into(),
-        "--listen".into(),
-        "stdio://".into(),
-    ];
-    let mut environment: BTreeMap<String, String> = std::env::vars().collect();
-    environment.insert("CODEX_HOME".into(), home.into());
-    if isolated {
-        command.extend(["-c".into(), "cli_auth_credentials_store=\"file\"".into()]);
-        environment.remove("OPENAI_API_KEY");
-        environment.remove("CODEX_API_KEY");
-    }
-    let launch = ProviderLaunchSpec::new(
-        command,
-        environment,
-        std::env::current_dir().map_err(|_| ())?,
-    );
-    #[cfg(unix)]
-    let factory = Arc::new(StdioProviderTaskFactory {
-        deadline: started + CATALOG_TIMEOUT,
-        max_frame_bytes: MAX_CATALOG_PAGE_BYTES,
-        max_output_bytes: MAX_CATALOG_RESPONSE_BYTES,
-    });
-    #[cfg(unix)]
-    {
-        read_session_with_shutdown(factory, launch, started, stop).await
-    }
-    #[cfg(not(unix))]
-    {
-        let _launch = launch;
-        Err(())
-    }
+    provider_exchange::run(
+        executable,
+        home,
+        isolated,
+        CATALOG_TIMEOUT,
+        stop,
+        OperationId("catalog-initialize".into()),
+        json!({
+            "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
+            "capabilities": {"experimentalApi": true}
+        }),
+        |session, started| Box::pin(read_pages(session, started)),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -328,52 +310,27 @@ async fn read_session(
 ) -> Result<Value, ()> {
     read_session_with_shutdown(factory, launch, started, Shutdown::default()).await
 }
+#[cfg(test)]
 async fn read_session_with_shutdown(
     factory: Arc<dyn ProviderTaskFactory>,
     launch: ProviderLaunchSpec,
     started: Instant,
     shutdown: Shutdown,
 ) -> Result<Value, ()> {
-    let mut stop = shutdown.subscribe();
-    if *stop.borrow() {
-        return Err(());
-    }
-    let mut session = SessionHandle::open(
+    provider_exchange::run_with_factory(
         factory,
-        ProviderHandle::for_account("model-catalog"),
-        OpenOptions {
-            clock: SessionClock::from_origin(started),
-            launch,
-            expected_generation: Some(Generation(1)),
-        },
-        SessionTaskConfig {
-            generation: Generation(1),
-            claude: false,
-            timeout_ms: duration_ms(CATALOG_TIMEOUT),
-            initialize_operation: OperationId("catalog-initialize".into()),
-            request_id_prefix: None,
-            recovered: vec![],
-            initialize_params: json!({
-                "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-                "capabilities": {"experimentalApi": true}
-            }),
-        },
+        launch,
+        started,
+        CATALOG_TIMEOUT,
+        shutdown,
+        OperationId("catalog-initialize".into()),
+        json!({
+            "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
+            "capabilities": {"experimentalApi": true}
+        }),
+        |session, started| Box::pin(read_pages(session, started)),
     )
     .await
-    .map_err(|_| ())?;
-    let result = tokio::select! { biased;
-        _ = Shutdown::cancelled(&mut stop) => Err(()),
-        result = read_pages(&mut session, started) => result,
-    };
-    let closed = session.shutdown().await;
-    // Cancellation also closes the adapter lanes; the session may observe that
-    // closure before its stop signal. A complete catalog still requires reaping.
-    if !matches!(closed.result, Ok(()) | Err(SessionTaskError::Closed))
-        || closed.adapter.is_none_or(|exit| exit.result.is_err())
-    {
-        return Err(());
-    }
-    result
 }
 
 async fn next_event(
@@ -536,6 +493,8 @@ fn duration_ms(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use studio_runtime_process::ProviderLaunchSpec;
     use studio_runtime_process::{EventCursor, provider_seam::*};
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
