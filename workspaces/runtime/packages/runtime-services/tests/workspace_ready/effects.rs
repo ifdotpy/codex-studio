@@ -196,8 +196,8 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("UTF-8 Git")
 }
 fn oracle(root: &Path, request: Value) -> Value {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .expect("CODEX_AGENTS_PYTHON must name the prepared isolated interpreter");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let python = crate::agents_create::prepared_python(&source);
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/turn_lifecycle/workspace_ready_oracle.py");
     for name in ["home", "codex", "claude"] {
