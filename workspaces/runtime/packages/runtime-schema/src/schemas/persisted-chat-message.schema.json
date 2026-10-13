@@ -1,0 +1,46 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "deliveries": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Deliveries",
+      "type": "object"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "room": {
+      "title": "Room",
+      "type": "string"
+    },
+    "sender": {
+      "title": "Sender",
+      "type": "string"
+    },
+    "seq": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": ["id", "seq", "room", "sender", "text", "created", "deliveries"],
+  "title": "PersistedChatMessage",
+  "type": "object"
+}

@@ -126,6 +126,53 @@ class PersistedExecutionRecord(_OpenPersistedRecord):
     resultReference: StrictStr | None = None
 
 
+class PersistedPeerTeam(_OpenPersistedRecord):
+    name: StrictStr
+    members: list[StrictStr]
+
+
+class PersistedRoomRecord(_OpenPersistedRecord):
+    kind: StrictStr
+    members: list[StrictStr] = Field(default_factory=list)
+    rootId: StrictStr | None = None
+    customName: StrictStr | None = None
+    updated: float | None = None
+    projectPath: StrictStr | None = None
+    userHidden: StrictBool | None = None
+    radio: dict[StrictStr, JsonValue] | None = None
+
+
+class PersistedProjectRecord(_OpenPersistedRecord):
+    path: StrictStr | None = None
+    name: StrictStr | None = None
+    peerTeams: list[PersistedPeerTeam] = Field(default_factory=list)
+
+
+class PersistedFederationMember(_OpenPersistedRecord):
+    name: StrictStr | None = None
+
+
+class PersistedFederationRoomRecord(_OpenPersistedRecord):
+    status: StrictStr
+    localApproved: StrictBool = False
+    remoteApproved: StrictBool = False
+    localMembers: list[StrictStr] = Field(default_factory=list)
+    remoteMembers: list[PersistedFederationMember] = Field(default_factory=list)
+    localParticipants: list[dict[StrictStr, JsonValue]] = Field(default_factory=list)
+    peerId: StrictStr
+    peerLabel: StrictStr
+    name: StrictStr
+
+
+class PersistedChatMessage(_OpenPersistedRecord):
+    seq: Annotated[StrictInt, Field(ge=1, le=MAX_SAFE_INTEGER)]
+    room: StrictStr
+    sender: StrictStr
+    text: StrictStr
+    created: float
+    deliveries: dict[StrictStr, StrictStr]
+
+
 class PersistedTaskRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     status: StrictStr | None = None
@@ -318,6 +365,10 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
+    "persisted-chat-message.schema.json": PersistedChatMessage,
+    "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
+    "persisted-project-record.schema.json": PersistedProjectRecord,
+    "persisted-room-record.schema.json": PersistedRoomRecord,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
     "persisted-tool-result.schema.json": PersistedToolResult,
     "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,
