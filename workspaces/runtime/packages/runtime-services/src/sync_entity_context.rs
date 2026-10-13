@@ -236,6 +236,18 @@ impl RoomDirectory {
             last_message,
             federation: if room["kind"] == "federated" {
                 records::get(tx, "runtime_federation_rooms", id)?
+                    .map(|row| {
+                        // The authoritative table schema was checked by get;
+                        // this narrower schema belongs only to the sync view.
+                        let valid =
+                            studio_runtime_schema::validate("PersistedFederationRoomRecord", &row)
+                                .map_err(studio_runtime_store::StoreError::SchemaValidation)?;
+                        if !valid {
+                            return Err(records::invalid("runtime_federation_rooms", id));
+                        }
+                        Ok(row)
+                    })
+                    .transpose()?
             } else {
                 None
             },
