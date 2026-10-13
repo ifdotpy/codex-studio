@@ -43,7 +43,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     )?;
     connection.pragma_update(None, "query_only", "ON")?;
 
-    Ok(StateCheckReport {
+    let mut report = StateCheckReport {
         tables: vec![
             check_table::<AgentRecord>(&connection)?,
             check_table::<TaskRecord>(&connection)?,
@@ -63,7 +63,11 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<GraphAgentRecord>(&connection)?,
             check_table::<ProfileRecord>(&connection)?,
         ],
-    })
+    };
+    report
+        .tables
+        .extend(crate::analytics_capture::check_state_readonly(state_dir)?);
+    Ok(report)
 }
 
 fn check_table<R: JsonRecord>(connection: &Connection) -> StoreResult<StateCheckTable> {

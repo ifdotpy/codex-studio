@@ -7,6 +7,7 @@ from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat,
 from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
+from studio_api.analytics_capture_models import ANALYTICS_SCHEMA_MODELS
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 
 
@@ -271,6 +272,7 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 
 STATE_SCHEMA_MODELS = {
+    **ANALYTICS_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-task-record.schema.json": PersistedTaskRecord,
