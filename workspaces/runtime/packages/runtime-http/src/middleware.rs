@@ -31,6 +31,9 @@ pub(crate) async fn boundary(
     let path = request.uri().path().to_owned();
     let api = path.starts_with("/api/");
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+    if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
+        return crate::routes::incoming_multi_server::serve(state, request).await;
+    }
     let headers = request.headers();
     let mut parsed_body = None;
     let mut raw_body = None;

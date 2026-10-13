@@ -19,6 +19,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub(crate) multi_server_boundary:
+        Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
@@ -65,6 +67,7 @@ impl HttpState {
         Self {
             account_driver: None,
             credentials: Arc::default(),
+            multi_server_boundary: None,
             token,
             workspace_id,
             native_path,
@@ -80,6 +83,14 @@ impl HttpState {
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
+    }
+
+    pub fn with_multi_server_boundary(
+        mut self,
+        boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
+    ) -> Self {
+        self.multi_server_boundary = Some(boundary);
+        self
     }
 
     /// Attach the retained account refresh driver used by account admission.

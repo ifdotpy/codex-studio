@@ -17,6 +17,13 @@ from studio_api.relocation_models import RelocationFormats
 from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord, PersistedTransferAgentRecord
 
+from studio_api.multi_server.persisted import (
+    PersistedAccessClient,
+    PersistedAccessInvite,
+    PersistedAccessReceipt,
+    PersistedServerDelivery,
+)
+
 
 def _unicode_scalar(value: str) -> str:
     if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
@@ -25,7 +32,6 @@ def _unicode_scalar(value: str) -> str:
 
 
 UnicodeScalar = Annotated[StrictStr, AfterValidator(_unicode_scalar)]
-
 
 class ClaudeCustomModelRecord(ContractModel):
     id: StrictStr
@@ -630,6 +636,10 @@ STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
     "persisted-account-transfer-record.schema.json": PersistedAccountTransferRecord,
+    "persisted-access-client.schema.json": PersistedAccessClient,
+    "persisted-access-invite.schema.json": PersistedAccessInvite,
+    "persisted-access-receipt.schema.json": PersistedAccessReceipt,
+    "persisted-server-delivery.schema.json": PersistedServerDelivery,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,

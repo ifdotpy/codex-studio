@@ -93,6 +93,19 @@ const TOOL_ALIAS: &[u8] = include_bytes!("schemas/persisted-tool-alias.schema.js
 const CONTINUATION_URI: &str =
     "https://codex-studio.invalid/persisted-continuation-snapshot.schema.json";
 const CONTINUATION: &[u8] = include_bytes!("schemas/persisted-continuation-snapshot.schema.json");
+const ACCESS_RECEIPT_URI: &str =
+    "https://codex-studio.invalid/persisted-access-receipt.schema.json";
+const ACCESS_RECEIPT: &[u8] = include_bytes!("schemas/persisted-access-receipt.schema.json");
+
+const ACCESS_CLIENT_URI: &str = "https://codex-studio.invalid/persisted-access-client.schema.json";
+const ACCESS_CLIENT: &[u8] = include_bytes!("schemas/persisted-access-client.schema.json");
+
+const ACCESS_INVITE_URI: &str = "https://codex-studio.invalid/persisted-access-invite.schema.json";
+const ACCESS_INVITE: &[u8] = include_bytes!("schemas/persisted-access-invite.schema.json");
+
+const SERVER_DELIVERY_URI: &str =
+    "https://codex-studio.invalid/persisted-server-delivery.schema.json";
+const SERVER_DELIVERY: &[u8] = include_bytes!("schemas/persisted-server-delivery.schema.json");
 
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
@@ -170,6 +183,9 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
     (FEDERATION_ROOM_PAYLOAD_URI, FEDERATION_ROOM_PAYLOAD),
     (CONTINUATION_URI, CONTINUATION),
+    (ACCESS_CLIENT_URI, ACCESS_CLIENT),
+    (ACCESS_INVITE_URI, ACCESS_INVITE),
+    (ACCESS_RECEIPT_URI, ACCESS_RECEIPT),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (
         ACCOUNT_TRANSFER_URI,
@@ -238,6 +254,8 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         "https://codex-studio.invalid/analytics-usage.schema.json",
         include_bytes!("schemas/analytics-usage.schema.json"),
     ),
+    (USAGE_LIMITS_URI, USAGE_LIMITS),
+    (SERVER_DELIVERY_URI, SERVER_DELIVERY),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
     (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
@@ -306,6 +324,10 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_federation_rooms" => "PersistedFederationRoomRecord",
         "runtime_federation_outbox" => "PersistedFederationOutbox",
         "runtime_federation_inbox" => "PersistedFederationInbox",
+        "runtime_access_clients" | "runtime_access_discovered" => "PersistedAccessClient",
+        "runtime_access_invites" => "PersistedAccessInvite",
+        "runtime_access_receipts" => "PersistedAccessReceipt",
+        "runtime_server_inbox" | "runtime_server_outbox" => "PersistedServerDelivery",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
@@ -370,6 +392,12 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     let mut validators = BTreeMap::new();
 
     for name in [
+        "DevicePairResponse",
+        "ServerIdentityResponse",
+        "DiscoveryIdentity",
+        "ServerOperationRequest",
+        "AutoPairRequest",
+        "DevicePairRequest",
         "AgentRecordResponse",
         "AgentRequest",
         "AnnotationReceipt",
@@ -477,6 +505,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             "AnalyticsUsage",
             "https://codex-studio.invalid/analytics-usage.schema.json",
         ),
+        ("PersistedAccessClient", ACCESS_CLIENT_URI),
+        ("PersistedAccessInvite", ACCESS_INVITE_URI),
+        ("PersistedAccessReceipt", ACCESS_RECEIPT_URI),
+        ("PersistedServerDelivery", SERVER_DELIVERY_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("PersistedWorkspaceOperationRecord", WORKSPACE_OPERATION_URI),
