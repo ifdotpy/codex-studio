@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 import stat
 import tempfile
+import time
 import unicodedata
 from typing import Any, Iterable
 
@@ -20,6 +21,9 @@ MAX_ENTRIES = 2_000_000
 # A manifest page stays well below the frame limit.
 PAGE_ENTRIES = 4096
 PAGE_BYTES = 1024 * 1024
+# The hash cache does not keep a file whose times are this close to the scan: a second write
+# in the same clock step would keep all key fields.
+RACY_NS = 2_000_000_000
 
 
 class HostExecError(Exception):
@@ -80,12 +84,30 @@ def under(path: str, roots: Iterable[str]) -> bool:
     return any(path == root or path.startswith(root + "/") for root in roots)
 
 
-def scan(root: Path, skip: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
+def load_hashes(path: Path) -> dict[str, Any]:
+    """A saved hash cache; a missing or damaged file is an empty cache."""
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def scan(root: Path, skip: Iterable[str] = (), hashes: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     """The entries below `root` with content hashes. The relative paths in `skip` stay out
-    with everything inside them."""
+    with everything inside them.
+
+    `hashes` is a cache: path -> [size, mtime_ns, inode, ctime_ns, sha256]. A file whose four
+    stat fields are unchanged is not read again; a change in any of them reads the file. The
+    scan updates the cache in place and removes the files that it no longer finds, except
+    those below a skipped path."""
     skipped = set(skip)
     result: dict[str, dict[str, Any]] = {}
+    started = time.time_ns()
+    seen: set[str] = set()
     if not root.exists():
+        if hashes is not None:
+            hashes.clear()
         return result
     for directory, folders, files in os.walk(root, followlinks=False):
         if skipped:
@@ -100,8 +122,22 @@ def scan(root: Path, skip: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
             if stat.S_ISLNK(info.st_mode):
                 result[rel] = {"kind": "link", "target": os.readlink(path)}
             elif stat.S_ISREG(info.st_mode):
-                with path.open("rb") as stream:
-                    checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+                stamp = [info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns]
+                cached = hashes.get(rel) if hashes is not None else None
+                if isinstance(cached, list) and len(cached) == 5 and cached[:4] == stamp and isinstance(cached[4], str):
+                    checksum = cached[4]
+                else:
+                    with path.open("rb") as stream:
+                        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+                        done = os.fstat(stream.fileno())
+                    if hashes is not None:
+                        # Keep only a hash of a file that did not change during the read.
+                        steady = [done.st_size, done.st_mtime_ns, done.st_ino, done.st_ctime_ns] == stamp
+                        if steady and started - max(info.st_mtime_ns, info.st_ctime_ns) > RACY_NS:
+                            hashes[rel] = [*stamp, checksum]
+                        else:
+                            hashes.pop(rel, None)
+                seen.add(rel)
                 result[rel] = {"kind": "file", "bytes": info.st_size,
                                "mode": stat.S_IMODE(info.st_mode) & 0o777, "sha256": checksum}
             elif stat.S_ISDIR(info.st_mode):
@@ -109,6 +145,9 @@ def scan(root: Path, skip: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
             else:
                 raise HostExecError("unsupported_file", "The slot contains a special file: " + rel)
             require(len(result) <= MAX_ENTRIES, "The slot exceeds its file count limit", "disk_budget")
+    if hashes is not None:
+        for gone in [path for path in hashes if path not in seen and not under(path, skipped)]:
+            del hashes[gone]
     return result
 
 

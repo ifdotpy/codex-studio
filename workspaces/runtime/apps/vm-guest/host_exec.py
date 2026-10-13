@@ -11,6 +11,14 @@ import uuid
 from host_exec_protocol import FRAME_LIMIT, PORT, HostExecError, atomic, conflicts, key, relative, require, under
 
 
+# Files up to this size travel in batches; a batch stays below the frame limit.
+SMALL_FILE = 256 * 1024
+BATCH_FRAME = 1536 * 1024
+BATCH_ENTRIES = 1024
+# The Mac hashes a large slot or clones cache folders in one request.
+LONG_CALL = 1800
+
+
 def request_key(operation: str, phase: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, operation + ":" + phase).hex
 
@@ -28,7 +36,7 @@ class HostExec:
         self.config.chmod(0o600)
         return {"configured": True}
 
-    async def call(self, method: str, params: dict[str, Any], phase: str) -> dict[str, Any]:
+    async def call(self, method: str, params: dict[str, Any], phase: str, timeout: float = 300) -> dict[str, Any]:
         require(self.config.exists(), "The host command channel is not configured", "unavailable")
         identity = request_key(params["operationId"], phase)
         channel = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -42,7 +50,7 @@ class HostExec:
             require(len(data) <= FRAME_LIMIT, "The host request exceeds its frame limit")
             writer.write(data)
             await asyncio.wait_for(writer.drain(), 15)
-            line = await asyncio.wait_for(reader.readline(), 300)
+            line = await asyncio.wait_for(reader.readline(), timeout)
             require(line and len(line) <= FRAME_LIMIT, "The host response is missing or too large", "outcome_unknown")
             response = json.loads(line)
             require(response.get("id") == identity, "The host response ID differs", "outcome_unknown")
@@ -68,9 +76,11 @@ class HostExec:
     async def manifest(self, method: str, params: dict[str, Any], phase: str, *, broker: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {}
         after = ""
-        caller = self.broker if broker else self.call
         while True:
-            page = await caller(method, {**params, "after": after}, phase + ":" + key(after))
+            if broker:
+                page = await self.broker(method, {**params, "after": after}, phase + ":" + key(after))
+            else:
+                page = await self.call(method, {**params, "after": after}, phase + ":" + key(after), LONG_CALL)
             result.update(page["entries"])
             if not page["next"]:
                 return result
@@ -118,14 +128,46 @@ class HostExec:
             await self.broker("host.slot.forget", slot, "conflict-forget")
             await self.call("release", common, "conflict-release")
             return {**op, "state": "refused", "reason": "name_conflict", "nameConflicts": bad}
+        features = op.get("features", [])
+        primed = []
+        if caches and "prime" in features:
+            # A slot without a cache folder clones it from the project folder on the Mac.
+            primed = (await self.call("prime", {**common, "caches": caches}, "prime", LONG_CALL))["primed"]
         held = await self.manifest("manifest", common, "held")
         deleted = [path for path in held if path not in target or held[path]["kind"] != target[path]["kind"]]
         for path in sorted(deleted, key=lambda value: (-value.count("/"), value)):
             await self.call("sync.delete", {**common, "path": path}, "delete:" + key(path))
         sent = 0
+        batch: list[tuple[str, dict[str, Any]]] = []
+        size = 0
+
+        async def flush() -> None:
+            # Folders, links and small files: one read in the guest and one request to the Mac.
+            nonlocal sent, size
+            if not batch:
+                return
+            names = [path for path, entry in batch if entry["kind"] == "file"]
+            data = {}
+            if names:
+                data = (await self.broker("host.slot.read", {**slot, "paths": names},
+                                          "batch-read:" + key("\0".join(names))))["files"]
+            items = [{"path": path, "entry": entry, **({"data": data[path]} if entry["kind"] == "file" else {})}
+                     for path, entry in batch]
+            await self.call("sync.batch", {**common, "items": items}, "batch:" + key("\0".join(path for path, _ in batch)))
+            sent += sum(entry["bytes"] for _, entry in batch if entry["kind"] == "file")
+            batch.clear()
+            size = 0
+
         for path in sorted(target, key=lambda value: (value.count("/"), value)):
             entry = target[path]
             if entry == held.get(path):
+                continue
+            if "batch" in features and (entry["kind"] != "file" or entry["bytes"] <= SMALL_FILE):
+                cost = 2 * len(path.encode()) + 4 * (entry.get("bytes", 0) // 3 + 1) + 400
+                if batch and (size + cost > BATCH_FRAME or len(batch) >= BATCH_ENTRIES):
+                    await flush()
+                batch.append((path, entry))
+                size += cost
                 continue
             await self.call("sync.entry", {**common, "path": path, "entry": entry}, "entry:" + key(path))
             if entry["kind"] == "file":
@@ -137,10 +179,11 @@ class HostExec:
                     offset += data["bytes"]
                     sent += data["bytes"]
                 await self.call("sync.commit", {**common, "path": path}, "commit:" + key(path))
+        await flush()
         relative_cwd = cwd.relative_to(line).as_posix()
         await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
             "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
-            "caches": caches}, "run")
+            "caches": caches}, "run", LONG_CALL)
         after_seq = 0
         while True:
             attached = await self.call("attach", {**common, "afterSeq": after_seq, "waitSeconds": 10}, "attach:" + str(after_seq))
@@ -201,4 +244,4 @@ class HostExec:
         await self.call("release", {**common, "collected": True}, "release")
         return {**final, "state": "conflicted" if merge_conflicts else final["state"], "collected": True,
                 "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent,
-                "artifacts": artifact_files, "lastSeq": after_seq}
+                "artifacts": artifact_files, "lastSeq": after_seq, "primed": primed}

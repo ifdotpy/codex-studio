@@ -64,8 +64,25 @@ and at least four times the duration of the walk.
 Each guest slot has a private folder for its line owner. The guest saves the line
 (`layr save`) and writes that state into the folder with `layr export --all`,
 incrementally after the first time; the folder holds that state. Content hashes
-select the files to transfer. File data uses 512 KiB chunks. The Mac checks the
-complete manifest before the command starts.
+select the files to transfer. The Mac checks the complete manifest before the
+command starts.
+
+Folders, links and files up to 256 KiB travel in batches. A batch is one read in
+the guest and one request to the Mac, with at most 1024 entries and about 1.5 MiB,
+below the 2 MiB frame limit. Larger files use 512 KiB chunks. The Mac checks the
+SHA-256 of each file. It does not sync the files of a batch to disk: after a crash,
+the next command hashes the slot again and sends each damaged file again.
+
+## Hash caches
+
+A hash cache keeps the SHA-256 of each file with its size, modification time,
+inode and change time. A scan reads a file again only when one of these four values
+changed. The Mac keeps one cache for each slot (`hash-cache.json` in the slot
+folder, removed with the slot). The guest keeps one cache for each scanned folder of
+a line in `host-slots/<project>/<agent>/hash-cache`; the line owner owns that folder,
+and root owns the folders above it. A cache holds only the files of the last scan, plus the files below a skipped path.
+A file that changed in the two seconds before the scan, or during its read, stays
+out of the cache, so the next scan reads it again.
 
 The Mac compares source content after the command. It sends changed files back
 to the guest slot. The guest merges each changed path into the current line
@@ -133,13 +150,32 @@ a command transfers it: a changed file stops the transfer with a checksum error.
 Then cancel the operation to release its slot.
 
 A command from a line without the cache folder removes the folder from the slot,
-but not its Mac-only paths. The next line with the folder sends it again in full.
-A plain folder at a cache path (`layr cache list` shows `plain folder`) is part of
-the state and follows the normal source rules.
+but not its Mac-only paths. A plain folder at a cache path (`layr cache list` shows
+`plain folder`) is part of the state and follows the normal source rules.
 
-Each command hashes every file of the slot: once in the guest and twice on the Mac.
-For a tree of the size of Chromium this takes minutes. The first transfer to a new
-slot sends every file.
+### Clones from the project folder on the Mac
+
+The Mac usually holds the same project folder (`source` in
+`layr-projects/<layr project ID>/project.json`), for example a Chromium checkout that
+the VM main received as a seeded layer ([vm-layr.md](vm-layr.md)). When a slot has no
+copy of a cache folder, or only its Mac-only paths, the Mac clones that folder from
+the project folder before the transfer:
+
+- The clone uses APFS `clonefile` for each file, so the files share their blocks
+  with the project folder. A failed clone never becomes a byte copy: the Mac removes
+  the partial clone and the normal transfer sends the folder.
+- The Mac does not clone when the project folder or the cache folder in it is
+  missing, or when the path crosses a symbolic link.
+- Links stay links. Sockets and pipes stay out.
+- The slot keeps its own Mac-only paths. The clone has the Mac-only paths of the
+  project folder only when the slot had none, for example the Mac tools of a hook.
+- Then the hash comparison sends only the files of the line that differ.
+
+The budget counts a clone at its full size (`st_blocks`), as the walk of the slot
+folder counts it, although the clone shares its blocks. So the budget can stop a
+command before the disk is full, but not after. The command result lists each cache
+folder in `primed`, with the reason when the Mac did not clone it. The first scan of
+a clone reads every file, because the clone has new inodes.
 
 ## Checks
 
@@ -152,6 +188,11 @@ python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
 xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization desktop/native/linux-vm/main.swift
 ```
+
+The manual benchmark `workspaces/runtime/apps/server/tests/host-exec-transfer-bench.py`
+times a cold slot, a warm slot and a small change (`--files 50000`; `--cache` puts
+the files in a cache folder). It runs the file helper as a process, without the VM
+socket and without real layr.
 
 The contract uses a layr fixture. It does not prove VM transport or real layr
 collection. The live check must use the native VM, real layr, `xcodebuild -version`,

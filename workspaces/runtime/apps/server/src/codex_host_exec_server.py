@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import base64
 import codecs
+import ctypes
 import fcntl
 import hashlib
 import hmac
@@ -15,6 +16,7 @@ import re
 import shutil
 import signal
 import sqlite3
+import stat
 import sys
 import time
 from typing import Any, TYPE_CHECKING
@@ -24,7 +26,7 @@ from codex_layout import VM_GUEST_ROOT
 # The host side shares the frame protocol with the guest (mypy finds it through mypy_path).
 sys.path.insert(0, str(VM_GUEST_ROOT))
 from host_exec_protocol import (CHUNK, FRAME_LIMIT, HostExecError, aliases, atomic,  # noqa: E402
-                                conflicts, inside, key, mapped, page, relative, require, scan, under)
+                                conflicts, inside, key, load_hashes, mapped, page, relative, require, scan, under)
 
 # The limits of a project without a settings file.
 DEFAULT_SLOTS = 4
@@ -32,6 +34,42 @@ DEFAULT_BUDGET = 20 * 1024**3
 SETTINGS = "host-exec.json"
 # The folder names of layr-projects/ (codex_linux_vm_share._id).
 PROJECT_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
+# What this service accepts beyond the first protocol; the guest reads it from the lease.
+FEATURES = ["prime", "batch"]
+CLONE_NOFOLLOW = 0x0001
+
+
+def clone_tree(origin: Path, target: Path) -> int:
+    """Clone a folder file by file with APFS clonefile(2), never with a byte copy: a failed clone
+    stops with an error. Links stay links; sockets and pipes stay out; a file that disappears
+    during the walk stays out. Returns the bytes as `HostService.size` counts them (st_blocks),
+    although the clones share their blocks with the origin."""
+    try:
+        clonefile = ctypes.CDLL(None, use_errno=True).clonefile
+    except AttributeError as exc:
+        raise OSError(45, "clonefile is not available") from exc
+    clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+    clonefile.restype = ctypes.c_int
+    total = 0
+    target.mkdir(mode=0o700)
+    for directory, folders, files in os.walk(origin, followlinks=False):
+        destination = target / Path(directory).relative_to(origin)
+        for name in folders + files:
+            source, copy = Path(directory) / name, destination / name
+            try:
+                info = source.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    copy.symlink_to(os.readlink(source))
+                elif stat.S_ISDIR(info.st_mode):
+                    copy.mkdir()
+                elif stat.S_ISREG(info.st_mode):
+                    if clonefile(os.fsencode(source), os.fsencode(copy), CLONE_NOFOLLOW) != 0:
+                        error = ctypes.get_errno()
+                        raise OSError(error, os.strerror(error), str(source))
+                    total += info.st_blocks * 512
+            except FileNotFoundError:
+                continue
+    return total
 
 
 class HostService:
@@ -166,6 +204,145 @@ class HostService:
             self.pages.pop(name, None)
         return result
 
+    @staticmethod
+    def scan_slot(slot: Path, skip: list[str]) -> dict[str, dict[str, Any]]:
+        """The entries of the slot's source folder. The slot's hash cache (removed with the slot)
+        keeps the hash of each unchanged file."""
+        cache = slot / "hash-cache.json"
+        hashes = load_hashes(cache)
+        entries = scan(slot / "source", skip, hashes)
+        atomic(cache, hashes)
+        return entries
+
+    @staticmethod
+    def cache_list(value: Any) -> list[str]:
+        require(isinstance(value, list) and len(value) <= 256, "Invalid cache folders")
+        return [relative(item) for item in value]
+
+    def project_folder(self, project_id: str) -> Path | None:
+        """The project's folder on this Mac (layr-projects/<project>/project.json "source")."""
+        if not PROJECT_FOLDER.fullmatch(project_id):
+            return None
+        try:
+            value = json.loads((self.state / "layr-projects" / project_id / "project.json").read_text())
+        except (OSError, ValueError):
+            return None
+        source = value.get("source") if isinstance(value, dict) else None
+        if not isinstance(source, str) or not source.startswith("/"):
+            return None
+        path = Path(source)
+        return path if path.is_dir() and not path.is_symlink() else None
+
+    @staticmethod
+    def bare(target: Path, cache: str, mac_only: list[str]) -> bool:
+        """Whether the slot's cache folder holds only Mac-only paths and the folders above them."""
+        for directory, folders, files in os.walk(target, followlinks=False):
+            here = Path(directory).relative_to(target).as_posix()
+            prefix = cache if here == "." else cache + "/" + here
+            keep = []
+            for name in folders + files:
+                rel = prefix + "/" + name
+                if under(rel, mac_only):
+                    continue
+                if name in folders and not (Path(directory) / name).is_symlink() and any(item.startswith(rel + "/") for item in mac_only):
+                    keep.append(name)
+                    continue
+                return False
+            folders[:] = keep
+        return True
+
+    async def prime(self, op: dict[str, Any], slot: Path, cache: str) -> dict[str, Any]:
+        """Clone a cache folder that the slot lacks from the project's Mac folder, so the transfer
+        sends only the files that differ. Each reason not to clone leaves the normal transfer."""
+        mac_only: list[str] = op.get("macOnly", [])
+        target = inside(slot / "source", cache)
+
+        def skipped(reason: str) -> dict[str, Any]:
+            return {"path": cache, "primed": False, "reason": reason}
+
+        if under(cache, mac_only):
+            return skipped("Mac-only path")
+        if target.is_symlink() or (target.exists() and not self.bare(target, cache, mac_only)):
+            return skipped("the slot has the folder")
+        folder = self.project_folder(op["projectId"])
+        if folder is None:
+            return skipped("no project folder on this Mac")
+        try:
+            origin = inside(folder, cache, leaf=True)
+        except HostExecError:
+            return skipped("the Mac path crosses a symbolic link")
+        if not origin.is_dir():
+            return skipped("the project folder on this Mac has no such folder")
+        temporary = slot / "prime"
+        await asyncio.to_thread(shutil.rmtree, temporary, True)
+        try:
+            cloned = await asyncio.to_thread(clone_tree, origin, temporary)
+        except OSError as exc:
+            await asyncio.to_thread(shutil.rmtree, temporary, True)
+            return skipped("clone failed: " + str(exc)[:300])
+        try:
+            # A clone counts at full size, as the walk of `size` counts it.
+            self.reserve(slot.parent, self.budget_of(op), cloned, slot)
+        except HostExecError:
+            await asyncio.to_thread(shutil.rmtree, temporary, True)
+            raise
+        if target.exists():
+            # The slot keeps its own Mac-only output in place of the copy from the project folder.
+            for item in mac_only:
+                if not item.startswith(cache + "/"):
+                    continue
+                own = target / item[len(cache) + 1:]
+                if not (own.exists() or own.is_symlink()):
+                    continue
+                try:
+                    copy = inside(temporary, item[len(cache) + 1:])
+                except HostExecError:
+                    continue
+                if copy.is_symlink() or copy.is_file():
+                    copy.unlink()
+                elif copy.exists():
+                    await asyncio.to_thread(shutil.rmtree, copy)
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(own, copy)
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(temporary, target)
+        return {"path": cache, "primed": True, "bytes": cloned}
+
+    def place(self, op: dict[str, Any], slot: Path, name: Any, entry: Any, data: bytes | None = None) -> None:
+        """Write one source entry: a folder, a link or a file. A file with `data` is complete; a
+        file without it starts empty and receives its content in chunks."""
+        path = inside(slot / "source", name)
+        require(not under(name, op.get("macOnly", [])), "The path stays on the Mac (macOnly)")
+        require(isinstance(entry, dict) and entry.get("kind") in {"directory", "link", "file"}, "Invalid source entry")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.exists() and entry["kind"] != "directory":
+            shutil.rmtree(path)
+        if entry["kind"] == "directory":
+            path.mkdir(exist_ok=True)
+            return
+        if entry["kind"] == "link":
+            require(isinstance(entry.get("target"), str) and "\0" not in entry["target"], "Invalid link target")
+            path.symlink_to(entry["target"])
+            return
+        length = entry.get("bytes")
+        require(isinstance(length, int) and 0 <= length <= self.budget_of(op), "Invalid file size")
+        self.reserve(slot.parent, self.budget_of(op), length, slot)
+        if data is None:
+            path.touch()
+            entries = self.opdir(op["operationId"]) / "entries"
+            entries.mkdir(exist_ok=True)
+            atomic(entries / (key(name) + ".json"), entry)
+            return
+        require(len(data) == length and hashlib.sha256(data).hexdigest() == entry.get("sha256"), "The source checksum differs")
+        mode = entry.get("mode")
+        require(isinstance(mode, int) and 0 <= mode <= 0o777, "Invalid source file mode")
+        # No fsync: the next command hashes the slot again and sends a file that a crash broke.
+        path.write_bytes(data)
+        path.chmod(mode)
+
     def slot(self, op: dict[str, Any]) -> Path:
         path = self.pool / key(op["projectId"]) / str(op["slotId"])
         lease = path / "lease.json"
@@ -210,7 +387,7 @@ class HostService:
                   "slotId": slot.name, "generation": meta["generation"], "state": "leased", "createdAt": time.time(),
                   "slotPath": str(slot / "source"), "derivedData": str(slot / "DerivedData"),
                   "packageCache": str(slot / "packages"), "artifactsPath": str(directory / "artifacts"),
-                  "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"]}
+                  "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"], "features": FEATURES}
             self.save(identity, op)
             atomic(slot / "lease.json", {"operationId": identity})
             return op
@@ -257,9 +434,23 @@ class HostService:
             if params.get("after"):
                 return self.listing(identity + "\0held", manifest_path, params["after"])
             # Hashing a large slot takes minutes; the event loop keeps serving other requests.
-            held = await asyncio.to_thread(scan, slot / "source", mac_only)
+            held = await asyncio.to_thread(self.scan_slot, slot, mac_only)
             atomic(manifest_path, held)
             return self.listing(identity + "\0held", manifest_path, "", held)
+        if method == "prime":
+            require(op["state"] == "leased", "The slot is no longer open for source transfer")
+            caches = self.cache_list(params.get("caches", []))
+            async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
+                return {"primed": [await self.prime(op, slot, cache) for cache in caches]}
+        if method == "sync.batch":
+            require(op["state"] == "leased", "The slot is no longer open for source transfer")
+            items: Any = params.get("items")
+            require(isinstance(items, list) and 0 < len(items) <= 1024, "Invalid source batch")
+            for item in items:
+                require(isinstance(item, dict) and isinstance(item.get("data", ""), str), "Invalid source batch")
+                content = base64.b64decode(item["data"], validate=True) if "data" in item else None
+                self.place(op, slot, item.get("path"), item.get("entry"), content)
+            return {"entries": len(items)}
         if method.startswith("sync."):
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             path = inside(slot / "source", params["path"])
@@ -272,25 +463,7 @@ class HostService:
                     # A folder above a Mac-only path stays: the guest deletes its other entries one by one.
                     shutil.rmtree(path)
             elif method == "sync.entry":
-                entry = params["entry"]
-                require(entry.get("kind") in {"directory", "link", "file"}, "Invalid source entry")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                if path.is_symlink() or path.is_file():
-                    path.unlink()
-                elif path.exists() and entry["kind"] != "directory":
-                    shutil.rmtree(path)
-                if entry["kind"] == "directory":
-                    path.mkdir(exist_ok=True)
-                elif entry["kind"] == "link":
-                    require(isinstance(entry.get("target"), str) and "\0" not in entry["target"], "Invalid link target")
-                    path.symlink_to(entry["target"])
-                else:
-                    length = entry.get("bytes")
-                    require(isinstance(length, int) and 0 <= length <= self.budget_of(op), "Invalid file size")
-                    self.reserve(slot.parent, self.budget_of(op), length, slot)
-                    path.touch()
-                    entry_dir.mkdir(exist_ok=True)
-                    atomic(entry_dir / (key(params["path"]) + ".json"), entry)
+                self.place(op, slot, params["path"], params["entry"])
             elif method == "sync.chunk":
                 require(path.is_file() and not path.is_symlink(), "The source file is not open")
                 data = base64.b64decode(params["data"], validate=True)
@@ -320,12 +493,9 @@ class HostService:
             timeout = params.get("timeoutSeconds", 300)
             require(isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and 0 < timeout <= 3600, "Invalid command timeout")
             # Cache folders of the line: the Mac receives them, and its changes there never return.
-            caches: Any = params.get("caches", [])
-            require(isinstance(caches, list) and len(caches) <= 256, "Invalid cache folders")
-            for item in caches:
-                relative(item)
+            caches = self.cache_list(params.get("caches", []))
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
-                source = await asyncio.to_thread(scan, slot / "source", mac_only)
+                source = await asyncio.to_thread(self.scan_slot, slot, mac_only)
                 # The scan let other requests run: the operation must still be leased.
                 op = self.load(identity)
                 require(op["state"] == "leased", "The command already started", "outcome_unknown")
@@ -468,7 +638,7 @@ class HostService:
                     reason = "cancelled"
             # Mac-only paths and cache folders never return to the line, so they are not compared.
             caches: list[str] = op.get("caches", [])
-            after = await asyncio.to_thread(scan, slot / "source", [*op.get("macOnly", []), *caches])
+            after = await asyncio.to_thread(self.scan_slot, slot, [*op.get("macOnly", []), *caches])
             before = {path: entry for path, entry in before.items() if not under(path, caches)}
             changed = {path: after.get(path) for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
             result_dir = self.opdir(identity) / "changes"
