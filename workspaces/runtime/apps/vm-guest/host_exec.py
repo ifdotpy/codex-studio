@@ -167,6 +167,7 @@ class HostExec:
         for path in sorted(deleted, key=lambda value: (-value.count("/"), value)):
             await self.call("sync.delete", {**common, "path": path}, "delete:" + key(path))
         sent = 0
+        cloned = 0
         batch: list[tuple[str, dict[str, Any]]] = []
         size = 0
         modes: list[dict[str, Any]] = []
@@ -216,6 +217,12 @@ class HostExec:
                 batch.append((path, entry))
                 size += cost
                 continue
+            if entry["kind"] == "file" and "clone" in features:
+                # The project folder on the Mac may hold the same file: a clone, not a transfer.
+                reply = await self.call("sync.clone", {**common, "path": path, "entry": entry}, "clone:" + key(path), LONG_CALL)
+                if reply.get("cloned"):
+                    cloned += entry["bytes"]
+                    continue
             await self.call("sync.entry", {**common, "path": path, "entry": entry}, "entry:" + key(path))
             if entry["kind"] == "file":
                 offset = 0
@@ -249,7 +256,7 @@ class HostExec:
         # Cache folders and Mac-only paths never return to the line, also from an older Mac service.
         changes = {path: entry for path, entry in changes.items() if not under(path, caches + mac_only)}
         if final.get("nameConflicts"):
-            return {**final, "state": "collection_refused", "transferredBytes": sent}
+            return {**final, "state": "collection_refused", "transferredBytes": sent, "clonedBytes": cloned}
         for path in sorted(changes, key=lambda value: (-value.count("/"), value)):
             if changes[path] is None:
                 await self.broker("host.slot.apply", {**slot, "action": "delete", "path": path}, "back-delete:" + key(path))
@@ -296,5 +303,5 @@ class HostExec:
             merge_conflicts.extend(report.get("conflicts", []))
         await self.call("release", {**common, "collected": True}, "release")
         return {**final, "state": "conflicted" if merge_conflicts else final["state"], "collected": True,
-                "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent,
+                "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent, "clonedBytes": cloned,
                 "artifacts": artifact_files, "lastSeq": after_seq, "primed": primed}

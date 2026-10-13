@@ -27,7 +27,8 @@ from codex_host_exec import service_build_id
 # The host side shares the frame protocol with the guest (mypy finds it through mypy_path).
 sys.path.insert(0, str(VM_GUEST_ROOT))
 from host_exec_protocol import (CHUNK, FRAME_LIMIT, HostExecError, aliases, atomic,  # noqa: E402
-                                conflicts, inside, key, load_hashes, mapped, page, relative, require, scan, under)
+                                conflicts, file_hash, inside, key, load_hashes, mapped, page, relative, require,
+                                scan, under)
 
 # The limits of a project without a settings file.
 DEFAULT_SLOTS = 4
@@ -36,8 +37,21 @@ SETTINGS = "host-exec.json"
 # The folder names of layr-projects/ (codex_linux_vm_share._id).
 PROJECT_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 # What this service accepts beyond the first protocol; the guest reads it from the lease.
-FEATURES = ["prime", "batch", "mode"]
+FEATURES = ["prime", "batch", "mode", "clone"]
 CLONE_NOFOLLOW = 0x0001
+
+
+def clone_file(source: Path, copy: Path) -> None:
+    """Clone one regular file with APFS clonefile(2). A failure raises OSError; it never copies bytes."""
+    try:
+        clonefile = ctypes.CDLL(None, use_errno=True).clonefile
+    except AttributeError as exc:
+        raise OSError(45, "clonefile is not available") from exc
+    clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+    clonefile.restype = ctypes.c_int
+    if clonefile(os.fsencode(source), os.fsencode(copy), CLONE_NOFOLLOW) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(source))
 
 
 def clone_tree(origin: Path, target: Path) -> int:
@@ -45,12 +59,6 @@ def clone_tree(origin: Path, target: Path) -> int:
     stops with an error. Links stay links; sockets and pipes stay out; a file that disappears
     during the walk stays out. Returns the bytes as `HostService.size` counts them (st_blocks),
     although the clones share their blocks with the origin."""
-    try:
-        clonefile = ctypes.CDLL(None, use_errno=True).clonefile
-    except AttributeError as exc:
-        raise OSError(45, "clonefile is not available") from exc
-    clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
-    clonefile.restype = ctypes.c_int
     total = 0
     target.mkdir(mode=0o700)
     for directory, folders, files in os.walk(origin, followlinks=False):
@@ -64,9 +72,7 @@ def clone_tree(origin: Path, target: Path) -> int:
                 elif stat.S_ISDIR(info.st_mode):
                     copy.mkdir()
                 elif stat.S_ISREG(info.st_mode):
-                    if clonefile(os.fsencode(source), os.fsencode(copy), CLONE_NOFOLLOW) != 0:
-                        error = ctypes.get_errno()
-                        raise OSError(error, os.strerror(error), str(source))
+                    clone_file(source, copy)
                     total += info.st_blocks * 512
             except FileNotFoundError:
                 continue
@@ -97,6 +103,8 @@ class HostService:
         self.usage: dict[str, int] = {}
         # Sorted manifests during paging, by operation and area.
         self.pages: dict[str, list[tuple[str, Any]]] = {}
+        # Hashes of files cloned into a slot, for its next scan, by slot folder.
+        self.cloned: dict[str, dict[str, Any]] = {}
         self.clients = 0
         # The code build at start. Studio replaces an idle service of another build (codex_host_exec.py).
         self.build_id = service_build_id()
@@ -210,12 +218,12 @@ class HostService:
             self.pages.pop(name, None)
         return result
 
-    @staticmethod
-    def scan_slot(slot: Path, skip: list[str]) -> dict[str, dict[str, Any]]:
+    def scan_slot(self, slot: Path, skip: list[str]) -> dict[str, dict[str, Any]]:
         """The entries of the slot's source folder. The slot's hash cache (removed with the slot)
-        keeps the hash of each unchanged file."""
+        keeps the hash of each unchanged file, and of each file cloned since the last scan."""
         cache = slot / "hash-cache.json"
         hashes = load_hashes(cache)
+        hashes.update(self.cloned.pop(str(slot), {}))
         entries = scan(slot / "source", skip, hashes)
         atomic(cache, hashes)
         return entries
@@ -314,6 +322,64 @@ class HostService:
         target.parent.mkdir(parents=True, exist_ok=True)
         os.rename(temporary, target)
         return {"path": cache, "primed": True, "bytes": cloned}
+
+    def clone_source(self, op: dict[str, Any], slot: Path, name: Any, entry: Any) -> dict[str, Any]:
+        """Clone one file from the same path in the project folder on this Mac when that file has
+        the size and SHA-256 of `entry`, so the guest does not send its content. Each reason not
+        to clone leaves the transfer. The project's hash cache keeps the hashes of the files it
+        checked; a clone counts at its st_blocks size, as the walk of the slot counts it."""
+        require(isinstance(entry, dict) and entry.get("kind") == "file" and isinstance(entry.get("bytes"), int)
+                and isinstance(entry.get("sha256"), str), "Invalid source entry")
+        mode = entry.get("mode")
+        require(isinstance(mode, int) and 0 <= mode <= 0o777, "Invalid source file mode")
+        require(not under(name, op.get("macOnly", [])), "The path stays on the Mac (macOnly)")
+        path = inside(slot / "source", name)
+
+        def skipped(reason: str) -> dict[str, Any]:
+            return {"cloned": False, "reason": reason}
+
+        folder = self.project_folder(op["projectId"])
+        if folder is None:
+            return skipped("no project folder on this Mac")
+        try:
+            origin = inside(folder, name, leaf=True)
+            info = origin.lstat()
+        except HostExecError:
+            return skipped("the Mac path crosses a symbolic link")
+        except OSError:
+            return skipped("the project folder has no such file")
+        if not stat.S_ISREG(info.st_mode) or info.st_size != entry["bytes"]:
+            return skipped("the project file differs")
+        cache = self.state / "layr-projects" / op["projectId"] / "host-exec-hashes.json"
+        hashes = load_hashes(cache)
+        if len(hashes) > 100_000:
+            hashes = {}
+        try:
+            checksum, known = file_hash(origin, info, name, hashes, time.time_ns())
+        except OSError:
+            return skipped("the project file cannot be read")
+        atomic(cache, hashes)
+        if checksum != entry["sha256"]:
+            return skipped("the project file differs")
+        self.reserve(slot.parent, self.budget_of(op), info.st_blocks * 512, slot)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.exists():
+            shutil.rmtree(path)
+        try:
+            clone_file(origin, path)
+        except OSError as exc:
+            return skipped("clone failed: " + str(exc)[:300])
+        path.chmod(mode)
+        after = origin.lstat()
+        if known and [after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns] == \
+                [info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns]:
+            # The origin did not change since its known hash: the run check need not read the clone.
+            mine = path.lstat()
+            self.cloned.setdefault(str(slot), {})[name] = [mine.st_size, mine.st_mtime_ns, mine.st_ino,
+                                                           mine.st_ctime_ns, checksum]
+        return {"cloned": True, "bytes": entry["bytes"]}
 
     @staticmethod
     def set_modes(slot: Path, mac_only: list[str], items: list[Any]) -> None:
@@ -484,6 +550,9 @@ class HostService:
             caches = self.cache_list(params.get("caches", []))
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
                 return {"primed": [await self.prime(op, slot, cache) for cache in caches]}
+        if method == "sync.clone":
+            require(op["state"] == "leased", "The slot is no longer open for source transfer")
+            return await asyncio.to_thread(self.clone_source, op, slot, params.get("path"), params.get("entry"))
         if method == "sync.mode":
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             changes: Any = params.get("items")
@@ -592,6 +661,12 @@ class HostService:
             for name in ("held", "changes", "artifacts"):
                 self.pages.pop(identity + "\0" + name, None)
             self.locks.pop("run\0" + identity, None)
+            pending = self.cloned.pop(str(slot), None)
+            if pending:
+                # Clones of a command that did not start keep their hashes for the next scan.
+                hashes = load_hashes(slot / "hash-cache.json")
+                hashes.update(pending)
+                atomic(slot / "hash-cache.json", hashes)
             self.evict(slot.parent, self.budget_of(op))
             return op
         raise HostExecError("invalid_params", "Unknown host method")

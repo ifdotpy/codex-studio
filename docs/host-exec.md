@@ -193,6 +193,15 @@ the project folder before the transfer:
   project folder only when the slot had none, for example the Mac tools of a hook.
 - Then the hash comparison sends only the files of the line that differ.
 
+Before the guest sends the content of a file above 256 KiB, the Mac clones that
+file from the same path in the project folder when the file there has the same size
+and SHA-256. For example, a slot that lost a Git pack gets it back without a
+transfer. A hash cache of the project folder (`host-exec-hashes.json` in
+`layr-projects/<layr project ID>/`, at most 100,000 files) keeps the hashes of the
+files that the Mac checked, and the run check does not read the clone again. The
+command result shows these bytes as `clonedBytes`. Small files travel in batches
+without this check, and the Mac does not look for the content at another path.
+
 The budget counts a clone at its full size (`st_blocks`), as the walk of the slot
 folder counts it, although the clone shares its blocks. So the budget can stop a
 command before the disk is full, but not after. The command result lists each cache
