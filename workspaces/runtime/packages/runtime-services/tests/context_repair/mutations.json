@@ -1,0 +1,167 @@
+[
+  {
+    "id": "CR01",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "snapshot.connection == history.connection",
+        "after": "true"
+      }
+    ],
+    "witness": "scope connection, account, generation"
+  },
+  {
+    "id": "CR02",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "snapshot.raw_agent[\"threadId\"] == history.thread_id",
+        "after": "true"
+      }
+    ],
+    "witness": "foreign native thread"
+  },
+  {
+    "id": "CR03",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "&& supported\n",
+        "after": "&& true\n"
+      }
+    ],
+    "witness": "no identified native input"
+  },
+  {
+    "id": "CR04",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "&& !unidentified\n",
+        "after": "&& true\n"
+      }
+    ],
+    "witness": "unidentified native user input"
+  },
+  {
+    "id": "CR05",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "matches!(history.state.as_deref(), Some(\"idle\" | \"notLoaded\"))",
+        "after": "true"
+      }
+    ],
+    "witness": "active native thread cannot release"
+  },
+  {
+    "id": "CR06",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "owner[\"submitted\"] == false",
+        "after": "true"
+      }
+    ],
+    "witness": "submitted owner cannot prove unsent"
+  },
+  {
+    "id": "CR07",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "(known_unsent || rejected.contains(&event.id))",
+        "after": "true"
+      }
+    ],
+    "witness": "absent rejection cannot release sent input"
+  },
+  {
+    "id": "CR08",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "&& turns.len() == 1\n",
+        "after": "&& !turns.is_empty()\n"
+      }
+    ],
+    "witness": "duplicate native acceptance"
+  },
+  {
+    "id": "CR09",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "if fresh != *snapshot {",
+        "after": "if false {"
+      }
+    ],
+    "witness": "changed event or agent capture"
+  },
+  {
+    "id": "CR10",
+    "file": "workspaces/runtime/packages/runtime-services/src/historical_input_receipts.rs",
+    "edits": [
+      {
+        "before": "row[\"digest\"] == self.digest",
+        "after": "true"
+      }
+    ],
+    "witness": "changed supervisor digest"
+  },
+  {
+    "id": "CR11",
+    "file": "workspaces/runtime/packages/runtime-services/src/historical_input_receipts.rs",
+    "edits": [
+      {
+        "before": "content(&item[\"content\"])\n                                        == Some(self.params[\"input\"].clone())",
+        "after": "true"
+      }
+    ],
+    "witness": "changed native input content"
+  },
+  {
+    "id": "CR12",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "Err(RepairError::ManifestWriterUnavailable)",
+        "after": "Ok(())"
+      }
+    ],
+    "witness": "manifest writer absence rolls back"
+  },
+  {
+    "id": "CR13",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "&& a[\"provider\"] != \"claude\"",
+        "after": "&& true"
+      }
+    ],
+    "witness": "Claude frozen retry owns rejection"
+  },
+  {
+    "id": "CR14",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "&& turns.is_none()\n                && !preparing.contains(&event.id)",
+        "after": "&& turns.is_none()"
+      }
+    ],
+    "witness": "preparing is not rejection"
+  },
+  {
+    "id": "CR15",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "let valid = snapshot.eligible()",
+        "after": "let valid = true"
+      }
+    ],
+    "witness": "stopped and changed waiter stays held"
+  }
+]
