@@ -1,6 +1,7 @@
 //! Durable Claude sign-in decisions. Codes and browser URLs are transient only.
 use crate::account_driver::{AuthMetadata, AuthStatus};
 pub mod chats;
+#[cfg(unix)]
 mod identity;
 pub mod ports;
 #[cfg(unix)]
