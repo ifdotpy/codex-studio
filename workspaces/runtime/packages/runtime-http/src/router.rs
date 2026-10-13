@@ -30,7 +30,9 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
+    pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+    pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
@@ -70,7 +72,9 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
+            tool_catalog: None,
             model_catalog,
+            capabilities_cache: Arc::new(Default::default()),
             sync_changes,
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
@@ -83,6 +87,15 @@ impl HttpState {
         driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
     ) -> Self {
         self.account_driver = Some(driver);
+        self
+    }
+
+    /// Attach the full selected native tool catalog for capabilities reads.
+    pub fn with_tool_catalog(
+        mut self,
+        catalog: studio_runtime_services::thread_prepare::CatalogSnapshot,
+    ) -> Self {
+        self.tool_catalog = Some(Arc::new(catalog));
         self
     }
 
