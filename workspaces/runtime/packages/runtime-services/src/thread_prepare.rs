@@ -55,6 +55,15 @@ pub enum CatalogSource {
     Legacy,
 }
 
+/// Preserve absent versus explicit null in Python's saved preparation settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+pub enum Stored<T> {
+    #[default]
+    Absent,
+    Present(T),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub model: Option<String>,
@@ -68,6 +77,8 @@ pub struct Settings {
     pub is_lead: bool,
     pub needs_title: bool,
     pub claude_options: Map<String, Value>,
+    pub daybreak_enabled: Stored<Option<bool>>,
+    pub cyber_access_program: Stored<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,9 +94,14 @@ pub struct Actor {
     pub native_tool_source: Option<CatalogSource>,
     pub native_tool_update: Option<Value>,
     pub error: Option<String>,
-    /// Only resolved released/resumed records are admitted; unresolved release
-    /// inspection/reset is represented by HoldReason::NativeRelease.
-    pub native_release: Option<Value>,
+    /// Includes failed unsubmitted inspections, retired by successful resume.
+    pub native_release: Option<Map<String, Value>>,
+    pub root_id: String,
+    pub parent_id: Option<String>,
+    pub auto_wake: bool,
+    /// Settings already contain the adapter's validated selection. If the stored
+    /// nativeEffort was absent, persist that selection before native submission.
+    pub native_effort_present: bool,
     pub deleted: bool,
 }
 
@@ -95,6 +111,15 @@ pub struct Account {
     pub provider: Provider,
     pub connection_id: String,
     pub available: bool,
+    pub supervisor_identity: Option<SupervisorIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupervisorIdentity {
+    pub state_dir: String,
+    pub handle: String,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +182,9 @@ pub enum Refusal {
     Daybreak,
     CatalogIdentity,
     MissingGuidance,
+    EmptyThreadIdentity,
+    PreparationIdentity,
+    MalformedCatalog,
 }
 
 /// All holds retain queued input. Replan after the documented observation changes.
@@ -190,6 +218,9 @@ pub struct LoadedIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPreparation {
+    pub agent_id: String,
+    pub epoch: u64,
+    pub account_key: String,
     /// Digest of the exact params in the durable attempt record.
     pub request_digest: String,
     pub attempt_id: String,
@@ -235,6 +266,8 @@ pub enum ArtifactIntent {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedAttempt {
+    pub transport_ticket: String,
+    pub native_release_id: Option<String>,
     pub request_digest: String,
     pub attempt_id: String,
     pub operation_id: String,
@@ -268,7 +301,7 @@ fn session_tool(s: &Snapshot) -> SessionTool {
 }
 
 /// Uses the immutable selected catalog, never a newly discovered live catalog.
-pub fn tool_definitions(s: &Snapshot) -> Vec<ToolDefinition> {
+pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
     let mut result = Vec::new();
     for mut tool in s.catalog.definitions.clone() {
         let name = tool.name.as_str();
@@ -284,15 +317,16 @@ pub fn tool_definitions(s: &Snapshot) -> Vec<ToolDefinition> {
             "orchestration_move" if session_tool(s) == SessionTool::Teleport => {
                 tool.name = "orchestration_teleport".into();
                 tool.description = tool.description.replace("Move your own", "Teleport your own").replace("a move", "a teleport");
-                if let Some(field) = tool.input_schema.get_mut("properties").and_then(|v| v.get_mut("accept_cache_loss")) {
-                    field["description"] = json!("Explicit approval for this teleport to a different Codex account. The provider prompt cache will be lost.");
-                }
+                let field = tool.input_schema.get_mut("properties")
+                    .and_then(Value::as_object_mut).and_then(|v| v.get_mut("accept_cache_loss"))
+                    .and_then(Value::as_object_mut).ok_or(Refusal::MalformedCatalog)?;
+                field.insert("description".into(), json!("Explicit approval for this teleport to a different Codex account. The provider prompt cache will be lost."));
             }
             "orchestration_agent_manage" if !s.settings.is_lead => {
                 tool.description = "Park yourself or a descendant on a named event, list parked workers, or cancel a wait. Only the lead emits events.".into();
-                if let Some(properties) = tool.input_schema.get_mut("properties") {
-                    properties["action"] = json!({"type":"string","enum":["park","list_parked","cancel_park"]});
-                }
+                let properties = tool.input_schema.get_mut("properties")
+                    .and_then(Value::as_object_mut).ok_or(Refusal::MalformedCatalog)?;
+                properties.insert("action".into(), json!({"type":"string","enum":["park","list_parked","cancel_park"]}));
             }
             "orchestration_spawn" if !s.actor.cwd.is_empty() => tool.description.push_str(&format!(" Default cwd for your workers: {}. A shell cd does not change it; pass cwd when you work in a subfolder.", s.actor.cwd)),
             "orchestration_complaint" => tool.description = if s.settings.is_lead {
@@ -312,7 +346,7 @@ pub fn tool_definitions(s: &Snapshot) -> Vec<ToolDefinition> {
         }
         result.push(tool);
     }
-    result
+    Ok(result)
 }
 
 fn progress_directory(s: &Snapshot) -> Option<&str> {
@@ -325,6 +359,12 @@ fn progress_directory(s: &Snapshot) -> Option<&str> {
 }
 
 fn refusal(s: &Snapshot) -> Option<Refusal> {
+    if s.actor.thread_id.as_deref() == Some("") {
+        return Some(Refusal::EmptyThreadIdentity);
+    }
+    if s.settings.daybreak_enabled == Stored::Present(Some(true)) {
+        return Some(Refusal::Daybreak);
+    }
     match s.workspace {
         WorkspaceReadiness::Image => Some(Refusal::ImageWorkspace),
         WorkspaceReadiness::Vm => Some(Refusal::VmWorkspace),
@@ -340,18 +380,26 @@ fn role_text(s: &Snapshot) -> &str {
         .unwrap_or(&s.guidance.role)
 }
 
-pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
+pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outcome {
     if let Some(reason) = refusal(s) {
         return Outcome::Refuse(reason);
     }
     if s.closed || s.actor.deleted {
         return Outcome::Hold(HoldReason::Inactive);
     }
-    if let Some(reason) = s.admission {
+    if let Some(reason) = s.admission
+        && !(reason == HoldReason::NativeRelease
+            && unsubmitted_inspection(s, s.actor.thread_id.as_deref()))
+    {
         return Outcome::Hold(reason);
     }
     if !s.account.available {
         return Outcome::Hold(HoldReason::ConnectionUnavailable);
+    }
+    if s.pending.as_ref().is_some_and(|p| {
+        p.agent_id != s.actor.id || p.epoch != s.actor.epoch || p.account_key != s.account.key
+    }) {
+        return Outcome::Refuse(Refusal::PreparationIdentity);
     }
     if s.pending
         .as_ref()
@@ -390,6 +438,10 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
     if role_text(s).is_empty() {
         return Outcome::Refuse(Refusal::MissingGuidance);
     }
+    let tools = match tool_definitions(s) {
+        Ok(tools) => tools,
+        Err(reason) => return Outcome::Refuse(reason),
+    };
     let method = if s.actor.thread_id.is_some() {
         Method::Resume
     } else {
@@ -427,14 +479,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
     let mut params = Map::new();
     params.insert("cwd".into(), json!(s.actor.cwd));
     params.insert("config".into(), json!(config));
-    params.insert(
-        "serviceTier".into(),
-        json!(if s.settings.fast_mode {
-            "priority"
-        } else {
-            "default"
-        }),
-    );
+    params.insert("serviceTier".into(), json!(service_tier(&s.settings)));
     if let Some(model) = s.settings.model.as_ref().filter(|m| !m.is_empty()) {
         params.insert("model".into(), json!(model));
     }
@@ -482,7 +527,6 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
     }
     params.insert("developerInstructions".into(), json!(instructions));
     let tool_catalog = if method == Method::Start || s.account.provider == Provider::Claude {
-        let tools = tool_definitions(s);
         params.insert("dynamicTools".into(), json!(tools));
         Some(tools)
     } else {
@@ -505,16 +549,34 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
         })
         .map_or(next_attempt_id, |p| p.attempt_id.as_str())
         .to_owned();
-    let before_submit = AgentPatch {
+    let mut before_submit = AgentPatch {
         set: Map::from_iter([
             ("prepareAttempt".into(), json!(attempt_id)),
             ("nativeTeleportTool".into(), json!(session_tool(s))),
-            ("nativeRoleGuidance".into(), json!(role_text(s))),
+            (
+                "nativeRoleGuidance".into(),
+                json!(
+                    s.actor
+                        .native_role_guidance
+                        .as_deref()
+                        .unwrap_or(role_text(s))
+                ),
+            ),
             ("nativeToolSource".into(), json!(source)),
         ]),
         remove: Vec::new(),
     };
+    if !s.actor.native_effort_present {
+        before_submit
+            .set
+            .insert("effort".into(), json!(s.settings.effort));
+        before_submit
+            .set
+            .insert("nativeEffort".into(), json!(s.settings.native_effort));
+    }
     let attempt = Box::new(PreparedAttempt {
+        transport_ticket: transport_ticket.to_owned(),
+        native_release_id: preparation_release_id(s),
         request_digest,
         operation_id: format!("prepare:{}:{}", s.actor.id, attempt_id),
         attempt_id,
@@ -532,9 +594,30 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str) -> Outcome {
     }
 }
 
+fn service_tier(settings: &Settings) -> &'static str {
+    if settings.fast_mode {
+        "priority"
+    } else {
+        "default"
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TurnInput {
+    pub events: Vec<TurnEvent>,
+    pub has_assets: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnEvent {
+    pub kind: String,
+    pub text: String,
+}
+
 /// Turn overrides must be sent even when a subscribed thread ignored resume options.
 /// The turn compiler adds ordered input and clientUserMessageId separately.
-pub fn turn_params(s: &Snapshot) -> Result<Map<String, Value>, Refusal> {
+pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>, Refusal> {
     if let Some(reason) = refusal(s) {
         return Err(reason);
     }
@@ -542,16 +625,14 @@ pub fn turn_params(s: &Snapshot) -> Result<Map<String, Value>, Refusal> {
         ("threadId".into(), json!(s.actor.thread_id)),
         ("model".into(), json!(s.settings.model)),
         ("cwd".into(), json!(s.actor.cwd)),
-        (
-            "serviceTier".into(),
-            json!(if s.settings.fast_mode {
-                "priority"
-            } else {
-                "default"
-            }),
-        ),
+        ("serviceTier".into(), json!(service_tier(&s.settings))),
     ]);
-    if let Some(effort) = &s.settings.native_effort {
+    let effort = if s.actor.native_effort_present {
+        &s.settings.native_effort
+    } else {
+        &s.settings.effort
+    };
+    if let Some(effort) = effort {
         params.insert("effort".into(), json!(effort));
     }
     if let Some(yolo) = s.settings.yolo_mode {
@@ -573,7 +654,17 @@ pub fn turn_params(s: &Snapshot) -> Result<Map<String, Value>, Refusal> {
         params.insert("sandboxPolicy".into(), sandbox);
     }
     if s.account.provider == Provider::Claude {
-        params.insert("dynamicTools".into(), json!(tool_definitions(s)));
+        params.insert("dynamicTools".into(), json!(tool_definitions(s)?));
+        if let [event] = input.events.as_slice()
+            && event.kind == "user"
+            && !input.has_assets
+            && !event.text.contains('\n')
+        {
+            let command = crate::event_write::python_strip(&event.text);
+            if command.starts_with(['/', '$']) {
+                params.insert("claudeCommand".into(), json!(command));
+            }
+        }
     } else {
         params.insert("cyberAccessProgram".into(), json!("standard"));
     }
@@ -582,6 +673,8 @@ pub fn turn_params(s: &Snapshot) -> Result<Map<String, Value>, Refusal> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderReceipt {
+    /// Authenticated transport/journal metadata, never read from the native result.
+    pub identity: ReceiptIdentity,
     pub thread_id: Option<String>,
     /// Map preserves absent versus explicit null for the provider's model field.
     pub fields: Map<String, Value>,
@@ -589,9 +682,55 @@ pub struct ProviderReceipt {
     pub claude_read_submitted: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptIdentity {
+    pub operation_id: String,
+    pub transport_ticket: String,
+    pub agent_id: String,
+    pub epoch: u64,
+    pub account_key: String,
+    pub connection_id: String,
+}
+
+impl PreparedAttempt {
+    pub fn receipt_identity(&self) -> ReceiptIdentity {
+        ReceiptIdentity {
+            operation_id: self.operation_id.clone(),
+            transport_ticket: self.transport_ticket.clone(),
+            agent_id: self.snapshot.actor.id.clone(),
+            epoch: self.snapshot.actor.epoch,
+            account_key: self.snapshot.account.key.clone(),
+            connection_id: self.snapshot.account.connection_id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloseNotice {
+    pub agent_id: String,
+    pub account_key: String,
+    pub connection_id: String,
+    pub thread_id: String,
+    pub release_id: Option<String>,
+}
+
+/// An unsubscribe close associated before resume cannot unload that new attempt.
+pub fn preparation_unloaded(attempt: &PreparedAttempt, close: &CloseNotice) -> bool {
+    close.agent_id == attempt.snapshot.actor.id
+        && close.account_key == attempt.snapshot.account.key
+        && close.connection_id == attempt.snapshot.account.connection_id
+        && Some(&close.thread_id) == attempt.snapshot.actor.thread_id.as_ref()
+        && !(attempt
+            .native_release_id
+            .as_ref()
+            .is_some_and(|id| !id.is_empty())
+            && attempt.native_release_id == close.release_id)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StaleReason {
+    ReceiptIdentity,
     Inactive,
     Agent,
     Epoch,
@@ -619,11 +758,13 @@ pub fn reduce_receipt(
     attempt: &PreparedAttempt,
     current: &Snapshot,
     receipt: Option<&ProviderReceipt>,
-    unloaded: bool,
+    close: Option<&CloseNotice>,
     resumed_at: Value,
 ) -> ReceiptOutcome {
     let old = &attempt.snapshot;
-    let stale = if unloaded {
+    let stale = if receipt.is_some_and(|r| r.identity != attempt.receipt_identity()) {
+        Some(StaleReason::ReceiptIdentity)
+    } else if close.is_some_and(|close| preparation_unloaded(attempt, close)) {
         Some(StaleReason::Unloaded)
     } else if current.closed || current.actor.deleted {
         Some(StaleReason::Inactive)
@@ -677,46 +818,46 @@ pub fn reduce_receipt(
                 json!(current.settings.model)
             },
         ),
-        (
-            "sandbox".into(),
-            receipt
-                .fields
-                .get("sandbox")
-                .cloned()
-                .unwrap_or(Value::Null),
-        ),
-        (
-            "approvalPolicy".into(),
-            receipt
-                .fields
-                .get("approvalPolicy")
-                .cloned()
-                .unwrap_or(Value::Null),
-        ),
-        (
-            "profile".into(),
-            receipt
-                .fields
-                .get("activePermissionProfile")
-                .cloned()
-                .unwrap_or(Value::Null),
-        ),
     ]);
+    for (source, destination) in [
+        ("sandbox", "sandbox"),
+        ("approvalPolicy", "approvalPolicy"),
+        ("activePermissionProfile", "profile"),
+    ] {
+        set.insert(
+            destination.into(),
+            receipt.fields.get(source).cloned().unwrap_or(Value::Null),
+        );
+    }
     if !(current.account.provider == Provider::Claude
         && (receipt.reattached || receipt.claude_read_submitted))
     {
         set.insert("preparedContext".into(), json!({"epoch":[thread_id,current.actor.compactions],"versions":attempt.context_versions}));
     }
-    if let Some(mut release) = current.actor.native_release.clone()
-        && matches!(
-            release.get("phase").and_then(Value::as_str),
-            Some("released" | "resumed")
-        )
-    {
-        release["phase"] = json!("resumed");
-        release["resumedAt"] = resumed_at;
-        release["resetPending"] = json!(false);
-        set.insert("nativeRelease".into(), release);
+    if let Some(mut release) = current.actor.native_release.clone() {
+        let retired = unsubmitted_inspection(current, Some(thread_id))
+            && release
+                .get("at")
+                .and_then(Value::as_f64)
+                .zip(resumed_at.as_f64())
+                .is_some_and(|(at, now)| at >= 0.0 && at <= now);
+        if retired {
+            if let Some(error) = release.get("error").filter(|v| !v.is_null()).cloned() {
+                release.entry("inspectionError").or_insert(error);
+            }
+            release.insert("error".into(), Value::Null);
+        }
+        if retired
+            || matches!(
+                release.get("phase").and_then(Value::as_str),
+                Some("released" | "resumed")
+            )
+        {
+            release.insert("phase".into(), json!("resumed"));
+            release.insert("resumedAt".into(), resumed_at);
+            release.insert("resetPending".into(), json!(false));
+            set.insert("nativeRelease".into(), json!(release));
+        }
     }
     let mut remove = Vec::new();
     if attempt.method == Method::Start
@@ -780,12 +921,81 @@ pub fn catalog_digest(tools: &[ToolDefinition]) -> String {
     let catalog: Vec<Value> = tools
         .iter()
         .map(|tool| {
-            let mut value = json!(tool);
-            if value.get("type").is_none() {
-                value["type"] = json!("function");
-            }
-            value
+            let mut fields = tool.extra.clone();
+            fields.insert("name".into(), json!(tool.name));
+            fields.insert("description".into(), json!(tool.description));
+            fields.insert("inputSchema".into(), json!(tool.input_schema));
+            fields.entry("type").or_insert(json!("function"));
+            Value::Object(fields)
         })
         .collect();
     sha256_hex(compact(&json!(catalog)).as_bytes())
+}
+
+fn release_scope(s: &Snapshot, release: &Map<String, Value>, thread_id: Option<&str>) -> bool {
+    release.get("targetEpoch").and_then(Value::as_u64) == Some(s.actor.epoch)
+        && release.get("threadId").and_then(Value::as_str) == thread_id
+        && release.get("accountKey").and_then(Value::as_str) == Some(s.account.key.as_str())
+        && release.get("targetRootId").and_then(Value::as_str) == Some(s.actor.root_id.as_str())
+        && release.get("targetParentId") == Some(&json!(s.actor.parent_id))
+}
+
+fn unsubmitted_inspection(s: &Snapshot, thread_id: Option<&str>) -> bool {
+    let Some(release) = &s.actor.native_release else {
+        return false;
+    };
+    let phase = release.get("phase").and_then(Value::as_str);
+    s.account.provider == Provider::Codex
+        && s.actor.auto_wake
+        && s.account.available
+        && !s.closed
+        && !s.actor.deleted
+        && thread_id.is_some_and(|id| !id.is_empty())
+        && (phase == Some("blocked")
+            || (release.get("phase").is_none_or(Value::is_null)
+                && release.get("inspectionPhase").and_then(Value::as_str) == Some("superseded")))
+        && release.get("resetPending") == Some(&json!(false))
+        && !release.contains_key("submittedAt")
+        && !release.contains_key("closedAt")
+        && release
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && release.get("connectionId").and_then(Value::as_str)
+            == Some(s.account.connection_id.as_str())
+        && !s.account.key.is_empty()
+        && !s.account.connection_id.is_empty()
+        && release_scope(s, release, thread_id)
+}
+
+fn preparation_release_id(s: &Snapshot) -> Option<String> {
+    let release = s.actor.native_release.as_ref()?;
+    if release.get("phase").and_then(Value::as_str) != Some("released")
+        || release.get("threadId").and_then(Value::as_str) != s.actor.thread_id.as_deref()
+        || crate::event_write::truthy(release.get("closedAt"))
+    {
+        return None;
+    }
+    let same_connection = release.get("connectionId").and_then(Value::as_str)
+        == Some(s.account.connection_id.as_str());
+    let retained = !release.contains_key("closedAt")
+        && s.account.available
+        && !s.account.connection_id.is_empty()
+        && release
+            .get("connectionId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && release_scope(s, release, s.actor.thread_id.as_deref())
+        && s.account
+            .supervisor_identity
+            .as_ref()
+            .is_some_and(|identity| {
+                identity.generation > 0
+                    && release.get("supervisorIdentity") == Some(&json!(identity))
+            });
+    if same_connection || retained {
+        release.get("id").and_then(Value::as_str).map(str::to_owned)
+    } else {
+        None
+    }
 }

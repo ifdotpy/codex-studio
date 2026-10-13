@@ -12,7 +12,11 @@
     "native_tool_update": null,
     "error": null,
     "native_release": null,
-    "deleted": false
+    "deleted": false,
+    "root_id": "root",
+    "parent_id": null,
+    "auto_wake": true,
+    "native_effort_present": true
   },
   "root": {
     "can_delegate": true,
@@ -22,7 +26,8 @@
     "key": "account",
     "provider": "codex",
     "connection_id": "connection",
-    "available": true
+    "available": true,
+    "supervisor_identity": null
   },
   "settings": {
     "model": "model-selected",
@@ -34,7 +39,13 @@
     "role": "orchestrator",
     "is_lead": true,
     "needs_title": false,
-    "claude_options": {}
+    "claude_options": {},
+    "daybreak_enabled": {
+      "state": "absent"
+    },
+    "cyber_access_program": {
+      "state": "absent"
+    }
   },
   "guidance": {
     "instructions": "System guidance",

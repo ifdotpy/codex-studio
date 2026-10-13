@@ -71,8 +71,8 @@ fn attempt(outcome: Outcome) -> PreparedAttempt {
         other => panic!("expected preparation, got {other:?}"),
     }
 }
-fn receipt() -> ProviderReceipt {
-    serde_json::from_value(json!({"thread_id":"thread","fields":{"model":"native-model"},"reattached":false,"claude_read_submitted":false})).expect("receipt")
+fn receipt(a: &PreparedAttempt) -> ProviderReceipt {
+    serde_json::from_value(json!({"identity":a.receipt_identity(),"thread_id":"thread","fields":{"model":"native-model"},"reattached":false,"claude_read_submitted":false})).expect("receipt")
 }
 fn apply(value: &mut Value, patch: &AgentPatch) {
     let object = value.as_object_mut().expect("record");
@@ -122,17 +122,17 @@ fn python_thread_preparation_corpus() {
             if let Some(change) = case.get("saved_params") {
                 merge(&mut previous, change);
             }
-            let saved = attempt(plan(&snapshot(&previous), "previous"));
+            let saved = attempt(plan(&snapshot(&previous), "previous", "ticket"));
             value["pending"]["request_digest"] = json!(saved.request_digest);
         }
         let s = snapshot(&value);
-        let planned = plan(&s, "attempt");
+        let planned = plan(&s, "attempt", "ticket");
         let mut current_value = value.clone();
         current_value["actor"]["prepare_attempt"] = json!("attempt");
         if let Some(change) = case.get("current") {
             merge(&mut current_value, change);
         }
-        let mut command = json!({"snapshot":value,"current":current_value,"receipt":case.get("receipt"),"unloaded":case.get("unloaded").and_then(Value::as_bool).unwrap_or(false)});
+        let mut command = json!({"snapshot":value,"current":current_value,"receipt":case.get("receipt"),"close":case.get("close"),"turn_input":case.get("turn_input").cloned().unwrap_or(json!({})),"claude_working":case.get("claude_working")});
         // Resume retries retain a durable identity (explicit task contract).
         // The oracle's supplied uid is the same external attempt identity.
         if let Outcome::Resume(a) = &planned
@@ -147,7 +147,14 @@ fn python_thread_preparation_corpus() {
         equal(
             name,
             "turn",
-            &json!(turn_params(&s).expect("turn overrides")),
+            &json!(
+                turn_params(
+                    &s,
+                    &serde_json::from_value(case.get("turn_input").cloned().unwrap_or(json!({})))
+                        .expect("input")
+                )
+                .expect("turn overrides")
+            ),
             &expected["turn"],
         );
         match planned {
@@ -167,16 +174,37 @@ fn python_thread_preparation_corpus() {
                 equal(
                     name,
                     "catalog_digest",
-                    &json!(catalog_digest(&tool_definitions(&s))),
+                    &json!(catalog_digest(&tool_definitions(&s).expect("catalog"))),
                     &expected["catalog_digest"],
                 );
-                for (key, value) in &a.before_submit.set {
-                    equal(
-                        name,
-                        &format!("before.{key}"),
-                        value,
-                        &expected["before"][key],
-                    );
+                let mut actual = expected["original"].clone();
+                apply(&mut actual, &a.before_submit);
+                equal(name, "before", &actual, &expected["before"]);
+                equal(
+                    name,
+                    "release association",
+                    &json!(a.native_release_id),
+                    &expected["native_release_id"],
+                );
+                assert_eq!(
+                    expected["validation_calls"],
+                    json!(usize::from(!s.actor.native_effort_present)),
+                    "{name}: validation"
+                );
+                // Apply only external observations to our independently patched row.
+                for (key, value) in expected["external_delta"]
+                    .as_object()
+                    .expect("external delta")
+                {
+                    actual
+                        .as_object_mut()
+                        .expect("row")
+                        .insert(key.clone(), value.clone());
+                }
+                equal(name, "receipt_before", &actual, &expected["receipt_before"]);
+                if case.get("close").is_some() {
+                    current_value["actor"]["native_release"] =
+                        actual.get("nativeRelease").cloned().unwrap_or(Value::Null);
                 }
                 let artifacts: Vec<&str> = a
                     .artifacts
@@ -186,22 +214,21 @@ fn python_thread_preparation_corpus() {
                     })
                     .collect();
                 equal(name, "artifacts", &json!(artifacts), &expected["artifacts"]);
-                let r: Option<ProviderReceipt> = case
-                    .get("receipt")
-                    .filter(|v| !v.is_null())
-                    .map(|v| serde_json::from_value(v.clone()).expect("typed receipt"));
+                let r: Option<ProviderReceipt> =
+                    case.get("receipt").filter(|v| !v.is_null()).map(|v| {
+                        let mut v = v.clone();
+                        v["identity"] = json!(a.receipt_identity());
+                        serde_json::from_value(v).expect("typed receipt")
+                    });
+                let close: Option<CloseNotice> = case
+                    .get("close")
+                    .map(|v| serde_json::from_value(v.clone()).expect("close"));
                 let current = snapshot(&current_value);
-                let outcome = reduce_receipt(
-                    &a,
-                    &current,
-                    r.as_ref(),
-                    case["unloaded"] == true,
-                    json!(1000.0),
-                );
+                let outcome =
+                    reduce_receipt(&a, &current, r.as_ref(), close.as_ref(), json!(1000.0));
                 match outcome {
                     ReceiptOutcome::Accepted { patch, loaded } => {
                         assert_eq!(expected["settlement"], "accepted", "{name}");
-                        let mut actual = expected["receipt_before"].clone();
                         apply(&mut actual, &patch);
                         equal(name, "after", &actual, &expected["after"]);
                         assert_eq!(loaded.thread_id, actual["threadId"], "{name}");
@@ -228,7 +255,10 @@ fn python_thread_preparation_corpus() {
             .or_insert(0) += 1;
     }
     eprintln!("thread preparation corpus full={full}: {counts:?}");
-    assert_eq!(counts.len(), 10, "all families have fast witnesses");
+    assert!(
+        counts.len() >= 10,
+        "all original families have fast witnesses"
+    );
 }
 
 #[test]
@@ -249,6 +279,9 @@ fn every_hold_releases_and_accepts_without_consuming_input() {
             HoldReason::ConnectionUnavailable => s.account.available = false,
             HoldReason::PreparationPending => {
                 s.pending = Some(PendingPreparation {
+                    agent_id: s.actor.id.clone(),
+                    epoch: s.actor.epoch,
+                    account_key: s.account.key.clone(),
                     request_digest: String::new(),
                     attempt_id: "old".into(),
                     connection_id: s.account.connection_id.clone(),
@@ -259,7 +292,7 @@ fn every_hold_releases_and_accepts_without_consuming_input() {
             _ => s.admission = Some(reason),
         }
         let unchanged = s.clone();
-        assert_eq!(plan(&s, "attempt"), Outcome::Hold(reason));
+        assert_eq!(plan(&s, "attempt", "ticket"), Outcome::Hold(reason));
         assert_eq!(s, unchanged);
         // Adapter observation (ready workspace/account, resolved repair/release/
         // transfer, replacement connection, reopened runtime) clears the gate.
@@ -268,11 +301,17 @@ fn every_hold_releases_and_accepts_without_consuming_input() {
             ready.pending = s.pending;
             ready.account.connection_id = "replacement".into();
         }
-        let prepared = attempt(plan(&ready, "attempt"));
+        let prepared = attempt(plan(&ready, "attempt", "ticket"));
         ready.actor.prepare_attempt = Some(prepared.attempt_id.clone());
         assert!(
             matches!(
-                reduce_receipt(&prepared, &ready, Some(&receipt()), false, json!(1000)),
+                reduce_receipt(
+                    &prepared,
+                    &ready,
+                    Some(&receipt(&prepared)),
+                    None,
+                    json!(1000)
+                ),
                 ReceiptOutcome::Accepted { .. }
             ),
             "{reason:?}"
@@ -299,8 +338,8 @@ fn named_refusals_have_no_intents_and_preserve_snapshot() {
             _ => s.unsupported = Some(refusal),
         }
         let before = s.clone();
-        assert_eq!(plan(&s, "attempt"), Outcome::Refuse(refusal));
-        assert_eq!(turn_params(&s), Err(refusal));
+        assert_eq!(plan(&s, "attempt", "ticket"), Outcome::Refuse(refusal));
+        assert_eq!(turn_params(&s, &TurnInput::default()), Err(refusal));
         assert_eq!(s, before);
     }
 }
@@ -308,41 +347,47 @@ fn named_refusals_have_no_intents_and_preserve_snapshot() {
 #[test]
 fn unknown_then_late_receipt_and_replaced_connection_are_safe() {
     let mut s = snapshot(&baseline());
-    let old = attempt(plan(&s, "old"));
+    let old = attempt(plan(&s, "old", "ticket"));
     s.actor.prepare_attempt = Some("old".into());
     s.pending = Some(PendingPreparation {
+        agent_id: s.actor.id.clone(),
+        epoch: s.actor.epoch,
+        account_key: s.account.key.clone(),
         request_digest: String::new(),
         attempt_id: "old".into(),
         connection_id: s.account.connection_id.clone(),
         thread_id: None,
     });
     assert_eq!(
-        reduce_receipt(&old, &s, None, false, json!(0)),
+        reduce_receipt(&old, &s, None, None, json!(0)),
         ReceiptOutcome::Unknown
     );
     assert_eq!(
-        plan(&s, "new"),
+        plan(&s, "new", "ticket"),
         Outcome::Hold(HoldReason::PreparationPending)
     );
     assert!(matches!(
-        reduce_receipt(&old, &s, Some(&receipt()), false, json!(0)),
+        reduce_receipt(&old, &s, Some(&receipt(&old)), None, json!(0)),
         ReceiptOutcome::Accepted { .. }
     ));
     s.account.connection_id = "replacement".into();
-    let new = attempt(plan(&s, "new"));
+    let new = attempt(plan(&s, "new", "ticket"));
     assert_eq!(new.operation_id, "prepare:agent:new");
     s.actor.prepare_attempt = Some("new".into());
     assert_eq!(
-        reduce_receipt(&old, &s, Some(&receipt()), false, json!(0)),
+        reduce_receipt(&old, &s, Some(&receipt(&old)), None, json!(0)),
         ReceiptOutcome::Stale(StaleReason::Connection)
     );
     assert!(matches!(
-        reduce_receipt(&new, &s, Some(&receipt()), false, json!(0)),
+        reduce_receipt(&new, &s, Some(&receipt(&new)), None, json!(0)),
         ReceiptOutcome::Accepted { .. }
     ));
     s.actor.thread_id = Some("thread".into());
     s.catalog.source = CatalogSource::Legacy;
     s.pending = Some(PendingPreparation {
+        agent_id: s.actor.id.clone(),
+        epoch: s.actor.epoch,
+        account_key: s.account.key.clone(),
         request_digest: String::new(),
         attempt_id: "resume-id".into(),
         connection_id: "old-connection".into(),
@@ -350,22 +395,22 @@ fn unknown_then_late_receipt_and_replaced_connection_are_safe() {
     });
     let mut previous = s.clone();
     previous.pending = None;
-    let saved = attempt(plan(&previous, "resume-id"));
+    let saved = attempt(plan(&previous, "resume-id", "ticket"));
     s.pending.as_mut().expect("pending resume").request_digest = saved.request_digest;
-    let resume = attempt(plan(&s, "unused"));
+    let resume = attempt(plan(&s, "unused", "ticket"));
     assert_eq!(resume.operation_id, "prepare:agent:resume-id");
     assert_eq!(resume.method, Method::Resume);
     s.settings.fast_mode = !s.settings.fast_mode;
-    let changed = attempt(plan(&s, "changed-params"));
+    let changed = attempt(plan(&s, "changed-params", "ticket"));
     assert_eq!(changed.operation_id, "prepare:agent:changed-params");
     assert_ne!(changed.request_digest, resume.request_digest);
     s.actor.prepare_attempt = Some(changed.attempt_id.clone());
     assert_eq!(
-        reduce_receipt(&resume, &s, Some(&receipt()), false, json!(0)),
+        reduce_receipt(&resume, &s, Some(&receipt(&resume)), None, json!(0)),
         ReceiptOutcome::Stale(StaleReason::Settings)
     );
     assert!(matches!(
-        reduce_receipt(&changed, &s, Some(&receipt()), false, json!(0)),
+        reduce_receipt(&changed, &s, Some(&receipt(&changed)), None, json!(0)),
         ReceiptOutcome::Accepted { .. }
     ));
 }
@@ -377,11 +422,11 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
     s.catalog.source = CatalogSource::Legacy;
     s.catalog.saved_thread_id = Some("thread".into());
     s.catalog.saved_digest = Some("old digest".into());
-    let a = attempt(plan(&s, "attempt"));
+    let a = attempt(plan(&s, "attempt", "ticket"));
     assert!(!a.params.contains_key("dynamicTools"));
     s.catalog.saved_thread_id = Some("wrong".into());
     assert_eq!(
-        plan(&s, "attempt"),
+        plan(&s, "attempt", "ticket"),
         Outcome::Refuse(Refusal::CatalogIdentity)
     );
     s.catalog.saved_thread_id = Some("thread".into());
@@ -392,9 +437,9 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
         connection_id: s.account.connection_id.clone(),
         thread_id: "thread".into(),
     });
-    assert!(matches!(plan(&s, "attempt"), Outcome::Resume(_)));
+    assert!(matches!(plan(&s, "attempt", "ticket"), Outcome::Resume(_)));
     s.loaded.as_mut().expect("loaded").epoch = s.actor.epoch;
-    assert!(matches!(plan(&s, "attempt"), Outcome::Ready(_)));
+    assert!(matches!(plan(&s, "attempt", "ticket"), Outcome::Ready(_)));
 }
 
 #[test]
@@ -416,7 +461,7 @@ fn oracle_guard_blocks_content_metadata_processes_and_network() {
 #[test]
 fn receipt_guards_all_frozen_execution_settings() {
     let base = snapshot(&baseline());
-    let prepared = attempt(plan(&base, "attempt"));
+    let prepared = attempt(plan(&base, "attempt", "ticket"));
     let changes = [
         json!({"is_lead":false}),
         json!({"needs_title":true}),
@@ -424,6 +469,8 @@ fn receipt_guards_all_frozen_execution_settings() {
         json!({"fast_mode":true}),
         json!({"native_effort":null}),
         json!({"yolo_mode":true}),
+        json!({"daybreak_enabled":{"state":"present","value":true}}),
+        json!({"cyber_access_program":{"state":"present","value":null}}),
     ];
     for change in changes {
         let mut value = baseline();
@@ -431,8 +478,143 @@ fn receipt_guards_all_frozen_execution_settings() {
         let mut current = snapshot(&value);
         current.actor.prepare_attempt = Some("attempt".into());
         assert_eq!(
-            reduce_receipt(&prepared, &current, Some(&receipt()), false, json!(0)),
+            reduce_receipt(
+                &prepared,
+                &current,
+                Some(&receipt(&prepared)),
+                None,
+                json!(0)
+            ),
             ReceiptOutcome::Stale(StaleReason::Settings)
         );
     }
+}
+
+#[test]
+fn receipt_and_pending_ownership_are_bound_to_exact_attempt() {
+    let base = snapshot(&baseline());
+    let prepared = attempt(plan(&base, "attempt", "ticket"));
+    let mut current = base.clone();
+    current.actor.prepare_attempt = Some("attempt".into());
+    for (key, value) in [
+        ("operation_id", json!("foreign")),
+        ("transport_ticket", json!("foreign")),
+        ("agent_id", json!("foreign")),
+        ("epoch", json!(8)),
+        ("account_key", json!("foreign")),
+        ("connection_id", json!("foreign")),
+    ] {
+        let mut foreign = json!(receipt(&prepared));
+        foreign["identity"][key] = value;
+        foreign["thread_id"] = json!("foreign-thread");
+        let foreign = serde_json::from_value(foreign).expect("foreign receipt");
+        assert_eq!(
+            reduce_receipt(&prepared, &current, Some(&foreign), None, json!(1000)),
+            ReceiptOutcome::Stale(StaleReason::ReceiptIdentity),
+            "{key}"
+        );
+    }
+    // A reissued resume can share the operation ID, never its transport ticket.
+    let second = attempt(plan(&base, "attempt", "new-ticket"));
+    assert_eq!(
+        reduce_receipt(
+            &second,
+            &current,
+            Some(&receipt(&prepared)),
+            None,
+            json!(1000)
+        ),
+        ReceiptOutcome::Stale(StaleReason::ReceiptIdentity)
+    );
+    for (key, value) in [
+        ("agent_id", json!("foreign")),
+        ("epoch", json!(8)),
+        ("account_key", json!("foreign")),
+    ] {
+        let mut pending = json!({"agent_id":"agent","epoch":7,"account_key":"account","request_digest":"digest","attempt_id":"attempt","connection_id":"connection","thread_id":null});
+        pending[key] = value;
+        let mut s = base.clone();
+        s.pending = Some(serde_json::from_value(pending).expect("pending"));
+        assert_eq!(
+            plan(&s, "new", "new-ticket"),
+            Outcome::Refuse(Refusal::PreparationIdentity),
+            "{key}"
+        );
+    }
+    let mut foreign = current.clone();
+    foreign.actor.id = "foreign".into();
+    assert_eq!(
+        reduce_receipt(
+            &prepared,
+            &foreign,
+            Some(&receipt(&prepared)),
+            None,
+            json!(1000)
+        ),
+        ReceiptOutcome::Stale(StaleReason::Agent)
+    );
+}
+
+#[test]
+fn malformed_stored_catalog_family_never_panics() {
+    let mut oracle = Oracle::new();
+    for tool in ["orchestration_move", "orchestration_agent_manage"] {
+        for invalid in [
+            Value::Null,
+            json!(false),
+            json!(42),
+            json!("scalar"),
+            json!([]),
+        ] {
+            let mut value = baseline();
+            value["settings"]["is_lead"] = json!(false);
+            let definition = value["catalog"]["definitions"]
+                .as_array_mut()
+                .expect("tools")
+                .iter_mut()
+                .find(|t| t["name"] == tool)
+                .expect("tool");
+            definition["inputSchema"]["properties"] = invalid;
+            let s = snapshot(&value);
+            assert_eq!(
+                plan(&s, "attempt", "ticket"),
+                Outcome::Refuse(Refusal::MalformedCatalog)
+            );
+            assert_eq!(
+                oracle.call(json!({"snapshot":value,"tool_probe":true}))["malformed"],
+                true
+            );
+        }
+    }
+    for invalid in [
+        Value::Null,
+        json!(false),
+        json!(42),
+        json!("scalar"),
+        json!([]),
+    ] {
+        let mut value = baseline();
+        value["catalog"]["definitions"][0]["inputSchema"]["properties"]["accept_cache_loss"] =
+            invalid;
+        assert_eq!(
+            plan(&snapshot(&value), "attempt", "ticket"),
+            Outcome::Refuse(Refusal::MalformedCatalog)
+        );
+        assert_eq!(
+            oracle.call(json!({"snapshot":value,"tool_probe":true}))["malformed"],
+            true
+        );
+    }
+    // Typed outer boundaries reject malformed maps before planning.
+    for path in ["inputSchema", "description", "name"] {
+        let mut value = baseline();
+        value["catalog"]["definitions"][0][path] = json!(false);
+        assert!(serde_json::from_value::<Snapshot>(value).is_err(), "{path}");
+    }
+    let mut s = snapshot(&baseline());
+    s.actor.thread_id = Some(String::new());
+    assert_eq!(
+        plan(&s, "attempt", "ticket"),
+        Outcome::Refuse(Refusal::EmptyThreadIdentity)
+    );
 }

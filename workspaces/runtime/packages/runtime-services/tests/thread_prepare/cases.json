@@ -6486,7 +6486,6 @@
         "epoch": 8
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6513,7 +6512,6 @@
         "key": "other"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6540,7 +6538,6 @@
         "connection_id": "other"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6567,7 +6564,6 @@
         "cwd": "/other"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6594,7 +6590,6 @@
         "model": "changed"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6621,7 +6616,6 @@
         "thread_id": "changed"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6648,7 +6642,6 @@
         "prepare_attempt": "other"
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6673,7 +6666,6 @@
     "current": {
       "closed": true
     },
-    "unloaded": false,
     "fast": true
   },
   {
@@ -6700,13 +6692,19 @@
         "deleted": true
       }
     },
-    "unloaded": false,
     "fast": true
   },
   {
     "family": "stale",
     "name": "unloaded",
-    "snapshot": {},
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
     "receipt": {
       "thread_id": "thread",
       "fields": {
@@ -6723,8 +6721,14 @@
       "claude_read_submitted": false
     },
     "current": {},
-    "unloaded": true,
-    "fast": true
+    "fast": true,
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": null
+    }
   },
   {
     "family": "replacement",
@@ -6742,7 +6746,10 @@
       "pending": {
         "attempt_id": "previous",
         "connection_id": "connection",
-        "thread_id": null
+        "thread_id": null,
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
       }
     },
     "fast": true
@@ -6763,7 +6770,10 @@
       "pending": {
         "attempt_id": "previous",
         "connection_id": "old",
-        "thread_id": null
+        "thread_id": null,
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
       }
     },
     "fast": true
@@ -6784,7 +6794,10 @@
       "pending": {
         "attempt_id": "previous",
         "connection_id": "connection",
-        "thread_id": "thread"
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
       }
     },
     "fast": true
@@ -6805,7 +6818,10 @@
       "pending": {
         "attempt_id": "previous",
         "connection_id": "old",
-        "thread_id": "thread"
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
       }
     },
     "fast": true
@@ -6876,7 +6892,10 @@
       "pending": {
         "attempt_id": "previous",
         "connection_id": "old",
-        "thread_id": "thread"
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
       }
     },
     "fast": true,
@@ -6884,6 +6903,1292 @@
       "settings": {
         "fast_mode": true
       }
+    }
+  },
+  {
+    "name": "saved-empty-role",
+    "family": "guidance",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_role_guidance": ""
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "missing-native-effort-high",
+    "family": "native-effort",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_effort_present": false
+      },
+      "settings": {
+        "effort": "high",
+        "native_effort": "high"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "missing-native-effort-None",
+    "family": "native-effort",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_effort_present": false
+      },
+      "settings": {
+        "effort": null,
+        "native_effort": "medium"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-None",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-False",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": false
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-True",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": true
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-None",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-standard",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "standard"
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-other",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "other"
+        }
+      }
+    }
+  },
+  {
+    "name": "command-'/compact'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-'  $skill  '",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "  $skill  "
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-' /compact\\n'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": " /compact\n"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-' /compact\\r'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": " /compact\r"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-'ordinary'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "ordinary"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-assets",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": true
+    }
+  },
+  {
+    "name": "command-multiple",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        },
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-followup",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "followup",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-codex",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "inspection-blocked",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-saved-error",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "inspectionError": "original error"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-superseded",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": null,
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "inspectionPhase": "superseded"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-submitted",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "submittedAt": null
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-closed",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": null
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-foreign-epoch",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 8,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-foreign-root",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "foreign",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-future",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 1001,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-invalid-at",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": true,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-negative-at",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": -1,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "release-close-same-connection",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-unrelated-close",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "other-release"
+    }
+  },
+  {
+    "name": "release-close-retained",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "retained",
+            "generation": 1
+          }
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-foreign-supervisor",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "other",
+            "generation": 1
+          }
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-retained-closed-null",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "retained",
+            "generation": 1
+          },
+          "closedAt": null
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "claude-working-read",
+    "family": "receipts",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "claude_working": true
+  },
+  {
+    "name": "release-close-falsey-False",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": false
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-0",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": 0
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-''",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": ""
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-[]",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": []
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-{}",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": {}
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
     }
   }
 ]

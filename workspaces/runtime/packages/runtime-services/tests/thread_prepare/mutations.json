@@ -30,7 +30,7 @@
         "after": "let tool_catalog = if true {"
       }
     ],
-    "witness": "parameters-78"
+    "witness": "parameters-39"
   },
   {
     "id": "thread-resume-model",
@@ -52,7 +52,7 @@
         "after": "let sandbox = if !yolo {"
       }
     ],
-    "witness": "parameters-0"
+    "witness": "parameters-52"
   },
   {
     "id": "thread-stale-epoch",
@@ -119,5 +119,214 @@
       }
     ],
     "witness": "replacement-resume-changed-parameters"
+  },
+  {
+    "id": "thread-omit-prepareAttempt",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "    let attempt = Box::new(PreparedAttempt {",
+        "after": "    before_submit.set.remove(\"prepareAttempt\");\n    let attempt = Box::new(PreparedAttempt {"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-omit-nativeTeleportTool",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "    let attempt = Box::new(PreparedAttempt {",
+        "after": "    before_submit.set.remove(\"nativeTeleportTool\");\n    let attempt = Box::new(PreparedAttempt {"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-omit-nativeRoleGuidance",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "    let attempt = Box::new(PreparedAttempt {",
+        "after": "    before_submit.set.remove(\"nativeRoleGuidance\");\n    let attempt = Box::new(PreparedAttempt {"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-omit-nativeToolSource",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "    let attempt = Box::new(PreparedAttempt {",
+        "after": "    before_submit.set.remove(\"nativeToolSource\");\n    let attempt = Box::new(PreparedAttempt {"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-omit-validation-selection",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "    if !s.actor.native_effort_present {",
+        "after": "    if false {"
+      }
+    ],
+    "witness": "missing-native-effort-None"
+  },
+  {
+    "id": "thread-stale-agent",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.actor.id != old.actor.id {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "receipt_and_pending_ownership_are_bound_to_exact_attempt"
+  },
+  {
+    "id": "thread-stale-account",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.account.key != old.account.key {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "account"
+  },
+  {
+    "id": "thread-stale-cwd",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.actor.cwd != old.actor.cwd {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "cwd"
+  },
+  {
+    "id": "thread-stale-settings",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.settings != old.settings || current.account.provider != old.account.provider {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "settings"
+  },
+  {
+    "id": "thread-stale-attempt",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.actor.prepare_attempt.as_deref() != Some(attempt.attempt_id.as_str()) {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "attempt"
+  },
+  {
+    "id": "thread-stale-thread",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.actor.thread_id != old.actor.thread_id {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "thread"
+  },
+  {
+    "id": "thread-stale-inactive",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.closed || current.actor.deleted {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "closed"
+  },
+  {
+    "id": "thread-foreign-receipt",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "let stale = if receipt.is_some_and(|r| r.identity != attempt.receipt_identity()) {",
+        "after": "let stale = if false {"
+      }
+    ],
+    "witness": "receipt_and_pending_ownership_are_bound_to_exact_attempt"
+  },
+  {
+    "id": "thread-foreign-pending",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "p.agent_id != s.actor.id || p.epoch != s.actor.epoch || p.account_key != s.account.key",
+        "after": "false"
+      }
+    ],
+    "witness": "receipt_and_pending_ownership_are_bound_to_exact_attempt"
+  },
+  {
+    "id": "thread-blocked-inspection",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "let retired = unsubmitted_inspection(current, Some(thread_id))",
+        "after": "let retired = false && unsubmitted_inspection(current, Some(thread_id))"
+      }
+    ],
+    "witness": "inspection-blocked"
+  },
+  {
+    "id": "thread-release-association",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "native_release_id: preparation_release_id(s),",
+        "after": "native_release_id: None,"
+      }
+    ],
+    "witness": "release-close-same-connection"
+  },
+  {
+    "id": "thread-release-unloaded",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "&& !(attempt\n            .native_release_id\n            .as_ref()\n            .is_some_and(|id| !id.is_empty())\n            && attempt.native_release_id == close.release_id)",
+        "after": "&& true"
+      }
+    ],
+    "witness": "release-close-same-connection"
+  },
+  {
+    "id": "thread-empty-role",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "                        .unwrap_or(role_text(s))",
+        "after": "                        .filter(|v| !v.is_empty()).unwrap_or(role_text(s))"
+      }
+    ],
+    "witness": "saved-empty-role"
+  },
+  {
+    "id": "thread-claude-command",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "params.insert(\"claudeCommand\".into(), json!(command));",
+        "after": "params.insert(\"claudeCommand\".into(), json!(\"wrong\"));"
+      }
+    ],
+    "witness": "command-'/compact'"
   }
 ]

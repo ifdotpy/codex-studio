@@ -8,48 +8,69 @@
     "Runtime.preparation_context_versions",
     "Runtime.prepared_result",
     "codex_daybreak.turn_params",
-    "codex_native_tools.digest"
+    "codex_native_tools.digest",
+    "Runtime.validate_execution",
+    "Runtime.start turn-parameter statements (AST projection only, never Runtime.start execution)",
+    "Runtime.notification close statements (AST projection)",
+    "codex_native_release.preparation_release_id",
+    "codex_native_release._retire_unsubmitted_inspection"
   ],
   "families": {
     "catalog": {
-      "full": 3,
-      "fast": 3
+      "fast": 3,
+      "full": 3
     },
     "guidance": {
-      "full": 11,
-      "fast": 11
+      "fast": 12,
+      "full": 12
+    },
+    "inspection": {
+      "fast": 10,
+      "full": 10
     },
     "loaded": {
-      "full": 2,
-      "fast": 2
+      "fast": 2,
+      "full": 2
+    },
+    "native-effort": {
+      "fast": 2,
+      "full": 2
     },
     "parameters": {
-      "full": 144,
-      "fast": 12
+      "fast": 12,
+      "full": 144
     },
     "receipts": {
-      "full": 36,
-      "fast": 9
+      "fast": 10,
+      "full": 37
     },
     "release": {
-      "full": 2,
-      "fast": 2
+      "fast": 2,
+      "full": 2
+    },
+    "release-association": {
+      "fast": 10,
+      "full": 10
     },
     "replacement": {
       "fast": 5,
       "full": 5
     },
     "stale": {
-      "full": 10,
-      "fast": 10
+      "fast": 16,
+      "full": 16
     },
     "tools": {
-      "full": 48,
-      "fast": 7
+      "fast": 7,
+      "full": 48
+    },
+    "turn-command": {
+      "fast": 9,
+      "full": 9
     },
     "uncertainty": {
-      "full": 4,
-      "fast": 4
+      "fast": 4,
+      "full": 4
     }
   },
   "effectsOutsidePlanner": [
@@ -80,8 +101,18 @@
     {
       "id": "complete-settings-revalidation",
       "scope": "receipt acceptance only; provider request unchanged",
-      "reason": "Compare the complete frozen Settings, including provider/isLead/needsTitle/claudeOptions. Python preparation_settings compares only a subset. Required by the assigned frozen-settings stale-receipt guard."
+      "reason": "Preserve every Python preparation_settings field including presence-aware daybreakEnabled/cyberAccessProgram; additionally compare provider/isLead/needsTitle/claudeOptions, as required by the assigned frozen-settings guard."
     }
   ],
-  "normalization": "No request/patch/content normalization; timestamps and uid are injected into Python effect boundaries. Opaque extra stored context/catalog are retained and compared."
+  "normalization": "No request/patch/content normalization. Both Rust patches apply to an independent original stored actor, with complete before/after comparison; only external current/close observations are injected between patches. Clock and uid are injected effect boundaries.",
+  "defensiveFamilies": {
+    "malformed-stored-catalog": {
+      "differential": 15,
+      "typed-boundary": 3
+    },
+    "empty-stored-thread": 1,
+    "receipt-binding": 7,
+    "pending-ownership": 3,
+    "actor-ownership": 1
+  }
 }
