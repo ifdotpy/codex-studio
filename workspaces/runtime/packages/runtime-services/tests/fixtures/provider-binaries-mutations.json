@@ -1,0 +1,54 @@
+[
+  {
+    "id": "PB01",
+    "description": "reverse numeric versus text prerelease ordering",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "(PrereleasePart::Numeric(_), PrereleasePart::Text(_)) => Ordering::Less,",
+        "after": "(PrereleasePart::Numeric(_), PrereleasePart::Text(_)) => Ordering::Greater,"
+      }
+    ],
+    "witnesses": [
+      "comparisons: numeric prerelease 1.2.3-2 precedes text prerelease 1.2.3-beta.1"
+    ]
+  },
+  {
+    "id": "PB02",
+    "description": "report equal installed and available versions as an update",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "(available_key > installed).then(|| UpdateNotice {",
+        "after": "(available_key >= installed).then(|| UpdateNotice {"
+      }
+    ],
+    "witnesses": [
+      "comparisons: equal 1.2.3 installed and available versions produce no notice"
+    ]
+  },
+  {
+    "id": "PB03",
+    "description": "suppress warning at the tested baseline version",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "if current >= parse_version(baseline)? {",
+        "after": "if current > parse_version(baseline)? {"
+      }
+    ],
+    "witnesses": ["diagnostics: running version equals the provider baseline"]
+  },
+  {
+    "id": "PB04",
+    "description": "hash the input vector rather than the canonical bundle map",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": ".collect::<std::collections::BTreeMap<_, _>>();",
+        "after": ".collect::<Vec<_>>();"
+      }
+    ],
+    "witnesses": ["hashes: canonical bundle digest matches the Python oracle"]
+  }
+]

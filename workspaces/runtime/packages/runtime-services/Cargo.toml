@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true }
+data-encoding = { workspace = true }
 getrandom = { workspace = true }
 notify = { workspace = true }
 process-wrap = { workspace = true }
