@@ -1,0 +1,72 @@
+[
+  {
+    "id": "cancel-priority",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "if snapshot.fields.cancel_requested {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "success-codes",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "snapshot.fields.success_exit_codes.contains(&c)",
+        "after": "c == 0"
+      }
+    ]
+  },
+  {
+    "id": "tail-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "pub const TAIL_CHARS: usize = 12_000;",
+        "after": "pub const TAIL_CHARS: usize = 11_999;"
+      }
+    ]
+  },
+  {
+    "id": "stall-generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "f.activity_generation <= f.stall_wake_generation",
+        "after": "f.activity_generation < f.stall_wake_generation"
+      }
+    ]
+  },
+  {
+    "id": "unknown-input",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "if matches!(outcome, InputOutcome::Unknown(_)) {\n        decision.record[\"inputAttempt\"] = receipt;",
+        "after": "if false {\n        decision.record[\"inputAttempt\"] = receipt;"
+      }
+    ]
+  },
+  {
+    "id": "result-ack-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_receipts.rs",
+    "edits": [
+      {
+        "before": "restore(store, &saved)?;\n    acknowledge(store.root(), &saved.key)",
+        "after": "acknowledge(store.root(), &saved.key)?;\n    restore(store, &saved)"
+      }
+    ]
+  },
+  {
+    "id": "output-replay",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_output.rs",
+    "edits": [
+      {
+        "before": "if offset < count {",
+        "after": "if offset < count && false {"
+      }
+    ]
+  }
+]
