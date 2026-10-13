@@ -683,7 +683,9 @@ async fn callback_unknown_write_is_not_resent_on_replay() {
     let wire = peer.next_write().await;
     wire.receipt.send(CommandReceipt::Unknown).ok().unwrap();
     assert!(matches!(
-        worker.completion().await,
+        tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+            .await
+            .expect("callback completion deadline"),
         Err(WorkerError::CallbackUnknown)
     ));
     assert!(peer.acks.try_recv().is_err());
@@ -691,7 +693,9 @@ async fn callback_unknown_write_is_not_resent_on_replay() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     peer.frame(frame).await;
     assert!(matches!(
-        worker.completion().await,
+        tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+            .await
+            .expect("callback completion deadline"),
         Err(WorkerError::CallbackUnknown)
     ));
     assert!(peer.writes.try_recv().is_err());
