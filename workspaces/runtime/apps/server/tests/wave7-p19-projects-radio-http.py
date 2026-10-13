@@ -102,9 +102,12 @@ class HostProjectsRadio(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual({k:v for k,v in replay.json().items() if k not in {"_syncEntities", "_syncEntitiesAfter"}}, {k:v for k,v in converted.json().items() if k not in {"_syncEntities", "_syncEntitiesAfter"}})
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
             agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id='a'").fetchone()[0])
+            projection = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id='a'").fetchone()[0])
         self.assertFalse(agent["isLead"])
         self.assertFalse(agent["autoWake"])
         self.assertEqual(agent["rootId"], "c")
+        self.assertEqual(projection["value"]["rootId"], "c")
+        self.assertEqual(projection["value"]["isLead"], False)
         before = no_write_snapshot(self.backend.state)
         changed = self.post(body | dict(target="b"))
         self.assertEqual(changed.status, 400, changed.body[:1000])

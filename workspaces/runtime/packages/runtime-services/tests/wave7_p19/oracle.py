@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from types import MethodType
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[6]
@@ -19,6 +20,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 import codex_radio as radio
 import codex_peer_conversion as conversion
+from codex_sync_entities import project as project_entity_view, put as sync_entity_put
 from types import SimpleNamespace
 
 TABLES = ("agents", "projects", "rooms", "events", "chat_messages", "requests", "completed_turns", "items", "operation_receipts", "sync_entities", "sidebar_order", "work", "plans", "annotations", "complaints", "event_meta", "rules")
@@ -43,6 +45,62 @@ def project_changed_events(before, after):
         })
     after["sync_entities"].sort(key=lambda row: (row["collection"], row["id"]))
 
+def sync_changed_rooms(f, before):
+    """Use the production DTO projector for room rows in the reduced fixture."""
+    with f.runtime.db() as db:
+        for room_id, raw in db.execute("SELECT id,record FROM runtime_rooms ORDER BY id"):
+            f.runtime.sync_room_entity(db, room_id, tombstone_unavailable=True)
+
+def fixture_sync_room_entity(self, db, room_id, *, tombstone_unavailable=False):
+    row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+    if not row:
+        return False
+    room = json.loads(row[0])
+    projects = [json.loads(item[0]) for item in db.execute("SELECT record FROM runtime_projects")]
+    project = next((p for p in projects if p.get("path") == room.get("projectPath")), {})
+    team_id = room.get("radio", {}).get("teamId")
+    team = next((t for t in project.get("peerTeams", []) if all(m in t.get("members", []) for m in room.get("members", []))), None)
+    agents = {item[0] for item in db.execute("SELECT id FROM runtime_agents")}
+    if not room.get("members") or any(member not in agents for member in room["members"]):
+        if tombstone_unavailable:
+            return sync_entity_put(db, "room", room_id, {}, True)
+        return False
+    view = {key: room.get(key) for key in ("id", "kind", "members", "updated", "userHidden", "projectPath", "radio")}
+    if isinstance(view.get("radio"), dict) and isinstance(view["radio"].get("active"), dict):
+        view["radio"]["active"].pop("interruptRequested", None)
+    last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=? ORDER BY seq DESC LIMIT 1", (room_id,)).fetchone()
+    last_message = {"seq": last[0], "text": last[1][:180], "created": last[2], "sender": last[3]} if last else None
+    view.update(name=room.get("customName") or f"{team.get('name', 'Team')} · Shared chat",
+                lastMessage=last_message)
+    if team:
+        view.update(peerTeamId=team.get("id"), peerTeamName=team.get("name"))
+    return sync_entity_put(db, "room", room_id, view)
+
+def sync_changed_conversion(f, before, *, sync_project=False):
+    """Complete the reduced fixture's agent and conversion project hooks."""
+    old_agents = {row["id"]: json.loads(row["record"]) for row in before["agents"]}
+    with f.runtime.db() as db:
+        for agent_id, raw in db.execute("SELECT id,record FROM runtime_agents ORDER BY id"):
+            record = json.loads(raw)
+            if old_agents.get(agent_id) == record:
+                continue
+            view = dict(record)
+            view.update(serverId=getattr(f.runtime, "_project_server_id", "local-test"), kind="agent", source="managed",
+                        canSend=True, launcherAlive=not getattr(f.runtime, "closed", False),
+                        nextTurnSettingsSupported=True, readStateSupported=True)
+            if record.get("isLead"):
+                view.pop("overview", None)
+                view["empty"] = True
+            else:
+                task = str(record.get("prompt") or "")
+                view["overview"] = {"task": task[:4000], "taskTruncated": len(task) > 4000,
+                    "result": "", "resultTruncated": False, "resultTurnId": None, "resultFile": None}
+            sync_entity_put(db, "agent", agent_id, view)
+        if sync_project:
+            for path, raw in db.execute("SELECT id,record FROM runtime_projects ORDER BY id"):
+                record = json.loads(raw)
+                sync_entity_put(db, "project", path, project_entity_view("project", record))
+
 def template(root):
     schema = json.loads((ROOT / "workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json").read_text())
     for name in ("canvas.sqlite3", "analytics.sqlite3"):
@@ -61,6 +119,7 @@ def case(name, mode, configure=None, extra=None):
     with patch("time.time", return_value=1000.0):
         f.setUp()
         try:
+            f.runtime.sync_room_entity = MethodType(fixture_sync_room_entity, f.runtime)
             for id in ("a", "b", "c", "d"):
                 f.mutate_agent(id, name=id, status="idle", epoch=1, created=10.0, updated=10.0, provider="codex", model="gpt-6-astra", role="lead", depth=0, prompt="", worktree=False)
             with f.runtime.db() as db:
@@ -104,6 +163,7 @@ def case(name, mode, configure=None, extra=None):
                     project=json.loads(db.execute("SELECT record FROM runtime_projects").fetchone()[0])
                     project.update(homeServerId="local-test", locations=[dict(serverId="local-test",path=f.path,projectId=f.path)])
                     f.runtime.put(db,"projects",project)
+            sync_changed_rooms(f, snapshot(f.runtime))
             before = snapshot(f.runtime)
             error = False
             result = None
@@ -129,7 +189,6 @@ def case(name, mode, configure=None, extra=None):
                     f.runtime.agent = lambda key, db: json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (key,)).fetchone()[0])
                     f.runtime._put = f.runtime.put
                     f.runtime.changed = SimpleNamespace(set=lambda: None)
-                    f.runtime.sync_room_entity = lambda *args, **kwargs: None
                     f.runtime._workspace_operations = lambda db, key: []
                     original_put = f.runtime.put
                     f.runtime.put = lambda db, table, record, **kwargs: original_put(db, table, record)
@@ -150,6 +209,17 @@ def case(name, mode, configure=None, extra=None):
                     result = radio.manage(f.runtime, body)
             except ValueError:
                 error = True
+            # The reduced fixture does not refresh the room DTO on every host
+            # operation. Mirror the production hook for changed room rows so
+            # the differential compares each collection written by Rust.
+            sync_changed_rooms(f, before)
+            if mode in ("convert", "create", "project", "peer"):
+                project_sync = mode in ("convert", "peer") or (mode == "project" and body.get("action") != "reorder")
+                sync_changed_conversion(f, before, sync_project=project_sync)
+                if mode == "project" and body.get("action") == "reorder":
+                    with f.runtime.db() as db:
+                        order = db.execute("SELECT record FROM runtime_sidebar_order WHERE id='current'").fetchone()
+                        sync_entity_put(db, "workspace", "current", {"id": "current", "sidebarOrder": json.loads(order[0]) if order else None})
             after = snapshot(f.runtime)
             project_changed_events(before, after)
             return dict(name=name, mode=mode, body=body, before=before, after=after, result=result, error=error, drafts=drafts)

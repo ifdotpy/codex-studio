@@ -32,8 +32,9 @@ use state::*;
 #[path = "projects/radio_lifecycle.rs"]
 mod lifecycle;
 pub use lifecycle::{
-    NativeAcceptanceReceipt, ObservedItem, bind_reserved, claim_interrupt, guard_message,
-    holds_floor, observe_item, route_question_answer, select_pending, tick,
+    InterruptOutcome, InterruptReceipt, NativeAcceptanceReceipt, ObservedItem, bind_reserved,
+    claim_interrupt, guard_message, holds_floor, observe_item, route_question_answer,
+    select_pending, settle_interrupt, tick,
 };
 
 pub(crate) fn publish_room(
@@ -151,6 +152,37 @@ pub struct Interrupt {
     pub request_id: String,
     pub agent: Value,
     pub turn_id: String,
+}
+
+/// Injected bridge to the retained native account worker. The scheduler tick owner
+/// first commits `claim_interrupt`, dispatches through this port after commit, then
+/// settles the returned receipt in a new transaction.
+pub trait InterruptTransport {
+    fn dispatch(&mut self, interrupt: &Interrupt) -> Result<InterruptReceipt, ProjectsError>;
+}
+
+/// Claim, hand off after commit, then settle by exact request receipt. If the
+/// process stops after claim or the transport outcome is lost, the state remains
+/// Unknown and later ticks do not resend it.
+pub fn handoff_interrupt(
+    store: &RuntimeStore,
+    prepared: &PreparedHost,
+    interrupt: &Interrupt,
+    transport: &mut dyn InterruptTransport,
+    now: f64,
+) -> Result<bool, ProjectsError> {
+    let event_id = interrupt
+        .request_id
+        .strip_prefix("radio-interrupt:")
+        .ok_or(ProjectsError::Invalid(
+            "interrupt request identity is invalid",
+        ))?;
+    let claimed = store.transaction_with(|tx| claim_interrupt(tx, prepared, event_id, now))?;
+    if !claimed {
+        return Ok(false);
+    }
+    let receipt = transport.dispatch(interrupt)?;
+    store.transaction_with(|tx| settle_interrupt(tx, prepared, event_id, &receipt, now))
 }
 
 /// P02 owns draft creation, provider defaults and account-identity revalidation.

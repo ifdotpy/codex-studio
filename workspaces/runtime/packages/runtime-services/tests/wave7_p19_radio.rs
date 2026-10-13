@@ -6,8 +6,9 @@ use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
-    radio_runtime::{self, NativeAcceptanceReceipt, RadioIngress},
-    turn_prepare::{Epoch, NativeReceipt, ReceiptOutcome},
+    radio_runtime::{
+        self, Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, RadioIngress,
+    },
 };
 use studio_runtime_store::{
     AgentId, AgentRecord, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
@@ -169,14 +170,19 @@ fn normalize(value: &mut Value) {
                 if key == "sync_entities"
                     && let Some(rows) = value.as_array_mut()
                 {
-                    // The reduced Python fixture only maintains the peerTeam
-                    // sync projection. Store also writes project, agent, room,
-                    // and event projections, so retain and compare the full
-                    // P19-owned peerTeam rows, including payload/hash/deleted.
-                    rows.retain(|row| row["collection"] == "peerTeam");
-                    rows.sort_by_key(|row| row["seq"].as_i64().unwrap_or_default());
+                    // Keep every collection written by the scenario. The Python
+                    // oracle builds its own projection rows for agent/room/event.
+                    rows.sort_by_key(|row| {
+                        (
+                            row["collection"].as_str().unwrap_or_default().to_owned(),
+                            row["id"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    });
                     for (index, row) in rows.iter_mut().enumerate() {
                         row["seq"] = json!(index + 1);
+                        // Compare the decoded canonical DTO payload. Hashes are
+                        // computed from each runtime's JSON byte encoding.
+                        row.as_object_mut().expect("sync row object").remove("hash");
                     }
                 }
                 if ["record", "result", "payload"].contains(&key.as_str())
@@ -583,11 +589,12 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .expect("recover intent");
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].request_id, format!("radio-interrupt:{event}"));
+    let mut transport = TransportDouble::accepted();
     assert!(
-        store
-            .transaction_with(|db| radio_runtime::claim_interrupt(db, &prepared, &event, 1002.0))
-            .expect("durably claim")
+        radio_runtime::handoff_interrupt(&store, &prepared, &recovered[0], &mut transport, 1002.0)
+            .expect("handoff")
     );
+    assert_eq!(transport.calls, vec![format!("radio-interrupt:{event}")]);
     drop(store);
 
     let store = RuntimeStore::open(Some(root.path())).expect("restart after claim");
@@ -596,28 +603,72 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
         .expect("hold unknown handoff");
     assert!(held.is_empty(), "claimed Unknown interrupt is never resent");
+
+    // Simulate a crash after the durable claim commits but before transport
+    // dispatch: recovery observes Unknown and the transport receives nothing.
+    let crash_root = tempfile::tempdir().expect("crash state");
+    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
+        fs::copy(template.path().join(db), crash_root.path().join(db)).expect("copy");
+    }
+    let crash_store = RuntimeStore::open(Some(crash_root.path())).expect("open crash state");
+    seed(&crash_store, &case["before"]);
+    let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
+    let pending = crash_store
+        .transaction_with(|db| radio_runtime::tick(db, &crash_prepared, &mut Ingress, 2000.0))
+        .expect("pending");
+    let crash_event = pending[0]
+        .request_id
+        .strip_prefix("radio-interrupt:")
+        .expect("interrupt request ID")
+        .to_owned();
+    assert!(
+        crash_store
+            .transaction_with(|db| radio_runtime::claim_interrupt(
+                db,
+                &crash_prepared,
+                &crash_event,
+                2001.0
+            ))
+            .expect("claim before simulated crash")
+    );
+    drop(crash_store);
+    let crash_store =
+        RuntimeStore::open(Some(crash_root.path())).expect("restart after claim crash");
+    let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
+    let mut transport = TransportDouble::accepted();
+    assert!(
+        !radio_runtime::handoff_interrupt(
+            &crash_store,
+            &crash_prepared,
+            &pending[0],
+            &mut transport,
+            2002.0
+        )
+        .expect("held")
+    );
+    assert!(transport.calls.is_empty());
 }
 
-#[test]
-fn native_answer_receipt_cannot_be_minted_from_unknown_or_rejected() {
-    let base = NativeReceipt {
-        operation_id: "operation".to_owned(),
-        actor_id: "agent".to_owned(),
-        epoch: Epoch(None, 7),
-        event_ids: vec!["event".to_owned()],
-        outcome: ReceiptOutcome::Unknown,
-    };
-    assert!(NativeAcceptanceReceipt::from_native(&base).is_none());
-    let mut rejected = base.clone();
-    rejected.outcome = ReceiptOutcome::Rejected;
-    assert!(NativeAcceptanceReceipt::from_native(&rejected).is_none());
-    let mut accepted = base;
-    accepted.outcome = ReceiptOutcome::Accepted {
-        turn_id: "turn".to_owned(),
-    };
-    assert!(NativeAcceptanceReceipt::from_native(&accepted).is_some());
-    accepted.event_ids.push("unexpected-event".to_owned());
-    assert!(NativeAcceptanceReceipt::from_native(&accepted).is_none());
+struct TransportDouble {
+    calls: Vec<String>,
+    outcome: InterruptOutcome,
+}
+impl TransportDouble {
+    fn accepted() -> Self {
+        Self {
+            calls: vec![],
+            outcome: InterruptOutcome::Accepted,
+        }
+    }
+}
+impl InterruptTransport for TransportDouble {
+    fn dispatch(&mut self, interrupt: &Interrupt) -> Result<InterruptReceipt, ProjectsError> {
+        self.calls.push(interrupt.request_id.clone());
+        Ok(InterruptReceipt::new(
+            interrupt.request_id.clone(),
+            self.outcome,
+        ))
+    }
 }
 
 #[test]
@@ -643,6 +694,20 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
             Ok(())
         })
         .expect("intervening row update");
+    assert!(matches!(
+        store.transaction_with(|db| prepared.recheck(db)),
+        Err(ProjectsError::Conflict(_))
+    ));
+    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_projects SET record=json_set(record,'$.name','changed')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("project row update");
     assert!(matches!(
         store.transaction_with(|db| prepared.recheck(db)),
         Err(ProjectsError::Conflict(_))

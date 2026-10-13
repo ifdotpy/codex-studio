@@ -433,6 +433,9 @@ pub struct NativeAcceptanceReceipt {
     event_id: String,
 }
 impl NativeAcceptanceReceipt {
+    /// Called by the trusted callback adapter after receiving the native worker result.
+    /// `NativeReceipt` is a public data value on this base, so P19 cannot authenticate its
+    /// provenance; this wrapper narrows the outcome and binds its identity.
     pub fn from_native(receipt: &crate::turn_prepare::NativeReceipt) -> Option<Self> {
         let crate::turn_prepare::ReceiptOutcome::Accepted { turn_id } = &receipt.outcome else {
             return None;
@@ -447,6 +450,53 @@ impl NativeAcceptanceReceipt {
             turn_id: turn_id.clone(),
             event_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod acceptance_receipt_tests {
+    use super::NativeAcceptanceReceipt;
+    use crate::turn_prepare::{Epoch, NativeReceipt, ReceiptOutcome};
+
+    #[test]
+    fn only_accepted_native_receipt_yields_wrapper() {
+        let mut receipt = NativeReceipt {
+            operation_id: "operation".into(),
+            actor_id: "agent".into(),
+            epoch: Epoch(None, 7),
+            event_ids: vec!["event".into()],
+            outcome: ReceiptOutcome::Unknown,
+        };
+        assert!(NativeAcceptanceReceipt::from_native(&receipt).is_none());
+        receipt.outcome = ReceiptOutcome::Rejected;
+        assert!(NativeAcceptanceReceipt::from_native(&receipt).is_none());
+        receipt.outcome = ReceiptOutcome::Accepted {
+            turn_id: "turn".into(),
+        };
+        assert!(NativeAcceptanceReceipt::from_native(&receipt).is_some());
+        receipt.event_ids.push("other".into());
+        assert!(NativeAcceptanceReceipt::from_native(&receipt).is_none());
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptOutcome {
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+/// Receipt returned by the injected interrupt transport for one stable request ID.
+pub struct InterruptReceipt {
+    request_id: String,
+    outcome: InterruptOutcome,
+}
+impl InterruptReceipt {
+    pub fn new(request_id: String, outcome: InterruptOutcome) -> Self {
+        Self {
+            request_id,
+            outcome,
+        }
     }
 }
 
@@ -476,6 +526,47 @@ pub fn claim_interrupt(
         active
             .extra
             .insert("interruptState".to_owned(), json!("unknown"));
+        save(db, &mut room, prepared, now)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Settle a claimed handoff only after the transport returns its matching receipt.
+/// An absent or Unknown receipt leaves the durable state held as Unknown.
+pub fn settle_interrupt(
+    db: &Transaction<'_>,
+    prepared: &PreparedHost,
+    event_id: &str,
+    receipt: &InterruptReceipt,
+    now: f64,
+) -> Result<bool, ProjectsError> {
+    prepared.recheck(db)?;
+    if receipt.request_id != format!("radio-interrupt:{event_id}") {
+        return Ok(false);
+    }
+    for mut room in rooms(db)? {
+        let Some(active) = room
+            .radio
+            .active
+            .as_mut()
+            .filter(|active| active.event_id == event_id)
+        else {
+            continue;
+        };
+        if room.radio.status != Status::Stopping
+            || active.extra.get("interruptState").and_then(Value::as_str) != Some("unknown")
+        {
+            return Ok(false);
+        }
+        let state = match receipt.outcome {
+            InterruptOutcome::Accepted => "accepted",
+            InterruptOutcome::Rejected => "rejected",
+            InterruptOutcome::Unknown => return Ok(true),
+        };
+        active
+            .extra
+            .insert("interruptState".to_owned(), json!(state));
         save(db, &mut room, prepared, now)?;
         return Ok(true);
     }

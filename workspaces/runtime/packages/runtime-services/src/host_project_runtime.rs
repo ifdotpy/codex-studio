@@ -61,6 +61,8 @@ impl PreparedHost {
     }
 
     /// Re-resolve every prepared path immediately before opening a writer.
+    /// The filesystem can still change after this check; the transaction fences
+    /// source rows but deliberately performs no filesystem I/O.
     /// This is intentionally filesystem work outside the transaction; `recheck`
     /// then fences the database rows inside the transaction that applies them.
     pub fn recheck_paths(&self) -> Result<(), ProjectsError> {

@@ -233,6 +233,24 @@ fn check_id(value: &Value, table: &'static str, id: &str) -> Result<(), Projects
     Ok(())
 }
 
+#[cfg(test)]
+mod schema_validation_tests {
+    use super::check_id;
+    use serde_json::json;
+
+    #[test]
+    fn project_read_rejects_matching_id_with_invalid_schema() {
+        assert!(
+            check_id(
+                &json!({"id":"project","peerTeams":[{"id":"team","name":"Team","members":"a"}]}),
+                "runtime_projects",
+                "project"
+            )
+            .is_err()
+        );
+    }
+}
+
 fn folder_fold(value: &str) -> String {
     value.to_lowercase()
 }

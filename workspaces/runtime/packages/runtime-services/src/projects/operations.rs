@@ -151,7 +151,7 @@ pub fn peer_team_write(
             SyncDocumentsRepository::put_entity(tx, "peerTeam", id, peer_team_projection(team, &path, current + 1)?, false)?;
         }
         for id in previous_ids.difference(&live_ids) { SyncDocumentsRepository::put_entity(tx, "peerTeam", id, json!({}), true)?; }
-        refresh_project_rooms(tx, &path)?;
+        refresh_project_rooms(tx, &path, &prepared)?;
         save_operation_receipt(tx, &key, &signature, &project)?;
         Ok(project)
     })
@@ -272,6 +272,7 @@ pub(crate) fn peer_team_projection(
 pub(crate) fn refresh_project_rooms(
     tx: &studio_runtime_store::Transaction<'_>,
     path: &str,
+    prepared: &PreparedHost,
 ) -> Result<(), ProjectsError> {
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_rooms')",
@@ -288,6 +289,16 @@ pub(crate) fn refresh_project_rooms(
     drop(statement);
     for id in ids {
         ProjectsRepository::refresh_private_room(tx, &id)?;
+        let raw = tx.query_row(
+            "SELECT record FROM runtime_rooms WHERE id=?1",
+            [&id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let room: Value = serde_json::from_str(&raw).map_err(|_| ProjectsError::InvalidStored {
+            table: "runtime_rooms",
+            id: id.clone(),
+        })?;
+        crate::radio_runtime::publish_room(tx, &room, prepared)?;
     }
     Ok(())
 }
