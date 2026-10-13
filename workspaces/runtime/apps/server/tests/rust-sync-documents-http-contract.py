@@ -71,13 +71,18 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         suffix = uuid.uuid4().hex
         agent_a, agent_b = f"sync-diff-{suffix}-a", f"sync-diff-{suffix}-b"
         worker_id = f"sync-diff-{suffix}-worker"
+        turn_error_id = f"sync-diff-{suffix}-turn-error"
         room_id = f"sync-diff-{suffix}-room"
+        empty_room_id = f"sync-diff-{suffix}-empty-room"
         complaint_id = f"sync-diff-{suffix}-complaint"
+        nullable_complaint_id = f"sync-diff-{suffix}-nullable-complaint"
         project_path = str((backend.cwd / f"sync-diff-{suffix}-project").resolve())
         project_id = project_path
         request_id = f"sync-diff-{suffix}-request"
         rule_id = f"sync-diff-{suffix}-rule"
         work_id = f"sync-diff-{suffix}-work"
+        empty_work_id = f"sync-diff-{suffix}-empty-work"
+        foreign_work_id = f"sync-diff-{suffix}-foreign-work"
         task_id = f"sync-diff-{suffix}-task"
         monitor_id = f"sync-diff-{suffix}-monitor"
         event_id = f"sync-diff-{suffix}-event"
@@ -85,24 +90,43 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         edge_id = f"sync-diff-{suffix}-edge"
         spawn_edge_id = f"sync-diff-{suffix}-spawn-edge"
         message_id = f"sync-diff-{suffix}-message"
+        identity_path = backend.state / "multi-server" / "identity.json"
+        identity_preexisting = identity_path.exists()
         fixtures = {
             "records": {
                 "runtime_agents": [
                     [agent_a, {"id": agent_a, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_a, "name": "First lead", "cwd": project_path, "status": "idle"}],
+                     "rootId": agent_a, "name": "First lead", "cwd": project_path, "status": "idle",
+                     "overview": {"task": "stale lead overview"}}],
                     [agent_b, {"id": agent_b, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_b, "name": "Second lead", "cwd": project_path + "/.", "status": "idle"}],
+                     "rootId": agent_b, "name": None, "cwd": project_path + "/.", "status": "idle"}],
                     [worker_id, {"id": worker_id, "kind": "agent", "isLead": False,
                      "parentId": agent_a, "rootId": agent_a, "name": "Worker", "cwd": project_path,
                      "status": "completed", "prompt": "Python view task", "lastAnswer": "done",
-                     "lastCompletedTurn": "turn-view", "threadId": "thread-view",
+                     "lastCompletedTurn": "turn-view", "turnId": "", "threadId": "thread-view",
+                     "nativeRelease": {"id": "release-request", "phase": "released",
+                                       "resetPending": False, "threadId": "thread-view",
+                                       "submittedAt": 10},
+                     "nativeStatus": {"phase": "safety", "message": "m" * 3000},
                      "nativeThreadBlock": {"threadId": "thread-view", "error": {"message": "blocked"}}}],
+                    [turn_error_id, {"id": turn_error_id, "kind": "agent", "isLead": False,
+                     "parentId": agent_a, "rootId": agent_a, "name": "Turn error worker",
+                     "status": "idle", "threadId": "thread-error", "turnId": "",
+                     "nativeTurnError": {"turnId": "", "error": {
+                         "codexErrorInfo": "misalignmentPolicyViolation", "message": "blocked"}}}],
                 ],
                 "runtime_rooms": [[room_id, {"id": room_id, "kind": "private",
-                    "members": [agent_a, worker_id], "projectPath": project_path, "updated": 10}]],
+                    "members": [agent_a, worker_id], "projectPath": project_path, "updated": 10,
+                    "customName": None}],
+                    [empty_room_id, {"id": empty_room_id, "kind": "private",
+                    "members": [agent_a, worker_id], "projectPath": project_path, "updated": 11,
+                    "customName": ""}]],
                 "runtime_complaints": [[complaint_id, {"id": complaint_id, "leadId": agent_a,
                     "author": agent_a, "recipient": "user", "status": "open", "text": "A view title",
-                    "responses": [], "version": 1, "created": 10, "updated": 10, "readAt": None}]],
+                    "responses": [], "version": 1, "created": 10, "updated": 10, "readAt": None}],
+                    [nullable_complaint_id, {"id": nullable_complaint_id, "leadId": agent_b,
+                    "author": agent_b, "recipient": "user", "status": "open", "text": "Nullable names",
+                    "responses": [], "version": 1, "created": 11, "updated": 11, "readAt": None}]],
                 "runtime_projects": [[project_id, {
                     "id": project_id,
                     "path": project_path,
@@ -113,7 +137,11 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "runtime_requests": [[request_id, {"id": request_id, "status": "pending"}]],
                 "runtime_rules": [[rule_id, {"id": rule_id}]],
                 "runtime_work": [[work_id, {"id": work_id, "owner": worker_id,
-                    "results": [{"agent": worker_id, "resultFile": "results/view.md", "created": 10}]}]],
+                    "results": [{"agent": worker_id, "resultFile": "results/view.md", "created": 10}]}],
+                    [empty_work_id, {"id": empty_work_id, "owner": worker_id,
+                    "results": [{"agent": worker_id, "resultFile": "", "created": 20}]}],
+                    [foreign_work_id, {"id": foreign_work_id, "owner": agent_a,
+                    "results": [{"agent": worker_id, "resultFile": "foreign.md", "created": 30}]}]],
                 "runtime_tasks": [[task_id, {
                     "id": task_id, "agent": agent_a, "status": "running", "created": 10,
                 }]],
@@ -135,6 +163,16 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "graph_edges": [edge_id, spawn_edge_id],
             "messages": [message_id],
         }
+        identity_setup = f"""
+from pathlib import Path
+import json, os
+identity_path = Path({str(identity_path)!r})
+if not identity_path.exists():
+    identity_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    identity_path.write_text(json.dumps({{"serverId": "sync-test-server"}}), encoding="utf-8")
+    identity_path.chmod(0o600)
+local_server_id = json.loads(identity_path.read_text(encoding="utf-8"))["serverId"]
+"""
         fixture_json = json.dumps(fixtures, separators=(",", ":"))
         fixture_keys_json = json.dumps(fixture_keys, separators=(",", ":"))
         seed_python = f"""
@@ -150,7 +188,8 @@ from codex_peer_teams import sync_entities
 canvas = Canvas(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
 runtime_owner = object.__new__(Runtime)
 runtime_owner.closed = False
-runtime_owner._project_server_id = None
+{identity_setup}
+runtime_owner._project_server_id = local_server_id
 runtime_owner.workspace_entity_view = lambda db, base=None: {{
     **(base or {{}}), "stateDir": str(canvas.root), "connected": False,
     "projectOrganizationVersion": 1, "peerTeamsVersion": 1, "tasksHistoryLimit": 100,
@@ -289,6 +328,12 @@ with canvas.connect() as db:
                 check=True,
                 timeout=30,
             )
+            if not identity_preexisting:
+                identity_path.unlink(missing_ok=True)
+                try:
+                    identity_path.parent.rmdir()
+                except OSError:
+                    pass
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM sync_entities")
                 database.executemany(
@@ -519,6 +564,37 @@ with canvas.connect() as db:
         finally:
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM runtime_rules WHERE id=?", (broken_id,))
+
+        invalid_projection_id = "sync-pull-invalid-unreturned-agent"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?,?)",
+                (invalid_projection_id, json.dumps({
+                    "id": invalid_projection_id,
+                    "name": "Invalid native release",
+                    "nativeRelease": {"phase": [], "resetPending": False},
+                })),
+            )
+        before_invalid_projection = sync_state_snapshot(backend.state)
+        try:
+            invalid_projection = backend.request(
+                "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
+                headers=headers,
+            )
+            self.assertEqual(invalid_projection.status, 500, invalid_projection.body[:1000])
+            self.assertIn(
+                f"agent/{invalid_projection_id}",
+                invalid_projection.json()["error"],
+            )
+            self.assertEqual(sync_state_snapshot(backend.state), before_invalid_projection)
+            with sqlite3.connect(database_path) as database:
+                self.assertIsNone(database.execute(
+                    "SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?",
+                    (invalid_projection_id,),
+                ).fetchone())
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute("DELETE FROM runtime_agents WHERE id=?", (invalid_projection_id,))
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_monitor_window_is_selected_before_owner_filter(self) -> None:

@@ -142,7 +142,19 @@ pub(crate) async fn pull(
         }
         store
             .transaction(|transaction| {
-                sync_policy::maintain_entity_projections(transaction, &state_dir)?;
+                sync_policy::maintain_entity_projections(
+                    transaction,
+                    &state_dir,
+                    |collection, id, value, deleted| {
+                        validate_entity_envelope(
+                            &json!({"collection":collection,"id":id,"value":value}),
+                            collection,
+                            id,
+                            deleted,
+                            &validators,
+                        )
+                    },
+                )?;
                 let page = SyncDocumentsRepository::pull_entities(
                     transaction,
                     after,

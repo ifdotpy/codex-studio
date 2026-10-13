@@ -4,6 +4,23 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use crate::event_write::truthy;
+
+const AGENT_SHORT_STRING_OBJECTS: &[&str] = &[
+    "activity",
+    "nativeStatus",
+    "nativeSafetyBuffering",
+    "nativeSafetyRetry",
+    "nativeTurnError",
+    "nativeThreadBlock",
+    "connectionCheck",
+    "readState",
+    "startAttempt",
+    "capacityRetry",
+    "usageResume",
+    "contextRepairWait",
+];
+
 /// The committed API schema is parsed once and shared with HTTP validation.
 pub fn openapi_document() -> &'static Value {
     static DOCUMENT: OnceLock<Value> = OnceLock::new();
@@ -17,7 +34,7 @@ fn schema_definition<'a>(schema: &'a Value, document: &'a Value) -> &'a Value {
     schema
         .get("$ref")
         .and_then(Value::as_str)
-        .and_then(|reference| reference.strip_prefix("#/"))
+        .and_then(|reference| reference.strip_prefix('#'))
         .and_then(|pointer| document.pointer(pointer))
         .unwrap_or(schema)
 }
@@ -48,30 +65,21 @@ fn collect_schema_properties(
     }
 }
 
-fn bound_sync_value(value: &Value, field: &str) -> Value {
+fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Value {
     match value {
         Value::String(text) => {
-            let limit = match field {
-                "overview" => 9_000,
-                "error" | "tail" | "description" | "command" | "query" => 2_000,
-                "text" | "lastAnswer" => 4_000,
-                _ => 12_000,
+            let limit = if agent_short_strings {
+                2_000
+            } else {
+                match field {
+                    "overview" => 9_000,
+                    "error" | "tail" | "description" | "command" | "query" => 2_000,
+                    "text" | "lastAnswer" => 4_000,
+                    _ => 12_000,
+                }
             };
             Value::String(text.chars().take(limit).collect())
         }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .take(if field == "sidebarOrder" { 10_000 } else { 200 })
-                .map(|item| bound_sync_value(item, ""))
-                .collect(),
-        ),
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(name, value)| (name.clone(), bound_sync_value(value, name)))
-                .collect(),
-        ),
         _ => value.clone(),
     }
 }
@@ -82,6 +90,8 @@ fn project_schema_value(
     field: &str,
     document: &Value,
     depth: usize,
+    agent_record: bool,
+    agent_short_strings: bool,
 ) -> Value {
     if depth > 32 {
         return Value::Null;
@@ -107,6 +117,8 @@ fn project_schema_value(
                                     name,
                                     document,
                                     depth + 1,
+                                    agent_record,
+                                    agent_short_strings,
                                 ),
                             )
                         })
@@ -118,16 +130,21 @@ fn project_schema_value(
                     .iter()
                     .filter_map(|(name, child)| {
                         properties.get(name).map(|field_schema| {
-                            (
-                                name.clone(),
+                            (name.clone(), {
+                                let short_strings = agent_short_strings
+                                    || (agent_record
+                                        && depth == 0
+                                        && AGENT_SHORT_STRING_OBJECTS.contains(&name.as_str()));
                                 project_schema_value(
                                     child,
                                     field_schema,
                                     name,
                                     document,
                                     depth + 1,
-                                ),
-                            )
+                                    agent_record,
+                                    short_strings,
+                                )
+                            })
                         })
                     })
                     .collect(),
@@ -140,11 +157,21 @@ fn project_schema_value(
                 items
                     .iter()
                     .take(limit)
-                    .map(|item| project_schema_value(item, item_schema, "", document, depth + 1))
+                    .map(|item| {
+                        project_schema_value(
+                            item,
+                            item_schema,
+                            "",
+                            document,
+                            depth + 1,
+                            agent_record,
+                            agent_short_strings,
+                        )
+                    })
                     .collect(),
             )
         }
-        _ => bound_sync_value(value, field),
+        _ => bound_sync_value(value, field, agent_short_strings),
     }
 }
 
@@ -173,7 +200,15 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         .filter(|id| !id.is_empty())?;
     let document = openapi_document();
     let schema = document.pointer(&format!("/components/schemas/{schema_name}"))?;
-    Some(project_schema_value(record, schema, "", document, 0))
+    Some(project_schema_value(
+        record,
+        schema,
+        "",
+        document,
+        0,
+        collection == "agent",
+        false,
+    ))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -203,8 +238,8 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     view.insert("source".to_owned(), Value::String("managed".to_owned()));
     let block = native_thread_block(record);
     let can_send = block.is_none()
-        && !record.get("movedTo").is_some_and(value_truthy)
-        && !record.get("moveImportPending").is_some_and(value_truthy);
+        && !truthy(record.get("movedTo"))
+        && !truthy(record.get("moveImportPending"));
     view.insert("canSend".to_owned(), Value::Bool(can_send));
     view.insert(
         "launcherAlive".to_owned(),
@@ -217,16 +252,17 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     } else {
         view.remove("nativeThreadBlock");
     }
-    if record.get("isLead").is_some_and(value_truthy) {
+    if truthy(record.get("isLead")) {
+        view.remove("overview");
         view.insert("empty".to_owned(), Value::Bool(context.empty_lead));
     } else {
         let task = record
             .get("prompt")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let result = if record.get("lastCompletedTurn").is_some_and(value_truthy)
-            && record.get("turnId").is_none_or(Value::is_null)
-            && !record.get("inFlight").is_some_and(value_truthy)
+        let result = if truthy(record.get("lastCompletedTurn"))
+            && !truthy(record.get("turnId"))
+            && !truthy(record.get("inFlight"))
             && record.get("status").and_then(Value::as_str) == Some("completed")
         {
             record
@@ -272,20 +308,9 @@ fn native_thread_block(record: &Value) -> Option<Value> {
         return Some(block);
     }
     let previous = record.get("nativeTurnError")?;
-    (previous.get("turnId").and_then(Value::as_str) == record.get("turnId").and_then(Value::as_str))
+    (truthy(previous.get("turnId")) && previous.get("turnId") == record.get("turnId"))
         .then(|| previous.get("error").and_then(blocked))
         .flatten()
-}
-
-pub(crate) fn value_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -302,7 +327,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
     let active = context
         .agents
         .iter()
-        .filter(|agent| !agent.get("deletedAt").is_some_and(value_truthy));
+        .filter(|agent| !truthy(agent.get("deletedAt")));
     let agents = active
         .filter_map(|agent| Some((agent.get("id")?.as_str()?.to_owned(), agent)))
         .collect::<BTreeMap<_, _>>();
@@ -329,7 +354,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             "name".to_owned(),
             record
                 .get("customName")
-                .filter(|name| value_truthy(name))
+                .filter(|name| truthy(Some(name)))
                 .or_else(|| federation.get("name"))
                 .cloned()
                 .unwrap_or(Value::Null),
@@ -343,7 +368,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         members = context
             .agents
             .iter()
-            .filter(|agent| !agent.get("deletedAt").is_some_and(value_truthy))
+            .filter(|agent| !truthy(agent.get("deletedAt")))
             .filter(|agent| {
                 root == "all" || agent.get("rootId").and_then(Value::as_str) == Some(root)
             })
@@ -361,7 +386,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             "name".to_owned(),
             record
                 .get("customName")
-                .filter(|name| value_truthy(name))
+                .filter(|name| truthy(Some(name)))
                 .cloned()
                 .unwrap_or(Value::String(name)),
         );
@@ -387,6 +412,7 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             "name".to_owned(),
             record
                 .get("customName")
+                .filter(|name| truthy(Some(name)))
                 .cloned()
                 .unwrap_or(Value::String(name)),
         );
@@ -458,18 +484,17 @@ pub fn complaint_entity_view(record: &Value, context: &ComplaintViewContext) -> 
                 .iter()
                 .any(|response| response.get("author").and_then(Value::as_str) == responsible));
     let agent_name = |key: Option<&str>, fallback: Option<&str>| {
-        let found = key
-            .and_then(|key| {
-                context
-                    .agents
-                    .iter()
-                    .find(|agent| agent.get("id").and_then(Value::as_str) == Some(key))
-            })
+        let agent = key.and_then(|key| {
+            context
+                .agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(Value::as_str) == Some(key))
+        });
+        agent
             .and_then(|agent| agent.get("name"))
-            .and_then(Value::as_str);
-        found
-            .or(fallback)
-            .map_or(Value::Null, |value| Value::String(value.to_owned()))
+            .cloned()
+            .or_else(|| fallback.map(|value| Value::String(value.to_owned())))
+            .unwrap_or(Value::Null)
     };
     let mut view = Map::new();
     view.insert("id".to_owned(), Value::String(id.to_owned()));
@@ -516,7 +541,7 @@ pub fn project_entity_view(
     vault: Option<&Value>,
 ) -> Option<Value> {
     let mut view = record.as_object()?.clone();
-    if let Some(readiness) = readiness.filter(|value| value_truthy(value)) {
+    if let Some(readiness) = readiness.filter(|value| truthy(Some(value))) {
         view.insert("layrReadiness".to_owned(), readiness.clone());
         if readiness.get("state").and_then(Value::as_str) == Some("ready") {
             if let Some(sync) = sync {
