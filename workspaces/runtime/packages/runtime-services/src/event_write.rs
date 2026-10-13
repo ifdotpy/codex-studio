@@ -14,6 +14,11 @@ static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Match Python's default JSON string escaping for durable operation signatures.
 pub fn python_json(value: &Value) -> String {
+    python_json_with_separators(value, ", ", ": ")
+}
+
+/// Sorted, ASCII-escaped Python JSON with caller-selected item/key separators.
+pub fn python_json_with_separators(value: &Value, item: &str, key: &str) -> String {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
         Value::String(value) => python_quote(value),
@@ -21,9 +26,9 @@ pub fn python_json(value: &Value) -> String {
             "[{}]",
             values
                 .iter()
-                .map(python_json)
+                .map(|value| python_json_with_separators(value, item, key))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(item)
         ),
         Value::Object(values) => {
             let mut keys = values.keys().collect::<Vec<_>>();
@@ -31,9 +36,14 @@ pub fn python_json(value: &Value) -> String {
             format!(
                 "{{{}}}",
                 keys.into_iter()
-                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
+                    .map(|name| format!(
+                        "{}{}{}",
+                        python_quote(name),
+                        key,
+                        python_json_with_separators(&values[name], item, key)
+                    ))
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(item)
             )
         }
     }
