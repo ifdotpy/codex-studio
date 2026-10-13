@@ -208,22 +208,18 @@ Run the shared corpus differential with the prepared Python interpreter using
   decimals, and empty values are rejected. Repeated scalar query parameters
   are rejected even when names are percent-encoded or all values are empty;
   arrays retain repeated occurrences.
-- The finite expected-difference table contains exact permanent cases for the
-  rename identity, draft identity, preference key/scope, queue message identity,
-  and RuleBody date-window rules, plus the opaque-`JsonValue` precision rule.
-  Model and handler rules are listed in Python's request-schema exception
-  inventory; the differential covers validation/extraction and does not test
-  handler-only protocol negotiation. Any unlisted mismatch, exception, 5xx, or
-  accepted-value difference fails the differential. A 400 refusal from both
-  sides is recorded as agreement for the opaque precision predicate when Rust
-  includes its located error envelope; the predicate must still produce at
-  least one exact normalized difference.
-  Agreement counts are reported per cause. The differential stubs route
-  handlers, so handler-level rules are exercised separately: rename identity by
-  `studio_api.tests.test_main_integration.MainIntegrationTests.test_delivery_and_smart_rename_require_identity_before_dispatch`,
-  draft application by `sync-first-draft-http-contract.py`, and preference
-  key/scope validation by `studio_api.sync.test_preferences.PreferenceTests.test_validation`. Protocol version
-  negotiation (HTTP 426) is covered on Python by
+- The only accepted-value differences are the eight documented opaque-
+  `JsonValue` large-integer precision cases. Queue and rename identity rules are
+  expressed in the OpenAPI schema. The extractor differential stubs handlers;
+  it reports rules that need parsed payloads or the current time separately as
+  `handler_validation_cases`. Those checks are exercised through the real Rust
+  routes by `rust-rules-http-contract.py` and
+  `rust-sync-documents-http-contract.py`, which compare relevant state before
+  and after each refusal. Any unlisted mismatch, exception, 5xx, or accepted-
+  value difference fails the differential. A 400 refusal from both sides is
+  recorded as agreement for the opaque precision predicate when Rust includes
+  its located error envelope; the predicate must still produce at least one
+  exact normalized difference. Protocol version negotiation (HTTP 426) is covered on Python by
   `sync-protocol-http-contract.py`; the Rust sync stream slice must add its own
   handler-level negotiation test.
 
