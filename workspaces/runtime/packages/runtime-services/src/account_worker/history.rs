@@ -20,7 +20,7 @@ const ERROR_MESSAGES: &[(&str, &str)] = &[
     ),
     ("default", "Codex reported an error."),
 ];
-fn message(error: &Value) -> String {
+pub(crate) fn message(error: &Value) -> String {
     let kind = error["codexErrorInfo"].as_str().or_else(|| {
         error["codexErrorInfo"]
             .as_object()
