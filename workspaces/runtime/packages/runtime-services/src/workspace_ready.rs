@@ -80,9 +80,16 @@ pub enum WorkspaceRefusal {
         reason: &'static str,
     },
 }
+/// Readiness cannot expose a cwd until transactionally validated.
+/// ```compile_fail
+/// use studio_runtime_services::workspace_ready::WorkspaceDecision;
+/// fn bypass(decision: WorkspaceDecision) {
+///     if let WorkspaceDecision::Ready { cwd, .. } = decision { let _ = cwd; }
+/// }
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceDecision {
-    Ready { cwd: PathBuf, token: ReadyToken },
+    Ready { token: ReadyToken },
     Provision(WorktreePlan),
     Defer { reservation: Option<String> },
     Refuse(WorkspaceRefusal),
@@ -166,7 +173,6 @@ pub fn decide_workspace(
     if !actor.worktree && actor.workspace_mode.as_deref() != Some("worktree") {
         return match cwd {
             Some(cwd) => WorkspaceDecision::Ready {
-                cwd: cwd.clone(),
                 token: ReadyToken::new(record, cwd.clone()),
             },
             None => recovery(None, actor.cwd.clone(), "Workspace directory is missing"),
@@ -183,7 +189,6 @@ pub fn decide_workspace(
             && actor.branch == observed.branch
         {
             return WorkspaceDecision::Ready {
-                cwd: cwd.clone(),
                 token: ReadyToken::new(record, cwd.clone()),
             };
         }

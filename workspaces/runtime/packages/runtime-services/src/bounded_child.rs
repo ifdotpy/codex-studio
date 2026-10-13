@@ -47,12 +47,12 @@ pub(crate) fn run(request: Request<'_>) -> Result<Output, ChildError> {
     run_with_environment(request, false)
 }
 
-/// Explicit environment only; used for journaled Git effects.
-pub(crate) fn run_isolated(request: Request<'_>) -> Result<Output, ChildError> {
+/// Inherit helper inputs but remove every ambient Git override before applying fixed settings.
+pub(crate) fn run_without_git_environment(request: Request<'_>) -> Result<Output, ChildError> {
     run_with_environment(request, true)
 }
 
-fn run_with_environment(request: Request<'_>, clear: bool) -> Result<Output, ChildError> {
+fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output, ChildError> {
     let Request {
         program,
         cwd,
@@ -65,8 +65,16 @@ fn run_with_environment(request: Request<'_>, clear: bool) -> Result<Output, Chi
     } = request;
     let deadline = Instant::now() + timeout;
     let mut command = Command::new(program);
-    if clear {
-        command.env_clear();
+    if remove_git {
+        for (key, _) in std::env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
     }
     command
         .arg("-C")

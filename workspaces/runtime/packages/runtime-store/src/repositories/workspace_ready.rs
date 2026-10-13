@@ -58,14 +58,27 @@ pub fn workspace_generation(actor: &Value) -> Value {
     )
 }
 
-/// Submission must compare this token inside its own transaction before consuming input.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Submission must compare this opaque token inside its transaction before consuming input.
+/// The only path accessor is successful validation; refused admission returns no cwd.
+/// ```compile_fail
+/// use studio_runtime_store::workspace_ready::ReadyToken;
+/// fn bypass(token: ReadyToken) { let _ = token.cwd; }
+/// ```
+#[derive(Clone, PartialEq)]
 pub struct ReadyToken {
-    pub agent: String,
-    pub epoch: u64,
-    pub source: Value,
-    pub cwd: PathBuf,
+    agent: String,
+    epoch: u64,
+    source: Value,
+    cwd: PathBuf,
 }
+impl std::fmt::Debug for ReadyToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadyToken(..)")
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadyRefusal;
+
 impl ReadyToken {
     pub fn new(record: &Value, cwd: PathBuf) -> Self {
         Self {
@@ -75,11 +88,11 @@ impl ReadyToken {
             cwd,
         }
     }
-    pub fn validate(&self, tx: &Transaction<'_>) -> StoreResult<bool> {
+    pub fn validate(&self, tx: &Transaction<'_>) -> StoreResult<Result<PathBuf, ReadyRefusal>> {
         let Some(current) = CheckpointsRepository::workspace_snapshot(tx, &self.agent)? else {
-            return Ok(false);
+            return Ok(Err(ReadyRefusal));
         };
-        Ok(current.agent.record["epoch"] == self.epoch
+        let valid = current.agent.record["epoch"] == self.epoch
             && workspace_generation(&current.agent.record) == self.source
             && current.agent.record["autoWake"] == true
             && current
@@ -89,7 +102,12 @@ impl ReadyToken {
                 .is_none_or(Value::is_null)
             && !reservations(&current)
                 .iter()
-                .any(|r| r.agent == self.agent || overlaps(&r.cwd, &self.cwd)))
+                .any(|r| r.agent == self.agent || overlaps(&r.cwd, &self.cwd));
+        Ok(if valid {
+            Ok(self.cwd.clone())
+        } else {
+            Err(ReadyRefusal)
+        })
     }
 }
 

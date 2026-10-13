@@ -7,6 +7,12 @@
 //! the common-directory mutex serializes workers of that installation.
 //! Ready carries a token: the submission transaction MUST validate it before consuming
 //! queued input. Provider/account-worker wiring is owned by the account-worker slice.
+//! No child runs inside a store transaction. External Git/files can change between the
+//! last observation and commit; the common-directory mutex excludes this adapter's own
+//! writers, and publication compares actor/reservations/journal again. The opaque Ready
+//! token revalidates admission in the submission transaction before exposing cwd. This
+//! does not freeze user filesystem edits; uncertain effects stay inspectable and no user
+//! worktree is reset or cleaned.
 use crate::bounded_child::{self, ChildError};
 use crate::workspace_ready::{
     GitObservation, ProvisionEffect, Reservation, WorkspaceActor, WorkspaceDecision,
@@ -169,22 +175,24 @@ fn confined(identity: &ProvisionIdentity) -> bool {
     }) && identity.cwd.canonicalize().ok().as_ref() == Some(&identity.cwd)
 }
 
-/// Git re-observation is bounded by the original deadline and occurs while publication's
-/// transaction excludes reservation/actor writers, after every checkpoint command.
+/// Observe Git after checkpoint commands, outside the writer transaction. Only bounded
+/// state comparisons and publication run while holding the store's writer.
 fn publish_verified(
     store: &RuntimeStore,
     identity: &ProvisionIdentity,
     checkpoint: Result<&Value, &str>,
     git: &Git,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
+    let observed = git.worktree(identity).ok();
+    let confined = confined(identity);
     let token = store.transaction(|tx| {
         let current = CheckpointsRepository::workspace_snapshot(tx, &identity.agent)?;
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
-            let Ok(observed) = git.worktree(identity) else { return false };
+            let Some(observed) = &observed else { return false };
             let decision = decide_workspace(&actor, &current.agent.record,
-                Some(&actor.cwd), &reservations(current), Some(identity), true, &observed);
-            confined(identity) && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
+                Some(&actor.cwd), &reservations(current), Some(identity), true, observed);
+            confined && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
         if !valid {
             WorkspaceReadyRepository::uncertain(tx, identity, "Workspace evidence changed before publication", now())?;
@@ -195,10 +203,7 @@ fn publish_verified(
         Ok(Some(ReadyToken::new(&record.record, identity.cwd.clone())))
     })?;
     match token {
-        Some(token) => Ok(WorkspaceDecision::Ready {
-            cwd: identity.cwd.clone(),
-            token,
-        }),
+        Some(token) => Ok(WorkspaceDecision::Ready { token }),
         None => Ok(recovery(
             Some(identity.id.clone()),
             identity.destination.clone(),
@@ -384,31 +389,14 @@ impl Git {
             return Err(WorkspaceError::Deadline);
         }
         let mut safe_args = vec!["-c", "protocol.allow=never"];
-        // Never inherit GIT_DIR, GIT_INDEX_FILE, GIT_CONFIG_COUNT, or other Git overrides.
-        let inherited = [
-            "PATH",
-            "HOME",
-            "USERPROFILE",
-            "SYSTEMROOT",
-            "TMPDIR",
-            "TEMP",
-            "TMP",
-            "XDG_CONFIG_HOME",
-        ]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key, value)))
-        .collect::<Vec<_>>();
-        let mut environment = inherited
-            .iter()
-            .map(|(key, value)| (*key, value.as_str()))
-            .collect::<Vec<_>>();
-        environment.extend([
+        // Helpers receive the caller's environment; the runner strips all ambient GIT_*.
+        let environment = [
             ("GIT_TERMINAL_PROMPT", "0"),
             ("GIT_OPTIONAL_LOCKS", "0"),
             ("GIT_ALLOW_PROTOCOL", ""),
-        ]);
+        ];
         safe_args.extend_from_slice(args);
-        let output = bounded_child::run_isolated(bounded_child::Request {
+        let output = bounded_child::run_without_git_environment(bounded_child::Request {
             program: std::ffi::OsStr::new("git"),
             cwd: cwd.as_os_str(),
             args: &safe_args,
@@ -518,7 +506,6 @@ impl Git {
                             .is_empty();
                     if observation.clean {
                         self.run(destination, &["diff", "--cached", "--quiet", "HEAD", "--"])?;
-                        self.run(destination, &["diff-files", "--quiet", "--"])?;
                     }
                 }
             }
@@ -559,24 +546,20 @@ impl Git {
             &plan.destination,
             &["for-each-ref", "--format=%(objectname)", &reference],
         )?;
-        if existing.trim() != plan.base_commit {
-            self.run(
-                &plan.destination,
-                &[
-                    "update-ref",
-                    &reference,
-                    &plan.base_commit,
-                    &"0".repeat(plan.base_commit.len()),
-                ],
-            )
-            .map_err(|error| {
-                if existing.trim().is_empty() {
-                    error
-                } else {
-                    WorkspaceError::CheckpointRefConflict
-                }
-            })?;
-        }
+        let expected = if existing.trim().is_empty() {
+            "0".repeat(plan.base_commit.len())
+        } else {
+            plan.base_commit.clone()
+        };
+        // Exact replay is a compare-and-swap too, not just a potentially stale ref read.
+        self.run(
+            &plan.destination,
+            &["update-ref", &reference, &plan.base_commit, &expected],
+        )
+        .map_err(|error| match error {
+            WorkspaceError::Git => WorkspaceError::CheckpointRefConflict,
+            other => other,
+        })?;
         Ok(
             json!({"id":id,"agent":plan.agent,"rootId":plan.source.get("rootId"),"label":"Before first turn",
             "tree":tree,"commit":plan.base_commit,"ref":reference,"threadId":plan.source.get("threadId"),
