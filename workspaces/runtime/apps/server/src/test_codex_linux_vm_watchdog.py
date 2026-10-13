@@ -29,19 +29,31 @@ class FakeHelper:
         self.stops = 0
         self.launches = 0
         self.healthy = True
+        # A dead kernel ignores the ACPI stop: the helper stops it this many polls later.
+        self.stop_polls = 0
+        self.while_stopping: Any = None
+        self.health_record_at_launch: bool | None = None
 
     def host(self, method: str, timeout: float = 5) -> dict[str, Any]:
         if method == 'host.status':
+            if self.state == 'stopping':
+                hook, self.while_stopping = self.while_stopping, None
+                if hook is not None:
+                    hook()
+                self.stop_polls -= 1
+                if self.stop_polls <= 0:
+                    self.state = 'stopped'
             if self.state == 'stopped':
                 raise vm.LinuxVMError('The Linux VM helper is unavailable: no socket')
             return {'state': self.state, 'pid': self.pid, 'error': None}
         if method == 'host.stop':
             self.stops += 1
-            self.state = 'stopped'
+            self.state = 'stopping' if self.stop_polls > 0 else 'stopped'
             return {'state': 'stopping'}
         raise AssertionError(method)
 
     def launch(self, *args: Any, **kwargs: Any) -> Mock:
+        self.health_record_at_launch = (self.directory / 'guest-health.json').exists()
         self.launches += 1
         self.pid += 1
         self.state = 'running'
@@ -52,10 +64,13 @@ class FakeHelper:
         return process
 
     def call(self, method: str, params: dict[str, Any] | None = None, **options: Any) -> dict[str, Any]:
-        if method != 'health':
+        if method not in {'health', 'ping'}:
             raise AssertionError(method)
         if not self.healthy:
             raise vm.LinuxVMError('The Linux VM connection closed before its response.', uncertain=True)
+        if method == 'ping':
+            # The guest service answers an unknown method with an error from its event loop.
+            raise vm.LinuxVMError('Linux guest ping: unsupported', code='invalid_params')
         return {'protocol': 1}
 
 
@@ -155,9 +170,26 @@ class WatchdogTests(unittest.TestCase):
         self.helper.pid += 1
         self.assertEqual(self.client.status()['state'], 'running')
 
+    def test_any_guest_answer_proves_life_and_clears_an_unanswered_verdict(self) -> None:
+        self.assertIsNone(self.client.ping())
+        self.helper.healthy = False
+        self.assertIn('closed before its response', str(self.client.ping()))
+        start = self.clock.now
+        self.client.record_health(self.helper.pid, None, now=start)
+        for step in range(1, 8):
+            self.client.record_health(self.helper.pid, 'no answer', now=start + 30 * step)
+        self.assertEqual(self.client.status()['guestFailure']['kind'], 'unanswered')
+        # The guest answers again, for example after a slow minute: no restart.
+        self.helper.healthy = True
+        self.clock.now = start + 240
+        self.assertEqual(self.watchdog.check(), 'running')
+        self.assertEqual(self.helper.stops, 0)
+
     # Recovery
 
     def test_a_failed_guest_restarts_through_the_normal_start_and_keeps_its_console(self) -> None:
+        # A failing probe record that the next helper PID would inherit.
+        self.client.record_health(self.helper.pid + 1, 'no answer', now=self.clock.now)
         self.panic()
         self.assertEqual(self.watchdog.check(), 'restarted')
         self.assertEqual((self.helper.stops, self.helper.launches), (1, 1))
@@ -180,6 +212,8 @@ class WatchdogTests(unittest.TestCase):
         health = json.loads((self.directory / 'guest-health.json').read_text())
         self.assertEqual(health['helperPid'], self.helper.pid)
         self.assertIsNotNone(health['healthyAt'])
+        # A new helper can get an old PID: its probe record starts empty.
+        self.assertFalse(self.helper.health_record_at_launch)
 
     def test_an_unanswered_guest_is_restarted_by_the_checks(self) -> None:
         self.assertEqual(self.watchdog.check(), 'running')
@@ -236,6 +270,30 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.records()[0]['outcome'], 'cancelled')
         # Later checks leave it stopped.
         self.clock.now += 3600
+        self.assertEqual(self.watchdog.check(), 'stopped')
+        self.assertEqual(self.helper.launches, 0)
+
+    def test_a_stop_while_a_dead_guest_stops_keeps_the_vm_stopped(self) -> None:
+        self.panic()
+        self.helper.stop_polls = 3
+        # A person stops the VM while the helper waits to force the stop of the dead kernel.
+        self.helper.while_stopping = self.client.stop
+        self.assertEqual(self.watchdog.check(), 'cancelled')
+        self.assertEqual(self.helper.launches, 0)
+        self.assertEqual(self.client.intent()['state'], 'stopped')
+        self.assertEqual(self.finished[0]['outcome'], 'cancelled')
+
+    def test_a_restart_that_a_backend_stop_interrupted_after_its_launch_is_closed(self) -> None:
+        record = {'id': 'restart-1', 'at': self.clock.now, 'kind': 'kernel_panic', 'reason': 'x',
+                  'stage': 'starting', 'chats': ['chat-1']}
+        (self.directory / watchdog.RECORD_FILE).write_text(json.dumps({'restarts': [record]}))
+        self.client._write_intent('running', 'watchdog', 'restart-1')
+        self.assertEqual(self.watchdog.check(), 'running')
+        self.assertEqual(self.records()[0]['outcome'], 'restarted')
+        self.assertEqual(self.finished[0]['chats'], ['chat-1'])
+        self.assertNotIn('restart', self.client.intent())
+        # A later stop by the guest itself does not start the VM again.
+        self.helper.state = 'stopped'
         self.assertEqual(self.watchdog.check(), 'stopped')
         self.assertEqual(self.helper.launches, 0)
 

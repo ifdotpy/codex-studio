@@ -115,11 +115,16 @@ reports `state: failed` when the helper says `running` and one of these is true:
 
 - `console.log` has a `Kernel panic - not syncing:` line. The helper clears `console.log` at
   each boot, so the line is from the current boot.
-- The guest answered `health` in this boot (same helper PID) and then gave no answer for
-  180 seconds, over at least 3 probes. The backend probes every 30 seconds and
-  `ensure_running` records the first answer, in `guest-health.json`. A booting or
-  provisioning guest is not a failure. A gap of more than 90 seconds between two probes
-  (Mac sleep, backend stop) starts a new span.
+- The guest answered in this boot (same helper PID) and then gave no answer for 180 seconds,
+  over at least 3 probes. The backend probes every 30 seconds and `ensure_running` records
+  the first answer, in `guest-health.json`. A booting or provisioning guest is not a failure.
+  A gap of more than 90 seconds between two probes (Mac sleep, backend stop) starts a new span.
+
+The probe (`Client.ping`) sends a method that the guest service does not have. The service
+answers it with an error from its event loop. Any answer proves that the kernel, vsock and the
+service run. Only a transport failure counts as no answer. The probe does not use `health`,
+because `health` waits for the root broker and layr, which can be slow for minutes during a
+large import. One answer clears an `unanswered` verdict, also while a restart waits.
 
 The failed status has `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
 `helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
@@ -144,11 +149,14 @@ Limits:
 - No restart while `upgrade-linux-vm-layr.py` holds `maintenance.lock` (for the whole upgrade),
   or while create, start or stop holds `client.lock`. An upgrade does not start during a restart.
 - The watchdog acts only on a live helper and never starts a stopped VM.
-  `Client.stop()` saves `intent.json`, also for a stopped VM. A stop between the watchdog's
-  stop and its start cancels that start (outcome `cancelled`).
-- One exception: a backend stop can interrupt a restart between its stop and its start. The
-  next backend finishes that restart if it is less than 30 minutes old.
-- A failed start is recorded. The next attempt waits for the limits.
+  `Client.stop()` saves `intent.json` before it takes the client lock, also for a stopped VM.
+  A stop at any time before the watchdog's start cancels that start (outcome `cancelled`).
+  The watchdog does not hold the client lock while the helper stops a dead kernel.
+- One exception: a restart that did not reach its start (a backend stop, or a stop without a
+  proven result). The next check finishes it if it is less than 30 minutes old. When the
+  guest of such a restart already answers, the next check closes the restart instead.
+- A failed start is recorded. If the helper still runs with a failed guest, the next attempt
+  waits for the limits. A VM that did not start stays stopped.
 
 `status()` shows the last restart and the number in the last 24 hours as `watchdog`.
 
