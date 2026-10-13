@@ -419,24 +419,62 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(persisted_state(backend), before)
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_monitor_input_and_cancel_remain_unregistered(self) -> None:
+    def test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive(self) -> None:
+        before = persisted_state(self.backend)
+        for _ in range(2):
+            response = self.backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json(), {"id":"contract-monitor", "status":"completed"})
+        response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id":"contract-monitor", "text":"x"})
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(persisted_state(self.backend), before)
+
+    def test_pending_monitor_cancel_expires_approval_and_records_exit(self) -> None:
         backend = self.backend
-        input_response = backend.request(
-            "POST",
-            "/api/monitor/input",
-            headers=self.headers(),
-            body={"id": "contract-monitor", "text": ""},
-        )
-        cancel_response = backend.request(
-            "POST",
-            "/api/monitor/cancel",
-            headers=self.headers(),
-            body={"id": "contract-monitor"},
-        )
-        for response in (input_response, cancel_response):
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+            original = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
+            actor = db.execute("SELECT record FROM runtime_agents WHERE id='monitor-contract-agent'").fetchone()[0]
+            monitor = json.loads(original)
+            monitor.update(id="pending-cancel", status="approval", epoch=json.loads(actor)["epoch"])
+            db.execute("INSERT INTO runtime_monitors VALUES(?,?)", (monitor["id"], json.dumps(monitor)))
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id='monitor-contract-agent'")
+            db.execute("INSERT INTO runtime_requests VALUES(?,?)", ("cancel-approval", json.dumps({"id":"cancel-approval","method":"monitor/approve","agent":"monitor-contract-agent","params":{"monitorId":"pending-cancel"},"status":"pending","createdAt":1})))
+        try:
+            response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"pending-cancel"})
+            self.assertEqual(response.status, 200, response.body[:1000])
+            value = response.json()
+            entities = value.pop("_syncEntities", [])
+            after = value.pop("_syncEntitiesAfter", None)
+            self.assertEqual(value, {"id":"pending-cancel","status":"cancelled","cancelRequested":False})
+            self.assertIsInstance(after, int)
+            self.assertIn("entity:monitor:pending-cancel", [entity["id"] for entity in entities])
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                stored = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='pending-cancel'").fetchone()[0])
+                approval = json.loads(db.execute("SELECT record FROM runtime_requests WHERE id='cancel-approval'").fetchone()[0])
+                event = db.execute("SELECT text,status FROM runtime_events WHERE id='monitor:pending-cancel'").fetchone()
+            self.assertEqual(stored["status"], "cancelled")
+            self.assertEqual(approval["status"], "expired")
+            self.assertEqual(json.loads(event[0])["status"], "cancelled")
+            self.assertEqual(event[1], "cancelled")
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                db.execute("UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'", (actor,))
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_running_monitor_cancel_refuses_native_dependency_without_writes(self) -> None:
+        backend = self.backend
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+            old = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
+            db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id='contract-monitor'")
+        try:
+            before = persisted_state(backend)
+            response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
             self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json()["error"], "Not implemented")
+            self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/monitor-commands")
+            self.assertEqual(persisted_state(backend), before)
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                db.execute("UPDATE runtime_monitors SET record=? WHERE id='contract-monitor'", (old,))
 
 
 if __name__ == "__main__":
