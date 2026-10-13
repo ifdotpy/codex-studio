@@ -263,6 +263,7 @@ fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
     let tables = if full {
         vec![
             "runtime_events",
+            "runtime_event_meta",
             "runtime_agents",
             "runtime_monitors",
             "sync_entities",
@@ -283,7 +284,10 @@ fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
                 finished: 2000.0,
             };
             store.transaction(|tx| {
-                tx.execute_batch(&format!("CREATE TRIGGER injected {boundary} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
+                // An upsert fires AFTER UPDATE when its row already exists.
+                for operation in ["INSERT", "UPDATE"] {
+                    tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END"))?;
+                }
                 Ok(())
             }).expect("install boundary");
             assert!(
@@ -294,7 +298,7 @@ fn result_write_boundaries_roll_back_then_recover_the_first_receipt() {
             assert_eq!(fixtures::events(&store), json!([]));
             store
                 .transaction(|tx| {
-                    tx.execute_batch("DROP TRIGGER injected")?;
+                    tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                     Ok(())
                 })
                 .expect("release boundary");
