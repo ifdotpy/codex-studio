@@ -10,6 +10,8 @@ use thiserror::Error;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
+/// Lead + 2048 workers + one queued team record.
+pub const MAX_TRANSFER_AGENT_RECORDS: usize = 2050;
 
 #[derive(Debug, Error)]
 pub enum TransferError {
@@ -152,7 +154,7 @@ impl Snapshot {
         let mut bytes = raw.len();
         for (id, raw) in agents {
             bytes = bytes.saturating_add(raw.len());
-            if records.len() >= 2049 || bytes > 64 * 1024 * 1024 {
+            if records.len() >= MAX_TRANSFER_AGENT_RECORDS || bytes > 64 * 1024 * 1024 {
                 return Err(invalid("transfer snapshot", "/resourceLimit"));
             }
             // `runtime_agents` uses the table schema. Keep the open record as JSON;
