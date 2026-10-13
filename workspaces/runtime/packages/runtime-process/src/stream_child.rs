@@ -220,8 +220,8 @@ async fn run_child(
                 None
             }
             request = input.recv(), if stdin.is_some() => {
-                if let Some(request) = request {
-                    if let Some(pipe) = stdin.as_mut() {
+                if let Some(request) = request
+                    && let Some(pipe) = stdin.as_mut() {
                         let written = tokio::select! {
                             biased;
                             _ = cancel.changed() => Err(ChildError::Unknown),
@@ -234,7 +234,6 @@ async fn run_child(
                             // Receiver loss leaves the caller with an unknown outcome; never retry.
                         }
                         if failed { reason = ExitReason::IoFailure; break; }
-                    }
                 }
                 None
             }
@@ -275,6 +274,48 @@ async fn run_child(
     })
 }
 
+/// Bounded one-shot capture on the same owned actor. Callers choose the environment
+/// and lifetime; neither command arguments nor output are included in errors.
+pub struct Capture {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub code: Option<i32>,
+    pub reason: ExitReason,
+}
+
+pub async fn capture(spec: ChildSpec) -> io::Result<Capture> {
+    let mut child = StreamChild::spawn(spec).await?;
+    let mut result = Capture {
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        code: None,
+        reason: ExitReason::IoFailure,
+    };
+    while let Some(event) = child.next_event().await {
+        match event {
+            ChildEvent::Output { stream, bytes } => {
+                let buffer = match stream {
+                    OutputStream::Stdout => &mut result.stdout,
+                    OutputStream::Stderr => &mut result.stderr,
+                };
+                buffer.extend(bytes);
+                if buffer.len() > 32768 {
+                    buffer.drain(..buffer.len() - 32768);
+                }
+            }
+            ChildEvent::Exited { code, reason } => {
+                result.code = code;
+                result.reason = reason;
+            }
+        }
+    }
+    child
+        .close()
+        .await
+        .map_err(|_| io::Error::other("child cleanup failed"))?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,14 +335,17 @@ mod tests {
 
     #[tokio::test]
     async fn input_eof_and_both_output_pipes_precede_exit() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("child test fixture");
         let mut child = StreamChild::spawn(spec(
             "read line; printf '%s:%s' \"$line\" \"$MONITOR_TEST\"; printf stderr >&2",
             root.path(),
         ))
         .await
-        .unwrap();
-        child.write(b"hello\n".to_vec(), true).await.unwrap();
+        .expect("child test fixture");
+        child
+            .write(b"hello\n".to_vec(), true)
+            .await
+            .expect("child test fixture");
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         while let Some(event) = child.next_event().await {
             match event {
@@ -321,20 +365,20 @@ mod tests {
                 }
             }
         }
-        child.close().await.unwrap();
+        child.close().await.expect("child test fixture");
     }
 
     #[tokio::test]
     async fn cancellation_reaps_owned_process_group() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("child test fixture");
         let mut child = StreamChild::spawn(spec("printf ready; read line", root.path()))
             .await
-            .unwrap();
+            .expect("child test fixture");
         assert!(matches!(
             child.next_event().await,
             Some(ChildEvent::Output { .. })
         ));
-        child.cancel().await.unwrap();
+        child.cancel().await.expect("child test fixture");
         assert!(matches!(
             child.next_event().await,
             Some(ChildEvent::Exited {
@@ -342,22 +386,24 @@ mod tests {
                 ..
             })
         ));
-        child.close().await.unwrap();
+        child.close().await.expect("child test fixture");
     }
 
     #[tokio::test]
     async fn handle_drop_keeps_cleanup_actor_until_reaped() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("child test fixture");
         let mut child = StreamChild::spawn(spec("printf ready; read line", root.path()))
             .await
-            .unwrap();
+            .expect("child test fixture");
         assert!(matches!(
             child.next_event().await,
             Some(ChildEvent::Output { .. })
         ));
         let mut done = child.completion.clone();
         drop(child);
-        done.wait_for(|result| result.is_some()).await.unwrap();
+        done.wait_for(|result| result.is_some())
+            .await
+            .expect("child test fixture");
         assert!(matches!(
             done.borrow().as_ref(),
             Some(Ok(ChildEvent::Exited {
@@ -369,26 +415,26 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_oversized_input_before_admission() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("child test fixture");
         let child = StreamChild::spawn(spec("read line", root.path()))
             .await
-            .unwrap();
+            .expect("child test fixture");
         assert_eq!(
             child.write(vec![0; INPUT_BYTES + 1], false).await,
             Err(ChildError::InputTooLarge)
         );
-        child.close().await.unwrap();
+        child.close().await.expect("child test fixture");
     }
 
     #[tokio::test]
     async fn environment_is_explicit_and_nonzero_exit_is_preserved() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("child test fixture");
         let mut child = StreamChild::spawn(spec(
             "printf '%s:%s' \"${HOME-unset}\" \"$MONITOR_TEST\"; exit 7",
             root.path(),
         ))
         .await
-        .unwrap();
+        .expect("child test fixture");
         let mut output = Vec::new();
         while let Some(event) = child.next_event().await {
             match event {
@@ -400,5 +446,40 @@ mod tests {
             }
         }
         assert_eq!(output, b"unset:explicit");
+    }
+
+    #[tokio::test]
+    async fn capture_retains_only_bounded_pipe_tails() {
+        let root = tempfile::tempdir().expect("capture root");
+        let result = capture(spec("printf '%040000d' 0; printf final >&2", root.path()))
+            .await
+            .expect("capture");
+        assert_eq!(result.stdout.len(), 32768);
+        assert!(result.stdout.iter().all(|byte| *byte == b'0'));
+        assert_eq!(result.stderr, b"final");
+        assert_eq!(result.code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn lifetime_timer_kills_and_reaps_without_more_output() {
+        let root = tempfile::tempdir().expect("timer root");
+        let mut child = StreamChild::spawn(spec("printf ready; read line", root.path()))
+            .await
+            .expect("timer child");
+        assert!(matches!(
+            child.next_event().await,
+            Some(ChildEvent::Output { .. })
+        ));
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::resume();
+        assert!(matches!(
+            child.next_event().await,
+            Some(ChildEvent::Exited {
+                reason: ExitReason::TimedOut,
+                ..
+            })
+        ));
+        child.close().await.expect("timer cleanup");
     }
 }

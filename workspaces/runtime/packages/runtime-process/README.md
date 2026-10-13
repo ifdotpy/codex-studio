@@ -248,3 +248,24 @@ The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.
 Run `cargo nextest run -p studio-runtime-process --test provider_stdio` for
 cancellation, deadline, caller-drop, and process-group cleanup checks.
+
+## Owned local pipe children
+
+[`StreamChild`](src/stream_child.rs) uses Tokio and process-wrap process groups;
+process-wrap's kill-on-drop feature stays disabled. A retained actor handles
+termination and reaping when its handle is dropped. Shut down the application by
+awaiting `close()` on each owned child before stopping the Tokio runtime. These
+children cannot be recovered by saved PID after a backend restart.
+
+`ChildSpec` supplies the complete environment after `env_clear`. A sign-in caller
+selects its isolated configuration home and CLI search path; a monitor caller
+supplies the environment selected by workspace preparation and permission checks.
+This leaf neither reads provider homes nor copies the ambient environment. It
+never includes arguments, environment values, or captured output in errors.
+
+`next_event` streams bounded chunks with order preserved within each pipe.
+`write` distinguishes a request that was never admitted from an unknown submitted
+write; unknown input must not be replayed. `capture` uses the same actor for a
+bounded tail of each pipe. Buffer and deadline limits are owned by
+[`stream_child.rs`](src/stream_child.rs). Production provider commands still use
+the account worker's native command port and sandbox policy.
