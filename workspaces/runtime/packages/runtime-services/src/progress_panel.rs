@@ -3,11 +3,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const MAX_PROGRESS_BYTES: usize = 128 * 1024;
@@ -18,7 +16,6 @@ const SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const RENDERER_V1: &str = "progress-markdown-v1";
 const RENDERER_V2: &str = "progress-markdown-v2";
 const LAYOUT_FILE: &str = "PROGRESS.layout.json";
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 pub enum ProgressPanelError {
@@ -234,10 +231,7 @@ pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPa
     if revision != requested_revision {
         return Err(ProgressPanelError::StaleRevision);
     }
-    let digest = Sha256::digest(markdown.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let digest = studio_runtime_store::sha256_hex(markdown.as_bytes());
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -679,58 +673,31 @@ fn atomic_replace(
     expected_revision: &str,
     bytes: &[u8],
 ) -> Result<(), ProgressPanelError> {
-    for _ in 0..16 {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = directory.join(format!(".layout-{}-{sequence}.tmp", std::process::id()));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o444);
-        }
-        match options.open(&temporary) {
-            Ok(mut file) => {
-                let result = (|| -> Result<(), ProgressPanelError> {
-                    file.write_all(bytes)?;
-                    file.sync_all()?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        file.set_permissions(fs::Permissions::from_mode(0o444))?;
-                    }
-                    drop(file);
-                    let current =
-                        read_file(progress).map_err(|_| ProgressPanelError::ChangedWhileSaving)?;
-                    if current.map(|(_, revision, _)| revision).as_deref()
-                        != Some(expected_revision)
-                    {
-                        return Err(ProgressPanelError::ChangedWhileSaving);
-                    }
-                    fs::rename(&temporary, target)?;
-                    #[cfg(unix)]
-                    File::open(directory)?.sync_all()?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    match fs::remove_file(&temporary) {
-                        Ok(()) | Err(_) => {}
-                    }
-                }
-                return result;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o444))?;
     }
-    Err(std::io::Error::other("cannot allocate progress layout file").into())
+    let temporary_path = temporary.into_temp_path();
+    let current = read_file(progress).map_err(|_| ProgressPanelError::ChangedWhileSaving)?;
+    if current.map(|(_, revision, _)| revision).as_deref() != Some(expected_revision) {
+        return Err(ProgressPanelError::ChangedWhileSaving);
+    }
+    fs::rename(&temporary_path, target)?;
+    #[cfg(unix)]
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ProgressPanelError, atomic_replace, read_progress, record_layout};
     use serde_json::{Value, json};
-    use sha2::Digest;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -935,8 +902,7 @@ mod tests {
             .as_secs_f64();
         let stored = json!({
             "version":1, "agent":"agent-a", "revision":revision,
-            "sha256":sha2::Sha256::digest(b"# Status\n").iter()
-                .map(|byte| format!("{byte:02x}")).collect::<String>(),
+            "sha256":studio_runtime_store::sha256_hex(b"# Status\n"),
             "status":"fits", "updatedAt":now,
             "reports":[{"client":"phone", "sequence":1, "renderer":"progress-markdown-v1",
                 "width":320, "height":150, "contentWidth":100, "contentHeight":40,

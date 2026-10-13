@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use studio_runtime_store::{RuntimeStore, StoreError, TerminalsRepository};
 use thiserror::Error;
 
@@ -473,7 +473,10 @@ impl<S: TerminalSession> TerminalDriver<S> {
         match self.session.send_request(
             &format!("terminal-input:{request_id}"),
             "process/writeStdin",
-            json!({"processHandle":id, "deltaBase64":base64_encode(text.as_bytes())}),
+            json!({
+                "processHandle":id,
+                "deltaBase64":base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
+            }),
         ) {
             Ok(_) => {}
             Err(SessionError::UnknownOutcome) => return Ok(uncertain),
@@ -643,26 +646,6 @@ fn decode_utf8(bytes: &[u8], final_chunk: bool) -> (String, Vec<u8>) {
     (output, Vec::new())
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let value = (u32::from(chunk[0]) << 16)
-            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*chunk.get(2).unwrap_or(&0));
-        for shift in [18, 12, 6, 0] {
-            encoded.push(ALPHABET[((value >> shift) & 0x3f) as usize] as char);
-        }
-        if chunk.len() < 3 {
-            encoded.replace_range(encoded.len() - 1.., "=");
-        }
-        if chunk.len() < 2 {
-            encoded.replace_range(encoded.len() - 2..encoded.len() - 1, "=");
-        }
-    }
-    encoded
-}
-
 fn now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -672,20 +655,9 @@ fn now_seconds() -> f64 {
 fn new_id() -> Result<String, TerminalError> {
     let mut bytes = [0; 16];
     getrandom::fill(&mut bytes).map_err(|_| TerminalError::InvalidRequest)?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    ))
+    Ok(uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string())
 }
 
 fn receipt_signature(value: &Value) -> String {
@@ -739,10 +711,7 @@ fn receipt_signature(value: &Value) -> String {
             )
         })
         .unwrap_or_else(|| value.to_string());
-    Sha256::digest(json.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    studio_runtime_store::sha256_hex(json.as_bytes())
 }
 
 #[cfg(test)]
@@ -755,8 +724,8 @@ mod tests {
 
     use super::{
         OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError, TerminalEvent,
-        TerminalNotification, TerminalOutcome, TerminalSession, base64_encode, decode_utf8,
-        history_output, now_seconds, output, receipt_signature, size, terminal_title,
+        TerminalNotification, TerminalOutcome, TerminalSession, decode_utf8, history_output,
+        new_id, now_seconds, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
     use studio_runtime_store::{RuntimeStore, TerminalsRepository};
@@ -919,8 +888,19 @@ mod tests {
 
     #[test]
     fn input_uses_the_appserver_base64_wire_representation() {
-        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(base64_encode("🙂".as_bytes()), "8J+Zgg==");
+        use base64::Engine as _;
+
+        let encode = base64::engine::general_purpose::STANDARD;
+        assert_eq!(encode.encode(b"hello"), "aGVsbG8=");
+        assert_eq!(encode.encode("🙂".as_bytes()), "8J+Zgg==");
+    }
+
+    #[test]
+    fn generated_process_handles_are_version_four_uuids() {
+        let uuid = uuid::Uuid::parse_str(&new_id().expect("UUID random bytes are available"))
+            .expect("generated UUID parses");
+        assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
+        assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
     }
 
     #[test]

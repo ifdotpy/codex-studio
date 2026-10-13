@@ -5,14 +5,20 @@
 //! the driver's mutex. Credential material is never retained in this module.
 
 use crate::account_policy::{RegistryOrder, decode_registry, encode_registry};
+use base64::Engine as _;
+#[cfg(unix)]
+use process_wrap::std::CommandWrap;
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -359,36 +365,32 @@ fn run_claude_status(
     binary: &str,
     options: Option<&Value>,
 ) -> Result<(Vec<u8>, bool), &'static str> {
-    let mut command = Command::new(binary);
-    command.args(["auth", "status", "--json"]);
-    for name in [
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-        "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ] {
-        command.env_remove(name);
-    }
-    if let Some(config_dir) = options
-        .and_then(|value| value.get("configDir"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-    {
-        command.env("CLAUDE_CONFIG_DIR", config_dir.trim());
-    }
-    // `Command` inherits all other environment values, matching Python's
-    // subscription_env while ensuring the credential environment is cleared.
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "spawn")?;
+    run_claude_status_with_timeout(binary, options, CLAUDE_TIMEOUT)
+}
+
+fn run_claude_status_with_timeout(
+    binary: &str,
+    options: Option<&Value>,
+    timeout: Duration,
+) -> Result<(Vec<u8>, bool), &'static str> {
+    #[cfg(unix)]
+    let mut child = CommandWrap::with_new(binary, |command| {
+        configure_claude_status_command(command, options);
+    })
+    .wrap(ProcessGroup::leader())
+    .spawn()
+    .map_err(|_| "spawn")?;
+    #[cfg(windows)]
+    let mut child = {
+        let mut command = Command::new(binary);
+        configure_claude_status_command(&mut command, options);
+        command.spawn().map_err(|_| "spawn")?
+    };
+    #[cfg(unix)]
+    let Some(stdout) = child.stdout().take() else {
+        return Err("spawn");
+    };
+    #[cfg(windows)]
     let Some(stdout) = child.stdout.take() else {
         return Err("spawn");
     };
@@ -415,7 +417,7 @@ fn run_claude_status(
         if let Some(status) = child.try_wait().map_err(|_| "spawn")? {
             break status;
         }
-        if started.elapsed() >= CLAUDE_TIMEOUT {
+        if started.elapsed() >= timeout {
             let _kill_result = child.kill();
             let _wait_result = child.wait();
             // If a descendant inherited stdout, the reader may not reach EOF
@@ -425,7 +427,7 @@ fn run_claude_status(
         std::thread::sleep(Duration::from_millis(20));
     };
     while !finished.load(std::sync::atomic::Ordering::Acquire) {
-        if started.elapsed() >= CLAUDE_TIMEOUT {
+        if started.elapsed() >= timeout {
             return Err("timeout");
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -436,6 +438,36 @@ fn run_claude_status(
     } else {
         Err("parser")
     }
+}
+
+fn configure_claude_status_command(command: &mut Command, options: Option<&Value>) {
+    command.args(["auth", "status", "--json"]);
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ] {
+        command.env_remove(name);
+    }
+    if let Some(config_dir) = options
+        .and_then(|value| value.get("configDir"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.env("CLAUDE_CONFIG_DIR", config_dir.trim());
+    }
+    // `Command` inherits other environment values, matching Python's
+    // subscription_env while ensuring the credential environment is cleared.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 }
 
 fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
@@ -781,7 +813,6 @@ fn atomic_replace_with(
     replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), ReplaceError> {
-    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
     fs::create_dir_all(parent).map_err(|_| ReplaceError::NotReplaced)?;
     #[cfg(unix)]
@@ -790,28 +821,18 @@ fn atomic_replace_with(
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
             .map_err(|_| ReplaceError::NotReplaced)?;
     }
-    let sequence = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = parent.join(format!("registry-{}-{sequence}.tmp", std::process::id()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| {
-        let mut file = options.open(&temp).map_err(|_| ReplaceError::NotReplaced)?;
-        file.write_all(bytes)
+    let mut temp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| ReplaceError::NotReplaced)?;
+    (|| {
+        temp.write_all(bytes)
             .map_err(|_| ReplaceError::NotReplaced)?;
-        file.sync_all().map_err(|_| ReplaceError::NotReplaced)?;
-        replace(&temp, path).map_err(|_| ReplaceError::NotReplaced)?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|_| ReplaceError::NotReplaced)?;
+        replace(temp.path(), path).map_err(|_| ReplaceError::NotReplaced)?;
         sync_parent(parent).map_err(|_| ReplaceError::ReplacedNotDurable)?;
         Ok(())
-    })();
-    if matches!(result, Err(ReplaceError::NotReplaced)) {
-        let _cleanup_result = fs::remove_file(temp);
-    }
-    result
+    })()
 }
 
 fn nonempty_string(value: &Value) -> Option<String> {
@@ -826,27 +847,9 @@ fn hex_sha256(value: &[u8]) -> String {
 }
 
 fn base64url_decode(value: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(value.len() * 3 / 4);
-    let mut accumulator = 0_u32;
-    let mut bits = 0_u8;
-    for byte in value.bytes() {
-        let digit = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            b'=' => break,
-            _ => return None,
-        };
-        accumulator = (accumulator << 6) | u32::from(digit);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push(((accumulator >> bits) & 0xff) as u8);
-        }
-    }
-    Some(output)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()
 }
 
 #[cfg(test)]
@@ -856,6 +859,46 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn base64url_decode_rejects_padding_and_noncanonical_trailing_bits() {
+        assert_eq!(base64url_decode("aGVsbG8"), Some(b"hello".to_vec()));
+        // URL_SAFE_NO_PAD rejects `=` and invalid residual bits; the previous
+        // decoder silently stopped at padding and accepted either form.
+        assert_eq!(base64url_decode("aGVsbG8="), None);
+        assert_eq!(base64url_decode("Zh"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_status_timeout_kills_descendant_processes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("create Claude command fixture");
+        let command = directory.path().join("claude");
+        let marker = directory.path().join("descendant-finished");
+        let pid_file = directory.path().join("descendant-pid");
+        let script = format!(
+            "#!/bin/sh\n(sleep 1; printf done > '{}') &\necho $! > '{}'\nwait\n",
+            marker.display(),
+            pid_file.display(),
+        );
+        fs::write(&command, script).expect("write Claude command fixture");
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
+            .expect("make Claude command executable");
+
+        assert!(matches!(
+            run_claude_status_with_timeout(
+                command.to_str().expect("fixture path is UTF-8"),
+                None,
+                Duration::from_millis(400),
+            ),
+            Err("timeout")
+        ));
+        assert!(pid_file.is_file(), "descendant started before timeout");
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(!marker.exists(), "timed-out descendant must not survive");
+    }
 
     struct FakeReader(AuthMetadata);
 
@@ -1232,6 +1275,18 @@ print(store.path)
             Err(ReplaceError::ReplacedNotDurable)
         ));
         assert_eq!(fs::read(&path).expect("read replaced registry"), b"after");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("read registry permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]

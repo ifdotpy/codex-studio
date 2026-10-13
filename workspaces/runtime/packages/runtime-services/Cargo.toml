@@ -7,16 +7,21 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 getrandom = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mime_guess = { workspace = true }
-sha2 = { workspace = true }
 studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }
 studio-runtime-store = { path = "../runtime-store" }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
 jsonschema = { version = "=0.49.9", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+process-wrap = { workspace = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
