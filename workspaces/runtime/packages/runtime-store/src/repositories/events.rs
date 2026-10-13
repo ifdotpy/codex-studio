@@ -57,3 +57,9 @@ impl QueueEventRepository {
         Ok(())
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "events",
+        requirements: &REQUIREMENTS,
+    }
+}

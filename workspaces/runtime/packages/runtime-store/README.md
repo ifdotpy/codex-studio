@@ -218,10 +218,17 @@ columns explicitly. Each implementation lives in
 beside its SQL methods. The declaration lists every table and column it uses,
 required triggers and connection-local SQL functions its writes need, plus conditional
 requirements such as transcript triggers when the transcript table exists.
-`schema::verify` aggregates these declarations via the single
-`repositories::REQUIREMENTS` list. Add a module, declare its contract next to
-its SQL, and add one line to that list; do not centralize family-specific
-schema knowledge in `schema.rs`.
+Each repository submits a `SchemaRegistration` beside its contract;
+`schema::verify` sorts these inventory entries by repository name before its
+startup checks. Add an explicit alphabetical module line and a local schema
+registration with each repository; directory and requirement parity tests
+catch omissions. Keep public imports on `repositories::<family>` paths when
+migrating consumers; the existing crate re-exports remain during migration.
+Bootstrap parent tables and supported connection-local SQL functions are
+inventory registrations too, each collected in stable name order.
+
+- No build-script scanner: explicit declarations keep modules visible to Rust tooling.
+- No `automod`: its upstream is archived, and rustfmt skips macro-declared modules.
 
 The fixture schema used by the Python drift guard is captured from a new
 `Runtime` before `Canvas` is initialized. It therefore omits

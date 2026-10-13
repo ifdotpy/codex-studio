@@ -76,3 +76,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "workspace_files",
+        requirements: &REQUIREMENTS,
+    }
+}

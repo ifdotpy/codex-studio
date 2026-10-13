@@ -427,3 +427,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "event_write",
+        requirements: &REQUIREMENTS,
+    }
+}

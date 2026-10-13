@@ -273,3 +273,70 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FEATURE_SCHEMA;
+    use crate::repositories::schema_registrations;
+    use rusqlite::Connection;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn feature_tables_are_not_core_repository_requirements() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        let mut table_statements = 0;
+        for statement in FEATURE_SCHEMA.split(';') {
+            let statement = statement.trim();
+            let uppercase = statement.to_ascii_uppercase();
+            if uppercase.starts_with("CREATE TABLE")
+                || uppercase.starts_with("CREATE VIRTUAL TABLE")
+            {
+                connection
+                    .execute(statement, [])
+                    .expect("feature schema table statement executes");
+                table_statements += 1;
+            }
+        }
+        assert!(table_statements > 0, "feature table DDL is discovered");
+
+        let created_tables = connection
+            .prepare(
+                "SELECT name FROM sqlite_schema \
+                 WHERE type='table' AND sql IS NOT NULL ORDER BY name",
+            )
+            .expect("SQLite schema query prepares")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("feature tables are queried")
+            .map(|table| table.expect("feature table name is readable"))
+            .collect::<BTreeSet<_>>();
+
+        let mut core_violations = Vec::new();
+        for registration in schema_registrations() {
+            for table in registration.requirements.tables {
+                if created_tables.contains(table.name) {
+                    core_violations.push(format!(
+                        "{} declares bootstrap-created table {} as core",
+                        registration.repository, table.name
+                    ));
+                }
+            }
+            for table in registration.requirements.bootstrap_tables {
+                if created_tables.contains(table.name) {
+                    let exists: bool = connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                            [table.name],
+                            |row| row.get(0),
+                        )
+                        .expect("bootstrap table existence is checked after creation");
+                    assert!(exists, "{} bootstrap table is created", table.name);
+                }
+            }
+        }
+
+        assert!(
+            core_violations.is_empty(),
+            "feature schema tables must be bootstrap requirements, not core requirements: {core_violations:?}"
+        );
+    }
+}

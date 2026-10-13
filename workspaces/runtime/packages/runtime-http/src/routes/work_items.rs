@@ -342,3 +342,10 @@ pub(crate) fn write_error(error: EventWriteError) -> ApiError {
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "work_items",
+        routes: Some(routes),
+        dependencies: &["event-driver/work-items", "workspace-state/organization-effects"],
+    }
+}

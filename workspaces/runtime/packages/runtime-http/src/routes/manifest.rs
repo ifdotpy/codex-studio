@@ -8,43 +8,31 @@ use crate::router::HttpState;
 #[serde(transparent)]
 pub(crate) struct Dependency(&'static str);
 
-/// Names use `<slice>/<capability>` and are removed when the slice that provides them merges.
-const KNOWN_DEPENDENCIES: &[&str] = &[
-    "coordination-policy/inbox",
-    "cross-server/remote-events",
-    "event-driver/annotations",
-    "event-driver/plan-updates",
-    "event-driver/queue-mutations",
-    "event-driver/work-items",
-    "monitor-driver/active-checks",
-    "provider-session/account-rate-limits",
-    "provider-session/model-list",
-    "provider-session/app-server",
-    "resource-policy/publish-drafts",
-    "resource-policy/read-progress-panel",
-    "resource-policy/windows-file-identity",
-    "resource-policy/write-progress-layout",
-    "rule-driver/event-rules",
-    "sync-policy/entity-seeding",
-    "sync-policy/entity-window-maintenance",
-    "sync-policy/runtime-capabilities",
-    "transcript-service/pull",
-    "transcript/event-driver",
-    "transcript/payload-store",
-    "transcript/search-index",
-    "transcript/workspace-state",
-    "work-policy/views",
-    "workspace-state/git-changes",
-    "workspace-state/image-execution",
-    "workspace-state/organization-effects",
-    "workspace-state/snapshot",
-    "coordination-policy/chat-history",
-    "coordination-policy/room-visibility",
-    "event-driver/message-receipts",
-    "event-driver/message-send",
-    "federation-driver/rooms",
-    "agent-discovery/launcher-status",
-];
+#[cfg(test)]
+pub(crate) fn registered_dependencies() -> Vec<&'static str> {
+    let mut names = inventory::iter::<RouteModuleRegistration>
+        .into_iter()
+        .flat_map(|registration| registration.dependencies.iter().copied())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+}
+
+pub(crate) struct RouteModuleRegistration {
+    pub(crate) name: &'static str,
+    pub(crate) routes: Option<fn() -> RouteGroup>,
+    pub(crate) dependencies: &'static [&'static str],
+}
+
+inventory::collect!(RouteModuleRegistration);
+
+inventory::submit! {
+    RouteModuleRegistration {
+        name: "manifest",
+        routes: None,
+        dependencies: &[],
+    }
+}
 
 impl Dependency {
     #[allow(
@@ -60,7 +48,9 @@ impl Dependency {
     }
 
     fn is_known(self) -> bool {
-        KNOWN_DEPENDENCIES.contains(&self.0)
+        inventory::iter::<RouteModuleRegistration>
+            .into_iter()
+            .any(|registration| registration.dependencies.contains(&self.0))
     }
 }
 

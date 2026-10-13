@@ -150,3 +150,10 @@ mod tests {
         assert_eq!(rename_signature("chat-1", Some("Café")), expected);
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "agents_create",
+        routes: Some(routes),
+        dependencies: &["agent-discovery/launcher-status"],
+    }
+}

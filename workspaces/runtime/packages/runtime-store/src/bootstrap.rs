@@ -5,7 +5,31 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use crate::{StoreError, StoreResult};
 
 const SYNC_SCHEMA: &str = include_str!("sync_schema.sql");
-const PARENT_TABLES: [&str; 3] = ["runtime_events", "runtime_agents", "runtime_items"];
+
+struct ParentTableRegistration(&'static str);
+
+inventory::collect!(ParentTableRegistration);
+
+inventory::submit! {
+    ParentTableRegistration("runtime_agents")
+}
+
+inventory::submit! {
+    ParentTableRegistration("runtime_events")
+}
+
+inventory::submit! {
+    ParentTableRegistration("runtime_items")
+}
+
+fn registered_parent_tables() -> Vec<&'static str> {
+    let mut tables = inventory::iter::<ParentTableRegistration>
+        .into_iter()
+        .map(|registration| registration.0)
+        .collect::<Vec<_>>();
+    tables.sort_unstable();
+    tables
+}
 
 pub(crate) fn prepare_sync_schema(transaction: &Transaction<'_>) -> StoreResult<()> {
     let sections = parse_sections(SYNC_SCHEMA)?;
@@ -107,14 +131,15 @@ fn expected_catalog(
     has_runtime_items: bool,
 ) -> StoreResult<(Vec<CatalogObject>, Vec<SchemaFinding>)> {
     let expected = Connection::open_in_memory()?;
-    for parent in PARENT_TABLES {
-        if parent == "runtime_items" && !has_runtime_items {
+    let parent_tables = registered_parent_tables();
+    for parent in &parent_tables {
+        if *parent == "runtime_items" && !has_runtime_items {
             continue;
         }
         let sql = connection
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE",
-                [parent],
+                [*parent],
                 |row| row.get::<_, String>(0),
             )
             .optional()?
@@ -145,7 +170,7 @@ fn expected_catalog(
     for object in rows {
         let (kind, name, sql) = object?;
         if kind == "table" {
-            if PARENT_TABLES
+            if parent_tables
                 .iter()
                 .any(|parent| parent.eq_ignore_ascii_case(&name))
             {
@@ -300,6 +325,13 @@ fn schema_object_mismatch(object: &str, reason: &str) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_tables_are_registered_in_stable_order() {
+        let tables = registered_parent_tables();
+        assert_eq!(tables.len(), 3);
+        assert!(tables.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 
     #[test]
     fn table_inspection_returns_findings_without_writing() {

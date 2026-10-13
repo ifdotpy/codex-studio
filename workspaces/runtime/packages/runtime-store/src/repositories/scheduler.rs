@@ -1218,3 +1218,9 @@ mod tests {
         }
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "scheduler",
+        requirements: &REQUIREMENTS,
+    }
+}
