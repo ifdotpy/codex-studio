@@ -18,7 +18,7 @@ pub use repositories::analytics::{
 };
 pub use repositories::budget;
 pub use repositories::checkpoints::{
-    CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+    CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
