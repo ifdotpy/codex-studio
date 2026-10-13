@@ -220,3 +220,66 @@ fn request_replay_is_bound_to_lead_destination_and_scope() {
     );
     assert!(!saved.replay("fresh", "a", "target", "team").expect("new"));
 }
+
+#[test]
+fn selection_matches_real_python_method() {
+    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let output = Command::new(python)
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/account_transfer/selection_oracle.py"),
+        )
+        .output()
+        .expect("selection oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
+    assert_eq!(cases.len(), 11);
+    for case in cases {
+        let snapshot = studio_runtime_services::account_selection::SelectionSnapshot::read(
+            case["raw"].as_str().expect("row"),
+        )
+        .expect("snapshot");
+        match snapshot.decide(
+            case["target"].as_str().expect("target"),
+            Some(&case["account"]),
+            case["directory"].as_str().expect("directory"),
+            case["empty"].as_bool().expect("empty"),
+        ) {
+            Ok(value) => {
+                assert!(case["error"].is_null(), "{}", case["name"]);
+                assert_eq!(value, case["result"], "{}", case["name"]);
+            }
+            Err(error) => assert_eq!(json!(error.to_string()), case["error"], "{}", case["name"]),
+        }
+    }
+}
+
+#[test]
+fn selection_holds_pending_resume_without_changing_agent() {
+    let agent = json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,"accountKey":"source","cwd":"/project","usageResume":{"status":"scheduled"}});
+    let snapshot =
+        studio_runtime_services::account_selection::SelectionSnapshot::read(&agent.to_string())
+            .expect("snapshot");
+    let error = snapshot
+        .decide(
+            "target",
+            Some(&json!({"provider":"codex"})),
+            "/project",
+            true,
+        )
+        .expect_err("hold");
+    assert_eq!(
+        error.to_string(),
+        "Not implemented: requires account-transfer/usage-resume-cancellation"
+    );
+    assert_eq!(
+        snapshot
+            .decide("source", None, "/project", true)
+            .expect("unchanged account"),
+        agent
+    );
+}

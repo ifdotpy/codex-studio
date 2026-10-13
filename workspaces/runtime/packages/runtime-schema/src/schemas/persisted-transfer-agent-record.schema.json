@@ -152,6 +152,17 @@
         }
       ]
     },
+    "projectFolderRevision": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Projectfolderrevision",
+      "type": "integer"
+    },
+    "provider": {
+      "enum": ["codex", "claude"],
+      "title": "Provider",
+      "type": "string"
+    },
     "rootId": {
       "maxLength": 200,
       "minLength": 1,
@@ -175,6 +186,34 @@
         }
       ],
       "title": "Threadid"
+    },
+    "usageResume": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Usageresume"
+    },
+    "workerDefaults": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Workerdefaults"
     }
   },
   "required": ["id", "rootId", "epoch", "status"],

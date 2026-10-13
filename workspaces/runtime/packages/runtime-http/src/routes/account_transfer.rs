@@ -17,7 +17,10 @@ const TRANSFER: &[Dependency] = &[
     Dependency::new("account-transfer/destination-settings"),
     Dependency::new("store-bootstrap/account-transfer-schema"),
 ];
-const SELECTION: &[Dependency] = &[Dependency::new("account-transfer/empty-lead-selection")];
+const SELECTION: &[Dependency] = &[
+    Dependency::new("account-driver/unavailable"),
+    Dependency::new("account-transfer/usage-resume-cancellation"),
+];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
@@ -33,11 +36,36 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 async fn selection(
-    ApiJson(_body): ApiJson<generated::AccountSelectionRequest>,
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::AccountSelectionRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(error(TransferError::Requires(
-        "account-transfer/empty-lead-selection",
-    )))
+    tokio::task::spawn_blocking(move || {
+        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+        let accounts = || {
+            if let Some(driver) = &state.account_driver {
+                driver.snapshot().map_err(|_| TransferError::Stored {
+                    object: "account registry",
+                    pointer: "/".into(),
+                })
+            } else if let Some(policy) = &state.account_policy {
+                Ok(policy.accounts())
+            } else {
+                Err(TransferError::Requires("account-driver/unavailable"))
+            }
+        };
+        let value = studio_runtime_services::account_selection::select(
+            store,
+            &accounts,
+            &body.id,
+            &body.account_key,
+            body.cwd.as_ref().and_then(Option::as_deref),
+        )
+        .map_err(error)?;
+        state.event_wake.notify_one();
+        super::generated_json::<generated::AgentResponse>(value).map(Json)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 #[derive(Deserialize)]
 struct Request {
@@ -131,7 +159,7 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "account_transfer", routes: Some(routes), dependencies: &[
             "account-transfer/provider-history-executor", "account-transfer/destination-settings",
-            "account-transfer/empty-lead-selection", "store-bootstrap/account-transfer-schema",
+            "account-driver/unavailable", "account-transfer/usage-resume-cancellation", "store-bootstrap/account-transfer-schema",
         ],
     }
 }
