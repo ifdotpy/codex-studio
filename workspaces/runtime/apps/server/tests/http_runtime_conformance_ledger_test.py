@@ -395,6 +395,34 @@ class LedgerTraceContract(unittest.TestCase):
             self.assertEqual(observed["passed"], 3)
             self.assertEqual(len(observed["tests"]), 2)
 
+    def test_consumer_reconciles_status_after_interleaved_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log = root / "consumer.log"
+            log.write_text(
+                "test_skipped (__main__.Example.test_skipped) ... skipped 'fixture'\n"
+                "test_passed (__main__.Example.test_passed) ... RuntimeWarning: noisy stderr\n"
+                "test_later_skipped (__main__.Example.test_later_skipped) ... skipped 'fixture'\n"
+                "ok\n"
+                "Ran 3 tests in 0.1s\n"
+                "OK (skipped=2)\n"
+                "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+            )
+            result = {"status": "passed", "passed": 2, "failed": 0, "skipped": 2, "logPath": str(log)}
+            process = SimpleNamespace(stdout=json.dumps(result), stderr="", returncode=0)
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                observed = ledger.run_suite(ledger.TESTS / "fixture.py", {}, root, [], {})
+            self.assertEqual(observed["passed"], 2)
+            self.assertEqual(observed["skipped"], 2)
+            self.assertEqual(
+                [(case["testId"], case["status"]) for case in observed["tests"]],
+                [
+                    ("__main__.Example.test_skipped", "skipped"),
+                    ("__main__.Example.test_passed", "ok"),
+                    ("__main__.Example.test_later_skipped", "skipped"),
+                ],
+            )
+
     def test_unittest_ids_keep_their_class_and_are_not_duplicated(self) -> None:
         cases = ledger.case_results(
             "test_example (__main__.ExampleContract.test_example) ... ok"

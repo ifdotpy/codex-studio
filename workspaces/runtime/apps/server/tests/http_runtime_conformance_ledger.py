@@ -1578,20 +1578,25 @@ store._save()
 
 def case_results(log_text: str) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    current: str | None = None
+    current: dict[str, str] | None = None
     for line in log_text.splitlines():
         start = re.match(r"^(test_[\w]+)\s+\(([^)]*)\)\s+\.\.\.\s*(.*)$", line)
         if start:
-            current = start.group(1)
-            full_id = start.group(2)
+            if current is not None:
+                # unittest writes test output and warnings to separate streams;
+                # a warning can put the next test heading before this test's status.
+                cases.append({**current, "status": "unreported"})
+            current = {"test": start.group(1), "testId": start.group(2)}
             tail = start.group(3).strip()
             if tail in {"ok", "FAIL", "ERROR"} or tail.startswith("skipped"):
-                cases.append({"test": current, "testId": full_id, "status": tail.split()[0].lower()})
+                cases.append({**current, "status": tail.split()[0].lower()})
                 current = None
             continue
         if current is not None and line.strip() in {"ok", "FAIL", "ERROR"}:
-            cases.append({"test": current, "testId": full_id, "status": line.strip().lower()})
+            cases.append({**current, "status": line.strip().lower()})
             current = None
+    if current is not None:
+        cases.append({**current, "status": "unreported"})
     return cases
 
 
@@ -1742,14 +1747,48 @@ def run_suite(
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
     if not ran_summaries or suite_summary is None:
         raise RuntimeError(f"consumer result summary missing in {relative}")
-    expected_reported_counts = {
-        "passed": observed_counts["passed"] + int(suite_summary.group(1)),
-        "failed": observed_counts["failed"] + max(
-            0, int(suite_summary.group(2)) - structured_failed_suites
-        ),
-        "skipped": observed_counts["skipped"] + int(suite_summary.group(3)) + int(suite_summary.group(4)),
+    suite_counts = {
+        "passed": int(suite_summary.group(1)),
+        "failed": max(0, int(suite_summary.group(2)) - structured_failed_suites),
+        "skipped": int(suite_summary.group(3)) + int(suite_summary.group(4)),
     }
-    reported_counts = {name: result.get(name, 0) or 0 for name in expected_reported_counts}
+    reported_counts = {name: result.get(name, 0) or 0 for name in suite_counts}
+    expected_test_counts = {
+        name: reported_counts[name] - suite_counts[name] for name in suite_counts
+    }
+    unreported = [case for case in cases if case["status"] == "unreported"]
+    observed_test_counts = {
+        "passed": observed_counts["passed"],
+        "failed": observed_counts["failed"],
+        "skipped": observed_counts["skipped"],
+    }
+    missing_counts = {
+        name: expected_test_counts[name] - observed_test_counts[name]
+        for name in expected_test_counts
+    }
+    if (
+        any(count < 0 for count in missing_counts.values())
+        or sum(missing_counts.values()) != len(unreported)
+        or sum(count > 0 for count in missing_counts.values()) > 1
+    ):
+        raise RuntimeError(
+            f"consumer result-count mismatch in {relative}: "
+            f"unreported test statuses cannot be reconciled: missing={missing_counts}, "
+            f"unreported={[case['testId'] for case in unreported]}"
+        )
+    for status, count in missing_counts.items():
+        if count:
+            for case in unreported:
+                case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
+            break
+    observed_counts = {
+        "passed": sum(case["status"] == "ok" for case in cases),
+        "failed": sum(case["status"] in {"fail", "error"} for case in cases),
+        "skipped": sum(case["status"] == "skipped" for case in cases),
+    }
+    expected_reported_counts = {
+        name: observed_counts[name] + suite_counts[name] for name in suite_counts
+    }
     if (
         sum(observed_counts.values()) != ran_count
         or expected_reported_counts != reported_counts
