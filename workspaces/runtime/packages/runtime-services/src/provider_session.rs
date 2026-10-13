@@ -28,6 +28,7 @@ pub enum ProviderSessionInput {
     Frame {
         frame: Frame,
         cursor: Option<u64>,
+        received_at_ms: u64,
     },
     WriteCompleted {
         ticket: RequestTicket,
@@ -247,10 +248,11 @@ impl ProviderSession {
                 return Err(ProviderSessionError::Process(error));
             }
         };
+        let started = Instant::now();
         let reader_sink = Arc::clone(&input_sink);
         let reader_thread = match thread::Builder::new()
             .name("provider-session-reader".into())
-            .spawn(move || spawn_reader(reader, reader_sink))
+            .spawn(move || spawn_reader(reader, reader_sink, started))
         {
             Ok(thread) => thread,
             Err(error) => {
@@ -287,7 +289,6 @@ impl ProviderSession {
             );
         }
         tickets.insert(initialize_ticket.id.clone(), initialize_ticket.clone());
-        let started = Instant::now();
         let mut session = Self {
             process: Some(process),
             state,
@@ -455,7 +456,20 @@ impl ProviderSession {
         input: ProviderSessionInput,
     ) -> Result<Vec<(ProviderSessionEvent, Option<u64>)>, ProviderSessionError> {
         match input {
-            ProviderSessionInput::Frame { frame, cursor } => self.process_frame(frame, cursor),
+            ProviderSessionInput::Frame {
+                frame,
+                cursor,
+                received_at_ms,
+            } => {
+                // The account actor can be busy after the reader has received a
+                // frame. Use its receive time so an expired request is marked
+                // unknown before a queued reply is matched, independent of
+                // when the actor gets around to handling that input.
+                let (_, expired) = self.state.expire(received_at_ms);
+                let mut events = self.apply_actions(expired, None);
+                events.extend(self.process_frame(frame, cursor)?);
+                Ok(events)
+            }
             ProviderSessionInput::WriteCompleted { ticket }
                 if ticket.method == Method::Initialize =>
             {
@@ -891,7 +905,11 @@ fn request_id_namespace(generation: u64) -> String {
     )
 }
 
-fn spawn_reader(mut reader: Box<dyn ProviderProcessReader>, sink: ProviderSessionInputSink) {
+fn spawn_reader(
+    mut reader: Box<dyn ProviderProcessReader>,
+    sink: ProviderSessionInputSink,
+    started: Instant,
+) {
     let mut decoder = LineDecoder::new();
     let mut bytes = [0_u8; 8192];
     loop {
@@ -903,6 +921,7 @@ fn spawn_reader(mut reader: Box<dyn ProviderProcessReader>, sink: ProviderSessio
             Ok(count) => match decoder.push(&bytes[..count]) {
                 Ok(frames) => {
                     let cursors = reader.take_cursors();
+                    let received_at_ms = now_ms(started);
                     let cursors = if cursors.len() == frames.len() {
                         cursors.into_iter().map(Some).collect::<Vec<_>>()
                     } else if cursors.is_empty() {
@@ -912,7 +931,11 @@ fn spawn_reader(mut reader: Box<dyn ProviderProcessReader>, sink: ProviderSessio
                         return;
                     };
                     for (frame, cursor) in frames.into_iter().zip(cursors) {
-                        sink(ProviderSessionInput::Frame { frame, cursor });
+                        sink(ProviderSessionInput::Frame {
+                            frame,
+                            cursor,
+                            received_at_ms,
+                        });
                     }
                 }
                 Err(_) => {

@@ -9,9 +9,9 @@ use std::sync::{Condvar, Mutex};
 
 use serde_json::{Value, json};
 use studio_runtime_process::{ProviderProcess, ProviderProcessReader};
-use studio_runtime_providers::{Method, RequestId, RequestTicket, ResponseBody};
+use studio_runtime_providers::{Frame, Method, RequestId, RequestTicket, ResponseBody};
 use studio_runtime_services::provider_session::{
-    ProviderSession, ProviderSessionConfig, ProviderSessionEvent,
+    ProviderSession, ProviderSessionConfig, ProviderSessionEvent, ProviderSessionInput,
 };
 
 struct FakeReader(ChildStdout);
@@ -365,15 +365,17 @@ fn lost_reply_is_unknown_and_is_not_retried() {
 fn reply_after_deadline_is_reported_as_late_evidence() {
     let mut session = connect("late");
     let ticket = session
-        .send_request(Method::ModelList, json!({}), None, false, 10)
+        .send_request(Method::ModelList, json!({}), None, false, 0)
         .expect("request should be submitted once");
     assert_eq!(
-        receive_result(&mut session)
-            .expect("unknown event at deadline")
-            .0,
-        ProviderSessionEvent::UnknownOutcome {
+        session
+            .handle_deadline()
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect::<Vec<_>>(),
+        vec![ProviderSessionEvent::UnknownOutcome {
             ticket: ticket.clone()
-        }
+        }]
     );
     assert_eq!(
         receive_result(&mut session).expect("late evidence").0,
@@ -382,6 +384,50 @@ fn reply_after_deadline_is_reported_as_late_evidence() {
             body: ResponseBody::Result(json!({"late": true})),
             late: true
         }
+    );
+    session.close().expect("provider shutdown");
+}
+
+#[test]
+fn queued_reply_received_after_deadline_is_marked_late_before_matching() {
+    let acknowledged = Arc::new(AtomicU64::new(0));
+    let process = scripted_process(
+        acknowledged,
+        vec![(json!({"id":"__initialize__","result":{}}), None)],
+    );
+    let mut session = ProviderSession::connect(Box::new(process), ProviderSessionConfig::new())
+        .expect("scripted provider initializes");
+    let id = RequestId::Number(77);
+    let ticket = session
+        .send_request_with_id(id.clone(), Method::ModelList, json!({}), None, false, 0)
+        .expect("request should be submitted");
+
+    let events = session
+        .handle_input(ProviderSessionInput::Frame {
+            frame: Frame::Response {
+                id,
+                body: ResponseBody::Result(json!({"late": true})),
+                fields: Default::default(),
+            },
+            cursor: None,
+            received_at_ms: u64::MAX,
+        })
+        .expect("frame should be handled");
+    assert_eq!(
+        events
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect::<Vec<_>>(),
+        vec![
+            ProviderSessionEvent::UnknownOutcome {
+                ticket: ticket.clone()
+            },
+            ProviderSessionEvent::Reply {
+                ticket,
+                body: ResponseBody::Result(json!({"late": true})),
+                late: true,
+            },
+        ]
     );
     session.close().expect("provider shutdown");
 }
