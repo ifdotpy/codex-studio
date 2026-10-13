@@ -139,7 +139,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
         }
         "interrupt_accepted" | "interrupt_rejected" | "interrupt_unknown" => {
             lifecycle_transaction(store, |tx| {
-                SchedulerRepository::prepare_interrupt(
+                let prepared = SchedulerRepository::prepare_interrupt(
                     tx,
                     "agent",
                     "thread",
@@ -147,7 +147,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                     1,
                     "interrupt-ticket",
                 )?;
-                SchedulerRepository::settle_interrupt_result(
+                let settled = SchedulerRepository::settle_interrupt_result(
                     tx,
                     "interrupt-ticket",
                     1,
@@ -157,7 +157,8 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
                         "interrupt_unknown" => Some("interrupt response unknown"),
                         _ => None,
                     },
-                )
+                ).map(|value| json!(value))?;
+                Ok(json!({"prepared": prepared, "settled": settled}))
             })
             .map(|value| json!(value))
             .map_err(|e| e.to_string())
@@ -465,6 +466,57 @@ fn python_written_turn_lifecycle_corpus() {
                 .transaction(|tx| Ok(tx.total_changes()))
                 .expect("probe write counter");
             assert_eq!(before, after, "conflicting replay wrote SQLite");
+        }
+        if let Some(outcome) = case["transition"]
+            .as_str()
+            .and_then(|v| v.strip_prefix("interrupt_"))
+            && error.is_none()
+        {
+            let response_error = match outcome {
+                "rejected" => Some("rejected"),
+                "unknown" => Some("interrupt response unknown"),
+                _ => None,
+            };
+            let before = store
+                .transaction(|tx| Ok(tx.total_changes()))
+                .expect("interrupt counter");
+            let replay = lifecycle_transaction(&store, |tx| {
+                SchedulerRepository::settle_interrupt_result(
+                    tx,
+                    "interrupt-ticket",
+                    1,
+                    outcome,
+                    response_error,
+                )
+                .map(|value| json!(value))
+            })
+            .expect("interrupt settlement replay");
+            assert_eq!(
+                json!(replay),
+                first.as_ref().expect("first result")["settled"],
+                "{id}: saved interrupt result"
+            );
+            let refusal = lifecycle_transaction(&store, |tx| {
+                SchedulerRepository::settle_interrupt_result(
+                    tx,
+                    "interrupt-ticket",
+                    1,
+                    outcome,
+                    Some("CORPUS_PRIVATE_PAYLOAD"),
+                )
+            })
+            .expect_err("changed interrupt result must refuse");
+            assert_eq!(
+                refusal.to_string(),
+                "invalid stored sync object runtime_agents/agent"
+            );
+            let after = store
+                .transaction(|tx| Ok(tx.total_changes()))
+                .expect("interrupt counter");
+            assert_eq!(
+                before, after,
+                "{id}: interrupt replay or refusal wrote SQLite"
+            );
         }
         if case["replay"] == true && error.is_none() {
             let before = store

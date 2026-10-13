@@ -6502,7 +6502,10 @@
       }
     ],
     "tier": "fast",
-    "return": null
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
   },
   {
     "id": "interrupt_rejected",
@@ -6549,7 +6552,10 @@
       }
     ],
     "tier": "fast",
-    "return": null
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
   },
   {
     "id": "interrupt_unknown",
@@ -6596,7 +6602,10 @@
       }
     ],
     "tier": "fast",
-    "return": null
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
   },
   {
     "id": "accepted_conflict",
