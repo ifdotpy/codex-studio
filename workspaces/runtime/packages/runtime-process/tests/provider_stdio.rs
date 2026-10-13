@@ -106,17 +106,24 @@ async fn oversized_stdout_stops_and_reaps_child() {
     assert_reaped(pid);
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
     use studio_runtime_process::OperationId;
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let mut attachment = child("printf '{\"method\":\"ready\"}\\n'; exec /usr/bin/python3 -c 'import os,signal; os.read(0,1); print(\"{\\\"method\\\":\\\"stdin-progress\\\"}\",flush=True); signal.pause()'").await;
+    let mut attachment = child(r#"exec /usr/bin/python3 -c 'import os,signal,fcntl,json; print(json.dumps({"method":"pipe-ready","params":{"capacity":fcntl.fcntl(0,fcntl.F_GETPIPE_SZ)}}),flush=True); os.read(0,1); print("{\"method\":\"stdin-progress\"}",flush=True); signal.pause()'"#).await;
     let pid = pid(&attachment);
-    attachment.journal.recv().await.expect("child ready");
+    let ready = attachment.journal.recv().await.expect("child ready");
+    let JournalPayload::Frame(Frame::UnknownMethod(ready)) = ready.payload else {
+        panic!("child reports its pipe capacity");
+    };
+    let capacity = ready.fields["params"]["capacity"]
+        .as_u64()
+        .expect("pipe capacity") as usize;
     let frame = Frame::Request(RequestFrame {
         id: RequestId::Number(1),
         method: Method::ModelList,
-        params: Some(serde_json::json!({"padding":"x".repeat(512 * 1024)})),
+        params: Some(serde_json::json!({"padding":"x".repeat(capacity + 4096)})),
         fields: Default::default(),
     });
     let write =
@@ -128,7 +135,7 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
         .await
         .expect("command admitted");
     // One byte has reached the child. It consumes no further input, so the
-    // 512 KiB frame cannot complete in this pipe's bounded kernel buffer.
+    // frame, larger than the measured capacity, cannot finish writing.
     attachment
         .journal
         .recv()
