@@ -1,7 +1,7 @@
 //! Explicit context repair keeps unsupported native history edits visibly refused.
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post},
+    manifest::{Dependency, OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
@@ -32,13 +32,8 @@ async fn repair(
                 StatusCode::BAD_REQUEST,
                 "Context repair awaits its exact native receipt",
             ),
-            RepairError::RewriteUnavailable => {
-                dependency_unavailable("POST", "/api/context-repair", &DEPENDENCIES[..1])
-                    .unwrap_or_else(|_| ApiError::internal())
-            }
-            RepairError::MissingSchema => {
-                dependency_unavailable("POST", "/api/context-repair", &DEPENDENCIES[1..])
-                    .unwrap_or_else(|_| ApiError::internal())
+            RepairError::RewriteUnavailable | RepairError::MissingSchema => {
+                ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
             }
             _ => ApiError::internal(),
         })?;
