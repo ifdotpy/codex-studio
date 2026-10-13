@@ -82,7 +82,8 @@ def review_cases(runtime, root):
             if kind == 'federated':
                 record = {'id':identity,'status':'approved' if identity=='approved' else 'pending',
                           'localApproved':True,'remoteApproved':identity=='approved','localMembers':['agent'],
-                          'remoteMembers':[],'peerId':'remote','peerLabel':'Remote','name':'Federated'}
+                          'remoteMembers':[],'peerId':'remote','peerLabel':'Remote','name':'Federated',
+                          'shareNames':False,'shareStatus':False,'created':800.0}
                 db.execute('INSERT INTO runtime_federation_rooms(id,record) VALUES (?,?)', (identity,json.dumps(record)))
             db.execute('INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)',
                        ('chat-'+identity,identity,'agent','needle '+identity,800.0,'{}'))

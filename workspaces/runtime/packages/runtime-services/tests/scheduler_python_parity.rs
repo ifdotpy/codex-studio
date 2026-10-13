@@ -14,9 +14,6 @@ use studio_runtime_services::scheduler::{
 };
 use studio_runtime_store::{AgentId, AgentRepository, AgentStatus, RuntimeStore};
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
-
 const CREATE_PYTHON_EVENTS: &str = r#"
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])

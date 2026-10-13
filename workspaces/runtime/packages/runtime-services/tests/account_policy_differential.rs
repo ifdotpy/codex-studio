@@ -10,9 +10,6 @@ use serde_json::{Value, json};
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::account_state;
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
-
 const REGISTRY: &[u8] = br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/disposable/codex","label":"Codex","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#;
 
 #[test]

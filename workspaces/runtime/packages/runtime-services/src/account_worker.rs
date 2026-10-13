@@ -898,7 +898,8 @@ impl Worker {
                 let operation = operation_id.0.clone();
                 let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
-                self.db("callback_written", move |store| {
+                let identity = operation.clone();
+                self.db_identified("callback_written", identity, move |store| {
                     store::callback_written(store, &operation, write_outcome)
                 })
                 .await?;
@@ -1051,7 +1052,8 @@ impl Worker {
         if let Err(error) = self.drive(control.submit_frame(prepared)).await {
             if definite_rejection(&error) {
                 self.callbacks.remove(&operation);
-                self.db("callback_written", move |store| {
+                let identity = operation.clone();
+                self.db_identified("callback_written", identity, move |store| {
                     store::callback_written(store, &operation, WriteOutcome::NotSent)
                 })
                 .await?;

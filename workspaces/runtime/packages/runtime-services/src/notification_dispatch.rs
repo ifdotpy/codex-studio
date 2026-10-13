@@ -1385,7 +1385,7 @@ fn flush_text_stream(
             agent["events"]
                 .as_u64()
                 .unwrap_or_default()
-                .saturating_add(count - 1),
+                .saturating_add(count.saturating_sub(1)),
         );
         agent["activity"] = json!({"phase":"writing", "at":observed_at});
         agent["tail"] = Value::String(suffix(&text, 300));
