@@ -17,9 +17,7 @@ fn identity() -> ConnectionIdentity {
     }
 }
 fn corpus(state: Option<&std::path::Path>) -> Value {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .or_else(|| std::env::var_os("STUDIO_HTTP_BACKEND_PYTHON"))
-        .expect("set isolated equipped Python");
+    let python = studio_runtime_services::agents_create::prepared_python();
     let mut command = Command::new(python);
     command.arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/context_repair/oracle.py"));
     if let Some(state) = state {

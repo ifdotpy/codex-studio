@@ -23,7 +23,7 @@ fn read(case: &Value) -> Snapshot {
 }
 #[test]
 fn python_transfer_actions_restart_and_projection() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let python = studio_runtime_services::agents_create::prepared_python();
     let output = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
         .output()
@@ -223,7 +223,7 @@ fn request_replay_is_bound_to_lead_destination_and_scope() {
 
 #[test]
 fn selection_matches_real_python_method() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let python = studio_runtime_services::agents_create::prepared_python();
     let output = Command::new(python)
         .arg(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -286,7 +286,7 @@ fn selection_holds_pending_resume_without_changing_agent() {
 
 #[test]
 fn python_written_legacy_truthy_deleted_at_row_is_readable() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let python = studio_runtime_services::agents_create::prepared_python();
     let output = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
         .output()

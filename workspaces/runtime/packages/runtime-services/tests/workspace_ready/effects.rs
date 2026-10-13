@@ -198,8 +198,7 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("UTF-8 Git")
 }
 fn oracle(root: &Path, request: Value) -> Value {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = crate::agents_create::prepared_python(&source);
+    let python = crate::agents_create::prepared_python();
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/turn_lifecycle/workspace_ready_oracle.py");
     for name in ["home", "codex", "claude"] {

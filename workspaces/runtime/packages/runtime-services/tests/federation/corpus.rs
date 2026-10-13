@@ -24,8 +24,7 @@ impl Corpus {
             None => tempfile::tempdir(),
         }
         .expect("isolated fixture scratch directory");
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to isolated equipped interpreter");
+        let python = crate::agents_create::prepared_python();
         let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/federation/oracle.py");
         let result = Command::new(python)
             .arg(script)

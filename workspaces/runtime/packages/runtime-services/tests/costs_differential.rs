@@ -12,12 +12,8 @@ fn server_source() -> PathBuf {
 
 fn python() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| {
-        std::env::var_os("CODEX_AGENTS_PYTHON")
-            .map(PathBuf::from)
-            .expect("set CODEX_AGENTS_PYTHON to the prepared interpreter")
-    })
-    .clone()
+    PATH.get_or_init(studio_runtime_services::agents_create::prepared_python)
+        .clone()
 }
 
 #[test]

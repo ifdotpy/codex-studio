@@ -6,7 +6,7 @@ pub fn corpus(root: &Path) -> Vec<Value> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = std::process::Command::new("timeout")
         .arg("60")
-        .arg(std::env::var_os("CODEX_AGENTS_PYTHON").expect("set isolated CODEX_AGENTS_PYTHON"))
+        .arg(studio_runtime_services::agents_create::prepared_python())
         .arg("-B")
         .arg(manifest.join("tests/monitors/oracle.py"))
         .arg(manifest.join("../../apps/server/src"))

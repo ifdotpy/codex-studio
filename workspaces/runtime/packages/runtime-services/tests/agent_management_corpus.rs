@@ -5,7 +5,7 @@ use studio_runtime_services::agent_management::{
 };
 
 fn corpus() -> Vec<Value> {
-    let python = std::env::var("CODEX_AGENTS_PYTHON").expect("set isolated CODEX_AGENTS_PYTHON");
+    let python = studio_runtime_services::agents_create::prepared_python();
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py");
     let output = Command::new(python)
         .arg(path)

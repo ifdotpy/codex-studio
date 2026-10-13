@@ -25,7 +25,7 @@ struct Template(TempDir);
 impl Template {
     fn new() -> Self {
         let root = temporary_state();
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python required");
+        let python = studio_runtime_services::agents_create::prepared_python();
         let output = Command::new(python)
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"))
             .arg("--template")

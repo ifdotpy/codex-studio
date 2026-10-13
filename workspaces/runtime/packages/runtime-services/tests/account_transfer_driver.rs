@@ -18,13 +18,11 @@ fn template() -> &'static Path {
     ROOT.get_or_init(|| {
         let root =
             std::env::temp_dir().join(format!("account-transfer-template-{}", std::process::id()));
-        let output = Command::new(
-            std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into()),
-        )
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/template.py"))
-        .arg(&root)
-        .output()
-        .expect("Python template");
+        let output = Command::new(studio_runtime_services::agents_create::prepared_python())
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/template.py"))
+            .arg(&root)
+            .output()
+            .expect("Python template");
         assert!(
             output.status.success(),
             "{}",

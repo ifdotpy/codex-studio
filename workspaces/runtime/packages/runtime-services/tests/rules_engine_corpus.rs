@@ -7,9 +7,7 @@ use studio_runtime_services::rules_engine::{
 };
 
 fn python() -> PathBuf {
-    std::env::var_os("CODEX_AGENTS_PYTHON")
-        .map(PathBuf::from)
-        .expect("set CODEX_AGENTS_PYTHON to an isolated interpreter with server dependencies")
+    studio_runtime_services::agents_create::prepared_python()
 }
 fn oracle() -> Vec<Value> {
     let mut command = Command::new(python());

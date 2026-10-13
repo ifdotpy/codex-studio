@@ -50,7 +50,7 @@ fn template(root: &Path) {
     }
 }
 fn cases() -> Vec<Value> {
-    let output = Command::new(std::env::var("CODEX_AGENTS_PYTHON").expect("isolated Python"))
+    let output = Command::new(studio_runtime_services::agents_create::prepared_python())
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py"))
         .output()
         .expect("oracle");

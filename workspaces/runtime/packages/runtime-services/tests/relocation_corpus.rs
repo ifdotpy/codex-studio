@@ -17,8 +17,7 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary oracle root");
         let template = root.path().join("template");
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared isolated interpreter");
+        let python = studio_runtime_services::agents_create::prepared_python();
         let output = Command::new(python)
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
             .arg(&template)
@@ -682,7 +681,7 @@ fn relocation_process_stop_child() {
 
 #[test]
 fn oracle_guard_rejects_content_and_metadata_before_io() {
-    let output = Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"))
+    let output = Command::new(studio_runtime_services::agents_create::prepared_python())
         .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
         .arg("--guard-self-test")
         .output()
