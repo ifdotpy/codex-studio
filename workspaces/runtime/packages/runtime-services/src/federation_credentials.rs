@@ -4,6 +4,8 @@
 //! owns request identity: a retry may only finish the same label, never change it.
 //! Keys, server ID and audit time are server-owned; the local route supplies the
 //! actor. A pending journal survives a crash between file replacement and commit.
+//! Only Unix credential permissions are supported at first cutover. Windows and
+//! other platforms explicitly refuse credentials until their secure file support exists.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ring::{
@@ -23,6 +25,8 @@ use crate::remote_transport::{self, RemoteTransportError, StoredMultiServerIdent
 
 #[derive(Debug, Error)]
 pub enum CredentialError {
+    #[error("Not implemented: requires server-credentials/platform-support")]
+    UnsupportedPlatform,
     #[error("The local server credential storage is unavailable or unsafe")]
     Storage,
     #[error("The stored local server credential is invalid")]
@@ -49,6 +53,7 @@ impl Credentials {
         store: &RuntimeStore,
         origin: Option<&str>,
     ) -> Result<Value, CredentialError> {
+        supported_platform()?;
         let mut saved = self.identity.lock().map_err(|_| CredentialError::Storage)?;
         let identity = self.load(store, &mut saved)?;
         Ok(public_identity(identity, origin))
@@ -62,11 +67,11 @@ impl Credentials {
         request_id: &str,
         actor: &str,
     ) -> Result<(), CredentialError> {
+        supported_platform()?;
         if !self.is_local_target(store, target)? {
             return Err(CredentialError::RemoteRequired);
         }
         let mut saved = self.identity.lock().map_err(|_| CredentialError::Storage)?;
-        let identity = self.load(store, &mut saved)?;
         // Check both journal identities before writing either. The target table
         // prevents a local request from reusing an earlier remote command ID.
         store.transaction_with(|tx| -> Result<(), CredentialError> {
@@ -75,6 +80,9 @@ impl Credentials {
             }
             Ok(())
         })?;
+        // Credential creation and pending recovery follow a committed reservation:
+        // a conflicting request must not create a file or apply older journal rows.
+        let identity = self.load(store, &mut saved)?;
         self.recover(store, identity)
     }
 
@@ -84,6 +92,7 @@ impl Credentials {
         store: &RuntimeStore,
         target: &str,
     ) -> Result<bool, CredentialError> {
+        supported_platform()?;
         if target == "local" {
             return Ok(true);
         }
@@ -169,7 +178,16 @@ fn validate_stored_name(label: &str) -> Result<(), CredentialError> {
     }
 }
 
+fn supported_platform() -> Result<(), CredentialError> {
+    if cfg!(unix) {
+        Ok(())
+    } else {
+        Err(CredentialError::UnsupportedPlatform)
+    }
+}
+
 fn private_directory(root: &Path) -> Result<(), CredentialError> {
+    supported_platform()?;
     let directory = root.join("multi-server");
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
@@ -193,14 +211,7 @@ fn private_directory(root: &Path) -> Result<(), CredentialError> {
             return Err(CredentialError::Storage);
         }
     }
-    #[cfg(windows)]
-    {
-        Err(CredentialError::Storage)
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(())
-    }
+    Ok(())
 }
 
 fn write_identity(
@@ -272,6 +283,62 @@ fn pem(label: &str, der: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn first_use_conflict_preserves_the_credential_directory_and_journal() {
+        for directory_exists in [false, true] {
+            for foreign_target in [false, true] {
+                let (root, store) = remote_transport::tests::runtime_store_fixture();
+                store
+                    .transaction(|tx| {
+                        assert!(Journal::reserve_name(tx, "reserved", "Original", "local")?);
+                        if foreign_target {
+                            tx.execute(
+                                "UPDATE runtime_access_name_targets SET server='remote'",
+                                [],
+                            )?;
+                        }
+                        Ok(())
+                    })
+                    .expect("existing journal reservation");
+                let directory = root.join("multi-server");
+                if directory_exists {
+                    private_directory(&root).expect("empty credential directory");
+                }
+                let credentials = Credentials::default();
+                let label = if foreign_target {
+                    "Original"
+                } else {
+                    "Changed"
+                };
+                assert!(matches!(
+                    credentials.rename(&store, "local", label, "reserved", "local"),
+                    Err(CredentialError::Conflict)
+                ));
+                assert_eq!(directory.exists(), directory_exists);
+                if directory_exists {
+                    assert_eq!(
+                        fs::read_dir(&directory)
+                            .expect("credential directory")
+                            .count(),
+                        0
+                    );
+                }
+                store
+                    .transaction(|tx| {
+                        assert_eq!(
+                            Journal::pending_names(tx)?,
+                            vec![("reserved".into(), "Original".into(), "local".into())]
+                        );
+                        Ok(())
+                    })
+                    .expect("reservation remains unapplied");
+                drop(store);
+                fs::remove_dir_all(root).expect("remove disposable state");
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]

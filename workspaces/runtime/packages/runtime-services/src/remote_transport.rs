@@ -1093,7 +1093,7 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         MultiServerExchangeInput, MultiServerRequest, MultiServerSigningInput, RemoteIdentity,
         canonical_json, ed25519_public_key, federation_message_signing_bytes,
@@ -1176,7 +1176,7 @@ mod tests {
         .expect("fixed RFC Ed25519 fixture loads")
     }
 
-    fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
+    pub(crate) fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -158,5 +158,21 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             path.chmod(0o600)
 
 
+    def test_g_first_use_conflict_leaves_the_credential_directory_absent(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("Python creates its identity during backend startup")
+        self.backend.stop()
+        directory = self.backend.state / "multi-server"
+        (directory / "identity.json").unlink()
+        directory.rmdir()
+        self.backend.start()
+        self.assertFalse(directory.exists(), "fixture must reach rename before first credential use")
+        rows = self.rows()
+        response = self.name("local-name", "Conflicting first use")
+        self.assertEqual(response.status, 409, response.body[:500])
+        self.assertFalse(directory.exists(), "a refused rename must not create credential files")
+        self.assertEqual(self.rows(), rows)
+
+
 if __name__ == "__main__":
     unittest.main()
