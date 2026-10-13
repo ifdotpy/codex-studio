@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::event_write::request_signature as receipt_signature;
@@ -28,6 +28,9 @@ pub trait TerminalSession: Send + Sync {
     fn receive_notification(&self) -> Result<Option<TerminalNotification>, SessionError>;
     fn receive_outcome(&self) -> Result<Option<TerminalOutcome>, SessionError>;
     fn close(&self) -> Result<(), SessionError>;
+    fn cleanup_orphan(&self, _identity: &Value) -> Result<bool, SessionError> {
+        Ok(false)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,7 +87,7 @@ pub enum TerminalError {
 pub struct TerminalDriver<S: TerminalSession> {
     store: Arc<RuntimeStore>,
     session: S,
-    event_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    event_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 pub struct TerminalCreate<'a> {
@@ -96,6 +99,7 @@ pub struct TerminalCreate<'a> {
     pub rows: u64,
     pub shell: &'a str,
     pub environment: Value,
+    pub submitted_request: &'a Value,
 }
 
 pub fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
@@ -103,7 +107,9 @@ pub fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
     let mut items = Vec::new();
     for record in TerminalsRepository::list(&connection)? {
         if record.get("status").and_then(Value::as_str) != Some("closed") {
-            items.push(record.value().clone());
+            let mut value = record.value().clone();
+            hide_process_identity(&mut value);
+            items.push(value);
         }
     }
     items.sort_by(|left, right| {
@@ -213,6 +219,12 @@ fn add_status(result: &mut Value, record: &TerminalRecord) {
     }
 }
 
+fn hide_process_identity(record: &mut Value) {
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("_processIdentity");
+    }
+}
+
 impl<S: TerminalSession> TerminalDriver<S> {
     pub fn new(store: std::sync::Arc<RuntimeStore>, session: S) -> Self {
         Self {
@@ -232,12 +244,17 @@ impl<S: TerminalSession> TerminalDriver<S> {
             rows,
             shell,
             environment,
+            submitted_request,
         } = request;
-        if request_id.is_empty() || request_id.chars().count() > 200 || !cwd.is_dir() {
+        if request_id.is_empty()
+            || request_id.chars().count() > 200
+            || !(2..=1000).contains(&columns)
+            || !(1..=500).contains(&rows)
+            || !cwd.is_dir()
+        {
             return Err(TerminalError::InvalidRequest);
         }
-        let request = json!({"id": request_id, "agent": agent, "cols": columns, "rows": rows});
-        let signature = receipt_signature(&request);
+        let signature = receipt_signature(submitted_request);
         if let Some((prior_signature, result)) =
             TerminalsRepository::receipt(&self.store.read()?, request_id)?
         {
@@ -336,7 +353,9 @@ impl<S: TerminalSession> TerminalDriver<S> {
                 self.store.transaction(|transaction| {
                     TerminalsRepository::update_record(transaction, id, &record)
                 })?;
-                Ok(record.value().clone())
+                let mut value = record.value().clone();
+                hide_process_identity(&mut value);
+                Ok(value)
             }
             "input" => self.send_input(id, data, record),
             "resize" => {
@@ -355,7 +374,9 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         let mut record = current.record;
                         record.set("updated", json!(now_seconds()));
                         TerminalsRepository::update_record(transaction, id, &record)?;
-                        Ok(record.value().clone())
+                        let mut value = record.value().clone();
+                        hide_process_identity(&mut value);
+                        Ok(value)
                     })
                     .map_err(TerminalError::Store)
             }
@@ -370,7 +391,9 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     "process/kill",
                     json!({"processHandle": id}),
                 )?;
-                Ok(record.value().clone())
+                let mut value = record.value().clone();
+                hide_process_identity(&mut value);
+                Ok(value)
             }
             _ => Err(TerminalError::InvalidRequest),
         }
@@ -417,6 +440,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     record.set("exitCode", code.map_or(Value::Null, |value| json!(value)));
                     record.set("updated", json!(now_seconds()));
                     record.remove("error");
+                    record.remove("_processIdentity");
                     TerminalsRepository::put(transaction, &id, &record, &output, offset)?;
                     TerminalsRepository::save_decoder_pending(transaction, &id, &[])?;
                     TerminalsRepository::save_event_cursor(transaction, &id, sequence)?;
@@ -525,15 +549,25 @@ impl<S: TerminalSession> TerminalDriver<S> {
     /// supervisor handle. Existing process handles are never spawned again.
     pub fn reconcile_after_restart(&self) -> Result<usize, TerminalError> {
         let rows = TerminalsRepository::list(&self.store.read()?)?;
+        for record in &rows {
+            if let Some(identity) = record.get("_processIdentity") {
+                self.session.cleanup_orphan(identity)?;
+            }
+        }
         self.store.transaction(|transaction| {
             for mut record in rows {
-                if record.get("status").and_then(Value::as_str) == Some("running") {
+                let was_running = record.get("status").and_then(Value::as_str) == Some("running");
+                let had_identity = record.get("_processIdentity").is_some();
+                if was_running {
                     record.set("status", json!("exited"));
                     record.set(
                         "error",
                         json!("The server restarted. This shell cannot be resumed."),
                     );
                     record.set("updated", json!(now_seconds()));
+                }
+                if was_running || had_identity {
+                    record.remove("_processIdentity");
                     let id = record.id().as_str();
                     TerminalsRepository::update_record(transaction, id, &record)?;
                 }
@@ -544,12 +578,17 @@ impl<S: TerminalSession> TerminalDriver<S> {
     }
 
     fn event_lock(&self, id: &str) -> Arc<Mutex<()>> {
-        self.event_locks
+        let mut locks = self
+            .event_locks
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(id.to_owned())
-            .or_default()
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = locks.get(id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(id.to_owned(), Arc::downgrade(&lock));
+        lock
     }
 
     fn settle_outcome(&self, outcome: TerminalOutcome) -> Result<(), TerminalError> {
@@ -586,6 +625,28 @@ impl<S: TerminalSession> TerminalDriver<S> {
         self.session.close().map_err(TerminalError::Session)
     }
 
+    pub fn persist_process_identity(
+        &self,
+        id: &str,
+        identity: &studio_runtime_process::PtyIdentity,
+    ) -> Result<(), TerminalError> {
+        let identity = serde_json::to_value(identity)
+            .map_err(|_| TerminalError::InvalidStoredObject(id.to_owned()))?;
+        self.store.transaction(|transaction| {
+            let mut record = TerminalsRepository::get(transaction, id)?
+                .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
+                .record;
+            if record.get("status").and_then(Value::as_str) != Some("running") {
+                return Err(StoreError::SchemaMismatch(
+                    "terminal stopped before process identity persistence".into(),
+                ));
+            }
+            record.set("_processIdentity", identity);
+            TerminalsRepository::update_record(transaction, id, &record)
+        })?;
+        Ok(())
+    }
+
     fn require_running(&self, record: &TerminalRecord) -> Result<(), TerminalError> {
         if record.get("status").and_then(Value::as_str) == Some("running") {
             Ok(())
@@ -596,10 +657,16 @@ impl<S: TerminalSession> TerminalDriver<S> {
 }
 
 fn size(data: &Value, key: &str, default: u64) -> Result<u64, TerminalError> {
-    match data.get(key) {
-        None => Ok(default),
-        Some(value) => value.as_u64().ok_or(TerminalError::InvalidRequest),
-    }
+    let value = match data.get(key) {
+        None => default,
+        Some(value) => value.as_u64().ok_or(TerminalError::InvalidRequest)?,
+    };
+    let valid = match key {
+        "cols" => (2..=1000).contains(&value),
+        "rows" => (1..=500).contains(&value),
+        _ => false,
+    };
+    valid.then_some(value).ok_or(TerminalError::InvalidRequest)
 }
 
 fn terminal_title(title: &str) -> Result<&str, TerminalError> {
@@ -670,6 +737,10 @@ fn new_id() -> Result<String, TerminalError> {
 }
 
 #[cfg(test)]
+#[path = "../tests/support/prepared_python.rs"]
+mod prepared_python;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -678,15 +749,17 @@ mod tests {
     use std::thread;
 
     use super::{
-        OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError, TerminalEvent,
-        TerminalNotification, TerminalOutcome, TerminalSession, decode_utf8, history_output,
-        new_id, now_seconds, output, receipt_signature, size, terminal_title,
+        INPUT_LIMIT, OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError,
+        TerminalEvent, TerminalNotification, TerminalOutcome, TerminalSession, decode_utf8,
+        history_output, new_id, now_seconds, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, RuntimeStore, TerminalRecord,
         TerminalsRepository,
     };
+
+    use super::prepared_python;
 
     #[derive(Default)]
     struct FakeSession {
@@ -696,6 +769,7 @@ mod tests {
         error: Mutex<Option<SessionError>>,
         resize_barrier: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
         closed: Mutex<bool>,
+        orphan_identities: Mutex<Vec<Value>>,
     }
 
     impl TerminalSession for FakeSession {
@@ -739,6 +813,14 @@ mod tests {
             *self.closed.lock().expect("fake close lock") = true;
             Ok(())
         }
+
+        fn cleanup_orphan(&self, identity: &Value) -> Result<bool, SessionError> {
+            self.orphan_identities
+                .lock()
+                .expect("orphan identity lock")
+                .push(identity.clone());
+            Ok(true)
+        }
     }
 
     struct TestState {
@@ -754,9 +836,11 @@ mod tests {
     }
 
     fn test_state() -> TestState {
+        let tmpfs = Path::new("/dev/shm/cs-rust-terminals-tests");
+        std::fs::create_dir_all(tmpfs).expect("tmpfs test state directory");
         let directory = tempfile::Builder::new()
             .prefix("terminal-driver-test-")
-            .tempdir()
+            .tempdir_in(tmpfs)
             .expect("test state root");
         let root = directory.path().to_path_buf();
         let snapshot: Value = serde_json::from_str(include_str!(
@@ -801,7 +885,8 @@ mod tests {
             }
         }
         let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let output = Command::new("python3")
+        let python = prepared_python::prepared_python(&server_source);
+        let output = Command::new(python)
             .arg(server_source.join("codex_python.py"))
             .arg("--exec")
             .arg("-c")
@@ -841,6 +926,8 @@ mod tests {
     }
 
     fn create(driver: &TerminalDriver<FakeSession>, cwd: &Path) -> Value {
+        let submitted =
+            serde_json::json!({"id":"create:request","agent":"agent","cols":100,"rows":28});
         driver
             .create(TerminalCreate {
                 request_id: "create:request",
@@ -851,6 +938,7 @@ mod tests {
                 rows: 28,
                 shell: "/bin/sh",
                 environment: serde_json::json!({}),
+                submitted_request: &submitted,
             })
             .expect("create")
     }
@@ -912,7 +1000,56 @@ mod tests {
             size(&serde_json::json!({}), "cols", 100).expect("default"),
             100
         );
+        assert_eq!(
+            size(&serde_json::json!({"cols":2}), "cols", 100).expect("minimum columns"),
+            2
+        );
+        assert_eq!(
+            size(&serde_json::json!({"cols":1000}), "cols", 100).expect("maximum columns"),
+            1000
+        );
+        assert!(size(&serde_json::json!({"cols":1001}), "cols", 100).is_err());
+        assert!(size(&serde_json::json!({"rows":501}), "rows", 28).is_err());
         assert!(terminal_title(&format!("{}x", " ".repeat(120))).is_err());
+    }
+
+    #[test]
+    fn input_accepts_exactly_64_kib_and_refuses_larger_text_without_a_receipt() {
+        use base64::Engine as _;
+
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let record = create(&driver, &state.root);
+        let id = record["id"].as_str().expect("terminal id");
+        let text = "x".repeat(INPUT_LIMIT);
+        let request = serde_json::json!({"id":id,"text":text,"request_id":"input-limit-valid"});
+        let result = driver.action("input", &request).expect("64 KiB input");
+        assert_eq!(result, serde_json::json!({"ok":true,"delivery":"sent"}));
+        let request = driver.session.requests.lock().expect("requests");
+        let (_, method, params) = request.last().expect("input request");
+        assert_eq!(method, "process/writeStdin");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(params["deltaBase64"].as_str().expect("base64 text"))
+            .expect("valid base64");
+        assert_eq!(decoded.len(), INPUT_LIMIT);
+        drop(request);
+
+        let before = TerminalsRepository::receipt(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            "input-limit-too-large",
+        )
+        .expect("receipt read");
+        let too_large = serde_json::json!({"id":id,"text":"x".repeat(INPUT_LIMIT + 1),"request_id":"input-limit-too-large"});
+        assert!(matches!(
+            driver.action("input", &too_large),
+            Err(TerminalError::InvalidRequest)
+        ));
+        let after = TerminalsRepository::receipt(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            "input-limit-too-large",
+        )
+        .expect("receipt reread");
+        assert_eq!(before, after);
     }
 
     #[test]
@@ -969,6 +1106,9 @@ mod tests {
         let result = serde_json::json!({"id":id,"agent":"agent","title":"Terminal","cwd":state.root,
             "status":"running","created":1.0,"updated":1.0,"exitCode":null});
         let typed = TerminalRecord::from_value(result.clone()).expect("terminal record");
+        let submitted =
+            serde_json::json!({"id":"python-create","agent":"agent","cols":100,"rows":28});
+        let signature = receipt_signature(&submitted);
         state
             .store
             .as_ref()
@@ -978,7 +1118,7 @@ mod tests {
                 TerminalsRepository::save_receipt(
                     tx,
                     "python-create",
-                    "39c969a6c3bf9f631ba6edf5dc9c2e3e433a9a7ffe808a5bbf0b89a36287b378",
+                    &signature,
                     &result.to_string(),
                 )
             })
@@ -993,10 +1133,74 @@ mod tests {
                 rows: 28,
                 shell: "/bin/sh",
                 environment: serde_json::json!({}),
+                submitted_request: &submitted,
             })
             .expect("replay");
         assert_eq!(replay, result);
         assert!(driver.session.requests.lock().expect("requests").is_empty());
+    }
+
+    #[test]
+    fn create_receipt_refuses_a_retry_with_changed_submitted_content() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let _created = create(&driver, &state.root);
+        let changed =
+            serde_json::json!({"id":"create:request","agent":"agent","cols":100,"rows":29});
+        let result = driver.create(TerminalCreate {
+            request_id: "create:request",
+            agent: "agent",
+            agent_cwd: state.root.to_str().expect("UTF-8 test cwd"),
+            cwd: &state.root,
+            columns: 100,
+            rows: 28,
+            shell: "/bin/sh",
+            environment: serde_json::json!({}),
+            submitted_request: &changed,
+        });
+        assert!(matches!(result, Err(TerminalError::ReceiptConflict)));
+        assert_eq!(driver.session.requests.lock().expect("requests").len(), 1);
+    }
+
+    #[test]
+    fn restart_reconciles_only_after_cleaning_the_persisted_process_identity() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let created = create(&driver, &state.root);
+        let id = created["id"].as_str().expect("terminal id");
+        let store = state.store.as_ref().expect("store");
+        store
+            .transaction(|transaction| {
+                let mut record = TerminalsRepository::get(transaction, id)?
+                    .expect("terminal exists")
+                    .record;
+                record.set(
+                    "_processIdentity",
+                    serde_json::json!({"pid":2345,"session":2345,"start_time_ticks":98765}),
+                );
+                TerminalsRepository::update_record(transaction, id, &record)
+            })
+            .expect("persist process identity");
+
+        driver
+            .reconcile_after_restart()
+            .expect("clean and reconcile restart");
+        assert_eq!(
+            *driver
+                .session
+                .orphan_identities
+                .lock()
+                .expect("orphan identity lock"),
+            vec![serde_json::json!({"pid":2345,"session":2345,"start_time_ticks":98765})]
+        );
+        let row = TerminalsRepository::get(&store.read().expect("read"), id)
+            .expect("terminal row")
+            .expect("terminal exists");
+        assert_eq!(
+            row.record.get("status").and_then(Value::as_str),
+            Some("exited")
+        );
+        assert!(row.record.get("_processIdentity").is_none());
     }
 
     #[test]
@@ -1026,6 +1230,58 @@ mod tests {
         assert_eq!(history["text"], "xxxxxxx");
         assert_eq!(history["offset"], 7);
         assert_eq!(history["hasMore"], true);
+    }
+
+    #[test]
+    fn output_store_failpoint_rolls_back_rows_and_cursor_before_replay() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("terminal id")
+            .to_owned();
+        let notification = TerminalNotification {
+            terminal_id: id.clone(),
+            sequence: 1,
+            event: TerminalEvent::Output(b"atomic".to_vec()),
+        };
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open fail-point database");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_terminal_cursor BEFORE INSERT ON user_terminal_event_cursor
+                 BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END;",
+            )
+            .expect("install cursor fail point");
+
+        assert!(driver.apply_notification(notification.clone()).is_err());
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        assert_eq!(
+            output(state.store.as_ref().expect("store"), &id, 0).expect("output")["text"],
+            ""
+        );
+        assert_eq!(
+            TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
+            None
+        );
+        drop(connection);
+
+        database
+            .execute_batch("DROP TRIGGER fail_terminal_cursor;")
+            .expect("remove cursor fail point");
+        drop(database);
+        driver
+            .apply_notification(notification)
+            .expect("replay after transaction rollback");
+        assert_eq!(
+            output(state.store.as_ref().expect("store"), &id, 0).expect("committed output")["text"],
+            "atomic"
+        );
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        assert_eq!(
+            TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1130,6 +1386,28 @@ mod tests {
             persisted["error"],
             "The server restarted. This shell cannot be resumed."
         );
+    }
+
+    #[test]
+    fn terminal_commits_advance_the_shared_change_notification_hub() {
+        let state = test_state();
+        let store = state.store.as_ref().expect("store").clone();
+        let hub = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
+        let notifier = Arc::clone(&hub);
+        store.set_commit_notifier(move || notifier.notify_one());
+        let driver = test_driver(&state, FakeSession::default());
+        let initial = hub.snapshot().revision;
+        let record = create(&driver, &state.root);
+        assert!(hub.snapshot().revision > initial);
+        let after_create = hub.snapshot().revision;
+        driver
+            .apply_notification(TerminalNotification {
+                terminal_id: record["id"].as_str().expect("terminal ID").into(),
+                sequence: 1,
+                event: TerminalEvent::Output(b"event".to_vec()),
+            })
+            .expect("append output notification");
+        assert!(hub.snapshot().revision > after_create);
     }
 
     #[test]

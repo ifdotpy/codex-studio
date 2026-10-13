@@ -124,18 +124,27 @@ async fn create(
                 .await
                 .map_err(|_| ApiError::internal())?
                 .map_err(terminal_body_error)?;
-        let columns = body.get("cols").and_then(Value::as_u64).unwrap_or(100);
-        let rows = body.get("rows").and_then(Value::as_u64).unwrap_or(28);
+        let dimension = |name: &str, default| match body.get(name) {
+            None => Ok(default),
+            Some(value) => value.as_u64().ok_or(TerminalError::InvalidRequest),
+        };
+        let columns = dimension("cols", 100).map_err(terminal_body_error)?;
+        let rows = dimension("rows", 28).map_err(terminal_body_error)?;
         let request_id = body
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
         let shell = terminal_shell();
-        let environment = serde_json::json!({
-            "TERM":"xterm-256color",
-            "COLORTERM":"truecolor"
-        });
+        let mut environment = serde_json::Map::new();
+        for name in ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"] {
+            if let Ok(value) = std::env::var(name) {
+                environment.insert(name.to_owned(), Value::String(value));
+            }
+        }
+        environment.insert("TERM".into(), Value::String("xterm-256color".into()));
+        environment.insert("COLORTERM".into(), Value::String("truecolor".into()));
+        let environment = Value::Object(environment);
         let driver = state
             .terminal_driver_handle()
             .ok_or_else(ApiError::internal)?;
@@ -149,6 +158,7 @@ async fn create(
                 rows,
                 shell: &shell,
                 environment,
+                submitted_request: &body,
             })
         })
         .await

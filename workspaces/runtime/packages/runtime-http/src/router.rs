@@ -85,6 +85,15 @@ impl HttpState {
                     let _notification_result = driver.apply_notification(notification);
                 }
             }));
+            let weak = Arc::downgrade(&driver);
+            session.set_identity_callback(Arc::new(move |id, identity| {
+                let driver = weak
+                    .upgrade()
+                    .ok_or(studio_runtime_services::terminal_driver::SessionError::Disconnected)?;
+                driver.persist_process_identity(id, identity).map_err(|_| {
+                    studio_runtime_services::terminal_driver::SessionError::Disconnected
+                })
+            }));
             terminal_startup_failed = driver.reconcile_after_restart().is_err();
             driver
         });

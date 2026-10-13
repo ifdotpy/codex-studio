@@ -26,7 +26,7 @@ pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
 #[cfg(unix)]
-pub use pty_host::{LocalPtyHost, PtyHostError, PtySession};
+pub use pty_host::{LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan};
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
 pub use transport::SupervisorTransport;
 

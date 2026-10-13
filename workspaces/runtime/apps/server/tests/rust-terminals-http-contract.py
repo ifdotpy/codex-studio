@@ -153,17 +153,19 @@ class TerminalsHTTPContract(unittest.TestCase):
         })
 
     def test_invalid_bodies_are_refused_before_terminal_mutation(self) -> None:
-        bodies = {
-            "/api/terminals/create": {"id": "create", "agent": "fixture-agent", "cols": 1},
-            "/api/terminals/input": {"id": self.terminal_id, "text": "x", "request_id": 12},
-            "/api/terminals/resize": {"id": self.terminal_id, "cols": 1001},
-            "/api/terminals/rename": {"id": self.terminal_id, "title": ""},
-            "/api/terminals/close": {},
-        }
+        bodies = [
+            ("/api/terminals/create", {"id": "create", "agent": "fixture-agent", "cols": 1}),
+            ("/api/terminals/create", {"id": "create-bool-size", "agent": "fixture-agent", "cols": True}),
+            ("/api/terminals/create", {"id": "create-unknown-owner", "agent": "not-owned-agent", "cols": 100, "rows": 28}),
+            ("/api/terminals/input", {"id": self.terminal_id, "text": "x", "request_id": 12}),
+            ("/api/terminals/resize", {"id": self.terminal_id, "cols": 1001}),
+            ("/api/terminals/rename", {"id": self.terminal_id, "title": ""}),
+            ("/api/terminals/close", {}),
+        ]
         database_path = self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(database_path) as database:
             before = terminal_tables(database)
-        for path, body in bodies.items():
+        for path, body in bodies:
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 400, (path, response.body[:1000]))
             with sqlite3.connect(database_path) as database:
