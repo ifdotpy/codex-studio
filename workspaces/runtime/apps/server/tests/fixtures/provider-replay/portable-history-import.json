@@ -1,5 +1,6 @@
 {
   "source": "synthetic provider replies for portable history import contracts",
+  "boundaryOnly": true,
   "rpcReplies": {
     "thread/list": {
       "direction": "in",
