@@ -13,6 +13,9 @@ studio-runtime-providers = { path = "../runtime-providers" }
 thiserror.workspace = true
 tokio.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+process-wrap.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 

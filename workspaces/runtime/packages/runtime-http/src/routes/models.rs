@@ -44,16 +44,14 @@ async fn models(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let catalog = state.model_catalog.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let snapshot = account_policy.accounts();
-        if workers {
-            worker_catalog(&catalog, &snapshot, &account_key, retry)
-        } else {
-            account_catalog(&catalog, &snapshot, &account_key, retry)
-        }
-    })
-    .await
-    .map_err(|_| ApiError::internal())?;
+    let snapshot = tokio::task::spawn_blocking(move || account_policy.accounts())
+        .await
+        .map_err(|_| ApiError::internal())?;
+    let result = if workers {
+        worker_catalog(&catalog, &snapshot, &account_key, retry).await
+    } else {
+        account_catalog(&catalog, &snapshot, &account_key, retry).await
+    };
     let (status, value) = match result {
         Ok(value) => (StatusCode::OK, value),
         Err((status, value)) => (status, value),
@@ -62,7 +60,7 @@ async fn models(
     Ok((status, Json(response)))
 }
 
-fn account_catalog(
+async fn account_catalog(
     catalog: &ModelCatalogService,
     snapshot: &AccountsSnapshot,
     account_key: &str,
@@ -77,7 +75,10 @@ fn account_catalog(
             }),
         ));
     }
-    match catalog.read(&account.key, &account.home, &account.provider, retry) {
+    match catalog
+        .read(&account.key, &account.home, &account.provider, retry)
+        .await
+    {
         CatalogRead::Ready(value) => Ok(value),
         CatalogRead::Pending => Err((
             StatusCode::BAD_REQUEST,
@@ -134,7 +135,7 @@ fn account_context(
     })
 }
 
-fn worker_catalog(
+async fn worker_catalog(
     catalog: &ModelCatalogService,
     snapshot: &AccountsSnapshot,
     parent_account: &str,
@@ -183,7 +184,10 @@ fn worker_catalog(
                 continue;
             }
         };
-        match catalog.read(&account.key, &account.home, &account.provider, retry) {
+        match catalog
+            .read(&account.key, &account.home, &account.provider, retry)
+            .await
+        {
             CatalogRead::Ready(value) => {
                 if let Some(rows) = value.get("data").and_then(Value::as_array) {
                     for row in rows {
@@ -263,20 +267,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn changed_and_error_accounts_are_refused_before_catalog_read() {
+    #[tokio::test]
+    async fn changed_and_error_accounts_are_refused_before_catalog_read() {
         for status in ["changed", "error"] {
             let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
             let error =
                 account_catalog(&ModelCatalogService::new(None), &snapshot, "default", true)
+                    .await
                     .expect_err("changed account must be refused");
             assert_eq!(error.0, StatusCode::BAD_REQUEST);
             assert_eq!(error.1, json!({"error":"Account is unavailable"}));
         }
     }
 
-    #[test]
-    fn direct_claude_catalog_names_the_missing_provider_service() {
+    #[tokio::test]
+    async fn direct_claude_catalog_names_the_missing_provider_service() {
         let snapshot =
             snapshot(json!({"id":"claude-account", "provider":"claude", "status":"ready"}));
         let error = account_catalog(
@@ -285,6 +290,7 @@ mod tests {
             "claude-account",
             false,
         )
+        .await
         .expect_err("Claude requires its provider service");
         assert_eq!(error.0, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(

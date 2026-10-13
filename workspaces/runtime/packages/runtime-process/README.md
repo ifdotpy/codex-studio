@@ -8,11 +8,13 @@
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
   models for each v1 action; `ProviderProcessFactory` and its supervisor-backed
   native-account adapter; `provider_seam::ProviderTaskFactory` and
-  `provider_task::SupervisorProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports.
+  `provider_task::SupervisorProviderTaskFactory`; the Unix temporary-child adapter
+  `provider_stdio::StdioProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports.
 - **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
   bindings, and OS-specific code outside transport adapters.
-- **Invariants:** The supervisor remains the sole owner of provider and command
-  children. Handshake identity is `(backendId, stateDir)`; each child receipt
+- **Invariants:** The supervisor owns retained provider and command children. Temporary
+  stdio children belong to their adapter task until their process group is stopped
+  and reaped, including cancellation, deadline expiry, and caller drop. Handshake identity is `(backendId, stateDir)`; each child receipt
   and journal event also carries a process `generation`. A sent action whose
   response is lost is `UnknownOutcome`; callers resolve it by operation receipt
   or journal replay instead of issuing a fresh operation identity.
@@ -239,3 +241,17 @@ the old byte-stream workers only when those callers have migrated.
 Environment reads that have not started are aborted on shutdown. Shutdown still joins
 the cancelled blocking job (Tokio may first wait for a pool worker) or an already
 started, at-most-4-MiB OS read; there is no detached job or hard OS-read deadline.
+
+## Temporary stdio attachment
+
+[`StdioProviderTaskFactory`](src/provider_stdio.rs) implements the same bounded
+async seam for ephemeral exchanges, without supervisor state or replay. The
+caller supplies an absolute Tokio deadline and raw frame/total-output bounds.
+The task concurrently reads stdout, drains stderr, and writes commands; the
+single deadline also interrupts stalled writes. Cleanup runs before completion
+or status-channel closure. This adapter requires Unix process groups.
+
+The model catalog consumes it through the accepted session task. Its cache is
+process-local, so consumed entries are settled without a durable journal.
+Run `cargo nextest run -p studio-runtime-process --test provider_stdio` for
+cancellation, deadline, caller-drop, and process-group cleanup checks.
