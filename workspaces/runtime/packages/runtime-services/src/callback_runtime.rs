@@ -38,17 +38,30 @@ pub trait CallbackReplyPort: Send + Sync {
     fn deliver(&self, reply: &Reply, deadline: Duration) -> Result<ReplyReceipt, CallbackError>;
 }
 
+#[derive(Default)]
+struct LifecycleGate(Mutex<()>);
+
+impl LifecycleGate {
+    fn with<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, CallbackError>,
+    ) -> Result<T, CallbackError> {
+        let _guard = self.0.lock().map_err(|_| CallbackError::Unknown)?;
+        action()
+    }
+}
+
 pub struct CallbackRuntime {
     store: Arc<RuntimeStore>,
     port: Arc<dyn CallbackReplyPort>,
-    lifecycle: Mutex<()>,
+    lifecycle: LifecycleGate,
 }
 impl CallbackRuntime {
     pub fn new(store: Arc<RuntimeStore>, port: Arc<dyn CallbackReplyPort>) -> Self {
         Self {
             store,
             port,
-            lifecycle: Mutex::new(()),
+            lifecycle: LifecycleGate::default(),
         }
     }
 
@@ -60,8 +73,7 @@ impl CallbackRuntime {
         &self,
         action: impl FnOnce() -> Result<T, CallbackError>,
     ) -> Result<T, CallbackError> {
-        let _guard = self.lifecycle.lock().map_err(|_| CallbackError::Unknown)?;
-        action()
+        self.lifecycle.with(action)
     }
 
     /// Run on the retained owner immediately before bounded submit_frame admission.
@@ -205,5 +217,28 @@ impl CallbackReplyPort for CallbackMailbox {
         receiver
             .recv_timeout(deadline.min(REPLY_DEADLINE))
             .map_err(|_| CallbackError::Unknown)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn lifecycle_gate_is_held_during_the_action() {
+        let gate = LifecycleGate::default();
+        gate.with(|| {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| assert!(gate.0.try_lock().is_err()))
+                    .join()
+                    .unwrap();
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert!(gate.0.try_lock().is_ok());
     }
 }

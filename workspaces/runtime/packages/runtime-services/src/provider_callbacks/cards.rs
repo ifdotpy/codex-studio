@@ -333,15 +333,77 @@ pub fn resolve(
     store.transaction_with(|tx| {
         let identity = ReplyIdentity::new(context, rpc_id);
         let resolution_key = format!("{}:resolved", identity.key());
+        let mut card_signature = None;
+        for card in records::all(tx, "runtime_requests")? {
+            if card["agent"] == context.agent
+                && card["accountKey"] == context.account
+                && card["connectionId"] == context.connection
+                && card["epoch"].as_u64() == Some(context.epoch)
+                && card
+                    .pointer("/supervisor/generation")
+                    .and_then(Value::as_u64)
+                    == Some(context.generation)
+                && card["rpcId"] == serde_json::to_value(rpc_id)?
+            {
+                let card_id = card["id"]
+                    .as_str()
+                    .ok_or_else(|| CallbackError::Stored("runtime_requests/id".into()))?;
+                let input = Input {
+                    id: serde_json::from_value(card["rpcId"].clone())
+                        .map_err(|_| CallbackError::Stored(format!("runtime_requests/{card_id}")))?,
+                    method: card["method"]
+                        .as_str()
+                        .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{card_id}")))?
+                        .into(),
+                    params: card
+                        .get("params")
+                        .filter(|params| params.is_object())
+                        .cloned()
+                        .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{card_id}")))?,
+                };
+                input.check_context(context)?;
+                let signature = input.signature();
+                if card_signature
+                    .as_ref()
+                    .is_some_and(|previous| previous != &signature)
+                {
+                    return Err(CallbackError::Conflict);
+                }
+                card_signature = Some(signature);
+            }
+        }
+        let receipt_signature = storage::read(tx, &identity.key())?
+            .or(storage::read(tx, &format!("{}:card", identity.key()))?)
+            .and_then(|receipt| receipt["signature"].as_str().map(str::to_owned));
+        if card_signature
+            .as_ref()
+            .zip(receipt_signature.as_ref())
+            .is_some_and(|(card, receipt)| card != receipt)
+        {
+            return Err(CallbackError::Conflict);
+        }
+        let known_signature = card_signature.or(receipt_signature);
         if let Some(previous) = storage::read(tx, &resolution_key)? {
             if previous["identity"] != serde_json::to_value(&identity)? {
                 return Err(CallbackError::Stale);
             }
+            if let Some(signature) = known_signature {
+                if previous
+                    .get("signature")
+                    .is_some_and(|saved| saved != &signature)
+                {
+                    return Err(CallbackError::Conflict);
+                }
+                if previous.get("signature").is_none() {
+                    let mut proof = previous;
+                    proof["signature"] = json!(signature);
+                    storage::update(tx, &resolution_key, &proof)?;
+                }
+            }
         } else {
             let mut proof = json!({"identity":identity,"resolvedAt":now});
-            if let Some(saved) = storage::read(tx, &identity.key())?
-                .or(storage::read(tx, &format!("{}:card", identity.key()))?) {
-                proof["signature"] = saved["signature"].clone();
+            if let Some(signature) = known_signature {
+                proof["signature"] = json!(signature);
             }
             storage::save(tx, &resolution_key, &proof)?;
         }
@@ -485,24 +547,30 @@ pub fn prepare_delete(
     store.transaction_with(|tx| {
         let mut card = records::get(tx, "runtime_requests", id)?
             .ok_or(CallbackError::Invalid("Unknown question"))?;
-        let method = card["method"].as_str().unwrap_or_default();
-        if !matches!(method, "agent/asyncQuestion" | "item/tool/requestUserInput")
-            && !(method == "mcpServer/elicitation/request" && card["params"]["mode"] == "form")
-        {
-            return Err(CallbackError::Invalid("Only a question can be deleted"));
-        }
         let actor = records::get(
             tx,
             "runtime_agents",
             card["agent"].as_str().ok_or(CallbackError::Stale)?,
         )?
         .ok_or(CallbackError::Stale)?;
-        if studio_runtime_store::truthy(actor.get("deletedAt")) {
-            return Err(CallbackError::Invalid("This agent was deleted"));
-        }
-        if studio_runtime_store::truthy(card.get("deletedAt")) {
+        let allowed = crate::questions_write::state_only_delete_allowed(
+            &card,
+            studio_runtime_store::truthy(actor.get("deletedAt")),
+            false,
+        )
+        .map_err(|error| match error {
+            crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
+                CallbackError::Invalid(message)
+            }
+            crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
+                CallbackError::Dependency("provider-session/question-answer")
+            }
+            _ => CallbackError::Invalid("Unable to delete question"),
+        })?;
+        if !allowed {
             return Ok(None);
         }
+        let method = card["method"].as_str().unwrap_or_default();
         if card["status"] == "pending" && method != "agent/asyncQuestion" {
             let data = if method == "mcpServer/elicitation/request" {
                 json!({"decision":"cancel"})
@@ -511,15 +579,7 @@ pub fn prepare_delete(
             };
             return prepare_answer_in(tx, id, &data, now, true);
         }
-        if matches!(card["status"].as_str(), Some("answering" | "uncertain")) {
-            return Err(CallbackError::Invalid(
-                "Question delivery is uncertain; wait for its receipt",
-            ));
-        }
-        card["status"] = json!("deleted");
-        card["deletedAt"] = json!(now);
-        card["deletedBy"] = json!("user");
-        card["deferred"] = json!(false);
+        crate::questions_write::mark_state_only_deleted(&mut card, now);
         save(tx, &card)?;
         Ok(None)
     })

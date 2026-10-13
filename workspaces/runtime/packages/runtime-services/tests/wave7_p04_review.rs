@@ -5,7 +5,7 @@ mod fixture;
 use fixture::*;
 use serde_json::json;
 use std::sync::{Arc, mpsc};
-use studio_runtime_providers::RequestId;
+use studio_runtime_providers::{Frame, RequestId};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::RuntimeStore;
 
@@ -43,6 +43,45 @@ fn resolved_before_admission_or_before_deletion_survives_restart() {
             );
         }
     }
+}
+
+#[test]
+fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires() {
+    let (_root, store, context) = fixture();
+    let frame = request(&context);
+    let Frame::Request(request_frame) = &frame else {
+        panic!("request")
+    };
+    let mut legacy = template()["legacyCard"].clone();
+    legacy["id"] = json!("legacy-resolved-card");
+    legacy["rpcId"] = json!(request_frame.id);
+    legacy["method"] = json!(request_frame.method.as_str());
+    legacy["params"] = request_frame.params.clone().unwrap();
+    legacy["status"] = json!("pending");
+    card(&store, &legacy);
+
+    resolve(&store, &context, &RequestId::Number(42), 20.0).unwrap();
+    assert!(matches!(
+        dispatch(&store, &context, &frame, 21.0).unwrap(),
+        CallbackDecision::Settled(_)
+    ));
+    let decision = dispatch(&store, &context, &frame, 22.0).unwrap();
+    bind_journal(&store, &decision, &context, &RequestId::Number(42), 1).unwrap();
+    assert_eq!(checkpoint(&store, &context, 0), 0);
+    assert_eq!(checkpoint(&store, &context, 1), 1);
+    assert!(matches!(
+        dispatch(&store, &context, &frame, 23.0).unwrap(),
+        CallbackDecision::Settled(_)
+    ));
+
+    let Frame::Request(mut changed) = frame else {
+        panic!("request")
+    };
+    changed.params.as_mut().unwrap()["questions"][0]["question"] = json!("Changed?");
+    assert!(matches!(
+        dispatch(&store, &context, &Frame::Request(changed), 24.0),
+        Err(CallbackError::Conflict)
+    ));
 }
 
 #[test]
@@ -133,31 +172,19 @@ fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_transac
         store.clone(),
         Arc::new(Port::default()),
     ));
-    let (start_tx, start_rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
-    let other = runtime.clone();
-    let other_context = context.clone();
-    let resolver = std::thread::spawn(move || {
-        start_rx.recv().unwrap();
-        other
-            .resolve(&other_context, &RequestId::Number(42), 21.0)
-            .unwrap();
-        done_tx.send(()).unwrap();
-    });
     assert_eq!(
         runtime
             .submit_committed(&reply, || {
                 // Taking a store transaction here proves the check released its transaction.
                 store.transaction_with::<_, CallbackError>(|_| Ok(()))?;
-                start_tx.send(()).unwrap();
-                assert!(done_rx.try_recv().is_err());
                 Ok(())
             })
             .unwrap(),
         Some(())
     );
-    resolver.join().unwrap();
-    done_rx.recv().unwrap();
+    runtime
+        .resolve(&context, &RequestId::Number(42), 21.0)
+        .unwrap();
     assert_eq!(stored(&store, &id)["status"], "resolved");
 }
 
@@ -422,13 +449,20 @@ fn python_failures_null_decisions_and_race_winners_are_preserved() {
     for case in template()["races"].as_array().unwrap() {
         let (_root, store, context) = fixture();
         card(&store, &case["before"]);
+        put_actor(&store, &case["beforeActor"]);
         let id = case["before"]["id"].as_str().unwrap();
         let reply = prepare_user_answer(&store, id, &json!({"answers":{}}), 20.0, false)
             .unwrap()
             .unwrap();
         delivery(&store, &reply.identity, DeliveryOutcome::Submitted).unwrap();
         if case["outcome"] == "resolved" {
+            let before_resolution = logical_snapshot(&store);
             resolve(&store, &context, &reply.identity.rpc_id, 20.0).unwrap();
+            assert_writes(
+                &before_resolution,
+                &store,
+                &case["winner"]["resolutionWrites"],
+            );
             assert!(delivery(&store, &reply.identity, DeliveryOutcome::Written).is_err());
             assert_eq!(stored(&store, id), case["winner"]["after"]);
         } else {

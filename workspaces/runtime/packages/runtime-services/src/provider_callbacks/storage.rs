@@ -325,8 +325,9 @@ pub fn bind_journal(
 }
 
 /// Run in the worker's checkpoint transaction AFTER advancing its durable ACK.
-/// Only payloads are removed. Exact identity/signature tombstones suppress RPC
-/// replays even at later cursors; Unknown proof is never garbage-collected.
+/// Only acknowledged payloads and resolution proofs are removed. Exact card
+/// identity/signature tombstones and visible resolved cards still suppress
+/// acknowledged replays; Unknown proof is never garbage-collected.
 pub fn retire_checkpointed(
     tx: &Transaction<'_>,
     account: &str,
@@ -374,7 +375,45 @@ pub fn retire_checkpointed(
         object.insert("delivery".into(), json!("retired"));
         update(tx, id, &saved)?;
     }
-    Ok(ids.len())
+    let remaining = 128usize.saturating_sub(ids.len());
+    let mut resolutions = Vec::new();
+    if remaining > 0 {
+        let mut stmt = tx.prepare("SELECT resolved.id FROM runtime_operation_receipts resolved WHERE resolved.signature='provider-callback' AND resolved.id LIKE '%:resolved' AND json_extract(resolved.result,'$.identity.context.account')=?1 AND json_extract(resolved.result,'$.identity.context.generation')=?2 AND (CAST(json_extract(resolved.result,'$.journalCursor') AS INTEGER)<=?3 OR CAST((SELECT json_extract(card.result,'$.journalCursor') FROM runtime_operation_receipts card WHERE card.id=substr(resolved.id,1,length(resolved.id)-9)||':card') AS INTEGER)<=?3) LIMIT ?4")?;
+        resolutions = stmt
+            .query_map(
+                params![
+                    account,
+                    i64::try_from(generation).map_err(|_| CallbackError::Stale)?,
+                    i64::try_from(checkpoint).map_err(|_| CallbackError::Stale)?,
+                    i64::try_from(remaining).map_err(|_| CallbackError::Stale)?
+                ],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    for id in &resolutions {
+        let proof = read(tx, id)?.ok_or(CallbackError::Unknown)?;
+        let identity: ReplyIdentity = serde_json::from_value(proof["identity"].clone())
+            .map_err(|_| CallbackError::Stored(id.clone()))?;
+        let resolution_key = format!("{}:resolved", identity.key());
+        if resolution_key != *id
+            || identity.context.account != account
+            || identity.context.generation != generation
+        {
+            return Err(CallbackError::Stored(id.clone()));
+        }
+        let admission_cursor = read(tx, &format!("{}:card", identity.key()))?
+            .and_then(|admission| admission["journalCursor"].as_u64());
+        let cursor = proof["journalCursor"].as_u64().or(admission_cursor);
+        if !cursor.is_some_and(|cursor| cursor > 0 && cursor <= checkpoint) {
+            return Err(CallbackError::Stored(id.clone()));
+        }
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature='provider-callback'",
+            [id],
+        )?;
+    }
+    Ok(ids.len() + resolutions.len())
 }
 
 pub(super) fn saved_decision(
@@ -425,6 +464,48 @@ pub(super) fn saved_decision(
             return Err(CallbackError::Conflict);
         }
         return Ok(Some(CallbackDecision::Settled(identity.clone())));
+    }
+    if read(tx, &identity.key())?.is_none() {
+        for card in records::all(tx, "runtime_requests")? {
+            if card["agent"] == identity.context.agent
+                && card["accountKey"] == identity.context.account
+                && card["connectionId"] == identity.context.connection
+                && card["epoch"].as_u64() == Some(identity.context.epoch)
+                && card
+                    .pointer("/supervisor/generation")
+                    .and_then(Value::as_u64)
+                    == Some(identity.context.generation)
+                && card["rpcId"] == serde_json::to_value(&identity.rpc_id)?
+                && card["status"] == "resolved"
+            {
+                let card_id = card["id"]
+                    .as_str()
+                    .ok_or_else(|| CallbackError::Stored("runtime_requests/id".into()))?;
+                let saved_input = Input {
+                    id: serde_json::from_value(card["rpcId"].clone()).map_err(|_| {
+                        CallbackError::Stored(format!("runtime_requests/{card_id}"))
+                    })?,
+                    method: card["method"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            CallbackError::Stored(format!("runtime_requests/{card_id}"))
+                        })?
+                        .into(),
+                    params: card
+                        .get("params")
+                        .filter(|params| params.is_object())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CallbackError::Stored(format!("runtime_requests/{card_id}"))
+                        })?,
+                };
+                saved_input.check_context(&identity.context)?;
+                if saved_input.signature() != input.signature() {
+                    return Err(CallbackError::Conflict);
+                }
+                return Ok(Some(CallbackDecision::Settled(identity.clone())));
+            }
+        }
     }
     saved_reply(tx, identity, input).map(|v| v.map(CallbackDecision::Answer))
 }

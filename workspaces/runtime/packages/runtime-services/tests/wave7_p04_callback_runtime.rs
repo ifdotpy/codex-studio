@@ -112,16 +112,8 @@ fn not_sent_creates_new_attempt_and_foreign_receipt_is_unknown() {
 fn python_resolution_rows_match_after_completed_or_cleared_turn() {
     let (_root, store, context) = fixture();
     for case in template()["resolved"].as_array().unwrap() {
-        card(&store, &case["card"]);
-        store
-            .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
-                tx.execute(
-                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                    rusqlite::params![case["actor"].to_string(), context.agent],
-                )?;
-                Ok(())
-            })
-            .unwrap();
+        seed_case(&store, case);
+        let before = logical_snapshot(&store);
         resolve(
             &store,
             &context,
@@ -143,6 +135,7 @@ fn python_resolution_rows_match_after_completed_or_cleared_turn() {
             serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
             case["expectedActor"]
         );
+        assert_writes(&before, &store, &case["writes"]);
     }
 }
 

@@ -152,20 +152,41 @@ for method in ["item/commandExecution/requestApproval", "item/fileChange/request
 # reviewed Rust contract deliberately preserves the durable winning transition.
 # Capture both the actual race winner and Python's subsequent overwrite.
 from native_notifications.dispatch import consume_native_notification
+for case in base["resolved"]:
+    with runtime.db() as db:
+        db.execute("DELETE FROM runtime_requests")
+        runtime.put(db, "agents", case["actor"])
+        runtime.put(db, "requests", case["card"])
+    before = snapshot()
+    case["before"] = case["card"]
+    case["counters"] = {table: before[table] for table in [
+        "runtime_agent_record_generation",
+        "runtime_scheduler_agent_change_state",
+        "runtime_scheduler_agent_changes",
+        "runtime_transcript_revisions",
+    ]}
+    with patch("time.time", return_value=20.0):
+        consume_native_notification(runtime, {"method":"serverRequest/resolved","params":{"threadId":case["actor"]["threadId"],"requestId":case["card"]["rpcId"]}}, "default", "connection")
+    case["writes"] = changes(before, snapshot())
 races = []
 for outcome in ["completed", "failed", "resolved"]:
     card = {**base["legacyCard"], "id": f"race-{outcome}", "rpcId": f"race-rpc-{outcome}", "method": "item/tool/requestUserInput", "params": {**base["legacyCard"]["params"], "questions": []}}
     before = seeded(card)
+    with runtime.db() as db: before_actor = runtime.agent(lead["id"], db)
     winner = {}
     def during_reply(*args, **kwargs):
         if outcome == "resolved":
+            before_resolution = snapshot()
             consume_native_notification(runtime, {"method": "serverRequest/resolved", "params": {"threadId": lead["threadId"], "requestId": card["rpcId"]}}, "default", "connection")
+            resolution_writes = changes(before_resolution, snapshot())
         else:
             with runtime.db() as db: runtime.put(db, "agents", {**lead, "status": outcome, "turnId": None, "inFlight": False})
+            resolution_writes = {}
         winner.update(result_rows(card, before))
+        winner["resolutionWrites"] = resolution_writes
     with patch.object(runtime, "reply", during_reply), patch("time.time", return_value=20.0):
         response = runtime.answer(card["id"], {"answers": {}})
-    races.append({"before": card, "outcome": outcome, "winner": winner, "pythonAfter": result_rows(card, before), "response": response})
+    races.append({"before": card, "beforeActor": before_actor, "outcome": outcome, "winner": winner, "pythonAfter": result_rows(card, before), "response": response})
 with runtime.db() as db:
     db.execute("DELETE FROM runtime_requests")
     runtime.put(db,"agents",lead)
