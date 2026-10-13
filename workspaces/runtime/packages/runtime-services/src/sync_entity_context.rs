@@ -1,6 +1,6 @@
 //! Persisted context needed to build canonical renderer entity views.
 
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fs::{self, File};
@@ -162,8 +162,27 @@ pub(crate) struct RoomDirectory {
 }
 impl RoomDirectory {
     pub(crate) fn load(tx: &Transaction<'_>) -> Result<Self, studio_runtime_store::StoreError> {
-        let agents = records::all(tx, "runtime_agents")?;
-        let projects = records::all(tx, "runtime_projects")?;
+        Self::resolve(
+            records::all(tx, "runtime_agents")?,
+            records::all(tx, "runtime_projects")?,
+        )
+    }
+    /// Read checked database snapshots, then resolve paths with no transaction held.
+    pub(crate) fn prepare(
+        connection: &Connection,
+    ) -> Result<Self, studio_runtime_store::StoreError> {
+        if !connection.is_autocommit() {
+            return Err(records::invalid(
+                "runtime_projects",
+                "room-path-preparation-in-transaction",
+            ));
+        }
+        Self::resolve(
+            records::all(connection, "runtime_agents")?,
+            records::all(connection, "runtime_projects")?,
+        )
+    }
+    fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
             let Some(path) = project["path"].as_str().filter(|s| !s.is_empty()) else {
@@ -207,6 +226,10 @@ impl RoomDirectory {
             peers,
         })
     }
+    pub(crate) fn matches(&self, connection: &Connection) -> StoreResult<bool> {
+        Ok(self.agents == records::all(connection, "runtime_agents")?
+            && self.projects == records::all(connection, "runtime_projects")?)
+    }
     pub(crate) fn agents(&self) -> &[Value] {
         &self.agents
     }
@@ -215,7 +238,7 @@ impl RoomDirectory {
     }
     pub(crate) fn for_room(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         room: &Value,
         last: bool,
     ) -> Result<RoomViewContext, studio_runtime_store::StoreError> {
@@ -240,5 +263,36 @@ impl RoomDirectory {
                 None
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod room_preparation_tests {
+    use super::*;
+    #[test]
+    fn paths_are_prepared_without_transaction_and_snapshot_is_rechecked() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = studio_runtime_store::RuntimeStore::open(Some(root.path())).expect("store");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
+                    [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("project");
+        let mut connection = store.read().expect("read");
+        let prepared = RoomDirectory::prepare(&connection).expect("prepare outside transaction");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_projects SET record=json_set(record,'$.name','after') WHERE id='project'", [])?;
+            Ok(())
+        }).expect("concurrent project edit");
+        let tx = connection.transaction().expect("read transaction");
+        assert!(!prepared.matches(&tx).expect("check database preconditions"));
+        assert!(
+            RoomDirectory::prepare(&tx).is_err(),
+            "filesystem preparation inside a transaction must refuse"
+        );
     }
 }
