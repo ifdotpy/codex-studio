@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 use studio_runtime_providers::{
-    Action, Frame, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame, RequestId, RequestOutcome,
-    RequestTicket, ResponseBody, SessionState, encode_line,
+    Action, Frame, InitializationStatus, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame,
+    RequestId, RequestOutcome, RequestTicket, ResponseBody, SessionState, encode_line,
+    validate_initialize_params,
 };
 
 const INIT: &str = r#"{"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}"#;
@@ -35,7 +36,9 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
     actions
         .iter()
         .filter_map(|action| match action {
-            Action::Write(bytes) => serde_json::from_slice(bytes).ok(),
+            Action::Write(frame) => {
+                serde_json::from_slice(&encode_line(frame).expect("valid write")).ok()
+            }
             _ => None,
         })
         .collect()
@@ -79,7 +82,181 @@ fn initialize_handshake_and_python_caller_request_shapes() {
 }
 
 #[test]
-fn injected_deadline_marks_all_pending_unknown_and_late_reply_is_positive_evidence() {
+fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
+    let shapes = [
+        (
+            Method::SkillsList,
+            json!({"cwds":["/repo"],"forceReload":false}),
+        ),
+        (
+            Method::McpServerStatusList,
+            json!({"threadId":"thread","limit":100}),
+        ),
+        (
+            Method::ThreadBackgroundTerminalsList,
+            json!({"threadId":"thread","limit":100}),
+        ),
+        (
+            Method::ThreadBackgroundTerminalsTerminate,
+            json!({"threadId":"thread","processId":"42"}),
+        ),
+    ];
+    for (method, params) in shapes {
+        let mut session = state(false);
+        let (ticket, actions) = session
+            .submit(method, params.clone(), 1, 10, None, true)
+            .expect("one-off request is admitted");
+        let request = &outgoing(&actions)[0];
+        assert_eq!(request["method"], method.as_str());
+        assert_eq!(request["params"], params);
+        let settled = session
+            .receive(Frame::Response {
+                id: ticket.id,
+                body: ResponseBody::Result(json!({"ok":true})),
+                fields: Default::default(),
+            })
+            .expect("provider reply is correlated");
+        assert!(matches!(
+            &settled[0],
+            Action::Resolve {
+                outcome: RequestOutcome::Reply { late: false, .. },
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn recovered_requests_keep_a_finite_configured_deadline() {
+    let recovered_id = RequestId::Number(88);
+    let (mut state, _) = SessionState::new_with_recovered(
+        9,
+        false,
+        10,
+        5,
+        serde_json::from_str(INIT).expect("scripted test operation"),
+        vec![(recovered_id.clone(), Method::ModelList, None)],
+    )
+    .expect("recovered request should register");
+    assert!(state.expire(14).1.is_empty());
+    assert_eq!(state.next_deadline_ms(), Some(15));
+    state
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    assert_eq!(state.next_deadline_ms(), Some(15));
+    let (_, actions) = state.expire(15);
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::Resolve {
+            ticket: RequestTicket { id, .. },
+            outcome: RequestOutcome::Unknown,
+        } if id == &recovered_id
+    )));
+}
+
+#[test]
+fn initialization_validation_is_a_pure_refusal_before_session_creation() {
+    assert!(validate_initialize_params(&json!({"capabilities":{}})).is_ok());
+    let invalid = json!({"payload":"x".repeat(MAX_FRAME_BYTES)});
+    assert!(matches!(
+        validate_initialize_params(&invalid),
+        Err(studio_runtime_providers::CodecError::FrameTooLarge { .. })
+    ));
+    assert!(matches!(
+        SessionState::new(1, false, 0, 10, invalid),
+        Err(studio_runtime_providers::SessionError::Codec(
+            studio_runtime_providers::CodecError::FrameTooLarge { .. }
+        ))
+    ));
+}
+
+#[test]
+fn readiness_waits_for_the_initialized_write_receipt() {
+    let (mut session, _) =
+        SessionState::new(77, false, 0, 10, json!({})).expect("session creation");
+    assert_eq!(
+        session.initialization_status(),
+        InitializationStatus::AwaitingReply
+    );
+    assert!(matches!(
+        session.mark_initialized_notification_written(),
+        Err(studio_runtime_providers::SessionError::InitializationNotReady)
+    ));
+
+    let actions = session
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    assert!(actions.iter().any(|action| matches!(
+        action,
+        Action::Write(Frame::Notification(notification)) if notification.method == Method::Initialized
+    )));
+    assert_eq!(session.lifecycle(), Lifecycle::Ready);
+    assert_eq!(
+        session.initialization_status(),
+        InitializationStatus::InitializedWritePending
+    );
+    session
+        .mark_initialized_notification_written()
+        .expect("write receipt completes initialization");
+    assert_eq!(session.initialization_status(), InitializationStatus::Ready);
+    session
+        .mark_initialized_notification_written()
+        .expect("duplicate completion receipt is idempotent");
+}
+
+#[test]
+fn initialization_refusal_and_unanswered_transport_have_distinct_readiness() {
+    let (mut refused, _) =
+        SessionState::new(78, false, 0, 10, json!({})).expect("session creation");
+    refused
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Error(json!({"code":-1})),
+            fields: Default::default(),
+        })
+        .expect("initialize refusal");
+    assert_eq!(
+        refused.initialization_status(),
+        InitializationStatus::Refused
+    );
+
+    let (mut lost, _) = SessionState::new(79, false, 0, 10, json!({})).expect("session creation");
+    lost.transport_lost();
+    assert_eq!(lost.initialization_status(), InitializationStatus::Unknown);
+
+    let (mut write_lost, _) =
+        SessionState::new(80, false, 0, 10, json!({})).expect("session creation");
+    write_lost
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("initialize response");
+    write_lost.transport_lost();
+    assert_eq!(
+        write_lost.initialization_status(),
+        InitializationStatus::InitializedWritePending
+    );
+    write_lost
+        .mark_initialized_notification_written()
+        .expect("a late positive write receipt completes initialization");
+    assert_eq!(
+        write_lost.initialization_status(),
+        InitializationStatus::Ready
+    );
+}
+
+#[test]
+fn injected_deadline_marks_only_one_request_unknown_and_late_reply_is_positive_evidence() {
     let mut session = state(false);
     let (first, _) = session
         .submit(Method::TurnStart, json!({}), 0, 5, None, false)
@@ -103,8 +280,9 @@ fn injected_deadline_marks_all_pending_unknown_and_late_reply_is_positive_eviden
                 }
             ))
             .count(),
-        2
+        1
     );
+    assert_eq!(session.lifecycle(), Lifecycle::Ready);
     let late = session
         .receive(Frame::Response {
             id: first.id,
@@ -509,7 +687,7 @@ fn numeric_request_exactly_at_frame_limit_uses_its_actual_id_for_validation() {
         .expect("valid maximum-size request");
     assert_eq!(ticket.id, RequestId::Number(2));
     let written = match &actions[0] {
-        Action::Write(bytes) => bytes,
+        Action::Write(frame) => encode_line(frame).expect("valid frame"),
         other => panic!("expected request write, got {other:?}"),
     };
     assert_eq!(written.len(), exact.len());
@@ -733,4 +911,227 @@ fn cancelled_book_ids_are_removed_but_never_reused() {
         book.register(id, Method::ThreadRead),
         Err(studio_runtime_providers::BookError::DuplicateId)
     );
+}
+
+#[test]
+fn arrival_timestamp_classification_is_independent_of_expiry_order() {
+    for received_at_ms in [10, 11, 12] {
+        let mut replies = Vec::new();
+        for expire_first in [false, true] {
+            let mut session = state(false);
+            let (ticket, _) = session
+                .submit(Method::ModelList, json!({}), 1, 10, None, false)
+                .expect("request registration");
+            if expire_first {
+                assert_eq!(session.expire(20).1.len(), 1);
+                assert_eq!(session.next_deadline_ms(), None);
+                assert!(session.expire(21).1.is_empty());
+            }
+            let actions = session
+                .receive_at(
+                    Frame::Response {
+                        id: ticket.id,
+                        body: ResponseBody::Result(json!({})),
+                        fields: Default::default(),
+                    },
+                    received_at_ms,
+                )
+                .expect("timestamped response");
+            assert!(matches!(&actions[0], Action::Resolve {
+                outcome: RequestOutcome::Reply { late, .. }, ..
+            } if *late == (received_at_ms >= 11)));
+            replies.push(actions);
+            assert!(session.expire(30).1.is_empty());
+        }
+        assert_eq!(replies[0], replies[1]);
+    }
+}
+
+#[test]
+fn rejecting_unsent_retires_expired_queue_and_releases_next_serialized_request() {
+    for expired in [false, true] {
+        let mut session = state(true);
+        let (first, _) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("first");
+        let (second, actions) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                10,
+                Some("thread".into()),
+                false,
+            )
+            .expect("queued second");
+        assert!(actions.is_empty());
+        let (third, actions) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("queued third");
+        assert!(actions.is_empty());
+        if expired {
+            assert_eq!(session.expire(10).1.len(), 1);
+        }
+        assert!(
+            session
+                .reject_unsent(&second)
+                .expect("retire second")
+                .is_empty()
+        );
+        let released = session.reject_unsent(&first).expect("retire first");
+        let writes = outgoing(&released);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0]["id"],
+            serde_json::to_value(&third.id).expect("id")
+        );
+        assert!(
+            session
+                .receive(reply_for_test(second.id))
+                .expect("orphan response")
+                .is_empty()
+        );
+        assert_eq!(session.next_deadline_ms(), Some(100));
+    }
+}
+
+fn reply_for_test(id: RequestId) -> Frame {
+    Frame::Response {
+        id,
+        body: ResponseBody::Result(json!({})),
+        fields: Default::default(),
+    }
+}
+
+#[test]
+fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
+    let mut session = state(false);
+    let (ticket, _) = session
+        .submit(Method::ModelList, json!({}), 0, 10, None, false)
+        .expect("ticket");
+    let mut stale = ticket.clone();
+    stale.generation += 1;
+    assert!(session.reject_unsent(&stale).is_err());
+    let _ignored = session.expire(10);
+    assert!(
+        session
+            .reject_unsent(&ticket)
+            .expect("retire expired unsent")
+            .is_empty()
+    );
+    assert_eq!(session.next_deadline_ms(), None);
+    assert!(
+        session
+            .receive(reply_for_test(ticket.id))
+            .expect("orphan")
+            .is_empty()
+    );
+}
+
+#[test]
+fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
+    for arrived in [9, 10, 11] {
+        let mut session = state(false);
+        let (ticket, _) = session
+            .submit(Method::ModelList, json!({}), 0, 10, None, false)
+            .expect("ticket");
+        session.transport_lost();
+        let actions = session
+            .receive_at(reply_for_test(ticket.id), arrived)
+            .expect("late evidence");
+        assert!(
+            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))
+        );
+    }
+}
+
+#[test]
+fn restored_request_preserves_original_deadline_and_prior_unknown() {
+    for unknown in [false, true] {
+        let mut session = state(false);
+        let ticket = RequestTicket {
+            generation: 9,
+            id: RequestId::Number(80),
+            method: Method::ModelList,
+        };
+        session
+            .restore_request(&ticket, None, 5, unknown, false)
+            .expect("valid recovery");
+        assert_eq!(session.request_deadline_ms(&ticket.id), Some(5));
+        assert_eq!(
+            session.next_deadline_ms(),
+            if unknown { None } else { Some(5) }
+        );
+        let (_, expired) = session.expire(20);
+        assert_eq!(expired.len(), usize::from(!unknown));
+        let actions = session
+            .receive_at(
+                Frame::Response {
+                    id: ticket.id,
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                },
+                4,
+            )
+            .expect("late delivery, early arrival");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            Action::Resolve {
+                outcome: RequestOutcome::Reply { late: false, .. },
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn restored_serialized_and_lightweight_requests_preserve_thread_ownership() {
+    for lightweight in [false, true] {
+        let mut session = state(true);
+        let restored = RequestTicket {
+            generation: 9,
+            id: RequestId::Number(80),
+            method: Method::TurnStart,
+        };
+        session
+            .restore_request(&restored, Some("thread".into()), 100, true, lightweight)
+            .expect("restore");
+        let (_, actions) = session
+            .submit_with_id(
+                RequestId::Number(81),
+                Method::TurnStart,
+                json!({"threadId":"thread","input":[]}),
+                1,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("submit successor");
+        assert_eq!(outgoing(&actions).len(), usize::from(lightweight));
+        let actions = session
+            .receive_at(
+                Frame::Response {
+                    id: restored.id,
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                },
+                2,
+            )
+            .expect("resolve restored");
+        assert_eq!(outgoing(&actions).len(), usize::from(!lightweight));
+    }
 }

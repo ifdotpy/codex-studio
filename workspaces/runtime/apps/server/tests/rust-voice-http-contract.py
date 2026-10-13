@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -23,7 +25,7 @@ from http_backend_harness import TimedHTTPContractTest, start_contract_backend, 
 
 def seed_python_voice_rows(backend) -> None:
     script = f"""
-import importlib.util, json, sqlite3
+import base64, importlib.util, json, sqlite3
 from pathlib import Path
 import sys
 tests = Path({str(Path(__file__).resolve().parent)!r})
@@ -66,11 +68,21 @@ voice.record(
     agent_id, "python-session", "python-stopped-agent-record", "user",
     "Wake the stopped agent.", payload={{"utterance_order": 3}},
 )
+voice.audio(
+    agent_id, "python-session", "python-audio-fixture",
+    base64.b64encode(b"existing synthetic audio").decode("ascii"),
+    "audio/webm;codecs=opus",
+)
 with runtime.db() as connection:
     connection.execute(
         "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) "
         "VALUES(?,?,?,?,?,?,?,?,?)",
         ("conflicting-message", agent_id, "user", "Different transcript", "pending", 1, 0, None, None),
+    )
+    connection.execute(
+        "INSERT INTO voice_speech_requests(id,session,record_id,state,error) "
+        "VALUES(?,?,?,?,?)",
+        ("python-session:python-courier-record", "python-session", "python-courier-record", "failed", "saved failure"),
     )
 runtime.close()
 """
@@ -156,7 +168,8 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(record_ids[:3], [
             "python-user-record", "python-courier-record", "python-stopped-agent-record",
         ])
-        self.assertTrue(all(record_id.startswith("approval-speech:") for record_id in record_ids[3:]))
+        self.assertTrue(record_ids[3].startswith("audio:"))
+        self.assertTrue(all(record_id.startswith("approval-speech:") for record_id in record_ids[4:]))
         session = history.json()["session"]
         self.assertEqual(session["session_id"], "python-session")
         self.assertEqual(session["state"], "lost")
@@ -183,6 +196,40 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         conflict = self.request("/api/voice/record", {**body, "text": "Changed"})
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_audio_reads_python_written_chunk_and_retries_without_duplicate_records(self):
+        body = {
+            "agent": self.lead_id,
+            "session_id": "python-session",
+            "chunk_id": "python-audio-fixture",
+            "audio": base64.b64encode(b"existing synthetic audio").decode("ascii"),
+            "mime": "audio/webm;codecs=opus",
+        }
+        first = self.request("/api/voice/audio", body)
+        self.assertEqual(first.status, 200, first.body[:1000])
+        expected_id = "audio:" + hashlib.sha256(
+            f"{self.lead_id}:python-session:python-audio-fixture".encode()
+        ).hexdigest()
+        self.assertEqual(first.json()["id"], expected_id)
+        retry = self.request("/api/voice/audio", body)
+        self.assertEqual(retry.status, 200, retry.body[:1000])
+        self.assertEqual(retry.json(), first.json())
+
+        before = no_write_snapshot(self.backend.state)
+        conflict = self.request("/api/voice/audio", {
+            **body, "audio": base64.b64encode(b"different bytes").decode("ascii"),
+        })
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        for invalid in (
+            {**body, "mime": "text/plain"},
+            {**body, "session_id": "missing-session"},
+            {**body, "audio": "%%%"},
+        ):
+            with self.subTest(invalid=invalid):
+                response = self.request("/api/voice/audio", invalid)
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_submit_commits_delivery_and_event_once_and_refusals_do_not_write(self):
         body = {
@@ -360,13 +407,14 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         return sorted(path.name for path in audio.iterdir()) if audio.exists() else []
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_provider_and_audio_operations_refuse_without_writes(self):
+    def test_provider_operations_refuse_without_writes(self):
         before = no_write_snapshot(self.backend.state)
         requests = (
             ("start", {"agent": self.lead_id, "session_id": "unused", "sdp": "offer"}),
-            ("audio", {
-                "agent": self.lead_id, "session_id": "python-session", "chunk_id": "unused",
-                "audio": "", "mime": "audio/webm",
+            ("end", {"agent": self.lead_id, "session_id": "active-without-worker"}),
+            ("speech", {
+                "agent": self.lead_id, "session_id": "active-without-worker",
+                "record_id": "python-courier-record",
             }),
             ("approve", {
                 "agent": self.lead_id, "session_id": "python-session", "speech_id": "unused",
@@ -385,15 +433,6 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(ended.status, 200, ended.body[:1000])
         self.assertEqual(ended.json()["state"], "lost")
 
-        self.backend.stop()
-        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
-            connection.execute(
-                "INSERT INTO voice_speech_requests(id,session,record_id,state,error) "
-                "VALUES(?,?,?,?,?)",
-                ("python-session:python-courier-record", "python-session", "python-courier-record", "failed", "saved failure"),
-            )
-        self.backend.start()
-        self.backend.ready_samples.append(self.backend.ready_seconds or 0)
         receipt = self.request("/api/voice/speech", {
             "agent": self.lead_id, "session_id": "python-session",
             "record_id": "python-courier-record",

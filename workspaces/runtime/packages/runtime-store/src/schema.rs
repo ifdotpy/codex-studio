@@ -226,9 +226,19 @@ pub fn python_json(value: &Value) -> String {
     python_json_separated(value, ", ", ": ", true)
 }
 
+/// Sorted UTF-8 JSON with Python's human-readable separators.
+pub fn python_json_utf8(value: &Value) -> String {
+    python_json_separated(value, ", ", ": ", false)
+}
+
 /// Compact Python-compatible JSON for content-addressed signatures.
 pub fn python_json_compact(value: &Value) -> String {
     python_json_separated(value, ",", ":", false)
+}
+
+/// Sorted ASCII JSON with explicitly selected separators for provider catalog digests.
+pub fn python_json_with_separators(value: &Value, item: &str, key: &str) -> String {
+    python_json_separated(value, item, key, true)
 }
 
 fn python_json_separated(

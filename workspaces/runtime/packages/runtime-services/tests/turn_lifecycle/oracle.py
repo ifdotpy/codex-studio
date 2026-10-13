@@ -46,6 +46,20 @@ sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
 import codex_runtime
 import codex_accounts
+import codex_efficiency
+
+# Match the accepted turn compiler's canonical context-version encoding while
+# validating the original Python payload hashes before normalizing snapshots.
+_CONTEXT_TOKENS = {}
+_original_context_digest = codex_efficiency.digest
+
+def _context_digest(value):
+    token = _original_context_digest(value)
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    _CONTEXT_TOKENS[token] = hashlib.sha256(canonical.encode()).hexdigest()[:24]
+    return token
+
+codex_efficiency.digest = _context_digest
 
 TABLES = (
     "runtime_agents", "runtime_events", "runtime_execution_runs", "runtime_execution_attempts",
@@ -53,7 +67,7 @@ TABLES = (
     "runtime_event_meta", "runtime_items", "runtime_item_fulltext", "runtime_context_manifests", "runtime_context_reminders",
     "runtime_budget", "runtime_budget_usage", "runtime_requests", "runtime_tasks", "runtime_complaints", "runtime_operation_receipts",
     "sync_entities", "sync_documents", "sync_versions", "runtime_search", "runtime_search_rows",
-    "runtime_search_indexed", "runtime_search_next_meta",
+    "runtime_search_indexed", "runtime_search_next_meta", "runtime_search_rollout",
 )
 TIMES = {"created", "createdAt", "created_at", "finished", "at", "lastEvent", "reconciledAt", "updated", "updatedAt", "acceptedAt", "enqueuedAt", "dispatchPickedAt", "observedAt"}
 _PRESTATES = {}
@@ -93,6 +107,8 @@ def valid_time(value):
 
 
 def normalize(value, key=""):
+    if key == "versions" and isinstance(value, dict):
+        return {k: _CONTEXT_TOKENS.get(v, v) for k, v in sorted(value.items())}
     if key in TIMES and value is not None:
         # Malformed seed fields must remain visible for refusal/no-write cases.
         # Never replace an invalid stored value with an opaque clock token.
@@ -143,6 +159,18 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
                 for field in ("record", "payload", "result"):
                     if field in record and record[field] is not None:
                         record[field] = json.loads(record[field])
+                if tables == TABLES and table == "runtime_operation_receipts" and record["id"].startswith("provider-submission:"):
+                    item_row = db.execute("SELECT agent,record,created FROM runtime_items WHERE json_extract(record,'$.role')='user'").fetchone()
+                    agent, item_raw, created = item_row
+                    item = json.loads(item_raw)
+                    text = item["text"]
+                    signature_input = dict(agent=agent,firstEventId=item["inputs"][0]["id"],submittedAt=item["at"],createdAt=created,record=item,text=text,inputTexts=[v["text"] for v in item["inputs"]])
+                    # Rust serializes integral f64 values with a decimal; retain the same numeric shape.
+                    signature_input["submittedAt"] = float(signature_input["submittedAt"])
+                    signature_input["createdAt"] = float(signature_input["createdAt"])
+                    digest = hashlib.sha256(json.dumps(signature_input,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+                    assert record["signature"] == digest, "invalid submission signature"
+                    record["signature"] = "<validated-signature>"
                 inspect(record, (table, *(str(record[k]) for k in keys)))
                 if table == "sync_entities":
                     record["hash"] = hashlib.sha256(json.dumps(normalize(record["payload"]), sort_keys=True).encode()).hexdigest()
@@ -215,6 +243,9 @@ def capture_submission(runtime, *, stop="submitted"):
     class Provider:
         supervisor_mode = False
 
+        def after_events(self, callback):
+            callback()
+
     captured = {}
     item = runtime.item
     def record_item(db, *args, **kwargs):
@@ -237,7 +268,15 @@ def capture_submission(runtime, *, stop="submitted"):
     with runtime.read_db() as db:
         rows = [dict(db.execute("SELECT * FROM runtime_events WHERE id=?", (key,)).fetchone())
                 for key in agent["startAttempt"]["events"]]
-    with patch.object(runtime, "prepare", lambda a:a), \
+    from codex_wakeups import complaint_records
+    with runtime.read_db() as db:
+        for row in rows:
+            if row["kind"] == "complaint" and complaint_records(db, agent, row["text"]) is None:
+                row["preserveComplaint"] = True
+    # The fixture starts with a loaded native thread. Runtime.prepare itself
+    # still runs every readiness and continuation check; only provider I/O is fake.
+    runtime.loaded.add(agent["id"])
+    with patch.object(runtime, "connect", lambda *_:Provider()), \
          patch.object(runtime, "connect_agent", lambda a:Provider()), \
          patch.object(runtime, "agent_connection", lambda a:None), \
          patch.object(runtime, "item", record_item), \
@@ -246,7 +285,7 @@ def capture_submission(runtime, *, stop="submitted"):
             Runtime.start(runtime, agent, rows)
         except Captured:
             return captured
-    raise AssertionError("real start did not reach the selected submission boundary")
+    raise AssertionError("real start did not reach the selected submission boundary: " + repr(runtime.agent("agent").get("error")))
 
 
 _SEED_AGENT = None
@@ -283,6 +322,10 @@ def seed(runtime, case):
             db.execute("UPDATE runtime_events SET status=?,turn_id=? WHERE id='event'",
                        ("delivered" if phase == "accepted" else "reserved" if phase == "claimed" else "dispatching",
                         "turn" if phase == "accepted" else None))
+        if case["transition"] in {"submission", "reconcile_submission"}:
+            workspace = runtime.root / "workspace"
+            workspace.mkdir(exist_ok=True)
+            agent.update(cwd=str(workspace), worktree=False, workspaceMode="shared", nativeEffort=None)
         for key in case.get("remove", []):
             agent.pop(key, None)
         agent.update(case.get("agent", {}))
@@ -291,8 +334,15 @@ def seed(runtime, case):
         runtime.put(db, "agents", agent)
         if case.get("event"):
             for key, value in case["event"].items():
-                assert key in {"status", "text", "epoch", "error", "turn_id"}
+                assert key in {"kind", "status", "text", "epoch", "error", "turn_id"}
                 db.execute('UPDATE runtime_events SET "' + key + '"=? WHERE id=\'event\'', (value,))
+        for extra in case.get("extraEvents", []):
+            runtime.enqueue(db, agent, extra["kind"], extra["text"], extra["id"])
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id=?", (extra["id"],))
+            if "metadata" in extra:
+                db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)", (extra["id"], json.dumps(extra["metadata"])))
+        for related in case.get("related", []):
+            runtime.put(db, related["table"], related["record"])
         if case.get("run"):
             import codex_execution
             run = codex_execution._load(db, "runs", "run:attempt")
@@ -306,6 +356,8 @@ def seed(runtime, case):
         with runtime.db() as db:
             agent = runtime.agent("agent",db)
             agent.update(case.get("agent",{}))
+            for key in case.get("removeAfterRecovery", []):
+                agent.pop(key, None)
             runtime.put(db,"agents",agent)
     for corruption in case.get("corrupt", []):
         table, key = corruption["table"], corruption["id"]
@@ -360,11 +412,19 @@ def transition(runtime, case):
                 runtime.corpus_result = recovery.adopt_restart_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"})
             else:
                 runtime.corpus_result = recovery.adopt_transport_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"},None)
+    elif action in {"reconcile", "reconcile_submission"}:
+        from codex_wakeups import reconcile_start
+        with runtime.db() as db:
+            rows = [dict(db.execute("SELECT * FROM runtime_events WHERE id=?", (key,)).fetchone()) for key in agent["startAttempt"]["events"]]
+            retired = reconcile_start(runtime, db, agent, rows)
+            runtime.corpus_result = not retired if action == "reconcile_submission" else retired
     elif action == "claim":
         with patch.object(codex_runtime, "uid", lambda:"attempt"):
             runtime.corpus_result = runtime.dispatch_candidates("agent")
     elif action == "submission":
-        capture_submission(runtime)
+        captured = capture_submission(runtime)
+        inputs = captured["kwargs"]["inputs"]
+        runtime.corpus_preparation = {"itemId":"agent:" + inputs[0]["id"],"baseText":runtime.model_event_text(inputs),"fullText":captured["args"][3]}
         runtime.corpus_result = {"boundary":"before_provider_submission"}
     elif action.startswith("interrupt_"):
         class InterruptProvider:
@@ -400,7 +460,7 @@ class LifecycleCases:
         runtime, case = self.runtime, command["case"]
         runtime.close_notification_database()
         runtime.__dict__.pop("_agent_records_cache", None)
-        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","expectRefusal") if k in case}}, sort_keys=True)
+        key = json.dumps({"prepare":case["transition"] in {"submission", "reconcile_submission"},"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","removeAfterRecovery","extraEvents","related","expectRefusal") if k in case}}, sort_keys=True)
         if key not in self.seeds:
             with sqlite3.connect(runtime.db_path) as db:
                 self.pristine.backup(db)
@@ -424,14 +484,21 @@ class LifecycleCases:
         assert snapshot(rust) == before, "pre-states differ"
         python_error = None
         try:
-            self.runtime = transition(runtime, case) or runtime
+            if case["transition"] == "submission":
+                # Both interpreters emit the same actual progress-artifact path.
+                # SQLite remains the separate Python prestate via runtime.db_path.
+                with patch.object(runtime, "root", rust):
+                    self.runtime = transition(runtime, case) or runtime
+            else:
+                self.runtime = transition(runtime, case) or runtime
         except Exception as error:
             if not case.get("expectRefusal"): raise
             python_error = type(error).__name__
         if case.get("afterEventText"):
             with self.runtime.db() as db:
                 db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
-        return {"before":before, "after":snapshot(self.runtime.root), "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
+        after = snapshot(self.runtime.root)
+        return {"before":before, "after":after, "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
 
     def close(self):
         if self.runtime is not None:
@@ -450,7 +517,22 @@ def main():
          patch.object(threading.Thread, "join", lambda self, *a, **k: None), \
          patch.object(codex_runtime, "_RuntimeWalKeeper", lambda *a: None):
         template = pathlib.Path(tempfile.mkdtemp(prefix="lifecycle-schema-"))
-        initialized = QuietRuntime(template, lambda *_a, **_kw: None)
+        # Runtime selects WAL after its first schema setup; choose it upfront
+        # for disposable fixture initialization to avoid per-table rollback journals.
+        with sqlite3.connect(template / "canvas.sqlite3") as db:
+            db.execute("PRAGMA journal_mode=WAL")
+        connect = codex_runtime.sqlite_connect
+        def fixture_connect(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            db.execute("PRAGMA synchronous=OFF")
+            return db
+        # Schema fixture construction is not a crash witness; all compared
+        # transitions reopen the copied databases with production durability.
+        with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
+            initialized = QuietRuntime(template, lambda *_a, **_kw: None)
+        with initialized.db() as db:
+            # Match the notification corpus: materialize the next-index schema on both sides.
+            db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
         initialized.close()
         lifecycle = LifecycleCases(template)
         for line in sys.stdin:

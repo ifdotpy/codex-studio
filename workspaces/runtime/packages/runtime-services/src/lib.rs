@@ -1,4 +1,4 @@
-//! Synchronous application services between the HTTP edge and the store,
+//! Application services between the HTTP edge and the store,
 //! provider and process crates.
 //!
 //! Each service is one leaf module owned by one slice. A service takes
@@ -9,37 +9,59 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod account_worker;
 pub mod agents_create;
 pub mod analytics;
 pub mod bounded_child;
+pub mod budget;
+pub mod budget_service;
+pub mod budget_wait;
+pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
+pub mod claude_bridge;
+pub mod claude_controls;
+pub mod claude_input_recovery;
+pub mod claude_login;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod event_write;
 pub mod federation;
 pub mod model_catalog;
 pub mod multi_server;
+pub mod notification_dispatch;
 pub mod panels;
 pub mod payload_store;
 pub mod progress_panel;
 pub mod progress_watch;
 pub mod projects;
-pub mod provider_session;
+pub(crate) mod provider_exchange;
+pub mod provider_session_task;
 pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
+pub mod radio;
+pub mod recovery;
+pub mod recovery_absence;
+pub mod recovery_history;
+pub mod recovery_policy;
+pub mod recovery_store;
 pub mod remote_transport;
 pub mod rules;
 pub mod scheduler;
+pub mod submit_gates;
 pub mod sync_documents;
 pub(crate) mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod system_reads;
+pub mod task_recovery;
+pub mod task_recovery_store;
 pub mod terminal_driver;
+pub mod thread_prepare;
 pub mod tool_requests;
 pub mod transcript;
+pub mod turn_prepare;
 pub mod usage;
 pub mod voice;
 pub mod work_policy;

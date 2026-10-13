@@ -2,26 +2,29 @@
 name = "studio-runtime-services"
 version.workspace = true
 edition.workspace = true
-description = "Synchronous application services of the Codex Studio runtime"
+description = "Application services of the Codex Studio runtime"
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
 chrono = { workspace = true }
+futures-util.workspace = true
 getrandom = { workspace = true }
 nix = { workspace = true }
 notify = { workspace = true }
 process-wrap = { workspace = true }
+regex = "=1.13.1"
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 mime_guess = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+shlex = "=2.0.1"
 spki = { workspace = true }
 studio-operations = { path = "../operations", features = ["serde"] }
 studio-runtime-process = { path = "../runtime-process" }
@@ -40,6 +43,7 @@ process-wrap = { workspace = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,195 @@
+[
+  {
+    "id": "R1",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_policy.rs",
+    "edits": [
+      {
+        "before": "    let orphan_busy = has(a, \"inFlight\")",
+        "after": "    let orphan_busy = !has(a, \"inFlight\")"
+      }
+    ],
+    "witnesses": ["python_written_eligibility_corpus"]
+  },
+  {
+    "id": "R2",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_policy.rs",
+    "edits": [
+      {
+        "before": "|| item[\"exitCode\"].is_u64())",
+        "after": "|| item[\"exitCode\"].is_u64() || item[\"exitCode\"].is_null())"
+      }
+    ],
+    "witnesses": ["python_written_eligibility_corpus"]
+  },
+  {
+    "id": "R3",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "        if response.scope != self.scope {",
+        "after": "        if false && response.scope != self.scope {"
+      }
+    ],
+    "witnesses": ["foreign_transport_receipt_is_refused_before_use"]
+  },
+  {
+    "id": "R4",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "return if previous == item {",
+        "after": "return if previous != item {"
+      }
+    ],
+    "witnesses": ["conflicting_duplicate_items_are_not_a_receipt"]
+  },
+  {
+    "id": "R5",
+    "file": "workspaces/runtime/packages/runtime-services/src/task_recovery.rs",
+    "edits": [
+      {
+        "before": "        if self.has_local_receipt() {",
+        "after": "        if false && self.has_local_receipt() {"
+      }
+    ],
+    "witnesses": [
+      "exact_task_receipts_match_python_and_unknown_local_outcomes_override_native"
+    ]
+  },
+  {
+    "id": "R6",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_store.rs",
+    "edits": [
+      {
+        "before": "            if &current != a {",
+        "after": "            if false && &current != a {"
+      }
+    ],
+    "witnesses": ["recovery_transaction_restart_matrix"]
+  },
+  {
+    "id": "R7",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_store.rs",
+    "edits": [
+      {
+        "before": "status IN ('reserved','dispatching','uncertain')",
+        "after": "status IN ('reserved','dispatching')"
+      }
+    ],
+    "witnesses": ["recovery_transaction_restart_matrix"]
+  },
+  {
+    "id": "R8",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "let matches = turn[\"clientUserMessageId\"] == message",
+        "after": "let matches = false"
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R9",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "&& item[\"clientId\"] == message",
+        "after": "&& item[\"clientId\"] == \"wrong\""
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R10",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "turn[\"startOutcome\"].as_str(),\n                    Some(\"preparing\" | \"not_applied\")",
+        "after": "turn[\"startOutcome\"].as_str(),\n                    Some(\"wrong\")"
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R11",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "item[\"deliveryStatus\"].as_str(),\n                                    Some(\"preparing\" | \"not_applied\")",
+        "after": "item[\"deliveryStatus\"].as_str(),\n                                    Some(\"wrong\")"
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R12",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "if found.as_ref().is_some_and(|previous| previous != turn)",
+        "after": "if false && found.as_ref().is_some_and(|previous| previous != turn)"
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R13",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "if cursor.is_none() {\n                return Ok(found);",
+        "after": "if true {\n                return Ok(found);"
+      }
+    ],
+    "witnesses": ["legacy_start_matches_python_complete_history"]
+  },
+  {
+    "id": "R14",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_absence.rs",
+    "edits": [
+      {
+        "before": "&& observation.replaced_child(snapshot)",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": ["legacy_start_absence_matches_python_writes_and_visible_wait"]
+  },
+  {
+    "id": "R15",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_absence.rs",
+    "edits": [
+      {
+        "before": "age >= crate::recovery_policy::UNKNOWN_START_HOLD_SECONDS",
+        "after": "age >= 0.0"
+      }
+    ],
+    "witnesses": ["legacy_start_absence_matches_python_writes_and_visible_wait"]
+  },
+  {
+    "id": "R16",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_absence.rs",
+    "edits": [
+      {
+        "before": "|| !completed_turn",
+        "after": "|| false"
+      }
+    ],
+    "witnesses": [
+      "task_absence_consumer_matches_python_lost_and_persists_named_hold"
+    ]
+  },
+  {
+    "id": "R17",
+    "file": "workspaces/runtime/packages/runtime-services/src/task_recovery.rs",
+    "edits": [
+      {
+        "before": "&& absent_from_complete_terminals",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": [
+      "task_absence_consumer_matches_python_lost_and_persists_named_hold"
+    ]
+  }
+]

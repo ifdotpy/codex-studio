@@ -1,0 +1,767 @@
+[
+  {
+    "id": "M1",
+    "description": "drop-accepted-turn",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n",
+        "after": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        // AUDIT MUTATION: omit accepted turnId write.\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n"
+      }
+    ],
+    "witnesses": ["accepted"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M2",
+    "description": "preserve-last-answer",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
+        "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        // AUDIT MUTATION: preserve previous answer on turn-start notice.\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ],
+    "witnesses": ["started_notice"],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice",
+        "transition": "started",
+        "state": "running",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M3",
+    "description": "rejection-status",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = status;\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n",
+        "after": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = if !unknown && !preparation { AgentStatus::Running } else { status };\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n"
+      }
+    ],
+    "witnesses": ["rejected"],
+    "lifecycleCombinations": [
+      {
+        "id": "rejected",
+        "transition": "rejected",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M4",
+    "description": "skip-closed-stream",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "edits": [
+      {
+        "before": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n",
+        "after": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if false && self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n"
+      }
+    ],
+    "witnesses": ["missing_turn_completion"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M5",
+    "description": "wrong-replay-result",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return result[\"bound\"]\n                .as_bool()\n                .ok_or_else(|| invalid_agent(agent_id));\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n",
+        "after": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return Ok(false); // AUDIT MUTATION: discard saved successful replay result.\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n"
+      }
+    ],
+    "witnesses": ["accepted_replay"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted_replay",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M6",
+    "description": "remove-savepoint",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    transaction\n        .execute_batch(&format!(\"SAVEPOINT {SAVEPOINT}\"))\n        .map_err(StoreError::from)?;\n    match operation() {\n        Ok(value) => match transaction.execute_batch(&format!(\"RELEASE SAVEPOINT {SAVEPOINT}\")) {\n            Ok(()) => Ok(value),\n            Err(error) => {\n                drop(transaction.execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                )));\n                Err(StoreError::from(error).into())\n            }\n        },\n        Err(error) => {\n            if transaction\n                .execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                ))\n                .is_err()\n            {\n                return Err(error);\n            }\n            Err(error)\n        }\n    }\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n",
+        "after": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    operation() // AUDIT MUTATION: no internal savepoint.\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n"
+      }
+    ],
+    "witnesses": ["late-service-failure"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M7",
+    "description": "leak-sentinel",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    #[error(\"invalid stored object {table}:{id}\")]",
+        "after": "    #[error(\"invalid stored object {table}:{id} SECRET_STORED_SENTINEL\")]"
+      }
+    ],
+    "witnesses": ["malformed-runtime_agents-epoch"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M8",
+    "description": "preserve-existing-answer",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
+        "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.entry(\"lastAnswer\".to_owned()).or_insert(json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ],
+    "witnesses": ["started_notice__last_answer"],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice__last_answer",
+        "transition": "started",
+        "state": "last_answer",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M9",
+    "description": "invalid-timestamp",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "edits": [
+      {
+        "before": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,timestamp(),ids])?;\n    }\n    Ok(())\n}\n",
+        "after": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,\"not-a-time\",ids])?;\n    }\n    Ok(())\n}\n"
+      }
+    ],
+    "witnesses": ["accepted"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M10",
+    "description": "no-account-thread-check",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    if notification_thread.is_some_and(|actual| actual != thread) {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    let account = match agent.get(\"accountKey\") {\n",
+        "after": "    {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    if false && notification_thread.is_some_and(|actual| actual != thread) {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    let account = match agent.get(\"accountKey\") {\n"
+      },
+      {
+        "before": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n",
+        "after": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if false && provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n"
+      }
+    ],
+    "witnesses": ["foreign-account", "foreign-thread"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M11",
+    "description": "retain active tools on turn start",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "witnesses": ["started_notice__active_tools"],
+    "edits": [
+      {
+        "before": "        agent.extra.insert(\"activeTools\".into(), json!([]));",
+        "after": "        // mutation: retain stale active tools"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice__active_tools",
+        "transition": "started",
+        "state": "running",
+        "phase": "submitted"
+      }
+    ]
+  },
+  {
+    "id": "M12",
+    "description": "stop keeps continuation enabled",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "witnesses": ["stop_accepted"],
+    "edits": [
+      {
+        "before": "        agent.extra.insert(\"autoWake\".into(), json!(false));",
+        "after": "        agent.extra.insert(\"autoWake\".into(), json!(true));"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "stop_accepted",
+        "transition": "stop",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M13",
+    "description": "submission stores wrong request ticket",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+    "witnesses": ["submit_python_claim"],
+    "edits": [
+      {
+        "before": "\"submitted\":true,\"requestTicket\":request_id,\"nativeOperationId\"",
+        "after": "\"submitted\":true,\"requestTicket\":\"wrong-ticket\",\"nativeOperationId\""
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "submit_python_claim",
+        "transition": "submission",
+        "state": "python_attempt",
+        "phase": "claimed"
+      }
+    ]
+  },
+  {
+    "id": "M14",
+    "description": "terminal replay returns false",
+    "file": "workspaces/runtime/packages/runtime-services/src/scheduler.rs",
+    "witnesses": ["completed"],
+    "edits": [
+      {
+        "before": "        return saved\n            .as_bool()",
+        "after": "        return Some(false)\n            .or_else(|| saved.as_bool())"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "completed",
+        "transition": "completed",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M15",
+    "description": "ignore terminal policy refusal mapping",
+    "file": "workspaces/runtime/packages/runtime-services/src/scheduler.rs",
+    "witnesses": ["policy_interrupted"],
+    "edits": [
+      {
+        "before": "    let visible = if refusal { \"failed\" } else { native };",
+        "after": "    let visible = if refusal { \"interrupted\" } else { native };"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "policy_interrupted",
+        "transition": "interrupted",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M16",
+    "description": "notification identity omits cursor",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "            \"cursor\": identity.cursor,",
+        "after": "            \"cursor\": 1,"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M17",
+    "description": "wrong returned outcome with correct receipt",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "    result.map(|outcome| NotificationDispatchResult {\n        outcome,",
+        "after": "    result.map(|_outcome| NotificationDispatchResult {\n        outcome: DispatchOutcome::Ignored { reason: \"wrong-return\".into() },"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M18",
+    "description": "reverse prepared input ordering",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "witnesses": ["submission-batch"],
+    "edits": [
+      {
+        "before": "        .inputs\n        .iter()\n        .map(|input| {",
+        "after": "        .inputs\n        .iter()\n        .rev()\n        .map(|input| {"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M19",
+    "description": "omit aggregate prepared assets",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "witnesses": ["submission-prepared-assets"],
+    "edits": [
+      {
+        "before": "        \"assets\": submission.assets,",
+        "after": "        \"assets\": [],"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M20",
+    "description": "completion overwrites buffered text with empty snapshot",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "                    .filter(|text| !text.is_empty())\n                    .unwrap_or(&latest_text)",
+        "after": "                    .filter(|_text| true)\n                    .unwrap_or(&latest_text)"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M21",
+    "description": "drop stream base text on flush",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "witnesses": ["pending_then_start"],
+    "edits": [
+      {
+        "before": "        let mut text = current_text.to_owned();",
+        "after": "        let mut text = String::new(); let _ = current_text;"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M22",
+    "description": "mislocate stored errors",
+    "filter": "test(malformed_stored_agent_and_item_shapes_are_named_without_content_leaks)",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["malformed-runtime_agents-epoch"],
+    "edits": [
+      {
+        "before": "        table: table.into(),\n        id: id.to_owned(),",
+        "after": "        table: table.into(),\n        id: \"wrong-id\".to_owned(),"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W1",
+    "description": "omit durable Submitted ledger",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "\"submitted\",\n            json!({\"context\":context,\"request\":record(request)}),",
+        "after": "\"omitted-submitted\",\n            json!({\"context\":context,\"request\":record(request)}),"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W2",
+    "description": "acknowledge without notification effects",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "if let JournalPayload::Frame(frame) = &entry.payload {",
+        "after": "if let JournalPayload::Frame(frame) = &entry.payload && false {"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W3",
+    "description": "skip obsolete-event reconciliation at submission",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "let may_submit = replay\n        || SchedulerRepository::reconcile_obsolete_before_submit(",
+        "after": "let may_submit = true || replay\n        || SchedulerRepository::reconcile_obsolete_before_submit("
+      }
+    ],
+    "witnesses": ["submit_retires_resolved_complaint"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W4",
+    "description": "drop terminal native error notice",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "if status == \"failed\" {",
+        "after": "if false && status == \"failed\" {"
+      }
+    ],
+    "witnesses": ["failed", "denials", "policy_interrupted"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W5",
+    "description": "wrong native error wording",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "Codex refused this turn under its cybersecurity policy.",
+        "after": "Incorrect policy notice."
+      }
+    ],
+    "witnesses": ["policy_interrupted"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W6",
+    "description": "omit terminal turnStatus mark",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "tx.execute(\"UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?1) WHERE agent=?2 AND json_extract(record,'$.turnId')=?3 AND created>=?4\"",
+        "after": "tx.execute(\"UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?1) WHERE 0 AND agent=?2 AND json_extract(record,'$.turnId')=?3 AND created>=?4\""
+      }
+    ],
+    "witnesses": ["failed"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W7",
+    "description": "compiled context preserves transcript title",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "edits": [
+      {
+        "before": "\"title\": \"User\",",
+        "after": "\"title\": \"Wrong\","
+      }
+    ],
+    "witnesses": ["submit_python_claim"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W8",
+    "description": "compiled context preserves base text",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation.rs",
+    "edits": [
+      {
+        "before": "    Ok(PreparedTurn {\n        params: json!(params),\n        submission,\n        compiled,\n    })",
+        "after": "    let mut submission=submission; submission.text.push_str(\" changed base\");\n    Ok(PreparedTurn { params:json!(params),submission,compiled })"
+      }
+    ],
+    "witnesses": ["submit_python_claim"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W9",
+    "description": "lost wake after active turn settlement",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "effect = Some(Effect::Wake(identity.agent_id, identity.epoch));",
+        "after": "effect = Some(Effect::Wake(identity.agent_id, identity.epoch + 1));"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W10",
+    "description": "unknown deadline wrongly requeues input",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "} else if context.method()? == Method::TurnStart {\n            TurnStart::Unknown",
+        "after": "} else if context.method()? == Method::TurnStart {\n            TurnStart::NotSubmitted"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "deadline_unknown_is_not_resent_and_late_reply_refines_it"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W11",
+    "description": "restart ignores durable Submitted evidence",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "AND substr(r.id,-10)=':submitted'",
+        "after": "AND substr(r.id,-10)=':discarded'"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "restart_after_submitted_before_written_recovers_unknown_without_resend"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W12",
+    "description": "wrong unsupported callback result",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/callback.rs",
+    "edits": [
+      {
+        "before": "\"code\":-32601",
+        "after": "\"code\":0"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "unsupported_approval_is_answered_after_commit",
+      "unsupported_question_is_answered_after_commit",
+      "unsupported_dynamic_tool_is_answered_after_commit"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W13",
+    "description": "callback admitted without durable Submitted",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "save(tx, operation, \"submitted\", json!(true))?;",
+        "after": "save(tx, operation, \"omitted\", json!(true))?;"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "unsupported_approval_is_answered_after_commit",
+      "unsupported_question_is_answered_after_commit",
+      "unsupported_dynamic_tool_is_answered_after_commit"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "D1",
+    "description": "review regression D1",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "                agent.extra.insert(\"startAttempt\".into(), attempt);",
+        "after": "                let _ = attempt;"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "accepted_turn_reattaches_and_keeps_notification_effects"
+    ]
+  },
+  {
+    "id": "D2",
+    "description": "review regression D2",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "    for phase in [\"submitted\", \"written\", \"resolved\"] {",
+        "after": "    for phase in [\"never-retire\"] {"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "rejected_start_restarts_without_unresolved_transport_receipts"
+    ]
+  },
+  {
+    "id": "D3",
+    "description": "review regression D3",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "        if account_key(&agent) != account || i.account_key != account {",
+        "after": "        if false && (account_key(&agent) != account || i.account_key != account) {"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "transfer_between_resume_and_start_never_writes_to_old_account",
+      "transfer_after_claim_before_resume_submission_is_refused"
+    ]
+  },
+  {
+    "id": "D4",
+    "description": "review regression D4",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "fn definite_rejection(error: &WorkerError) -> bool {\n    matches!(",
+        "after": "fn definite_rejection(error: &WorkerError) -> bool {\n    true || matches!("
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "unrelated_store_failure_after_enqueue_keeps_write_unknown"
+    ]
+  },
+  {
+    "id": "D5",
+    "description": "review regression D5",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "    if let Some(key) = effect_key(account, effect) {",
+        "after": "    if let Some(key) = effect_key(account, effect).filter(|_| false) {"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "committed_stop_survives_crash_before_interrupt_admission"
+    ]
+  },
+  {
+    "id": "D6",
+    "description": "review regression D6",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "        SchedulerRepository::recover_unsubmitted_for_account(tx, account)?;",
+        "after": "        // MUTATION: no recovery on reacquisition."
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": ["every_scenario_recovers_at_every_bridge_boundary"]
+  },
+  {
+    "id": "D7",
+    "description": "review regression D7",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "        while self.session.status.borrow().initialization != InitializationStatus::Ready {\n            tokio::select! { biased;\n                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; return Ok(()); },\n                changed = self.session.status.changed() => { changed.map_err(|_| WorkerError::Closed)?; },\n                event = self.events.recv() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },\n            }\n        }\n",
+        "after": ""
+      },
+      {
+        "before": "            if self.session.status.borrow().initialization == InitializationStatus::Ready\n                && let Some(effect) = self.effects.pop_front()",
+        "after": "            if let Some(effect) = self.effects.pop_front()"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": [
+      "callback_replay_waits_for_initialization_before_admission"
+    ]
+  },
+  {
+    "id": "L2",
+    "description": "review regression L2",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "                command = self.inbox.recv(), if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {\n                    #[cfg(test)]\n                    Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },\n                    Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,\n                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,\n                    None => return Ok(()),\n                },\n                event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },\n",
+        "after": "                event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },\n                command = self.inbox.recv(), if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {\n                    #[cfg(test)]\n                    Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },\n                    Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,\n                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,\n                    None => return Ok(()),\n                },\n"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": ["stop_and_wake_progress_with_a_replenished_event_lane"]
+  },
+  {
+    "id": "L3",
+    "description": "review regression L3",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "    for raw in rows {\n        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;",
+        "after": "    for raw in rows.into_iter().take(0) {\n        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": ["bookkeeping_rows_stay_bounded_across_completed_turns"]
+  },
+  {
+    "id": "L4",
+    "description": "review regression L4",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "        replace(tx, &key, \"pending\", json!(pending))",
+        "after": "        let _ = pending; Ok(())"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": ["durable_stream_batch_recovers_before_flush"]
+  },
+  {
+    "id": "L4B",
+    "description": "review regression L4B",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;",
+        "after": "pub(super) const STREAM_FLUSH_BYTES: usize = usize::MAX;"
+      }
+    ],
+    "witnesses": [],
+    "lifecycleCombinations": [],
+    "workerWitnesses": ["stream_base_survives_replaced_visible_item"]
+  },
+  {
+    "id": "L4WrongBase",
+    "description": "review regression L4WrongBase",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "edits": [
+      {
+        "before": "            entry.base = Some(hash);",
+        "after": "            entry.base = Some(\"wrong-base\".into()); let _ = hash;"
+      }
+    ],
+    "witnesses": ["flushed_then_start_then_delta"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "L4MissingBase",
+    "description": "review regression L4MissingBase",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "        if let Some(text) = text {",
+        "after": "        if let Some(text) = text.filter(|_| false) {"
+      }
+    ],
+    "witnesses": ["flushed_then_start_then_delta"],
+    "lifecycleCombinations": []
+  }
+]

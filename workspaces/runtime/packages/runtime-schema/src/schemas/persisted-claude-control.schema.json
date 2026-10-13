@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "ClaudeControlTransport": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "account": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Account",
+          "type": "string"
+        },
+        "connection": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Connection",
+          "type": "string"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Generation",
+          "type": "integer"
+        }
+      },
+      "required": ["account", "connection", "generation"],
+      "title": "ClaudeControlTransport",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Agent",
+      "type": "string"
+    },
+    "controlEpoch": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Controlepoch"
+    },
+    "controlTransport": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClaudeControlTransport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "id": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["claude_settings", "claude_rollback"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "provider_pending",
+        "provider_ready",
+        "recovery_required",
+        "completed",
+        "failed"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Provider"
+    },
+    "removedTurns": {
+      "anyOf": [
+        {
+          "items": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Removedturns"
+    },
+    "requestId": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Requestid",
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "retainedTurn": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Retainedturn"
+    },
+    "signature": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Signature",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Source",
+      "type": "object"
+    },
+    "submitted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Submitted"
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnid"
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Updated"
+    }
+  },
+  "required": [
+    "id",
+    "requestId",
+    "kind",
+    "agent",
+    "signature",
+    "source",
+    "phase",
+    "created"
+  ],
+  "title": "PersistedClaudeControlRecord",
+  "type": "object"
+}

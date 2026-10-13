@@ -11,6 +11,17 @@ use thiserror::Error;
 
 use crate::event_write::{self, EventWriteError};
 
+#[path = "voice/policy.rs"]
+pub mod policy;
+
+#[path = "voice/audio.rs"]
+mod audio;
+
+pub use audio::{VoiceAudioError, save_audio};
+
+#[path = "voice/provider.rs"]
+pub mod provider;
+
 const MAX_RECORD_TEXT: usize = 100_000;
 const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
@@ -372,7 +383,9 @@ pub fn end(store: &RuntimeStore, agent_id: &str, session_id: &str) -> Result<Val
     {
         return Ok(session);
     }
-    Err(VoiceError::RequiresDependency("provider-session/voice"))
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
 }
 
 pub fn speech_receipt(
@@ -419,7 +432,9 @@ pub fn speech_receipt(
             "Start voice before audio playback",
         ));
     }
-    Err(VoiceError::RequiresDependency("provider-session/voice"))
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
 }
 
 pub fn approval_speech(

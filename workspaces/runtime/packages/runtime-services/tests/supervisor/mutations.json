@@ -1,0 +1,132 @@
+[
+  {
+    "id": "cursor-lower",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
+        "after": "cursor > self.record.sequence"
+      }
+    ]
+  },
+  {
+    "id": "cursor-upper",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
+        "after": "cursor < self.record.acknowledged"
+      }
+    ]
+  },
+  {
+    "id": "receipt-content",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if prior.record.digest != digest {",
+        "after": "if false && prior.record.digest != digest {"
+      }
+    ]
+  },
+  {
+    "id": "output-capacity",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if buffered >= HANDLE_LIMIT {",
+        "after": "if buffered > HANDLE_LIMIT {"
+      }
+    ]
+  },
+  {
+    "id": "event-generation",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "if state.generation() != generation {",
+        "after": "if false && state.generation() != generation {"
+      }
+    ]
+  },
+  {
+    "id": "commit-before-effects",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "tx.commit()?;",
+        "after": "tx.rollback()?;"
+      }
+    ]
+  },
+  {
+    "id": "ack-prefix",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "DELETE FROM events WHERE handle=? AND sequence<=?",
+        "after": "DELETE FROM events WHERE handle=? AND sequence<?"
+      }
+    ]
+  },
+  {
+    "id": "receipt-visible-before-ack",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if seq <= current.record.acknowledged =>",
+        "after": "if true || seq <= current.record.acknowledged =>"
+      }
+    ]
+  },
+  {
+    "id": "unknown-recovery-forgotten",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "let closed = matches!(outcome, \"already-exited\"|\"terminated\"|\"killed\"|\"identity-mismatch\").then_some(now);",
+        "after": "let closed = Some(now);"
+      }
+    ]
+  },
+  {
+    "id": "recovery-audit-bound",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "ORDER BY id DESC LIMIT 16",
+        "after": "ORDER BY id DESC LIMIT 17"
+      }
+    ]
+  },
+  {
+    "id": "kernel-same-second-collision",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if expected == actual {",
+        "after": "if expected.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) == actual.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) {"
+      }
+    ]
+  },
+  {
+    "id": "identity-upgrade-not-durable",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "UPDATE child_identities SET start_time=? WHERE handle=?",
+        "after": "UPDATE child_identities SET start_time=start_time WHERE handle=?2 AND ?1 IS NOT NULL"
+      }
+    ]
+  },
+  {
+    "id": "open-missing-cwd",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "#[serde(deserialize_with = \"Option::<String>::deserialize\")]",
+        "after": "#[serde(default)]"
+      }
+    ]
+  }
+]

@@ -24,6 +24,8 @@ db.executemany('INSERT INTO runtime_agents VALUES (?, ?)', [
     ('invalid-secret-id', '{"id":"invalid-secret-id","rootId":"root-secret","epoch":"broken","status":"idle","private":"private-record-content"}')
 ])
 db.execute('INSERT INTO runtime_tasks VALUES (?, ?, ?)', ('task-secret-id', 'valid-secret-id', '{"id":"task-secret-id","agent":"valid-secret-id","reattachRecovery":{"state":"pending"},"outputPreviewOnly":true}'))
+db.execute('CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+db.executemany('INSERT INTO runtime_execution_attempts VALUES (?, ?)', [('attempt-good', '{"id":"attempt-good","epoch":2}'), ('attempt-bad','{"id":"attempt-bad","epoch":"wrong"}')])
 db.commit()
 db.close()
 "#;
@@ -48,7 +50,7 @@ db.close()
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    assert_eq!(tables.len(), 33);
+    assert_eq!(tables.len(), 36);
     assert!(
         tables
             .iter()
@@ -68,7 +70,16 @@ db.close()
         .expect("task table is checked");
     assert_eq!(tasks["row_count"], 1);
     assert_eq!(tasks["rejected_count"], 0);
+    let attempts = tables
+        .iter()
+        .find(|table| table["table"] == "runtime_execution_attempts")
+        .expect("Claude attempts are checked");
+    assert_eq!(attempts["row_count"], 2);
+    assert_eq!(attempts["rejected_count"], 1);
+    assert_eq!(attempts["failures"][0]["pointer"], "/epoch");
     for private_value in [
+        "attempt-good",
+        "attempt-bad",
         "valid-secret-id",
         "invalid-secret-id",
         "task-secret-id",

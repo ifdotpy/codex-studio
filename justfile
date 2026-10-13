@@ -49,10 +49,6 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
-[doc("Run the full workspace readiness Python corpus and writer witness (manual heavy tier).")]
-test-rust-runtime-corpora:
-    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
@@ -81,3 +77,19 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+[doc("Run the full Rust readiness, lifecycle, notification, preparation and subsystem matrices (manual heavy tier; no load generators).")]
+test-rust-runtime-corpora:
+    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates|budget|radio_policy|voice_provider|recovery|catalog_reads)_corpus$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
+
+    @cargo nextest run -p studio-runtime-services -E 'binary(/^claude_/) or binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/)'
+    @cargo nextest run -p studio-process-supervisor
+
+[doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
+test-rust-runtime-corpora-mutations *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
+
+[doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
+test-rust-session-fairness:
+    @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'

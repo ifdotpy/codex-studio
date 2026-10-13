@@ -222,7 +222,7 @@ pub(crate) fn stored_records(
     Ok(rows)
 }
 
-fn normalized_project_path(value: &str) -> Option<String> {
+pub(crate) fn normalized_project_path(value: &str) -> Option<String> {
     if value.trim().is_empty() {
         return None;
     }
@@ -271,7 +271,7 @@ fn retire_if_live(
     Ok(())
 }
 
-fn maintain_task_window(
+pub(crate) fn maintain_task_window(
     transaction: &Transaction<'_>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {

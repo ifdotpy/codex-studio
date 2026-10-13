@@ -1,7 +1,10 @@
 mod account_login;
 mod agents_create;
 mod catalog;
+mod catalog_agent;
 mod checkpoints;
+mod claude_controls;
+mod claude_login;
 pub(crate) mod compose;
 mod desktop;
 pub(crate) mod extractors;
@@ -18,6 +21,7 @@ mod questions_reads;
 mod questions_write;
 mod queue_read;
 mod queue_write;
+mod recovery;
 mod rules;
 mod session;
 mod sync;

@@ -4,6 +4,8 @@
 //! validates the resulting document, and atomically persists it while holding
 //! the driver's mutex. Credential material is never retained in this module.
 
+pub mod claude;
+
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
 use crate::event_write::python_strip;
 use base64::Engine as _;
@@ -502,17 +504,7 @@ fn terminate_claude_process_group(mut child: Box<dyn ChildWrapper>) {
 
 fn configure_claude_status_command(command: &mut Command, options: Option<&Value>) {
     command.args(["auth", "status", "--json"]);
-    for name in [
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-        "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ] {
+    for name in claude::SUBSCRIPTION_ENV_REMOVALS {
         command.env_remove(name);
     }
     if let Some(config_dir) = options

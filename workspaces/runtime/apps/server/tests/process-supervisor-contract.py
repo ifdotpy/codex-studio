@@ -2186,9 +2186,14 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertGreaterEqual(p50,0)
         self.assertGreaterEqual(p95,p50)
 
-    def restart_supervisor_after_kill(self):
+    def restart_supervisor_after_kill(self, *, wait_for_dead_pid=None):
         self.supervisor.kill()
         self.supervisor.wait(timeout=5)
+        if wait_for_dead_pid is not None:
+            wait_for_condition(
+                lambda: process_start_time(wait_for_dead_pid) is None,
+                f"child PID {wait_for_dead_pid} exits after losing supervisor stdin",
+            )
         self.supervisor=subprocess.Popen([sys.executable,'-B',str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
             '--state',str(self.root)],stdout=subprocess.DEVNULL,stderr=self.supervisor_log_stream)
         if self.supervisor.poll() is not None:
@@ -2214,7 +2219,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
             receipts_before=db.execute("SELECT count(*) FROM operations WHERE handle='account:dead-child'").fetchone()[0]
         self.assertIsNotNone(process_start_time(pid))
-        self.restart_supervisor_after_kill()
+        self.restart_supervisor_after_kill(wait_for_dead_pid=pid)
         wait_for(lambda: process_start_time(pid) is None)
         recovery=status(self.root)['recovery']
         self.assertFalse(recovery['degraded'])

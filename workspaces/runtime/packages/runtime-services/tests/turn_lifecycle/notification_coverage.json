@@ -1,0 +1,281 @@
+{
+  "fast_rule": "All method names, all six start/delta/completion orders, every review finding, submission/crash/rollback witnesses. Remaining notification kinds share one sequence. Full additionally crosses timer masks, completion snapshots, states, generations, policy forms and corruption shapes.",
+  "review_findings": [
+    {
+      "id": "R1-A1",
+      "finding": "delivery identity and saved replay",
+      "cases": ["DSC-ticks0"]
+    },
+    {
+      "id": "R1-A2",
+      "finding": "thread/account/deleted/stale routing",
+      "cases": ["stale-turn-D", "foreign-account", "foreign-thread"]
+    },
+    {
+      "id": "R1-A3",
+      "finding": "agent progress fields",
+      "cases": ["null-retry-missing-D"]
+    },
+    {
+      "id": "R1-A4",
+      "finding": "snapshot replacement of pending deltas",
+      "cases": ["pending_then_start"]
+    },
+    {
+      "id": "R1-A5",
+      "finding": "completion then delta/start",
+      "cases": ["CDS-ticks4"]
+    },
+    {
+      "id": "R1-A6",
+      "finding": "canonical agent sync projection",
+      "cases": ["long-completion"]
+    },
+    {
+      "id": "R1-A7",
+      "finding": "prepared batch/model text/assets/links",
+      "cases": ["submission-batch", "submission-prepared-assets"]
+    },
+    {
+      "id": "R1-A8",
+      "finding": "both search projections",
+      "cases": ["search-active"]
+    },
+    {
+      "id": "R1-A9",
+      "finding": "async question request and sync publication",
+      "cases": ["deviation-questions"]
+    },
+    {
+      "id": "R1-A10",
+      "finding": "transactional refusal",
+      "cases": ["malformed-runtime_items-truncated", "late-service-failure"]
+    },
+    {
+      "id": "R1-A11",
+      "finding": "stored shape/table/id errors",
+      "cases": ["malformed-runtime_items-id"]
+    },
+    {
+      "id": "R1-A12",
+      "finding": "real Python path and complete differential",
+      "cases": ["DSC-ticks0"]
+    },
+    {
+      "id": "R1-A13",
+      "finding": "empty and conflicting submission replay",
+      "cases": ["submission-empty"]
+    },
+    {
+      "id": "R2-A3",
+      "finding": "retry cleanup and start tail",
+      "cases": ["null-retry-missing-D"]
+    },
+    {
+      "id": "R2-A4",
+      "finding": "timer snapshot precedence",
+      "cases": ["flushed_then_start_then_delta"]
+    },
+    {
+      "id": "R2-A5",
+      "finding": "new generation closure",
+      "cases": ["pending_new_generation"]
+    },
+    {
+      "id": "R2-A6",
+      "finding": "sync bounds and nested/private fields",
+      "cases": ["long-completion"]
+    },
+    {
+      "id": "R2-A7",
+      "finding": "orchestration kinds and absent metadata",
+      "cases": ["submission-work_decision-no-metadata"]
+    },
+    {
+      "id": "R2-A11",
+      "finding": "stored inputs and identity",
+      "cases": ["malformed-runtime_items-inputs"]
+    },
+    {
+      "id": "R2-A12",
+      "finding": "real timers/submission/sync/postings",
+      "cases": ["DSC-ticks0"]
+    },
+    {
+      "id": "R2-new-authorization",
+      "finding": "foreign followup denied",
+      "cases": ["policy-followup-foreign-sender"]
+    },
+    {
+      "id": "R2-new-replay-deleted",
+      "finding": "saved submission survives mutable agent",
+      "cases": ["submission-long"]
+    },
+    {
+      "id": "R2-new-old-metadata",
+      "finding": "replacement removes afterRestore/inputs/assets",
+      "cases": ["old-metadata"]
+    },
+    {
+      "id": "R2-new-null-turn",
+      "finding": "explicit null item and native response turn",
+      "cases": ["null-retry-missing-D"]
+    },
+    {
+      "id": "R2-new-error-disclosure",
+      "finding": "no stored sentinel in errors",
+      "cases": [
+        "malformed-runtime_agents-epoch",
+        "located-transcript-store-error"
+      ]
+    },
+    {
+      "id": "R3-A1",
+      "finding": "missing and null retry turn equality",
+      "cases": ["null-retry-missing-D"]
+    },
+    {
+      "id": "R3-A2",
+      "finding": "pending batches and cached base",
+      "cases": ["flushed_then_start_then_delta"]
+    },
+    {
+      "id": "R3-A3",
+      "finding": "terminal omitted-turn wildcard",
+      "cases": ["missing_turn_completion"]
+    },
+    {
+      "id": "R3-A4",
+      "finding": "plain radio accepted",
+      "cases": ["submission-radio-no-metadata"]
+    },
+    {
+      "id": "R3-A5",
+      "finding": "truncated/streaming boolean shapes",
+      "cases": ["malformed-runtime_items-truncated"]
+    },
+    {
+      "id": "R3-A6",
+      "finding": "permanent real-path corpus",
+      "cases": ["DSC-ticks0"]
+    },
+    {
+      "id": "R3-A7",
+      "finding": "user response author checked before exception",
+      "cases": ["policy-complaint-user-foreign"]
+    },
+    {
+      "id": "R3-A8",
+      "finding": "full text and input suffix conflict",
+      "cases": ["submission-long"]
+    },
+    {
+      "id": "R3-A9",
+      "finding": "outer rollback preserves stream state",
+      "cases": ["rollback-completion-then-delta"]
+    },
+    {
+      "id": "R3-A10",
+      "finding": "original creation order",
+      "cases": ["created-order"]
+    },
+    {
+      "id": "R3-A11",
+      "finding": "canonical peer paths",
+      "cases": ["policy-peer-175"]
+    },
+    {
+      "id": "R4-A1",
+      "finding": "injected service refusal before receipt and rollback of pending flush",
+      "cases": [
+        "unload-refusal-rolls-back-pending-command-flush",
+        "account-notice-without-thread-refusal"
+      ]
+    },
+    {
+      "id": "R4-B1",
+      "finding": "real account-level notice without thread ID",
+      "cases": ["account-notice-without-thread-refusal"]
+    },
+    {
+      "id": "R4-B2",
+      "finding": "byte-bounded text stream flush preserves Python full text",
+      "cases": ["text-stream-byte-boundary", "text-stream-oversized-frame"]
+    }
+  ],
+  "counts": {
+    "total": 300,
+    "fast": 75,
+    "unit": 1,
+    "review3_original_stream_cases": 53,
+    "stream_orders": {
+      "CDS": 16,
+      "CSD": 16,
+      "DCS": 16,
+      "DSC": 16,
+      "SCD": 16,
+      "SDC": 16
+    },
+    "notification_frames_by_kind": {
+      "account/login/completed": 1,
+      "account/rateLimits/updated": 2,
+      "account/updated": 1,
+      "autoApprovalReview/strictReviewRequired": 3,
+      "command/exec/outputDelta": 1,
+      "configWarning": 3,
+      "deprecationNotice": 3,
+      "error": 6,
+      "guardianWarning": 3,
+      "hook/completed": 4,
+      "hook/started": 4,
+      "item/agentMessage/delta": 145,
+      "item/autoApprovalReview/completed": 4,
+      "item/autoApprovalReview/started": 3,
+      "item/commandExecution/outputDelta": 14,
+      "item/completed": 148,
+      "item/reasoning/summaryTextDelta": 2,
+      "item/reasoning/textDelta": 3,
+      "item/started": 139,
+      "mcpServer/oauthLogin/completed": 3,
+      "mcpServer/startupStatus/updated": 3,
+      "model/safetyBuffering/updated": 5,
+      "model/verification": 3,
+      "modelProvider/authRecoveryCompleted": 3,
+      "modelProvider/authRecoveryStarted": 3,
+      "provider/generationStarted": 1,
+      "serverRequest/resolved": 3,
+      "thread/closed": 2,
+      "thread/realtime/closed": 1,
+      "thread/realtime/error": 1,
+      "thread/realtime/item/completed": 1,
+      "thread/realtime/item/started": 1,
+      "thread/realtime/sdp": 1,
+      "thread/realtime/transcript/delta": 1,
+      "thread/realtime/transcript/done": 1,
+      "thread/status/changed": 2,
+      "thread/tokenUsage/updated": 1,
+      "turn/diff/updated": 2,
+      "turn/plan/updated": 2,
+      "warning": 9
+    },
+    "submission_events_by_kind": {
+      "agent_message": 9,
+      "browser_declined": 2,
+      "browser_recovery": 2,
+      "chat_review": 1,
+      "child_result": 2,
+      "complaint": 2,
+      "complaint_response": 17,
+      "event_wake": 2,
+      "followup": 11,
+      "monitor_cancelled": 2,
+      "monitor_exit": 2,
+      "plan_update": 2,
+      "radio": 2,
+      "radio_turn": 1,
+      "user": 5,
+      "work_decision": 4
+    }
+  },
+  "deviation_registry": "deviations.json"
+}

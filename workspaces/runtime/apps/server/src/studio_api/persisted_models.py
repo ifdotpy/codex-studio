@@ -7,10 +7,15 @@ from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat,
 from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
+from studio_api.budget_models import BUDGET_SCHEMA_MODELS
+from studio_api.claude_persisted_models import (
+    PersistedClaudeAttemptRecord, PersistedClaudeControlRecord, PersistedClaudeLoginRecord,
+)
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 from studio_api.workspace_operation_models import (
     PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
 )
+from studio_api.recovery_models import RecoveryAgentRecord, RecoveryTaskRecord, RecoveryToolReceipt
 
 
 def _unicode_scalar(value: str) -> str:
@@ -56,6 +61,29 @@ class PersistedTranscriptAsset(ContractModel):
     created: float
 
 
+class PersistedNotificationStatus(ContractModel):
+    """Open native activity state consumed by notification transitions."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    at: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    dismissed: StrictBool | None = None
+    phase: StrictStr | None = None
+    responseStarted: StrictBool | None = None
+    showBufferingUi: StrictBool | None = None
+    turnId: StrictStr | None = None
+
+
+class PersistedActiveTool(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr | None = None
+    name: StrictStr | None = None
+    type: StrictStr | None = None
+
+
 class PersistedAgentRecord(ContractModel):
     """Persisted agent identity plus the extensible state written by the runtime."""
 
@@ -77,6 +105,15 @@ class PersistedAgentRecord(ContractModel):
     threadId: StrictStr | None = None
     accountKey: StrictStr | None = None
     model: StrictStr | None = None
+
+    # Notification-owned fields; absent values remain absent in stored JSON.
+    activeTools: list[PersistedActiveTool] | None = None
+    activity: PersistedNotificationStatus | None = None
+    compactions: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    events: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    nativeResponseTurn: StrictStr | None = None
+    nativeSafetyBuffering: PersistedNotificationStatus | None = None
+    nativeStatus: PersistedNotificationStatus | None = None
 
 
 class _OpenPersistedRecord(ContractModel):
@@ -291,6 +328,18 @@ class PersistedTaskRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     status: StrictStr | None = None
 
+    # Provider task fields consumed by notification transitions.
+    completedAtMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    created: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    durationMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    itemId: StrictStr | None = None
+    kind: StrictStr | None = None
+    outputTruncated: StrictBool | None = None
+    startedAtMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    tail: StrictStr | None = None
+    turnId: StrictStr | None = None
+    type: StrictStr | None = None
+
 
 class PersistedPlanRecord(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
@@ -482,12 +531,16 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
+    **BUDGET_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
+    "persisted-claude-attempt.schema.json": PersistedClaudeAttemptRecord,
+    "persisted-claude-control.schema.json": PersistedClaudeControlRecord,
+    "persisted-claude-login.schema.json": PersistedClaudeLoginRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
     "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
@@ -511,9 +564,12 @@ STATE_SCHEMA_MODELS = {
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
+    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
+    "recovery-agent-record.schema.json": RecoveryAgentRecord,
+    "recovery-task-record.schema.json": RecoveryTaskRecord,
+    "recovery-tool-receipt.schema.json": RecoveryToolReceipt,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
-    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
     "workspace-checkpoint-agent-record.schema.json": WorkspaceCheckpointAgentRecord,
     "workspace-checkpoint-history-record.schema.json": WorkspaceCheckpointHistoryRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
