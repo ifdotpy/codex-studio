@@ -129,8 +129,8 @@ fn server_source() -> PathBuf {
 const WATCHDOG: Duration = Duration::from_secs(20);
 type FakeFrame = Option<(Vec<u8>, u64)>;
 struct Fake {
-    output: Mutex<Option<Sender<FakeFrame>>>,
-    requests: Sender<Value>,
+    output: Mutex<Option<TestSender<FakeFrame>>>,
+    requests: TestSender<Value>,
     generation: AtomicU64,
     acknowledged: AtomicU64,
     fail_write: AtomicBool,
@@ -165,7 +165,7 @@ impl ProviderProcessFactory for SharedFake {
 }
 struct FakeProcess {
     fake: Arc<Fake>,
-    input: Option<Receiver<FakeFrame>>,
+    input: Option<TestReceiver<FakeFrame>>,
 }
 impl ProviderProcess for FakeProcess {
     fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
@@ -209,7 +209,7 @@ impl ProviderProcess for FakeProcess {
     }
 }
 struct FakeReader {
-    input: Receiver<FakeFrame>,
+    input: TestReceiver<FakeFrame>,
     buffer: VecDeque<u8>,
     cursors: Vec<u64>,
 }
@@ -264,8 +264,8 @@ struct Harness {
     agents: Vec<(String, i64)>,
     fake: Arc<Fake>,
     worker: AccountWorker,
-    input: Receiver<AccountInput>,
-    requests: Receiver<Value>,
+    input: Receiver,
+    requests: TestReceiver<Value>,
     cursor: u64,
 }
 impl Harness {
@@ -278,7 +278,7 @@ impl Harness {
         let store =
             Arc::new(RuntimeStore::open(Some(&state.0)).expect("fixture operation succeeds"));
         let (request_tx, requests) = mpsc::channel();
-        let (tx, input) = mpsc::channel();
+        let (tx, input) = mailbox::channel();
         let wake = TurnWakeHandle(Weak::new());
         let fake = Arc::new(Fake {
             output: Mutex::new(None),
@@ -942,4 +942,404 @@ fn rejected_initialize_holds_account_until_explicit_restart() {
         .expect("explicit restart reopens admission");
     assert_eq!(h.fake.attaches.load(Ordering::Relaxed), 2);
     h.initialize();
+}
+
+#[test]
+fn activity_before_stop_interrupts_the_observed_unbound_turn() {
+    let mut h = Harness::new(1);
+    let _start = h.start(0);
+    h.notice(0, "turn/started", "observed-before-stop", "inProgress");
+    assert_eq!(
+        h.record(0).extra["startAttempt"]["observedTurnId"],
+        "observed-before-stop"
+    );
+    h.stop(0);
+    assert_eq!(
+        h.request("turn/interrupt")["params"]["turnId"],
+        "observed-before-stop"
+    );
+    assert!(h.record(0).extra["turnId"].is_null());
+    assert_eq!(h.status(0), "dispatching");
+}
+
+#[test]
+fn unrelated_completion_releases_cursor_after_definite_rejection() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.notice(0, "turn/completed", "unrelated", "completed");
+    h.frame(json!({"id":start["id"],"error":{"message":"definite rejection"}}));
+    assert_eq!(h.status(0), "failed");
+    assert!(h.worker.deferred.is_empty());
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
+    h.worker
+        .input(AccountInput::Restart)
+        .expect("regression fixture");
+    assert!(h.worker.deferred.is_empty());
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
+}
+
+#[test]
+fn rejected_interrupt_allows_explicit_stop_retry() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "running");
+    h.stop(0);
+    let interrupt = h.request("turn/interrupt");
+    h.frame(json!({"id":interrupt["id"],"error":{"message":"temporary rejection"}}));
+    assert!(h.worker.held);
+    h.stop(0);
+    assert!(!h.worker.held);
+    assert_eq!(h.request("turn/interrupt")["params"]["turnId"], "running");
+    assert_eq!(h.worker.interrupts.len(), 1);
+    assert_eq!(h.record(0).extra["inFlight"], true);
+}
+
+#[test]
+fn python_unknown_submission_gets_a_durable_recovery_hold() {
+    let mut h = Harness::new(1);
+    let _start = h.start(0);
+    let mut a = h.record(0);
+    let attempt = a
+        .extra
+        .get_mut("startAttempt")
+        .expect("regression fixture")
+        .as_object_mut()
+        .expect("regression fixture");
+    attempt.remove("connectionGeneration");
+    attempt.remove("requestTicket");
+    attempt.insert("supervisorIdentity".into(), json!({"generation":1}));
+    attempt.insert("executionOutcome".into(), json!("unknown"));
+    a.status = AgentStatus::Waiting;
+    h.store
+        .transaction(|tx| AgentRepository::put(tx, &a))
+        .expect("regression fixture");
+    recover_on_startup(&h.store).expect("regression fixture");
+    let accounts = SchedulerRepository::accounts_with_unknown_submitted_turns(
+        &h.store.read().expect("regression fixture"),
+    )
+    .expect("regression fixture");
+    assert!(accounts.is_empty());
+    assert_eq!(h.record(0).extra["inFlight"], false);
+    assert_eq!(h.record(0).extra["restartRecovery"]["stage"], "held");
+    assert_eq!(h.record(0).extra["nativeFailureHold"], true);
+    assert_eq!(
+        h.record(0).extra["disconnectRecovery"]["startAttempt"]["supervisorIdentity"]["generation"],
+        1
+    );
+    assert!(
+        h.record(0).extra["error"]
+            .as_str()
+            .expect("recovery error")
+            .contains("history reconciliation")
+    );
+}
+
+#[test]
+fn turn_lifecycle_writes_execution_history_with_fallback_error() {
+    let mut h = Harness::new(1);
+    let before: i64 = h
+        .store
+        .read()
+        .expect("regression fixture")
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_execution_attempts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("regression fixture");
+    let start = h.start(0);
+    h.accepted(&start, "ours");
+    h.notice(0, "turn/completed", "ours", "failed");
+    let after: i64 = h
+        .store
+        .read()
+        .expect("regression fixture")
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_execution_attempts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("regression fixture");
+    assert_eq!(after, before + 1);
+    assert_eq!(h.record(0).extra["lastCompletedTurnStatus"], "failed");
+    assert_eq!(
+        h.record(0).extra["lastCompletedTurnError"]["message"],
+        "Codex ended this turn with an error."
+    );
+}
+
+#[test]
+fn interrupted_turn_schedules_already_pending_input() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "ours");
+    write_annotation(&h.store, &h.agents[0].0, "second-input");
+    h.notice(0, "turn/completed", "ours", "interrupted");
+    let a = h.record(0);
+    assert_eq!(a.status, AgentStatus::Queued);
+    assert_eq!(a.extra["autoWake"], true);
+    assert_ne!(a.extra.get("nativeFailureHold"), Some(&json!(true)));
+    let pending: i64 = h
+        .store
+        .read()
+        .expect("regression fixture")
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='pending'",
+            [&a.id.0],
+            |r| r.get(0),
+        )
+        .expect("regression fixture");
+    assert_eq!(pending, 1);
+    assert_eq!(
+        SchedulerRepository::pending_agents(&h.store.read().expect("regression fixture"))
+            .expect("regression fixture")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn rejected_start_preserves_previous_completion() {
+    let mut h = Harness::new(1);
+    let mut a = h.record(0);
+    a.extra
+        .insert("lastCompletedTurn".into(), json!("previous-turn"));
+    a.extra
+        .insert("lastCompletedTurnStatus".into(), json!("completed"));
+    a.extra.insert("lastCompletedTurnError".into(), Value::Null);
+    h.store
+        .transaction(|tx| AgentRepository::put(tx, &a))
+        .expect("regression fixture");
+    let start = h.start(0);
+    h.frame(json!({"id":start["id"],"error":{"message":"new-input-rejected"}}));
+    let a = h.record(0);
+    assert_eq!(a.extra["lastCompletedTurn"], "previous-turn");
+    assert_eq!(a.extra["lastCompletedTurnStatus"], "completed");
+    assert!(a.extra["lastCompletedTurnError"].is_null());
+    assert_eq!(a.extra["startAttempt"]["executionOutcome"], "rejected");
+}
+#[test]
+fn held_account_backpressures_the_producer_and_still_accepts_shutdown() {
+    let mut h = Harness::new(1);
+    h.shutdown();
+    let mut runtime = TurnRuntime::start(h.store.clone(), Arc::new(SharedFake(h.fake.clone())))
+        .expect("runtime starts");
+    let sender = runtime.sessions.sender("default").expect("account mailbox");
+    let initialize = h.request("initialize");
+    h.cursor += 1;
+    h.fake
+        .frame(json!({"id":initialize["id"],"result":{}}), h.cursor);
+    sender.send(AccountInput::Hold).expect("hold command");
+    let (reply, receive) = mpsc::channel();
+    sender
+        .send(AccountInput::Snapshot(reply))
+        .expect("state barrier");
+    let (before, held) = receive.recv_timeout(WATCHDOG).expect("actor held barrier");
+    assert!(held);
+    for n in 0..mailbox::CAPACITY + 1 {
+        h.cursor += 1;
+        h.fake.frame(
+            json!({"method":"item/started","params":{"item":{"id":format!("item-{n}")}}}),
+            h.cursor,
+        );
+    }
+    assert_eq!(sender.backpressure_barrier(), mailbox::CAPACITY);
+    let (reply, receive) = mpsc::channel();
+    sender
+        .send(AccountInput::Snapshot(reply))
+        .expect("control remains admitted");
+    assert_eq!(
+        receive.recv_timeout(WATCHDOG).expect("held queue snapshot"),
+        (before, true)
+    );
+    let acknowledged = h.fake.acknowledged.load(Ordering::Relaxed);
+    runtime
+        .shutdown()
+        .expect("full mailbox shutdown releases blocked producer");
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), acknowledged);
+}
+
+#[test]
+fn uncertain_interrupt_receipt_stays_held_on_explicit_stop() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "running");
+    // Zero creates an already-expired request; Deadline is delivered explicitly.
+    h.worker.timeout_ms = 0;
+    h.stop(0);
+    h.request("turn/interrupt");
+    h.worker
+        .input(AccountInput::Deadline)
+        .expect("interrupt deadline");
+    assert!(h.worker.held);
+    h.stop(0);
+    assert!(h.worker.held);
+    assert_eq!(h.worker.interrupts.len(), 1);
+    assert!(matches!(
+        h.requests.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn stale_completion_releases_cursor_after_not_sent() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.notice(0, "turn/completed", "unrelated", "completed");
+    let ticket = RequestTicket {
+        id: serde_json::from_value(start["id"].clone()).expect("ticket"),
+        method: Method::TurnStart,
+        generation: 1,
+    };
+    h.worker.settlements.push_back(Settlement {
+        event: ProviderSessionEvent::NotSent { ticket },
+        cursor: None,
+        failures: 0,
+    });
+    h.worker
+        .input(AccountInput::Restart)
+        .expect("reclassify deferred frame");
+    assert!(h.worker.deferred.is_empty());
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
+    assert_eq!(h.status(0), "pending");
+}
+
+#[test]
+fn execution_history_matches_python_across_submission_acceptance_and_completion() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    let submitted = serde_json::to_value(h.record(0)).expect("agent snapshot");
+    h.accepted(&start, "execution-turn");
+    let accepted = serde_json::to_value(h.record(0)).expect("agent snapshot");
+    h.notice(0, "turn/completed", "execution-turn", "completed");
+    let completed = serde_json::to_value(h.record(0)).expect("agent snapshot");
+    let attempt = completed["startAttempt"]["id"].as_str().expect("attempt");
+    let connection = h.store.read().expect("history read");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_attempts WHERE id=?1",
+            [attempt],
+            |r| r.get(0),
+        )
+        .expect("attempt history");
+    let mut actual_attempt: Value = serde_json::from_str(&raw).expect("attempt JSON");
+    actual_attempt
+        .as_object_mut()
+        .expect("attempt object")
+        .remove("inputIdentity");
+    actual_attempt
+        .as_object_mut()
+        .expect("attempt object")
+        .remove("claimResult");
+    let run = actual_attempt["runId"].as_str().expect("run id");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_runs WHERE id=?1",
+            [run],
+            |r| r.get(0),
+        )
+        .expect("run history");
+    let mut actual_run: Value = serde_json::from_str(&raw).expect("run JSON");
+    actual_run
+        .as_object_mut()
+        .expect("run object")
+        .remove("finished");
+    let events = connection
+        .prepare("SELECT event FROM runtime_execution_inputs WHERE run=?1 ORDER BY event")
+        .expect("input query")
+        .query_map([run], |r| r.get::<_, String>(0))
+        .expect("inputs")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("input rows");
+    let script = r#"
+import json,sqlite3,sys
+sys.path.insert(0,sys.argv[1])
+import codex_execution as execution
+submitted,accepted,completed=json.load(sys.stdin)
+db=sqlite3.connect(':memory:')
+execution.ensure_tables(db)
+db.execute('CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT)')
+execution.reconcile_agent(db,submitted,None)
+execution.reconcile_agent(db,accepted,submitted)
+execution.observe_native(db,accepted,'turn/completed',{'threadId':accepted['threadId'],'turn':{'id':'execution-turn','status':'completed'}})
+execution.reconcile_agent(db,completed,accepted)
+a=json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',(completed['startAttempt']['id'],)).fetchone()[0])
+r=json.loads(db.execute('SELECT record FROM runtime_execution_runs WHERE id=?',(a['runId'],)).fetchone()[0])
+r.pop('finished',None)
+print(json.dumps({'attempt':a,'run':r,'events':[row[0] for row in db.execute('SELECT event FROM runtime_execution_inputs WHERE run=? ORDER BY event',(r['id'],))]}))
+"#;
+    let mut child = Command::new(python_executable())
+        .args(["-c", script])
+        .arg(server_source())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("Python oracle");
+    child
+        .stdin
+        .take()
+        .expect("oracle input")
+        .write_all(
+            json!([submitted, accepted, completed])
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("snapshots send");
+    let output = child.wait_with_output().expect("oracle exits");
+    assert!(output.status.success());
+    let expected: Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    assert_eq!(
+        json!({"attempt":actual_attempt,"run":actual_run,"events":events}),
+        expected
+    );
+    assert_eq!(expected["run"]["status"], "completed");
+    assert_eq!(h.record(0).status, AgentStatus::Failed); // named transcript refusal remains explicit
+}
+
+#[test]
+fn same_generation_restart_restores_authority_and_finishes_receipt() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "recovering-turn");
+    h.store
+        .transaction(|tx| {
+            SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, true)?;
+            SchedulerRepository::reconcile_generation(tx, "default", 1, 2.0)
+        })
+        .expect("same supervisor generation reconciles");
+    let agent = h.record(0);
+    assert_eq!(agent.status, AgentStatus::Running);
+    assert_eq!(agent.extra["autoWake"], true);
+    assert_eq!(agent.extra["restartRecovery"]["stage"], "reattached");
+    let before = agent.extra["events"].as_u64().expect("counter");
+    h.notice(0, "turn/started", "recovering-turn", "running");
+    let agent = h.record(0);
+    assert_eq!(agent.extra["events"], before + 1);
+    assert_eq!(agent.extra["activity"]["phase"], "thinking");
+    assert!(agent.extra["activity"]["at"].is_number());
+    assert!(
+        agent.extra["lastEvent"]
+            .as_str()
+            .expect("UTC stamp")
+            .ends_with('Z')
+    );
+    h.notice(0, "turn/completed", "recovering-turn", "interrupted");
+    let agent = h.record(0);
+    assert_eq!(agent.extra["events"], before + 2);
+    assert_eq!(agent.extra["restartRecovery"]["stage"], "finished");
+    assert_eq!(agent.extra["restartRecovery"]["outcome"], "interrupted");
+    assert!(agent.extra["restartRecovery"]["reconciledAt"].is_number());
+}
+
+#[test]
+fn unresolved_completion_queue_has_a_fixed_settlement_limit() {
+    let mut h = Harness::new(1);
+    h.start(0);
+    for n in 0..MAX_SETTLEMENTS - MAX_OUTSTANDING * 2 {
+        h.notice(0, "turn/completed", &format!("unbound-{n}"), "completed");
+    }
+    assert!(h.worker.held);
+    assert!(h.worker.settlements.len() + h.worker.deferred.len() <= MAX_SETTLEMENTS);
+    assert!(h.fake.acknowledged.load(Ordering::Relaxed) < h.cursor);
+    assert_eq!(h.status(0), "dispatching");
 }

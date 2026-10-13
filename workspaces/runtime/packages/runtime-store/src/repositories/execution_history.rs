@@ -1,0 +1,220 @@
+//! Execution evidence shares the lifecycle transaction; no commits or provider retries here.
+use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::{AgentRecord, StoreError, StoreResult};
+use rusqlite::{OptionalExtension, Transaction, params};
+use serde_json::{Value, json};
+
+const TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_execution_attempts",
+        columns: &["id", "run", "record"],
+    },
+    TableRequirement {
+        name: "runtime_execution_inputs",
+        columns: &["run", "event"],
+    },
+    TableRequirement {
+        name: "runtime_execution_runs",
+        columns: &[
+            "id", "agent", "account", "epoch", "thread", "turn", "created", "record",
+        ],
+    },
+];
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+    tables: &[],
+    conditional_tables: &[ConditionalTableRequirement {
+        table_exists: "runtime_execution_runs",
+        tables: TABLES,
+    }],
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: &[],
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
+};
+pub struct ExecutionHistoryRepository;
+impl ExecutionHistoryRepository {
+    pub fn attempt(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
+        tx.query_row(
+            "SELECT record FROM runtime_execution_attempts WHERE id=?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .transpose()
+    }
+    pub fn save_claim(
+        tx: &Transaction<'_>,
+        id: &str,
+        identity: &Value,
+        result: &Value,
+    ) -> StoreResult<()> {
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.inputIdentity',json(?1),'$.claimResult',json(?2)) WHERE id=?3",params![identity.to_string(),result.to_string(),id])?;
+        Ok(())
+    }
+    /// Reflect a claimed/submitted/accepted attempt, including Python-written existing runs.
+    pub fn record(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
+        let Some(attempt) = agent
+            .extra
+            .get("startAttempt")
+            .filter(|a| a["id"].is_string())
+        else {
+            return Ok(());
+        };
+        let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
+        let account = attempt
+            .get("accountKey")
+            .or_else(|| agent.extra.get("accountKey"))
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let thread = attempt
+            .get("threadId")
+            .or_else(|| agent.extra.get("threadId"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let mut run: Option<Value> = tx.query_row(
+            "SELECT r.record FROM runtime_execution_runs r JOIN runtime_execution_attempts a ON a.run=r.id WHERE a.id=?1",
+            [id], |r|r.get::<_,String>(0)).optional()?.map(|s|serde_json::from_str(&s)).transpose()?;
+        if run.is_none() && attempt["events"][0].is_string() {
+            run = tx.query_row(
+                "SELECT r.record FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run WHERE i.event=?1 AND r.agent=?2 AND r.account=?3 AND r.epoch=?4 AND r.turn IS NULL ORDER BY r.created DESC LIMIT 1",
+                params![attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()], |r|r.get::<_,String>(0)).optional()?.map(|s|serde_json::from_str(&s)).transpose()?;
+        }
+        let mut run = run.unwrap_or_else(||json!({"id":format!("run:{id}"),"agent":agent.id.0,"accountKey":account,
+            "epoch":attempt["epoch"],"threadId":thread,"turnId":null,"created":attempt.get("created").cloned().unwrap_or_else(||json!(now())),
+            "status":"pending","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
+        if run["agent"] != agent.id.0 || run["accountKey"] != account || !run["id"].is_string() {
+            return Err(invalid(id));
+        }
+        let turn = attempt
+            .get("turnId")
+            .filter(|v| v.is_string())
+            .or_else(|| attempt.get("observedTurnId").filter(|v| v.is_string()));
+        let evidence = if attempt["turnId"].is_string() {
+            "accepted"
+        } else if turn.is_some() {
+            "observed"
+        } else {
+            attempt["executionOutcome"]
+                .as_str()
+                .unwrap_or(if attempt["submitted"] == true {
+                    "unknown"
+                } else {
+                    "unsent"
+                })
+        };
+        if let Some(turn) = turn {
+            run["turnId"] = turn.clone();
+            if run["rootAttemptId"].is_null() {
+                run["rootAttemptId"] = json!(id);
+            }
+        }
+        run["threadId"] = thread;
+        if run["firstAttemptId"].is_null() {
+            run["firstAttemptId"] = json!(id);
+        }
+        run["latestAttemptId"] = json!(id);
+        if !terminal(&run["status"]) {
+            run["status"] = json!(if turn.is_some() { "running" } else { evidence });
+        }
+        for key in [
+            "disconnectRecovery",
+            "restartRecovery",
+            "connectionRecovery",
+        ] {
+            if let Some(marker) = agent.extra.get(key)
+                && marker
+                    .get("turnId")
+                    .is_none_or(|t| t.is_null() || *t == run["turnId"])
+                && marker
+                    .get("accountKey")
+                    .is_none_or(|v| *v == run["accountKey"])
+                && marker.get("threadId").is_none_or(|v| *v == run["threadId"])
+            {
+                run[key] = marker.clone();
+            }
+        }
+        let mut saved = attempt.clone();
+        if let Some(previous) = Self::attempt(tx, id)? {
+            for key in ["inputIdentity", "claimResult"] {
+                if let Some(value) = previous.get(key) {
+                    saved[key] = value.clone();
+                }
+            }
+        }
+        saved["runId"] = run["id"].clone();
+        saved["submission"] = json!(evidence);
+        saved["prepareAttemptId"] = agent
+            .extra
+            .get("prepareAttempt")
+            .cloned()
+            .unwrap_or(Value::Null);
+        saved["turnStatus"] = if terminal(&run["status"]) {
+            run["status"].clone()
+        } else {
+            Value::Null
+        };
+        saved["resultRunId"] = if terminal(&run["status"]) {
+            run["id"].clone()
+        } else {
+            Value::Null
+        };
+        save_run(tx, &run)?;
+        tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET run=excluded.run,record=excluded.record",
+            params![id,run["id"].as_str(),saved.to_string()])?;
+        tx.execute("INSERT OR IGNORE INTO runtime_execution_inputs(run,event) SELECT ?1,value FROM json_each(?2)",
+            params![run["id"].as_str(),attempt["events"].to_string()])?;
+        Ok(())
+    }
+    /// Native outcome is retained even when missing transcript support makes the agent fail.
+    pub fn terminal(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        turn_id: &str,
+        status: &str,
+        error: Option<&Value>,
+    ) -> StoreResult<()> {
+        let mut stmt = tx.prepare("SELECT r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=COALESCE(json_extract(a.record,'$.accountKey'),'default') AND r.thread IS json_extract(a.record,'$.threadId') LIMIT 2")?;
+        let rows = stmt
+            .query_map(params![agent_id, turn_id], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let [raw] = rows.as_slice() else {
+            return Err(invalid(agent_id));
+        };
+        let mut run: Value = serde_json::from_str(raw)?;
+        run["status"] = json!(status);
+        run["finished"] = json!(now());
+        run["result"] = json!("");
+        run["resultItemId"] = Value::Null;
+        run["error"] = error.cloned().unwrap_or(Value::Null);
+        save_run(tx, &run)
+    }
+}
+fn save_run(tx: &Transaction<'_>, run: &Value) -> StoreResult<()> {
+    if terminal(&run["status"]) {
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.turnStatus',?1,'$.resultRunId',?2) WHERE run=?2",
+            params![run["status"].as_str(),run["id"].as_str()])?;
+    }
+    tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET thread=excluded.thread,turn=excluded.turn,record=excluded.record",
+        params![run["id"].as_str(),run["agent"].as_str(),run["accountKey"].as_str(),run["epoch"].as_i64(),run["threadId"].as_str(),run["turnId"].as_str(),run["created"].as_f64(),run.to_string()])?;
+    Ok(())
+}
+fn terminal(status: &Value) -> bool {
+    matches!(
+        status.as_str(),
+        Some("completed" | "failed" | "interrupted" | "cancelled")
+    )
+}
+fn invalid(id: &str) -> StoreError {
+    StoreError::InvalidSyncObject {
+        scope: "runtime_execution_runs".into(),
+        id: id.into(),
+    }
+}
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}

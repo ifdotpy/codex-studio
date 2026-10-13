@@ -12,7 +12,11 @@ use crate::scheduler::{
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc;
+mod mailbox;
+use mailbox::{Receiver, Sender};
+#[cfg(test)]
+use std::sync::mpsc::{Receiver as TestReceiver, Sender as TestSender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +28,8 @@ use studio_runtime_store::{
 use thiserror::Error;
 
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60_000;
+const MAX_OUTSTANDING: usize = 32;
+const MAX_SETTLEMENTS: usize = 128;
 const SETTLEMENT_RETRIES: u8 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const SETTLEMENT_HELD: &str = "Provider settlement failed repeatedly; account held with its cursor retained. Stop or restart to retry settlement.";
@@ -123,7 +129,7 @@ struct SessionRegistry {
     request_timeout_ms: u64,
 }
 struct ManagedSession {
-    sender: Sender<AccountInput>,
+    sender: Sender,
     worker: Option<JoinHandle<Result<(), TurnRuntimeError>>>,
 }
 /// Reader and writer callbacks use this same channel as scheduler and lifecycle commands.
@@ -134,9 +140,13 @@ enum AccountInput {
     Stop(String, i64),
     Restart,
     Shutdown,
+    #[cfg(test)]
+    Hold,
+    #[cfg(test)]
+    Snapshot(mpsc::Sender<(usize, bool)>),
 }
 impl SessionRegistry {
-    fn sender(self: &Arc<Self>, account: &str) -> Result<Sender<AccountInput>, TurnRuntimeError> {
+    fn sender(self: &Arc<Self>, account: &str) -> Result<Sender, TurnRuntimeError> {
         let mut sessions = self
             .sessions
             .lock()
@@ -147,7 +157,7 @@ impl SessionRegistry {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(TurnRuntimeError::WorkerPanicked);
         }
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mailbox::channel();
         // Install the only entry before starting connection I/O.
         sessions.insert(
             account.to_owned(),
@@ -246,13 +256,14 @@ struct AccountWorker {
     store: Arc<RuntimeStore>,
     factory: Arc<dyn ProviderProcessFactory>,
     account: String,
-    sender: Sender<AccountInput>,
+    sender: Sender,
     wake: TurnWakeHandle,
     unknown_threads: Arc<AtomicU64>,
     timeout_ms: u64,
     session: Option<ProviderSession>,
     pending: HashMap<RequestId, Pending>,
     resumed: HashSet<String>,
+    interrupts: HashMap<String, (RequestTicket, bool)>,
     wakes: VecDeque<(String, i64)>,
     settlements: VecDeque<Settlement>,
     deferred: VecDeque<Settlement>,
@@ -269,7 +280,7 @@ impl AccountWorker {
         store: Arc<RuntimeStore>,
         factory: Arc<dyn ProviderProcessFactory>,
         account: String,
-        sender: Sender<AccountInput>,
+        sender: Sender,
         wake: TurnWakeHandle,
         unknown_threads: Arc<AtomicU64>,
         timeout_ms: u64,
@@ -285,6 +296,7 @@ impl AccountWorker {
             session: None,
             pending: HashMap::new(),
             resumed: HashSet::new(),
+            interrupts: HashMap::new(),
             wakes: VecDeque::new(),
             settlements: VecDeque::new(),
             deferred: VecDeque::new(),
@@ -296,7 +308,7 @@ impl AccountWorker {
             serial: 0,
         }
     }
-    fn run(&mut self, receiver: Receiver<AccountInput>) -> Result<(), TurnRuntimeError> {
+    fn run(&mut self, receiver: Receiver) -> Result<(), TurnRuntimeError> {
         if self.connect().is_err() {
             self.hold(None);
         }
@@ -311,13 +323,10 @@ impl AccountWorker {
             .into_iter()
             .flatten()
             .min();
-            let input = match timeout {
-                Some(timeout) => match receiver.recv_timeout(timeout) {
-                    Ok(input) => input,
-                    Err(mpsc::RecvTimeoutError::Timeout) => AccountInput::Deadline,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => AccountInput::Shutdown,
-                },
-                None => receiver.recv().unwrap_or(AccountInput::Shutdown),
+            let input = match receiver.receive(self.held || self.retry_at.is_some(), timeout) {
+                Ok(input) => input,
+                Err(mpsc::RecvTimeoutError::Timeout) => AccountInput::Deadline,
+                Err(mpsc::RecvTimeoutError::Disconnected) => AccountInput::Shutdown,
             };
             match self.input(input) {
                 Ok(true) => return Ok(()),
@@ -334,7 +343,27 @@ impl AccountWorker {
             }
         }
     }
+    #[allow(clippy::result_large_err)] // The shared sink returns ownership of an unqueued frame.
     fn connect(&mut self) -> Result<(), TurnRuntimeError> {
+        let mut config = ProviderSessionConfig::new();
+        config.request_timeout_ms = self.timeout_ms;
+        let candidates = SchedulerRepository::submitted_start_requests(
+            &self.store.read()?,
+            &self.account,
+            None,
+        )?;
+        let identities = candidates
+            .into_iter()
+            .map(|(_, _, _, id, thread)| (RequestId::String(id), Method::TurnStart, Some(thread)))
+            .collect::<Vec<_>>();
+        if identities.len() > MAX_OUTSTANDING {
+            return Err(StoreError::SchemaMismatch(
+                "Recovered account exceeds bounded request admission; reconciliation required."
+                    .into(),
+            )
+            .into());
+        }
+        ProviderSession::validate_recovered(&config, &identities)?;
         let mut process = self
             .factory
             .start_or_reattach(&ProviderHandle::for_account(&self.account))
@@ -344,7 +373,7 @@ impl AccountWorker {
         let generation = process.generation();
         let recovered = self.store.transaction(|tx| {
             SchedulerRepository::reconcile_generation(tx, &self.account, generation, now())?;
-            SchedulerRepository::submitted_start_requests(tx, &self.account, generation)
+            SchedulerRepository::submitted_start_requests(tx, &self.account, Some(generation))
         });
         let recovered = match recovered {
             Ok(value) => value,
@@ -356,6 +385,8 @@ impl AccountWorker {
         self.attachment_ready = false;
         self.pending.clear();
         self.resumed.clear();
+        self.interrupts.clear();
+        self.sender.reopen();
         let mut tickets = Vec::new();
         for (agent_id, epoch, attempt_id, request, thread_id) in recovered {
             let id = RequestId::String(request);
@@ -378,16 +409,20 @@ impl AccountWorker {
                 },
             );
         }
+        if tickets.len() > MAX_OUTSTANDING {
+            let _ignored = process.stop();
+            return Err(StoreError::SchemaMismatch(
+                "Recovered account exceeds bounded request admission; reconciliation required."
+                    .into(),
+            )
+            .into());
+        }
         let sender = self.sender.clone();
-        let mut config = ProviderSessionConfig::new();
-        config.request_timeout_ms = self.timeout_ms;
         self.session = Some(ProviderSession::begin_connect_recovering(
             process,
             config,
             tickets,
-            Arc::new(move |input| {
-                let _ignored = sender.send(AccountInput::Transport(input));
-            }),
+            Arc::new(move |input| sender.transport(input)),
         )?);
         self.collect_events();
         Ok(())
@@ -400,9 +435,20 @@ impl AccountWorker {
     }
     fn input(&mut self, input: AccountInput) -> Result<bool, TurnRuntimeError> {
         match input {
+            #[cfg(test)]
+            AccountInput::Hold => self.hold(None),
+            #[cfg(test)]
+            AccountInput::Snapshot(reply) => {
+                let _ignored =
+                    reply.send((self.settlements.len() + self.deferred.len(), self.held));
+            }
             AccountInput::Wake(agent, epoch) if !self.held && self.closing.is_none() => {
-                if !self.wakes.contains(&(agent.clone(), epoch)) {
+                if self.wakes.len() < mailbox::CAPACITY
+                    && !self.wakes.contains(&(agent.clone(), epoch))
+                {
                     self.wakes.push_back((agent, epoch));
+                } else if self.wakes.len() == mailbox::CAPACITY {
+                    self.sender.defer_wake();
                 }
                 if self.session.is_none() {
                     self.connect()?;
@@ -442,7 +488,17 @@ impl AccountWorker {
                 if let Some(record) = record
                     && record.epoch == epoch
                     && record.status == studio_runtime_store::AgentStatus::Paused
-                    && let Some(turn) = record.extra.get("turnId").and_then(Value::as_str)
+                    && let Some(turn) =
+                        record
+                            .extra
+                            .get("turnId")
+                            .and_then(Value::as_str)
+                            .or_else(|| {
+                                record
+                                    .extra
+                                    .get("startAttempt")
+                                    .and_then(|a| a["observedTurnId"].as_str())
+                            })
                 {
                     let thread = record
                         .extra
@@ -461,6 +517,7 @@ impl AccountWorker {
             }
             AccountInput::Shutdown => {
                 self.closing = Some(Closing::Shutdown);
+                self.sender.quiesce();
                 if let Some(session) = &mut self.session {
                     session.quiesce()?;
                 } else {
@@ -468,18 +525,38 @@ impl AccountWorker {
                 }
             }
         }
+        self.settlements.extend(self.deferred.drain(..));
         self.drain_settlements()?;
         if !self.held
             && self.closing.is_none()
             && self.session.as_ref().is_some_and(ProviderSession::is_ready)
         {
-            while let Some((agent, epoch)) = self.wakes.pop_front() {
+            while self.pending.len() + self.interrupts.len() < MAX_OUTSTANDING {
+                let Some((agent, epoch)) = self.wakes.pop_front() else {
+                    break;
+                };
                 self.start(agent, epoch)?;
+            }
+            if self.wakes.is_empty()
+                && self.pending.len() + self.interrupts.len() < MAX_OUTSTANDING
+                && self.sender.take_rescan()
+            {
+                self.wake.wake();
             }
         }
         self.collect_events();
         self.drain_settlements()?;
+        // Reserve space for one session transition resolving every admitted request.
+        if self.settlements.len() + self.deferred.len() >= MAX_SETTLEMENTS - MAX_OUTSTANDING * 2 {
+            self.hold(
+                self.settlements
+                    .front()
+                    .or_else(|| self.deferred.front())
+                    .and_then(|e| e.cursor),
+            );
+        }
         if self.quiesced && (self.settlements.is_empty() || self.held) {
+            self.sender.discard_quiesced_transport();
             if let Some(session) = &self.session {
                 self.store.transaction(|tx| {
                     SchedulerRepository::disconnect_account(
@@ -501,6 +578,7 @@ impl AccountWorker {
             self.quiesced = false;
             // Unacknowledged frames are replayed by the supervisor on reattach.
             self.settlements.clear();
+            self.wakes.clear();
             self.deferred.clear();
             if !self.held {
                 self.connect()?;
@@ -689,6 +767,7 @@ impl AccountWorker {
                 if ticket.method == Method::TurnInterrupt =>
             {
                 if matches!(body, ResponseBody::Error(_)) {
+                    self.interrupts.retain(|_, (sent, _)| sent.id != ticket.id);
                     self.hold(None);
                 }
             }
@@ -777,6 +856,15 @@ impl AccountWorker {
                         self.pending.remove(&ticket.id);
                     }
                 } else if matches!(ticket.method, Method::TurnInterrupt | Method::Initialize) {
+                    if matches!(event, ProviderSessionEvent::NotSent { .. }) {
+                        self.interrupts.retain(|_, (sent, _)| sent.id != ticket.id);
+                    } else if let Some((_, uncertain)) = self
+                        .interrupts
+                        .values_mut()
+                        .find(|(sent, _)| sent.id == ticket.id)
+                    {
+                        *uncertain = true;
+                    }
                     self.hold(None);
                     if ticket.method == Method::Initialize {
                         self.begin_close(Closing::Reconnect)?;
@@ -846,6 +934,8 @@ impl AccountWorker {
             return Ok(false);
         }
         settle_terminal_attempt(&self.store, &identity, params)?;
+        self.interrupts
+            .remove(&format!("interrupt:{}:{turn}", identity.agent_id));
         self.wake.wake();
         Ok(true)
     }
@@ -856,9 +946,17 @@ impl AccountWorker {
         };
         // Replayed stopped notifications need no second interrupt on this attachment.
         let key = format!("interrupt:{agent}:{turn}");
-        if self.resumed.contains(&key) {
+        if let Some((_, uncertain)) = self.interrupts.get(&key) {
+            if *uncertain {
+                self.hold(None);
+            }
             return Ok(());
         }
+        if self.pending.len() + self.interrupts.len() >= MAX_OUTSTANDING {
+            self.hold(None);
+            return Ok(());
+        }
+
         match session.send_request(
             Method::TurnInterrupt,
             json!({"threadId":thread,"turnId":turn}),
@@ -866,8 +964,8 @@ impl AccountWorker {
             false,
             self.timeout_ms,
         ) {
-            Ok(_) => {
-                self.resumed.insert(key);
+            Ok(ticket) => {
+                self.interrupts.insert(key, (ticket, false));
             }
             Err(_) => self.hold(None),
         }
@@ -879,6 +977,7 @@ impl AccountWorker {
             return Ok(());
         }
         self.closing = Some(closing);
+        self.sender.quiesce();
         if let Some(session) = &mut self.session {
             session.quiesce()?;
         }

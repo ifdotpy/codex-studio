@@ -121,7 +121,18 @@ pub fn settle_terminal_attempt(
             AgentStatus::Failed,
             Some(serde_json::json!({"message":HISTORY_UNAVAILABLE})),
         ),
-        Some("failed") => (AgentStatus::Failed, params["turn"].get("error").cloned()),
+        Some("failed") => (
+            AgentStatus::Failed,
+            Some(
+                params["turn"]
+                    .get("error")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .unwrap_or_else(
+                        || serde_json::json!({"message":"Codex ended this turn with an error."}),
+                    ),
+            ),
+        ),
         Some("interrupted") => (
             AgentStatus::Interrupted,
             params["turn"].get("error").cloned(),
@@ -132,7 +143,7 @@ pub fn settle_terminal_attempt(
         // NOTIFICATION-DISPATCH INTEGRATION: invoke dispatch(transaction, identity, params)
         // here. Until its history writes are available, successful native turns use the
         // named HISTORY_UNAVAILABLE failure; acknowledgment follows this transaction.
-        SchedulerRepository::settle_terminal(
+        let changed = SchedulerRepository::settle_terminal(
             transaction,
             &identity.agent_id,
             identity.epoch,
@@ -140,7 +151,17 @@ pub fn settle_terminal_attempt(
             turn_id,
             status,
             error,
-        )
+        )?;
+        if changed {
+            studio_runtime_store::ExecutionHistoryRepository::terminal(
+                transaction,
+                &identity.agent_id,
+                turn_id,
+                params["turn"]["status"].as_str().unwrap_or("failed"),
+                params["turn"].get("error"),
+            )?;
+        }
+        Ok(changed)
     })?)
 }
 
