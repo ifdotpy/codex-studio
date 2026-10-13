@@ -16,8 +16,63 @@
         }
       ],
       "title": "Agent"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "native": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Native"
+    },
+    "rootId": {
+      "title": "Rootid",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "x-safe-integer": "unsigned"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Updated"
+    },
+    "version": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Version",
+      "type": "integer"
     }
   },
+  "required": ["id", "rootId", "text", "version", "updated"],
   "title": "PersistedPlanRecord",
   "type": "object"
 }

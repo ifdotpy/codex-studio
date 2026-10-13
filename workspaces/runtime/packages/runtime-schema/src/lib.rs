@@ -125,6 +125,29 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
     Ok(validator.is_valid(value))
 }
 
+/// Return the authoritative persisted schema for a typed runtime table.
+pub fn table_schema(table: &str) -> Option<&'static str> {
+    Some(match table {
+        "runtime_agents" => "PersistedAgentRecord",
+        "runtime_tasks" => "PersistedTaskRecord",
+        "runtime_plans" => "PersistedPlanRecord",
+        "runtime_annotations" => "PersistedAnnotationRecord",
+        "runtime_requests" => "PersistedRequestRecord",
+        "runtime_complaints" => "PersistedComplaintRecord",
+        "runtime_checkpoints" => "PersistedCheckpointRecord",
+        "runtime_monitors" => "PersistedMonitorRecord",
+        "user_terminals" => "PersistedTerminalRecord",
+        "runtime_usage_resumes" => "PersistedUsageResumeRecord",
+        "runtime_work" => "PersistedWorkItemRecord",
+        "runtime_rules" => "PersistedRuleRecord",
+        "graph_agents" => "PersistedGraphAgentRecord",
+        "runtime_assets" => "PersistedTranscriptAsset",
+        "runtime_items" => "PersistedTranscriptRecord",
+        "runtime_event_meta" => "RuntimeEventMetadataRecord",
+        _ => return None,
+    })
+}
+
 /// Return the first validation error's JSON pointer and keyword, if any.
 pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, String)>> {
     let validator = compiled_schemas()?
@@ -269,7 +292,32 @@ fn escape_pointer(value: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{initialize, registry_for_document, validate};
+    use super::{initialize, registry_for_document, table_schema, validate};
+
+    #[test]
+    fn typed_table_selects_one_authoritative_storage_schema() {
+        for (table, schema) in [
+            ("runtime_agents", "PersistedAgentRecord"),
+            ("runtime_tasks", "PersistedTaskRecord"),
+            ("runtime_plans", "PersistedPlanRecord"),
+            ("runtime_annotations", "PersistedAnnotationRecord"),
+            ("runtime_requests", "PersistedRequestRecord"),
+            ("runtime_complaints", "PersistedComplaintRecord"),
+            ("runtime_checkpoints", "PersistedCheckpointRecord"),
+            ("runtime_monitors", "PersistedMonitorRecord"),
+            ("user_terminals", "PersistedTerminalRecord"),
+            ("runtime_usage_resumes", "PersistedUsageResumeRecord"),
+            ("runtime_work", "PersistedWorkItemRecord"),
+            ("runtime_rules", "PersistedRuleRecord"),
+            ("graph_agents", "PersistedGraphAgentRecord"),
+            ("runtime_assets", "PersistedTranscriptAsset"),
+            ("runtime_items", "PersistedTranscriptRecord"),
+            ("runtime_event_meta", "RuntimeEventMetadataRecord"),
+        ] {
+            assert_eq!(table_schema(table), Some(schema), "{table}");
+        }
+        assert_eq!(table_schema("untyped_table"), None);
+    }
 
     #[test]
     fn compiled_record_schemas_accept_known_records_and_reject_invalid_values() {

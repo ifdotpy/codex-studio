@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
 use tokio::net::TcpListener;
@@ -32,10 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let token = token
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
     let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;
@@ -76,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?,
     );
+    let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     for diagnostic in account_policy.limits_diagnostics() {
         eprintln!(
             "invalid persisted limits at {}/{}/{} ({})",
@@ -87,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let app = router(HttpState::new(
+    let state = HttpState::new(
         token,
         workspace_id,
         native_path,
@@ -96,13 +95,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         public_origin,
         Some(store),
         Some(account_policy),
-    ))?;
+    )
+    .with_account_driver(account_driver);
+    let sync_changes = state.sync_changes_handle();
+    let app = router(state)?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        sync_changes.close();
+    })
     .await?;
     Ok(())
 }

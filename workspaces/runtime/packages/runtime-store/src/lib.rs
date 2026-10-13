@@ -4,15 +4,24 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
+pub use schema::{python_json, python_json_compact, sha256_hex, truthy};
 mod state_check;
-pub use schema::sha256_hex;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
 pub use repositories::account_state;
+pub use repositories::analytics::{
+    self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
+    SessionCostError,
+};
+pub use repositories::checkpoints::{
+    CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+};
+pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use rusqlite::{Connection, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
@@ -40,12 +49,15 @@ pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
-pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::sync_documents::{
+    EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
+};
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
 pub use repositories::usage::{UsageRepositoryError, cancel_capacity_retry, disable_usage_resume};
+pub use repositories::voice::{VoiceDelivery, VoiceRecord, VoiceRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
@@ -120,6 +132,7 @@ pub struct RuntimeStore {
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
     version_reader: Mutex<Connection>,
+    commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl RuntimeStore {
@@ -150,17 +163,46 @@ impl RuntimeStore {
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
             version_reader: Mutex::new(version_reader),
+            commit_notifier: Mutex::new(None),
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
             feature_schema::prepare(transaction)?;
             schema::verify_bootstrap(transaction)
         })?;
+        let recovery_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or_default();
+        store.transaction(|transaction| {
+            CheckpointsRepository::recover_captures(transaction, recovery_time)
+        })?;
         Ok(store)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Install the process-local notification fired after each successful write commit.
+    pub fn set_commit_notifier(&self, notifier: impl Fn() + Send + Sync + 'static) {
+        let mut slot = self
+            .commit_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(Arc::new(notifier));
+    }
+
+    fn notify_commit(&self) {
+        let notifier = self
+            .commit_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        if let Some(notifier) = notifier {
+            notifier();
+        }
     }
 
     /// Run one durable transaction while holding the sole serialized writer.
@@ -190,6 +232,7 @@ impl RuntimeStore {
                 transaction
                     .commit()
                     .map_err(StoreError::CommitOutcomeUnknown)?;
+                self.notify_commit();
                 Ok(value)
             }
             Err(error) => {

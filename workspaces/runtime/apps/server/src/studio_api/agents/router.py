@@ -188,7 +188,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
-        if body.excluded_account_keys is not None:
+        if "excluded_account_keys" in body.model_fields_set:
             request["excluded_account_keys"] = cast(JsonValue, sorted(body.excluded_account_keys))
         try:
             result = runtime.conversation_settings(body.id, request)

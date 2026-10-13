@@ -30,6 +30,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_lead_requests (id TEXT PRIMARY KEY, agent TEXT NOT NULL, signature TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_sidebar_order (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_phase ON runtime_workspace_operations(
@@ -338,5 +339,73 @@ mod tests {
             core_violations.is_empty(),
             "feature schema tables must be bootstrap requirements, not core requirements: {core_violations:?}"
         );
+    }
+
+    fn compact(sql: &str) -> String {
+        sql.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn voice_bootstrap_catalog_matches_python_voice_store() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        let transaction = connection.transaction().expect("transaction opens");
+        transaction
+            .execute_batch(
+                "CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            )
+            .expect("core tables precede feature schema bootstrap");
+        transaction
+            .execute_batch(FEATURE_SCHEMA)
+            .expect("voice schema bootstraps");
+
+        let expected = [
+            (
+                "table",
+                "voice_sessions",
+                "CREATE TABLE voice_sessions ( id TEXT PRIMARY KEY, agent TEXT NOT NULL, created REAL NOT NULL, ended REAL, sdp TEXT, answer TEXT, native_thread TEXT, account_key TEXT, connection_id TEXT, state TEXT, error TEXT)",
+            ),
+            (
+                "table",
+                "voice_records",
+                "CREATE TABLE voice_records ( seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, agent TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, item_id TEXT NOT NULL, previous_item_id TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL)",
+            ),
+            (
+                "index",
+                "voice_records_agent",
+                "CREATE INDEX voice_records_agent ON voice_records(agent,seq)",
+            ),
+            (
+                "table",
+                "voice_approvals",
+                "CREATE TABLE voice_approvals (id TEXT PRIMARY KEY, agent TEXT NOT NULL, speech TEXT NOT NULL, transcript TEXT NOT NULL, status TEXT NOT NULL, result TEXT)",
+            ),
+            (
+                "table",
+                "voice_deliveries",
+                "CREATE TABLE voice_deliveries ( id TEXT PRIMARY KEY, agent TEXT NOT NULL, records TEXT NOT NULL, text TEXT NOT NULL, edited_text TEXT)",
+            ),
+            (
+                "table",
+                "voice_speech_requests",
+                "CREATE TABLE voice_speech_requests ( id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL, state TEXT NOT NULL, error TEXT)",
+            ),
+        ];
+        for (kind, name, python_sql) in expected {
+            let rust_sql: String = transaction
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                    [kind, name],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| panic!("bootstrap is missing {name}"));
+            assert_eq!(
+                compact(&rust_sql),
+                compact(python_sql),
+                "{name} DDL differs"
+            );
+        }
     }
 }

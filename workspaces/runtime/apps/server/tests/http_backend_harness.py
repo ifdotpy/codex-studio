@@ -78,7 +78,13 @@ class HTTPTransportError(RuntimeError):
 class BackendProcess:
     """Start the selected backend under isolated homes and a runner scratch root."""
 
-    def __init__(self, scratch_root: Path, *, initialize_workspace: bool = True):
+    def __init__(
+        self,
+        scratch_root: Path,
+        *,
+        claude_bin: str | None = "/usr/bin/false",
+        initialize_workspace: bool = True,
+    ):
         self.scratch_root = scratch_root.resolve(strict=True)
         self.root = Path(tempfile.mkdtemp(prefix="http-boundary-", dir=self.scratch_root)).resolve(strict=True)
         if self.scratch_root not in self.root.parents:
@@ -108,6 +114,7 @@ class BackendProcess:
         self._supervisor_process: subprocess.Popen[str] | None = None
         self._supervisor_log: TextIO | None = None
         self._backend_python: Path | None = None
+        self._claude_bin = claude_bin
         self._output: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
         self._stderr: list[str] = []
@@ -201,6 +208,10 @@ class BackendProcess:
             "ALL_PROXY": "http://127.0.0.1:9",
             "NO_PROXY": "127.0.0.1,localhost",
         }
+        # Match Python provider tests by default. Discovery tests can opt out to
+        # exercise the no-Claude path without exposing a host executable.
+        if self._claude_bin is not None:
+            values["STUDIO_CLAUDE_BIN"] = self._claude_bin
         if self.supervisor_protocol:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"

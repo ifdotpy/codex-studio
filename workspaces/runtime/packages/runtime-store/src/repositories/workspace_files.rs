@@ -1,10 +1,11 @@
 //! Read workspace upload records written by the Python runtime.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
+use serde_json::Value;
 
-use crate::StoreResult;
 use crate::records::{Table, TranscriptAssetId, TranscriptAssetRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
+use crate::{StoreError, StoreResult};
 
 /// Compatibility name for callers that used the pre-typed asset wrapper.
 pub type StoredWorkspaceAsset = TranscriptAssetRecord;
@@ -37,6 +38,21 @@ pub struct WorkspaceFilesRepository;
 impl WorkspaceFilesRepository {
     pub fn asset(connection: &Connection, id: &str) -> StoreResult<Option<TranscriptAssetRecord>> {
         Table::<TranscriptAssetRecord>::new(connection).get(&TranscriptAssetId::from(id))
+    }
+
+    pub fn asset_ids(connection: &Connection) -> StoreResult<Vec<String>> {
+        let mut statement = connection.prepare("SELECT id FROM runtime_assets")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn insert_asset(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
+        connection.execute(
+            "INSERT INTO runtime_assets(id,record) VALUES (?1,?2)",
+            params![id, serde_json::to_string(record)?],
+        )?;
+        Ok(())
     }
 }
 

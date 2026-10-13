@@ -8,17 +8,6 @@ use crate::router::HttpState;
 #[serde(transparent)]
 pub(crate) struct Dependency(&'static str);
 
-#[cfg(test)]
-pub(crate) fn registered_dependencies() -> Vec<&'static str> {
-    let mut names = inventory::iter::<RouteModuleRegistration>
-        .into_iter()
-        .flat_map(|registration| registration.dependencies.iter().copied())
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    names
-}
-
 pub(crate) struct RouteModuleRegistration {
     pub(crate) name: &'static str,
     pub(crate) routes: Option<fn() -> RouteGroup>,
@@ -27,12 +16,14 @@ pub(crate) struct RouteModuleRegistration {
 
 inventory::collect!(RouteModuleRegistration);
 
-inventory::submit! {
-    RouteModuleRegistration {
-        name: "manifest",
-        routes: None,
-        dependencies: &[],
-    }
+pub(crate) fn registered_dependencies() -> Vec<&'static str> {
+    let mut dependencies = inventory::iter::<RouteModuleRegistration>
+        .into_iter()
+        .flat_map(|registration| registration.dependencies.iter().copied())
+        .collect::<Vec<_>>();
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    dependencies
 }
 
 impl Dependency {
@@ -49,9 +40,7 @@ impl Dependency {
     }
 
     fn is_known(self) -> bool {
-        inventory::iter::<RouteModuleRegistration>
-            .into_iter()
-            .any(|registration| registration.dependencies.contains(&self.0))
+        registered_dependencies().contains(&self.0)
     }
 }
 
@@ -86,7 +75,7 @@ impl OperationStatus {
         reason = "partial route slices use this to bind 501 behavior"
     )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
-        matches!(self, Self::Partial { dependencies: declared } if dependencies.iter().all(|dependency| declared.contains(dependency)))
+        matches!(self, Self::Partial { dependencies: declared } if declared == dependencies)
     }
 }
 

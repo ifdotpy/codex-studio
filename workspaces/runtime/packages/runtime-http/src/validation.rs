@@ -10,7 +10,6 @@ use std::sync::Arc;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
 
-const OPENAPI: &[u8] = include_bytes!("../openapi.json");
 const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
@@ -61,7 +60,6 @@ pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
     preference_field: Option<Validator>,
     stored_schemas: Arc<BTreeMap<String, Validator>>,
-    definitions: Arc<Map<String, Value>>,
 }
 
 #[derive(Debug)]
@@ -84,10 +82,7 @@ impl std::error::Error for CompileError {}
 
 impl Registry {
     pub(crate) fn compile(registered: &[(String, String)]) -> Result<Self, CompileError> {
-        let document: Value = serde_json::from_slice(OPENAPI).map_err(|error| CompileError {
-            operation_id: "<document>".to_owned(),
-            message: error.to_string(),
-        })?;
+        let document = crate::schema::openapi_document().clone();
         let schema_registry = schema_registry(&document).map_err(|message| CompileError {
             operation_id: "<document>".to_owned(),
             message,
@@ -112,20 +107,37 @@ impl Registry {
             })?;
         let mut stored_schemas = BTreeMap::new();
         for name in [
+            "AgentEntityDto",
             "AgentRecordResponse",
             "AnnotationReceipt",
+            "ChatEntityDto",
             "CheckpointSummary",
+            "ComplaintEntityDto",
             "ComplaintRecordResponse",
+            "ConfigureResponse",
+            "EdgeEntityDto",
+            "EventEntityDto",
             "MonitorEntityDto",
-            "MonitorRecordResponse",
             "PlanView",
+            "PeerTeamEntityDto",
+            "ProfileRecord",
+            "ProjectEntityDto",
+            "ProjectMutationRecord",
             "QueueItem",
             "RequestRecordResponse",
-            "RuleRecordResponse",
-            "TaskDetailResponse",
+            "RequestEntityDto",
+            "ResourceRef",
+            "RoomEntityDto",
+            "RuleEntityDto",
+            "SyncEntityPayload",
+            "SyncPullResetResponse",
+            "SyncPullResponse",
             "TaskEntityDto",
+            "TaskDetailResponse",
             "TranscriptAsset",
             "WorkItem",
+            "WorkEntityDto",
+            "WorkspaceEntityDto",
         ] {
             let validator = jsonschema::options()
                 .with_registry(&schema_registry)
@@ -137,6 +149,21 @@ impl Registry {
                 })?;
             stored_schemas.insert(name.to_owned(), validator);
         }
+        let draft_payload: Value = serde_json::from_slice(include_bytes!(
+            "../draft-payload.schema.json"
+        ))
+        .map_err(|error| CompileError {
+            operation_id: "DraftPayload".to_owned(),
+            message: error.to_string(),
+        })?;
+        let draft_payload_validator = jsonschema::options()
+            .with_draft(Draft::Draft202012)
+            .build(&draft_payload)
+            .map_err(|error| CompileError {
+                operation_id: "DraftPayload".to_owned(),
+                message: error.to_string(),
+            })?;
+        stored_schemas.insert("DraftPayload".to_owned(), draft_payload_validator);
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
@@ -168,7 +195,6 @@ impl Registry {
             operations: Arc::new(compiled),
             preference_field: Some(preference_field),
             stored_schemas: Arc::new(stored_schemas),
-            definitions,
         })
     }
 
@@ -321,76 +347,36 @@ impl Registry {
     }
 
     pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
-        self.stored_schemas
-            .get(schema)
-            .is_some_and(|validator| validator.is_valid(value))
+        if let Some(validator) = self.stored_schemas.get(schema) {
+            return validator.is_valid(value);
+        }
+        false
     }
 
-    pub(crate) fn valid_stored_record(&self, schema: &str, id: &str, value: &Value) -> bool {
-        self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
+    pub(crate) fn validate_table_record(&self, table: &str, value: &Value) -> bool {
+        let Some(schema) = studio_runtime_schema::table_schema(table) else {
+            return false;
+        };
+        studio_runtime_schema::validate(schema, value).unwrap_or(false)
+    }
+
+    pub(crate) fn validate_component(&self, schema: &str, value: &Value) -> bool {
+        self.validate_stored(schema, value)
+    }
+
+    pub(crate) fn valid_table_record(&self, table: &str, id: &str, value: &Value) -> bool {
+        self.validate_table_record(table, value)
+            && value.get("id").and_then(Value::as_str) == Some(id)
+    }
+
+    pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
+        studio_runtime_services::sync_views::project_persisted_record(schema, value)
     }
 
     #[cfg(test)]
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
         let value = serde_json::from_str(raw).ok()?;
         self.validate_stored(schema, &value).then_some(value)
-    }
-
-    pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
-        let properties = self
-            .definitions
-            .get(schema)?
-            .get("properties")?
-            .as_object()?;
-        let source = value.as_object()?;
-        Some(Value::Object(
-            source
-                .iter()
-                .filter(|(key, _)| properties.contains_key(*key))
-                .map(|(key, value)| (key.clone(), bound_display_value(value, key, 200)))
-                .collect(),
-        ))
-    }
-}
-
-fn bound_display_value(value: &Value, key: &str, list_limit: usize) -> Value {
-    match value {
-        Value::String(text) => {
-            let limit = match key {
-                "overview" => 9000,
-                "error" | "tail" | "description" | "command" | "query" => 2000,
-                "text" | "lastAnswer" => 4000,
-                _ => 12000,
-            };
-            Value::String(text.chars().take(limit).collect())
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .take(list_limit)
-                .map(|item| bound_display_value(item, "", list_limit))
-                .collect(),
-        ),
-        Value::Object(items) => Value::Object(
-            items
-                .iter()
-                .map(|(name, item)| {
-                    (
-                        name.clone(),
-                        bound_display_value(
-                            item,
-                            name,
-                            if name == "sidebarOrder" {
-                                10_000
-                            } else {
-                                list_limit
-                            },
-                        ),
-                    )
-                })
-                .collect(),
-        ),
-        value => value.clone(),
     }
 }
 
@@ -1062,7 +1048,6 @@ mod tests {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
@@ -1287,7 +1272,6 @@ mod tests {
             )])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         let valid = registry
             .validate_route(
@@ -1480,7 +1464,6 @@ mod tests {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         let validated = arrays
             .validate(
@@ -1614,6 +1597,26 @@ mod tests {
             .validated_stored("CheckpointSummary", checkpoint)
             .expect("valid extension record retains its integer");
         assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
+    }
+
+    #[test]
+    fn persisted_runtime_schemas_are_used_for_typed_store_records() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let agent = json!({"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
+        assert!(registry.validate_table_record("runtime_agents", &agent));
+        assert!(!registry.validate_table_record(
+            "runtime_agents",
+            &json!({"id":"a","epoch":0,"status":"idle"})
+        ));
+        assert!(!registry.validate_table_record("unknown_table", &agent));
+    }
+
+    #[test]
+    fn typed_table_schema_takes_precedence_over_openapi_dto_shape() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let dto_only = json!({});
+        assert!(registry.validate_stored("RequestRecordResponse", &dto_only));
+        assert!(!registry.validate_table_record("runtime_requests", &dto_only));
     }
 
     #[test]

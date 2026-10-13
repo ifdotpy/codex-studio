@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -913,6 +913,35 @@ pub struct QueueEventRepository;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MessageRepository;
+
+pub(crate) fn get_json_record<T: DeserializeOwned>(
+    connection: &Connection,
+    table: &str,
+    id: &str,
+) -> StoreResult<Option<T>> {
+    connection
+        .query_row(
+            &format!("SELECT record FROM {table} WHERE id = ?1"),
+            [id],
+            |row| decode_json_record(row, 0),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+pub(crate) fn decode_json_record<T: DeserializeOwned>(
+    row: &Row<'_>,
+    column: usize,
+) -> rusqlite::Result<T> {
+    let json: String = row.get(column)?;
+    serde_json::from_str(&json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
 
 #[cfg(test)]
 mod tests {

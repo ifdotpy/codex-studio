@@ -7,13 +7,18 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+data-encoding = { workspace = true }
 inventory = { workspace = true }
+uuid = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 studio-runtime-schema = { path = "../runtime-schema" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

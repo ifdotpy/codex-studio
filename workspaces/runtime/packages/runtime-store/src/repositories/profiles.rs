@@ -98,31 +98,17 @@ impl ProfileRepository {
     }
 
     pub fn new_id(connection: &Connection) -> StoreResult<String> {
-        let mut bytes =
+        let bytes =
             connection.query_row("SELECT randomblob(16)", [], |row| row.get::<_, Vec<u8>>(0))?;
-        if bytes.len() != 16 {
-            return Err(StoreError::SchemaMismatch(
-                "SQLite returned invalid UUID bytes".to_owned(),
-            ));
-        }
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        Ok(format_uuid(&bytes))
+        let bytes: [u8; 16] = bytes.try_into().map_err(|_| {
+            StoreError::SchemaMismatch("SQLite returned invalid UUID bytes".to_owned())
+        })?;
+        Ok(uuid::Builder::from_random_bytes(bytes)
+            .into_uuid()
+            .to_string())
     }
 }
 
-fn format_uuid(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(36);
-    for (index, byte) in bytes.iter().enumerate() {
-        if matches!(index, 4 | 6 | 8 | 10) {
-            value.push('-');
-        }
-        value.push(char::from(HEX[usize::from(*byte >> 4)]));
-        value.push(char::from(HEX[usize::from(*byte & 0x0f)]));
-    }
-    value
-}
 inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "profiles",

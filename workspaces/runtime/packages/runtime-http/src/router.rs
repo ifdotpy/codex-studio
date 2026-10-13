@@ -6,6 +6,7 @@ use axum::response::Response;
 use axum::routing::any;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
 
@@ -17,6 +18,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub account_driver:
+        Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -28,6 +31,7 @@ pub struct HttpState {
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+    pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
@@ -44,9 +48,19 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
+        let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let model_changes = Arc::clone(&sync_changes);
         let model_catalog =
-            studio_runtime_services::model_catalog::ModelCatalogService::new(native_path.clone());
+            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
+                native_path.clone(),
+                Arc::new(move || model_changes.notify_one()),
+            );
+        if let Some(store) = &store {
+            let changes = Arc::clone(&sync_changes);
+            store.set_commit_notifier(move || changes.notify_one());
+        }
         Self {
+            account_driver: None,
             token,
             workspace_id,
             native_path,
@@ -57,14 +71,28 @@ impl HttpState {
             store,
             account_policy,
             model_catalog,
+            sync_changes,
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
     }
 
+    /// Attach the retained account refresh driver used by account admission.
+    pub fn with_account_driver(
+        mut self,
+        driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
+    ) -> Self {
+        self.account_driver = Some(driver);
+        self
+    }
+
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
+        Arc::clone(&self.sync_changes)
     }
 }
 
@@ -85,6 +113,7 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
         })
         .collect();
 
+    let router = router.merge(routes::voice::fallback());
     Ok(with_boundary(router, state))
 }
 
@@ -606,8 +635,13 @@ mod tests {
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         for (path, valid_json, limit) in cases {
             let app = router(state()).expect("router starts");
+            let at_limit_status = if path == "/api/assets" {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::NOT_IMPLEMENTED
+            };
             for (length, expected) in [
-                (limit, StatusCode::NOT_IMPLEMENTED),
+                (limit, at_limit_status),
                 (limit + 1, StatusCode::PAYLOAD_TOO_LARGE),
             ] {
                 let mut body = Vec::with_capacity(length);

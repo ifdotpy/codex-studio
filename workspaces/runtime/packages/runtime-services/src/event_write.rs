@@ -6,82 +6,23 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, StoreError, Transaction,
+    QueueEventId, RulesRepository, Transaction,
 };
 use thiserror::Error;
 
-static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
-
-/// Match Python's default JSON string escaping for durable operation signatures.
-pub fn python_json(value: &Value) -> String {
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
-        Value::String(value) => python_quote(value),
-        Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(python_json)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Value::Object(values) => {
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort();
-            format!(
-                "{{{}}}",
-                keys.into_iter()
-                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        }
-    }
-}
+pub use studio_runtime_store::{python_json, python_json_compact, truthy};
 
 pub fn request_signature(value: &Value) -> String {
     studio_runtime_store::sha256_hex(python_json(value).as_bytes())
 }
+
+static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
 pub fn python_strip(value: &str) -> &str {
     value.trim_matches(|character: char| {
         character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
     })
-}
-
-fn python_quote(value: &str) -> String {
-    let mut output = String::from("\"");
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\u{8}' => output.push_str("\\b"),
-            '\u{c}' => output.push_str("\\f"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            c if c < ' ' || c == '\u{7f}' => {
-                output.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c if c as u32 > 0x7f => {
-                let n = c as u32;
-                if n <= 0xffff {
-                    output.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    let n = n - 0x10000;
-                    output.push_str(&format!(
-                        "\\u{:04x}\\u{:04x}",
-                        0xd800 + (n >> 10),
-                        0xdc00 + (n & 0x3ff)
-                    ));
-                }
-            }
-            c => output.push(c),
-        }
-    }
-    output.push('"');
-    output
 }
 
 #[derive(Debug, Error)]
@@ -391,13 +332,7 @@ pub fn checked_agent(
     connection: &Transaction<'_>,
     id: &str,
 ) -> Result<AgentRecord, EventWriteError> {
-    let agent = AgentRepository::get(connection, &AgentId::from(id))
-        .map_err(|error| match error {
-            StoreError::InvalidStoredRecord { object, id } => {
-                EventWriteError::InvalidStoredObject { object, id }
-            }
-            other => EventWriteError::Store(other),
-        })?
+    let agent = AgentRepository::get(connection, &AgentId::from(id))?
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
     if truthy(agent.extra.get("deletedAt")) {
         return Err(EventWriteError::InvalidRequest("This agent was deleted"));
@@ -425,7 +360,9 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let mut updated = agent.clone();
     updated.status = AgentStatus::Queued;
     AgentRepository::put(connection, &updated)?;
-    EventWriteRepository::set_agent_sync_status(connection, &updated.id.0, "queued")?;
+    let projection =
+        serde_json::to_value(&updated).map_err(studio_runtime_store::StoreError::from)?;
+    crate::agents_create::publish_agent(connection, &projection)?;
     Ok(())
 }
 
@@ -435,17 +372,6 @@ fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
         .get("autoWake")
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
-}
-
-pub fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(values)) => !values.is_empty(),
-        Some(Value::Object(values)) => !values.is_empty(),
-        Some(Value::Bool(true)) => true,
-    }
 }
 
 pub fn unix_time() -> Result<f64, EventWriteError> {
@@ -586,6 +512,7 @@ mod tests {
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);

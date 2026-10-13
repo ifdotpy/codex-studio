@@ -486,6 +486,10 @@
       "title": "Namereceipts",
       "type": "object"
     },
+    "pendingAccountsChange": {
+      "title": "Pendingaccountschange",
+      "type": "boolean"
+    },
     "version": {
       "const": 1,
       "title": "Version",

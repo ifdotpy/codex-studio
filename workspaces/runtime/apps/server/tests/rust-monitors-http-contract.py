@@ -205,11 +205,18 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(unicode_name.status, 200, unicode_name.body[:100])
         self.assertEqual(unicode_name.headers["content-disposition"], 'attachment; filename="monitor-_.log"')
-        malformed = self.backend.request(
-            "GET", "/api/monitor/log?id=contract-monitor",
-            headers={**self.headers(), "Range": "bytes=+2-4"},
-        )
-        self.assertEqual(malformed.status, 416)
+        malformed_ranges = ["bytes=+2-4"]
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Rust deliberately applies the owner's strict Range policy.
+            malformed_ranges.extend(("bytes=-+100", "bytes=00-2", "bytes=0-02", "bytes=-03", "bytes=-0100"))
+        for header in malformed_ranges:
+            with self.subTest(range=header):
+                malformed = self.backend.request(
+                    "GET",
+                    "/api/monitor/log?id=contract-monitor",
+                    headers={**self.headers(), "Range": header},
+                )
+                self.assertEqual(malformed.status, 416)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_monitor_log_refuses_invalid_file_and_deleted_agent(self) -> None:

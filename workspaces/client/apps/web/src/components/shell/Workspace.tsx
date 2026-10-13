@@ -1264,7 +1264,7 @@ function Profiles(c: Context) {
                   profile_id: launch.profile_id,
                   prompt: launch.prompt,
                   parent: lead!.id,
-                  cwd: lead!.cwd,
+                  cwd: lead!.cwd ?? undefined,
                 });
                 setLaunch(null);
                 c.notify(`Started ${worker.name}`);

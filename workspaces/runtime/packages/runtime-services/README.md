@@ -76,6 +76,42 @@ The plan that assigns services to slices is
 Git changes use `std::process::Command` to preserve the Python runtime's system-Git status and patch output without a Git-library dependency.
 `gix 0.89.0` (MIT/Apache-2.0; 199 normal dependency-tree entries; 9.8s clean check) and `git2 0.21.0` (MIT/Apache-2.0; 7 entries; 8.5s including libgit2 build) can inspect status and diffs but require custom rendering and can change CLI output.
 
+## Remote transport
+
+The outbound multi-server and federation clients keep their Python wire formats
+separate. `multi-server/identity.json` stores `privateKey` as PKCS#8 PEM
+(`BEGIN PRIVATE KEY`) and `publicKey` as Ed25519 SubjectPublicKeyInfo PEM
+(`BEGIN PUBLIC KEY`), with `serverId` and `label`. The
+`runtime_federation_identity` row with `id='local'` stores the same PEM formats
+in `privateKey` and `publicKey`, with `stateId` and `label`. Federation response
+wrappers are verified with the paired Ed25519 key; multi-server responses retain
+Python's optional `serverId` and `publicKey` identity checks. Rust requires an
+Ed25519 SubjectPublicKeyInfo algorithm identifier for stored and paired public
+keys, which is stricter than Python's multi-server response field comparison.
+Signature text uses strict, padded standard Base64. Federation response state is
+checked when the caller supplies an expected state; a missing or null state is
+accepted when there is no expected state.
+
+Python's HTTPS clients use normal system CA trust and hostname verification;
+they do not pin TLS certificates. Rust uses the platform verifier for the same
+system roots. Peer identity is checked at the signed protocol layer with the
+paired Ed25519 key. Multi-server identity-file loading returns the named
+`UnsupportedPlatform` error on Windows.
+
+The runtime-server binary does not install a `log` backend. ureq and
+ureq-proto emit their wire traces through the `log` facade, so those records are
+discarded in this binary; the service does not install or add a logging backend.
+If a backend is added later, its target filters must exclude `ureq` and
+`ureq_proto` because their trace output can contain request and response data.
+
+The transport explicitly selects rustls' `ring` crypto provider through ureq's
+`unversioned_rustls_crypto_provider` API. That API is unstable; the workspace
+pins ureq to `=3.4.2` to keep this call aligned with the supported configuration.
+ureq uses `rustls-no-provider` plus `platform-verifier`, so the lock file omits
+the otherwise enabled `webpki-roots` bundle. The platform verifier brings
+`rustls-platform-verifier`, `rustls-native-certs`, `openssl-probe` and
+platform-specific certificate support crates into the lock graph.
+
 ## Account registry and limits read contract
 
 This slice loads the persisted account registry and workspace limits once at
@@ -211,10 +247,10 @@ make a network request. Run it with
 ### Account driver process boundary
 
 The account driver's Claude metadata reader runs `claude auth status --json`
-with an eight-second timeout. On timeout it kills and waits for the direct CLI
-child. It does not kill descendants as a process group; that behavior can
-switch to process-group termination when the supervisor work adds that support.
-The command's output is parsed in memory and is never logged.
+with an eight-second timeout. `process-wrap` places the command in a POSIX
+process group, so timeout and output-limit termination cover its child
+processes as well. Windows retains direct-child termination and is outside this
+Rust cutover. The command's output is parsed in memory and is never logged.
 On macOS, Rust currently reports the named reason
 `macos-passive-auth-unavailable` and leaves the previous account status
 unchanged. Python can read passive Keychain authentication through its

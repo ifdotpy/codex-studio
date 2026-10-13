@@ -1,6 +1,5 @@
 //! Local multi-server access projections and state mutations.
 use rusqlite::OptionalExtension;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::{MultiServerRepository, RuntimeStore, StoreError};
 use thiserror::Error;
@@ -19,14 +18,6 @@ pub enum MultiServerError {
     MissingIdentity,
     #[error("multi-server action requires a signed remote request")]
     NeedsSignedRequest,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PublicIdentity {
-    server_id: String,
-    label: String,
-    public_key: String,
 }
 
 pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
@@ -100,75 +91,13 @@ pub fn manage(store: &RuntimeStore, body: &Value, actor: &str) -> Result<Value, 
     snapshot(store)
 }
 
-fn read_identity(store: &RuntimeStore) -> Result<PublicIdentity, MultiServerError> {
-    let directory = store.root().join("multi-server");
-    let path = directory.join("identity.json");
-    let dir_meta = match std::fs::symlink_metadata(&directory) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(MultiServerError::MissingIdentity);
-        }
-        Err(error) => return Err(StoreError::from(error).into()),
-    };
-    if !dir_meta.is_dir() || dir_meta.file_type().is_symlink() {
-        return Err(StoreError::SchemaMismatch(
-            "unsafe local multi-server identity directory".into(),
-        )
-        .into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if dir_meta.permissions().mode() & 0o077 != 0 {
-            return Err(StoreError::SchemaMismatch(
-                "unsafe local multi-server identity directory permissions".into(),
-            )
-            .into());
-        }
-    }
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(MultiServerError::MissingIdentity);
-        }
-        Err(error) => return Err(StoreError::from(error).into()),
-    };
-    if !meta.is_file() || meta.file_type().is_symlink() {
-        return Err(
-            StoreError::SchemaMismatch("unsafe local multi-server identity file".into()).into(),
-        );
-    }
-    if meta.len() > 16_384 {
-        return Err(StoreError::SchemaMismatch(
-            "invalid stored object multi-server/identity.json: size".into(),
-        )
-        .into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o077 != 0 {
-            return Err(StoreError::SchemaMismatch(
-                "unsafe local multi-server identity file permissions".into(),
-            )
-            .into());
-        }
-    }
-    let bytes = std::fs::read(path).map_err(StoreError::from)?;
-    let identity: PublicIdentity = serde_json::from_slice(&bytes).map_err(|e| {
-        StoreError::SchemaMismatch(format!(
-            "invalid stored object multi-server/identity.json: {e}"
-        ))
-    })?;
-    if identity.server_id.is_empty() || identity.label.is_empty() || identity.public_key.is_empty()
-    {
-        return Err(StoreError::SchemaMismatch(
-            "invalid stored object multi-server/identity.json: public identity".into(),
-        )
-        .into());
-    }
-    Ok(identity)
+fn read_identity(
+    store: &RuntimeStore,
+) -> Result<crate::sync_entity_context::LocalIdentity, MultiServerError> {
+    crate::sync_entity_context::local_identity(&store.root().to_string_lossy())?
+        .ok_or(MultiServerError::MissingIdentity)
 }
+
 fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Value>, StoreError> {
     let q = format!("SELECT id,record FROM {table} ORDER BY id");
     let mut st = tx.prepare(&q)?;

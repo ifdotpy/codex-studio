@@ -2,7 +2,6 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use studio_runtime_services::queue_write::{QueueSnapshot, QueueWriteError};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, Connection, WorkItemsRepository,
@@ -78,10 +77,7 @@ pub(super) fn queue_snapshot(
             .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))?,
     };
     let bytes = serde_json::to_vec(&json!([agent.epoch, revision_number, items]))?;
-    let revision = Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let revision = studio_runtime_store::sha256_hex(&bytes);
     Ok(QueueSnapshot {
         items,
         revision,

@@ -3,7 +3,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::json;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -34,6 +33,7 @@ async fn accounts(
         .account_policy
         .clone()
         .ok_or_else(ApiError::internal)?;
+    let account_driver = state.account_driver.clone();
     let snapshot = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ())?;
         let waiting = studio_runtime_store::account_state::authentication_recovery_account_keys(
@@ -44,7 +44,10 @@ async fn accounts(
                 .as_secs_f64(),
         )
         .map_err(|_| ())?;
-        let mut snapshot = account_policy.accounts();
+        let mut snapshot = match account_driver {
+            Some(driver) => driver.listing_snapshot().map_err(|_| ())?,
+            None => account_policy.accounts(),
+        };
         studio_runtime_services::account_policy::apply_authentication_recovery(
             &mut snapshot,
             &waiting,
@@ -55,16 +58,7 @@ async fn accounts(
     .ok()
     .and_then(Result::ok);
     let snapshot = snapshot.ok_or_else(ApiError::internal)?;
-    let response = serde_json::from_value(json!({
-        "accounts": snapshot.accounts,
-        "archivedAccounts": snapshot.archived_accounts,
-        "defaultAccountKey": snapshot.default_account_key,
-        "logins": snapshot.logins,
-        "supportsDisconnect": true,
-        "supportsDelete": true,
-    }))
-    .map_err(|_| ApiError::internal())?;
-    Ok(Json(response))
+    super::accounts_response(snapshot)
 }
 
 async fn limits(

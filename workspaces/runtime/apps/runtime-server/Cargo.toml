@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 axum = { workspace = true }
+data-encoding = { workspace = true }
 getrandom = { workspace = true }
 studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }

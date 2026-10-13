@@ -50,6 +50,12 @@ try:
         runtime.put(db, "agents", deleted, sync_rooms=False)
     visible = runtime.rules({{"agent": live["id"], "action": "save", "name": "visible",
                              "id": "visible", "kind": "interval", "intervalSeconds": 60}})
+    ticked = runtime.rules({{"agent": live["id"], "action": "save", "name": "ticked",
+                            "id": "ticked", "kind": "low_workers", "minimumWorkers": 1,
+                            "durationMinutes": 60}})
+    runtime.rules_tick()
+    ticked = next(rule for rule in runtime.rules({{"agent": live["id"], "action": "list"}})["rules"]
+                  if rule["id"] == "ticked")
     hidden = runtime.rules({{"agent": deleted["id"], "action": "save", "id": "hidden",
                             "name": "hidden",
                             "kind": "interval", "intervalSeconds": 60}})
@@ -58,6 +64,7 @@ try:
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", deleted, sync_rooms=False)
         runtime.put(db, "rules", visible, sync_rooms=False)
+        runtime.put(db, "rules", ticked, sync_rooms=False)
         runtime.put(db, "rules", hidden, sync_rooms=False)
 finally:
     runtime.close()
@@ -132,13 +139,17 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         etag = response.headers.get("etag", "")
         self.assertRegex(etag, r'^"[0-9a-f]{64}"$')
         payload = response.json()
-        self.assertEqual(len(payload["rules"]), 1)
-        rule = payload["rules"][0]
+        self.assertEqual(len(payload["rules"]), 2)
+        rule = next(rule for rule in payload["rules"] if rule["id"] == "visible")
         self.assertEqual(rule["id"], "visible")
         self.assertEqual(rule["agent"], "rules-contract-live")
         self.assertEqual(rule["stallWakeGeneration"], -1)
         self.assertEqual(rule["lastExitCode"], -9)
         self.assertEqual(rule["lastStallExitCode"], -11)
+        ticked = next(rule for rule in payload["rules"] if rule["id"] == "ticked")
+        self.assertEqual(ticked["activeWorkers"], 0)
+        self.assertIsNotNone(ticked["lowSince"])
+        self.assertFalse(ticked["alerted"])
 
         conditional = self.backend.request(
             "GET",

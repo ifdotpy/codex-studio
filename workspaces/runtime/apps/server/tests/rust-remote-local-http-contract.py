@@ -294,6 +294,20 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
+    def test_multi_server_invite_refusal_names_missing_dependencies_without_writes(self) -> None:
+        if not self.rust_backend:
+            self.skipTest("Python runtime owns the existing invite writer")
+        before = table_snapshot(self.backend.state, ACCESS_TABLES)
+        response = self.backend.request(
+            "POST",
+            "/api/multi-server",
+            body={"action": "create_invite", "requestId": "invite-a", "label": "Disposable test"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 501, response.body[:1000])
+        self.assertIn("federation-credentials/private-key", response.json()["error"])
+        self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), before)
+
     def test_multi_server_pair_refusal_does_not_write_or_contact_another_server(self) -> None:
         before = table_snapshot(self.backend.state, ACCESS_TABLES)
         response = self.backend.request(

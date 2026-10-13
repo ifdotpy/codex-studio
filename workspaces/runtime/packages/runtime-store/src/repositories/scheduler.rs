@@ -4,11 +4,10 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-use crate::records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventMetadataRecord, Table,
-};
+use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+use crate::records::{EventMetadataRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{EventWriteRepository, QueueEvent, QueueEventId, StoreError, StoreResult};
+use crate::{EventWriteRepository, QueueEvent, QueueEventId, StoreError, StoreResult, truthy};
 
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
@@ -67,9 +66,18 @@ impl SchedulerRepository {
             || agent.status != AgentStatus::Queued
             || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
             || agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-            || agent.extra.get("nativeFailureHold").is_some_and(truthy)
-            || agent.extra.get("remoteWorker").is_some_and(truthy)
-            || agent.extra.get("remoteAnchor").is_some_and(truthy)
+            || agent
+                .extra
+                .get("nativeFailureHold")
+                .is_some_and(|value| truthy(Some(value)))
+            || agent
+                .extra
+                .get("remoteWorker")
+                .is_some_and(|value| truthy(Some(value)))
+            || agent
+                .extra
+                .get("remoteAnchor")
+                .is_some_and(|value| truthy(Some(value)))
         {
             return Ok(None);
         }
@@ -198,7 +206,10 @@ impl SchedulerRepository {
             && agent.status == AgentStatus::Starting
             && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
             && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-            && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
+            && !agent
+                .extra
+                .get("nativeFailureHold")
+                .is_some_and(|value| truthy(Some(value)))
             && agent
                 .extra
                 .get("startAttempt")
@@ -463,7 +474,7 @@ fn select_turn_batch(
                 == Some("after_turn")
                 || meta
                     .and_then(|value| value.get("sendNow"))
-                    .is_some_and(truthy));
+                    .is_some_and(|value| truthy(Some(value))));
         if composer_input && has_composer_input {
             break;
         }
@@ -487,17 +498,6 @@ fn invalid_agent(agent_id: &str) -> StoreError {
     StoreError::InvalidSyncObject {
         scope: "runtime_agents".to_owned(),
         id: agent_id.to_owned(),
-    }
-}
-
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 

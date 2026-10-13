@@ -63,6 +63,8 @@ class PersistedAgentRecord(ContractModel):
     rootId: StrictStr
     epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
     status: StrictStr
+    cwd: StrictStr | None = None
+    name: StrictStr | None = None
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
 
@@ -86,6 +88,13 @@ class PersistedPlanRecord(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     agent: StrictStr | None = None
+    id: StrictStr
+    rootId: StrictStr
+    text: StrictStr
+    version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    updated: SafeInt | StrictFloat | None
+    steps: list[JsonValue] = Field(default_factory=list)
+    native: dict[StrictStr, JsonValue] | None = None
 
 
 class PersistedAnnotationRecord(_OpenPersistedRecord):
@@ -137,6 +146,7 @@ class PersistedUsageResumeRecord(ContractModel):
 
 
 class PersistedWorkItemRecord(_OpenPersistedRecord):
+    rootId: StrictStr | None = None
     status: StrictStr | None = None
     title: StrictStr | None = None
 
@@ -248,6 +258,7 @@ class AccountRegistryRecord(ContractModel):
     logins: dict[StrictStr, CodexLoginReceiptRecord] = Field(default_factory=dict)
     deleteReceipts: dict[StrictStr, DeleteReceiptRecord] = Field(default_factory=dict)
     nameReceipts: dict[StrictStr, NameReceiptRecord] = Field(default_factory=dict)
+    pendingAccountsChange: StrictBool = False
 
 
 class UsageLimitsWorkspaceEnvelope(ContractModel):

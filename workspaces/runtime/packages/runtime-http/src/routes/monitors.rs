@@ -244,31 +244,29 @@ fn open_log(
 }
 
 fn byte_range(value: &str, size: u64) -> Option<(u64, u64)> {
-    let range = value.strip_prefix("bytes=")?;
-    let (start, end) = range.split_once('-')?;
-    if end.contains('-')
-        || (!start.is_empty() && !start.bytes().all(|b| b.is_ascii_digit()))
-        || (!end.is_empty() && !end.bytes().all(|b| b.is_ascii_digit()))
-        || (start.is_empty() && end.is_empty())
-    {
+    if size == 0 {
         return None;
     }
-    let (start, end) = if start.is_empty() {
-        let suffix = end.parse::<u64>().ok()?;
-        if suffix == 0 || size == 0 {
-            return None;
-        }
-        (size.saturating_sub(suffix), size)
-    } else {
-        let start = start.parse::<u64>().ok()?;
-        let end = if end.is_empty() {
-            size
-        } else {
-            end.parse::<u64>().ok()?.saturating_add(1).min(size)
-        };
-        (start, end)
-    };
-    (start < size && end > start).then_some((start, end))
+    // Preserve the existing behavior for a suffix longer than the file: it
+    // requests the complete file, though the parser crate marks it unsatisfiable.
+    if value
+        .strip_prefix("bytes=-")
+        .filter(|suffix| {
+            !suffix.is_empty()
+                && suffix.bytes().all(|byte| byte.is_ascii_digit())
+                && (suffix.len() == 1 || !suffix.starts_with('0'))
+        })
+        .and_then(|suffix| suffix.parse::<u64>().ok())
+        .is_some_and(|suffix| suffix > size)
+    {
+        return Some((0, size));
+    }
+    let parsed = http_range_header::parse_range_header(value).ok()?;
+    if parsed.ranges.len() != 1 {
+        return None;
+    }
+    let range = parsed.validate(size).ok()?.into_iter().next()?;
+    Some((*range.start(), range.end().checked_add(1)?))
 }
 
 fn invalid_monitor(id: &str) -> ApiError {
@@ -301,6 +299,31 @@ fn is_truthy(value: &Value) -> bool {
         Value::Object(value) => !value.is_empty(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::byte_range;
+
+    #[test]
+    fn byte_ranges_cover_open_suffix_and_parser_edge_cases() {
+        assert_eq!(byte_range("bytes=2-5", 10), Some((2, 6)));
+        assert_eq!(byte_range("bytes=2-", 10), Some((2, 10)));
+        assert_eq!(byte_range("bytes=-3", 10), Some((7, 10)));
+        assert_eq!(byte_range("bytes=-100", 10), Some((0, 10)));
+        // Leading zeroes are outside the strict Range syntax accepted here.
+        assert_eq!(byte_range("bytes=00-2", 10), None);
+        assert_eq!(byte_range("bytes=-+100", 10), None);
+        assert_eq!(byte_range("bytes=-0100", 10), None);
+        assert_eq!(byte_range("bytes=-0", 10), None);
+        assert_eq!(byte_range("bytes=10-", 10), None);
+        assert_eq!(byte_range("bytes=4-2", 10), None);
+        assert_eq!(byte_range("bytes=0-99", 10), Some((0, 10)));
+        assert_eq!(byte_range("bytes=18446744073709551616-", 10), None);
+        assert_eq!(byte_range("bytes=0-2,4-5", 10), None);
+        assert_eq!(byte_range("bytes=0-2", 0), None);
+    }
+}
+
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitors",

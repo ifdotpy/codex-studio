@@ -11,9 +11,8 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const PAGE_DEPENDENCIES: [Dependency; 3] = [
+const PAGE_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("transcript/event-driver"),
-    Dependency::new("transcript/payload-store"),
     Dependency::new("transcript/workspace-state"),
 ];
 const CANVAS_TRANSCRIPT_DEPENDENCIES: [Dependency; 1] =

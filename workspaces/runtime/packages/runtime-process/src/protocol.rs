@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strum::Display;
 
 /// Backend identity sent in the supervisor handshake.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,7 +40,8 @@ pub struct HandleIdentity {
 #[serde(transparent)]
 pub struct Generation(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq)]
+#[strum(serialize_all = "camelCase")]
 pub enum SupervisorAction {
     Health,
     Open,
@@ -54,31 +55,6 @@ pub enum SupervisorAction {
     Replay,
     Status,
     Detach,
-}
-
-impl SupervisorAction {
-    pub(crate) const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Health => "health",
-            Self::Open => "open",
-            Self::Next => "next",
-            Self::FinishFallback => "finishFallback",
-            Self::AdminCloseHandle => "adminCloseHandle",
-            Self::RetireCommand => "retireCommand",
-            Self::Write => "write",
-            Self::OperationStatus => "operationStatus",
-            Self::Ack => "ack",
-            Self::Replay => "replay",
-            Self::Status => "status",
-            Self::Detach => "detach",
-        }
-    }
-}
-
-impl fmt::Display for SupervisorAction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.wire_name())
-    }
 }
 
 /// Errors distinguish a rejected handshake, a lost connection, and a request

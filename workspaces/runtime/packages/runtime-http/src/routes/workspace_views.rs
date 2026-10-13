@@ -53,14 +53,7 @@ async fn changes(
         let actor = WorkspaceViewsRepository::agent(&transaction, actor_id)
             .map_err(|_| invalid_stored("runtime_agents", actor_id))?
             .ok_or_else(invalid_request)?;
-        let actor = actor.value();
-        let actor = checked_stored(
-            &state.validators,
-            "AgentRecordResponse",
-            "runtime_agents",
-            actor_id,
-            actor,
-        )?;
+        let actor = actor.value().clone();
         if deleted(&actor) {
             return Err(invalid_request());
         }
@@ -286,58 +279,42 @@ fn workspace_view(
                 .map_err(|_| invalid_stored("runtime_complaints", "unknown"))?,
         )?
     };
-    let rules = parse_records(
-        validators,
-        "RuleRecordResponse",
+    let rules = parse_open_records(
         "runtime_rules",
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
             .map_err(|_| invalid_stored("runtime_rules", "unknown"))?,
     )?;
-    let tasks = parse_records(
+    let tasks = project_task_records(
         validators,
-        "TaskDetailResponse",
-        "runtime_tasks",
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
             .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?,
-    )?
-    .into_iter()
-    .map(|task| {
-        let id = task["id"].as_str().unwrap_or("unknown");
-        let projection = validators
-            .project_entity("TaskEntityDto", &task)
-            .ok_or_else(|| invalid_stored("runtime_tasks", id))?;
-        if !validators.validate_stored("TaskEntityDto", &projection) {
-            return Err(invalid_stored("runtime_tasks", id));
-        }
-        Ok(projection)
-    })
-    .collect::<Result<Vec<_>, ApiError>>()?;
-    let monitors = parse_records(
-        validators,
-        "MonitorRecordResponse",
-        "runtime_monitors",
-        WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
-            .map_err(|_| invalid_stored("runtime_monitors", "unknown"))?,
-    )?
-    .into_iter()
-    .map(|monitor| {
-        let id = monitor["id"].as_str().unwrap_or("unknown");
-        let projection = validators
-            .project_entity("MonitorEntityDto", &monitor)
-            .ok_or_else(|| invalid_stored("runtime_monitors", id))?;
-        if !validators.validate_stored("MonitorEntityDto", &projection) {
-            return Err(invalid_stored("runtime_monitors", id));
-        }
-        Ok(projection)
-    })
-    .collect::<Result<Vec<_>, ApiError>>()?
-    .into_iter()
-    .filter(|monitor| {
-        monitor["agent"]
-            .as_str()
-            .is_some_and(|agent| ids.iter().any(|id| id == agent))
-    })
-    .collect::<Vec<_>>();
+    )?;
+    let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
+        .map_err(|_| invalid_stored("runtime_monitors", "unknown"))?
+        .into_iter()
+        .map(|row| {
+            let id = row.id;
+            let raw = row
+                .record
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
+            let monitor: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_monitors", &id))?;
+            if monitor.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(invalid_stored("runtime_monitors", &id));
+            }
+            let projection = validators
+                .project_entity("monitor", &monitor)
+                .ok_or_else(|| invalid_stored("runtime_monitors", &id))?;
+            Ok(projection)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?
+        .into_iter()
+        .filter(|monitor| {
+            monitor["agent"]
+                .as_str()
+                .is_some_and(|agent| ids.iter().any(|id| id == agent))
+        })
+        .collect::<Vec<_>>();
     let inbox = studio_runtime_services::workspace_views::workspace_inbox(
         studio_runtime_services::workspace_views::WorkspaceInboxData {
             agents: &agents,
@@ -377,9 +354,7 @@ fn workspace_view(
     let checkpoint_ids = agent_id
         .map(|id| vec![id.to_owned()])
         .unwrap_or_else(|| ids.clone());
-    let checkpoint_records = parse_records(
-        validators,
-        "CheckpointSummary",
+    let checkpoint_records = parse_open_records(
         "runtime_checkpoints",
         WorkspaceViewsRepository::records_for_agents(
             connection,
@@ -449,8 +424,8 @@ fn workspace_view(
 }
 
 fn parse_records(
-    validators: &Registry,
-    schema: &str,
+    _validators: &Registry,
+    _schema: &str,
     table: &str,
     records: Vec<StoredRecord>,
 ) -> Result<Vec<Value>, ApiError> {
@@ -460,7 +435,53 @@ fn parse_records(
             let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
             let value: Value =
                 serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
-            checked_stored(validators, schema, table, &row.id, value)
+            if !value.is_object()
+                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
+            {
+                return Err(invalid_stored(table, &row.id));
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn parse_open_records(table: &str, records: Vec<StoredRecord>) -> Result<Vec<Value>, ApiError> {
+    records
+        .into_iter()
+        .map(|row| {
+            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
+            let value: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
+            if !value.is_object()
+                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
+            {
+                return Err(invalid_stored(table, &row.id));
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn project_task_records(
+    validators: &Registry,
+    records: Vec<StoredRecord>,
+) -> Result<Vec<Value>, ApiError> {
+    records
+        .into_iter()
+        .map(|row| {
+            let id = row.id;
+            let raw = row
+                .record
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
+            let task: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_tasks", &id))?;
+            if task.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(invalid_stored("runtime_tasks", &id));
+            }
+            let projection = validators
+                .project_entity("task", &task)
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
+            Ok(projection)
         })
         .collect()
 }
@@ -581,20 +602,6 @@ fn map_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         _ => ApiError::internal(),
-    }
-}
-
-fn checked_stored(
-    validators: &Registry,
-    schema: &str,
-    table: &str,
-    id: &str,
-    value: Value,
-) -> Result<Value, ApiError> {
-    if !validators.valid_stored_record(schema, id, &value) {
-        Err(invalid_stored(table, id))
-    } else {
-        Ok(value)
     }
 }
 

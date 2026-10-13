@@ -1,5 +1,7 @@
 pub mod account_state;
 pub(crate) mod agents;
+pub mod analytics;
+pub(crate) mod checkpoints;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
@@ -12,6 +14,7 @@ pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
 pub(crate) mod queue_write;
+pub(crate) mod remote_transport;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
@@ -19,6 +22,7 @@ pub(crate) mod tasks;
 pub(crate) mod terminals;
 pub(crate) mod transcript;
 pub(crate) mod usage;
+pub(crate) mod voice;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
 pub(crate) mod workspace_views;
@@ -145,7 +149,7 @@ mod tests {
             .map(|registration| registration.repository.to_owned())
             .collect::<Vec<_>>();
         assert_eq!(registered_modules, requirement_modules);
-        assert_eq!(registrations.len(), 24);
+        assert_eq!(registrations.len(), requirement_modules.len());
         assert!(registered_modules.windows(2).all(|pair| pair[0] < pair[1]));
     }
 

@@ -87,6 +87,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "command": "c" * 2500 if number == 104 else "fixture command",
                         "arguments": "private arguments",
                         "error": "private error",
+                        **({"pythonOnlyMetadata": {"dispatchOwned": True}} if number == 104 else {}),
                     })
                 runtime.put(db, "tasks", {
                     "id": "workspace-views-other-task",
@@ -210,6 +211,13 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "recipient": lead["id"],
                     "responses": [],
                 })
+            runtime.rules({
+                "agent": lead["id"], "action": "save",
+                "id": "workspace-view-ticked-rule",
+                "name": "Ticked workspace rule", "kind": "low_workers",
+                "minimumWorkers": 1, "durationMinutes": 60,
+            })
+            runtime.rules_tick()
             cls.lead_id = lead["id"]
             cls.worker_id = worker["id"]
             cls.other_id = other["id"]
@@ -384,6 +392,10 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(workspace.status, 200, workspace.body[:1000])
         snapshot = workspace.json()
+        ticked_rule = next(rule for rule in snapshot["rules"] if rule["id"] == "workspace-view-ticked-rule")
+        self.assertEqual(ticked_rule["activeWorkers"], 0)
+        self.assertIsNotNone(ticked_rule["lowSince"])
+        self.assertFalse(ticked_rule["alerted"])
         self.assertEqual(snapshot["work"][0]["id"], "workspace-view-work")
         self.assertEqual(snapshot["work"][0]["displayStatus"], "ready")
         self.assertEqual(snapshot["annotations"][0]["id"], "workspace-view-annotation")

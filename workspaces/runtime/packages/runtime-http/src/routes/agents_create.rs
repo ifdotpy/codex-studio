@@ -1,162 +1,273 @@
-//! Persisted agent creation and management route slice.
-
+//! Typed HTTP boundary for persisted agent operations.
 use super::extractors::ApiJson;
-use super::manifest::{OperationStatus, RouteGroup, post};
-use axum::Json;
-use axum::extract::State;
-use axum::http::StatusCode;
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
+use crate::{error::ApiError, generated, router::HttpState};
+use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-use studio_runtime_services::agents_create::{self, RenameError};
-use studio_runtime_services::event_write::python_json;
-use studio_runtime_store::SyncDocumentsRepository;
-
-use crate::error::ApiError;
-use crate::router::HttpState;
+use studio_runtime_services::agents_create::{self, Context, Creation, OperationError};
 
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![post(
-        "/api/rename",
-        OperationStatus::Implemented,
-        rename,
-    )])
+    const LEAD_DEPENDENCIES: [Dependency; 6] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("agent-management/empty-chat-reuse"),
+        Dependency::new("project-driver/chat-binding"),
+        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("workspace-state/lead-workspace"),
+    ];
+    const RENAME_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("provider-session/title-generation")];
+    const AGENT_DEPENDENCIES: [Dependency; 6] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("worker-driver/work-assignment"),
+        Dependency::new("worker-driver/workspace-preparation"),
+        Dependency::new("workspace-state/lead-workspace"),
+    ];
+    const CONFIGURE_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("agent-management/agent-mode-settings")];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("agent-management/conversation-settings")];
+    const DELETE_DEPENDENCY: [Dependency; 1] =
+        [Dependency::new("agent-management/conversation-termination")];
+    RouteGroup::new(vec![
+        post(
+            "/api/agents",
+            OperationStatus::partial(&AGENT_DEPENDENCIES),
+            create_agent,
+        ),
+        post(
+            "/api/configure",
+            OperationStatus::partial(&CONFIGURE_DEPENDENCIES),
+            configure,
+        ),
+        post(
+            "/api/conversation",
+            OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
+            conversation,
+        ),
+        post(
+            "/api/conversation/delete",
+            OperationStatus::partial(&DELETE_DEPENDENCY),
+            delete_conversation,
+        ),
+        post(
+            "/api/leads",
+            OperationStatus::partial(&LEAD_DEPENDENCIES),
+            create_lead,
+        ),
+        post(
+            "/api/rename",
+            OperationStatus::partial(&RENAME_DEPENDENCIES),
+            rename,
+        ),
+    ])
 }
 
-const MAX_MUTATION_SYNC_ENTITIES: i64 = 500;
-
-async fn rename(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::RenameRequest>,
+async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
+    state: HttpState,
+    operation: impl FnOnce(&Context<'_>) -> Result<Value, OperationError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
-    let id = body.id;
-    let request_id = body.request_id.flatten();
-    let name = body.name.flatten().map(|name| name.trim().to_owned());
-    if name.as_ref().is_some_and(String::is_empty) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "A name must have 1 to 80 characters",
-        ));
-    }
-    let signature = rename_signature(&id, name.as_deref());
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
-        let before_connection = store.read().map_err(|_| ApiError::internal())?;
-        let sync_after = SyncDocumentsRepository::entity_sequence(&before_connection)
-            .map_err(|_| ApiError::internal())?;
-        drop(before_connection);
-        let mut result = store
-            .transaction_with_error(|transaction| {
-                agents_create::rename(
-                    transaction,
-                    &id,
-                    name.as_deref(),
-                    request_id.as_deref(),
-                    &signature,
-                )
-            })
-            .map_err(rename_error)?;
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let rows = SyncDocumentsRepository::entities_after(
-            &connection,
-            sync_after,
-            MAX_MUTATION_SYNC_ENTITIES + 1,
-        )
-        .map_err(|_| ApiError::internal())?;
-        if !rows.is_empty() {
-            result["_syncEntities"] = Value::Array(
-                rows.iter()
-                    .take(MAX_MUTATION_SYNC_ENTITIES as usize)
-                    .map(|row| {
-                        serde_json::json!({
-                            "id": format!("entity:{}:{}", row.collection, row.id),
-                            "seq": row.sequence,
-                            "payload": row.payload,
-                            "_deleted": row.deleted,
-                        })
-                    })
-                    .collect(),
-            );
-            let tombstone_floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
-                .map_err(|_| ApiError::internal())?;
-            if rows.len() <= MAX_MUTATION_SYNC_ENTITIES as usize && tombstone_floor <= sync_after {
-                result["_syncEntitiesAfter"] = serde_json::json!(sync_after);
-            }
-        }
-        Ok::<_, ApiError>(result)
+        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+        let context = Context {
+            store,
+            accounts: state.account_policy.as_deref(),
+            driver: state.account_driver.as_deref(),
+            validate: &|schema, value| match schema {
+                "PersistedAgentRecord" => state
+                    .validators
+                    .validate_table_record("runtime_agents", value),
+                _ => state.validators.validate_stored(schema, value),
+            },
+        };
+        let result = operation(&context).map_err(operation_error)?;
+        state.event_wake.notify_one();
+        super::generated_json::<T>(result).map(Json)
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    Ok(Json(super::generated_json::<
-        crate::generated::RenameResponse,
-    >(result)?))
+    Ok(result)
 }
 
-fn rename_signature(id: &str, name: Option<&str>) -> String {
-    let name = name
-        .map(|value| python_json(&Value::String(value.to_owned())))
-        .unwrap_or_else(|| "null".to_owned());
-    let body = format!(
-        "{{\"chat\": {}, \"name\": {name}, \"operation\": \"rename\"}}",
-        python_json(&Value::String(id.to_owned()))
-    );
-    Sha256::digest(body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+async fn create_lead(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::CreateLeadRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let request = Creation {
+        intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
+        catalog: body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
+            || body.model.as_ref().is_some_and(Option::is_some),
+        worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
+        project_binding: body.project_id.flatten().is_some()
+            || body.project_server_id.flatten().is_some()
+            || body.project_folder.flatten().is_some(),
+        id: body.id.flatten(),
+        cwd: body.cwd,
+        account: body.account_key,
+        workspace: body.workspace_mode.map(|value| value.to_string()),
+        yolo: body.yolo_mode,
+        previous: body.previous.flatten(),
+        reuse_empty: body.reuse_empty,
+        ..Creation::default()
+    };
+    dispatch::<generated::AgentResponse>(state, move |context| {
+        agents_create::lead(context, request)
+    })
+    .await
 }
-
-fn rename_error(error: RenameError) -> ApiError {
-    match error {
-        RenameError::UnknownAgent => {
-            ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
-        }
-        RenameError::Deleted => {
-            ApiError::new(StatusCode::BAD_REQUEST, "This conversation was deleted")
-        }
-        RenameError::Conflict => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "This request id has different content",
-        ),
-        RenameError::RequestIdRequired => {
-            ApiError::new(StatusCode::BAD_REQUEST, "A rename request id is required")
-        }
-        RenameError::TitleGenerationUnavailable => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires provider-session/title-generation",
-        ),
-        RenameError::InvalidStoredObject { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
-        RenameError::Store(studio_runtime_store::StoreError::InvalidStoredObject { table, id }) => {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {table}/{id}"),
-            )
-        }
-        RenameError::Store(_) => ApiError::internal(),
+async fn create_agent(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::CreateAgentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if state.store.is_none() && state.account_driver.is_none() {
+        return Err(operation_error(OperationError::Unavailable(
+            "account-driver/unavailable",
+        )));
     }
+    let request = Creation {
+        intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
+        catalog: body.model.is_some()
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some(),
+        worker_catalog: body.worker_defaults.is_some(),
+        id: body.id.flatten(),
+        cwd: body.cwd,
+        account: body.account_key,
+        workspace: body.workspace_mode.map(|value| value.to_string()),
+        name: body.name,
+        prompt: body.prompt,
+        role: body.role.map(|value| value.to_string()),
+        yolo: body.yolo_mode,
+        concurrency: body.concurrency,
+        max_agents: body.max_agents,
+        token_budget: body.token_budget.flatten(),
+        profile: body.profile_id.flatten(),
+        parent: body.parent.flatten(),
+        ..Creation::default()
+    };
+    dispatch::<generated::AgentResponse>(state, move |context| {
+        agents_create::agent(context, request)
+    })
+    .await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::rename_signature;
-    use sha2::{Digest, Sha256};
-
-    #[test]
-    fn rename_signature_matches_python_sorted_json_encoding() {
-        let body = r#"{"chat": "chat-1", "name": "Caf\u00e9", "operation": "rename"}"#;
-        let expected = Sha256::digest(body.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        assert_eq!(rename_signature("chat-1", Some("Café")), expected);
+async fn configure(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::ConfigureRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let request = agents_create::Configuration {
+        id: body.id,
+        concurrency: body.concurrency,
+        max_agents: body.max_agents,
+        token_budget: body.token_budget,
+        mode_receipt: body.expected_mode_revision.is_some() || body.request_id.is_some(),
+    };
+    dispatch::<generated::ConfigureResponse>(state, move |context| {
+        agents_create::configure(context, request)
+    })
+    .await
+}
+async fn conversation(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::ConversationRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let request = agents_create::Conversation {
+        non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
+        settings: body.cwd.is_some()
+            || body.yolo_mode.is_some()
+            || body.model.is_some()
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
+            || body.next_turn.flatten().is_some()
+            || body.request_id.flatten().is_some()
+            || body.worker_defaults.is_some()
+            || body.review_defaults.is_some()
+            || body.agent_mode.is_some()
+            || body.subagent_concurrency.is_some()
+            || body.expected_mode_revision.is_some(),
+        id: body.id,
+        expected_account: body.expected_account_key,
+        excluded: body.excluded_account_keys.map(|mut keys| {
+            keys.sort();
+            keys
+        }),
+    };
+    dispatch::<generated::AgentResponse>(state, move |context| {
+        agents_create::conversation(context, request)
+    })
+    .await
+}
+async fn rename(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::RenameRequest>,
+) -> Result<Json<Value>, ApiError> {
+    dispatch::<generated::RenameResponse>(state, move |context| {
+        agents_create::rename_operation(
+            context,
+            &body.id,
+            body.name.flatten().as_deref(),
+            body.request_id.flatten().as_deref(),
+        )
+    })
+    .await
+}
+async fn delete_conversation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
+    Err(operation_error(OperationError::Unavailable(
+        "agent-management/conversation-termination",
+    )))
+}
+fn operation_error(error: OperationError) -> ApiError {
+    use agents_create::MutationError;
+    if matches!(
+        error,
+        OperationError::Create(MutationError::RequestIdRequired)
+    ) {
+        return ApiError::validation(vec![Value::String("body".to_owned())]);
     }
+    let status = match &error {
+        OperationError::Unavailable(_)
+        | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
+            StatusCode::NOT_IMPLEMENTED
+        }
+        OperationError::Internal
+        | OperationError::Store(_)
+        | OperationError::Create(
+            MutationError::Store(_) | MutationError::InvalidStoredObject { .. },
+        ) => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    if matches!(
+        error,
+        OperationError::Store(_) | OperationError::Create(MutationError::Store(_))
+    ) {
+        return ApiError::internal();
+    }
+    ApiError::new(status, error.to_string())
 }
+
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "agents_create",
         routes: Some(routes),
-        dependencies: &["agent-discovery/launcher-status"],
+        dependencies: &[
+        "account-driver/unavailable",
+        "agent-discovery/launcher-status",
+        "agent-management/agent-mode-settings",
+        "agent-management/conversation-settings",
+        "agent-management/conversation-termination",
+        "agent-management/empty-chat-reuse",
+        "project-driver/chat-binding",
+        "provider-session/model-list",
+        "provider-session/title-generation",
+        "worker-driver/settings-catalog",
+        "worker-driver/work-assignment",
+        "worker-driver/workspace-preparation",
+        "workspace-state/lead-workspace",
+        ],
     }
 }
