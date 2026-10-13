@@ -80,6 +80,23 @@ fn receipt_survives_store_failure_restart_and_replays_once() {
 }
 
 #[test]
+fn malformed_pending_result_receipt_is_a_fatal_tick_error() {
+    let root = fixtures::tempdir();
+    fixtures::corpus(root.path());
+    let store = fixtures::store(root.path(), "corrupt-receipt");
+    let directory = store.root().join("monitor-results");
+    std::fs::create_dir(&directory).expect("monitor fixture");
+    std::fs::write(directory.join("corrupt.json"), b"{").expect("monitor fixture");
+
+    let error = monitor_receipts::recover_pending(&store, 64).expect_err("corrupt receipt");
+    assert!(matches!(
+        &error,
+        studio_runtime_services::monitor_policy::MonitorError::InvalidResultReceipt("json")
+    ));
+    assert!(error.fatal_for_tick());
+}
+
+#[test]
 fn unknown_input_stays_blocked_and_foreign_receipt_cannot_release_it() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());

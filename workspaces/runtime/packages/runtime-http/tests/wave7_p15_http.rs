@@ -80,7 +80,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         "Not implemented: requires monitor-input-request-identity"
     );
     assert!(port.submitted.lock().expect("submitted").is_empty());
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let (status, response) = call(
             &app,
             "/api/monitor/cancel",
@@ -89,6 +89,15 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         .await;
         assert_eq!(status, 200, "{response}");
         assert_eq!(response["cancelRequested"], true);
+        if attempt == 0 {
+            let entities = response["_syncEntities"].as_array().expect("sync deltas");
+            let entity_id = format!(
+                "entity:monitor:{}",
+                case["before"]["id"].as_str().expect("monitor id")
+            );
+            assert!(entities.iter().any(|entity| entity["id"] == entity_id));
+            assert!(response["_syncEntitiesAfter"].is_number());
+        }
     }
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
     let saved = MonitorsRepository::get(

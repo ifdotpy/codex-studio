@@ -43,6 +43,14 @@ pub struct Operation {
 pub enum MonitorError {
     #[error("Invalid stored object monitors/{id} at {location}")]
     InvalidStored { id: String, location: String },
+    #[error("Invalid persisted monitor result receipt: {0}")]
+    InvalidResultReceipt(&'static str),
+    #[error("Invalid monitor delivery identity: {0}")]
+    InvalidDeliveryIdentity(&'static str),
+    #[error("Invalid monitor output receipt: {0}")]
+    InvalidOutputReceipt(&'static str),
+    #[error("Monitor runtime tick task failed")]
+    TaskFailed,
     #[error("{0}")]
     Refused(&'static str),
     #[error("Not implemented: requires {0}")]
@@ -55,6 +63,53 @@ pub enum MonitorError {
     Rules(#[from] crate::rules_tick::RulesTickError),
     #[error("monitor file operation failed")]
     Io(#[from] std::io::Error),
+}
+
+impl MonitorError {
+    /// Invalid persisted state and incompatible contracts cannot be repaired by
+    /// replaying a timer batch. Other failures retain their durable identities.
+    pub fn fatal_for_tick(&self) -> bool {
+        match self {
+            Self::InvalidStored { .. } => true,
+            Self::InvalidResultReceipt(_) => true,
+            Self::InvalidDeliveryIdentity(_) => true,
+            Self::InvalidOutputReceipt(_) => true,
+            Self::TaskFailed => true,
+            Self::Store(error) => fatal_store_error(error),
+            Self::Event(crate::event_write::EventWriteError::InvalidStoredObject { .. }) => true,
+            Self::Event(crate::event_write::EventWriteError::Store(error)) => {
+                fatal_store_error(error)
+            }
+            Self::Rules(crate::rules_tick::RulesTickError::Rule(
+                crate::rules_engine::RuleError::Invalid { .. }
+                | crate::rules_engine::RuleError::Schema,
+            )) => true,
+            Self::Rules(crate::rules_tick::RulesTickError::Store(error)) => {
+                fatal_store_error(error)
+            }
+            Self::Rules(crate::rules_tick::RulesTickError::Event(
+                crate::event_write::EventWriteError::InvalidStoredObject { .. },
+            )) => true,
+            Self::Rules(crate::rules_tick::RulesTickError::Event(
+                crate::event_write::EventWriteError::Store(error),
+            )) => fatal_store_error(error),
+            _ => false,
+        }
+    }
+}
+
+fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
+    matches!(
+        error,
+        studio_runtime_store::StoreError::SchemaMismatch(_)
+            | studio_runtime_store::StoreError::InvalidSyncObject { .. }
+            | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+            | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+            | studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | studio_runtime_store::StoreError::SchemaValidation(_)
+            | studio_runtime_store::StoreError::RecordContract(_)
+            | studio_runtime_store::StoreError::Json(_)
+    )
 }
 
 #[derive(Clone, Deserialize)]

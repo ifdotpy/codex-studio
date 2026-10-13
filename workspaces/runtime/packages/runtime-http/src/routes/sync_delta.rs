@@ -35,6 +35,34 @@ where
     .map_err(|_| ApiError::internal())?
 }
 
+/// Wrap a runtime-backed mutation that owns its transaction with the same
+/// post-write entity delta used by transaction-local route handlers.
+pub(crate) async fn write_external<E>(
+    store: Arc<RuntimeStore>,
+    operation: impl FnOnce() -> Result<Value, E> + Send + 'static,
+    map_error: impl FnOnce(E) -> ApiError + Send + 'static,
+) -> Result<Value, ApiError>
+where
+    E: From<StoreError> + Send + 'static,
+{
+    let before = store.read().map_err(|_| ApiError::internal())?;
+    let sequence =
+        SyncDocumentsRepository::entity_sequence(&before).map_err(|_| ApiError::internal())?;
+    drop(before);
+    tokio::task::spawn_blocking(move || {
+        let result = operation().map_err(map_error)?;
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        let rows = SyncDocumentsRepository::entities_after(&connection, sequence, 501)
+            .map_err(|_| ApiError::internal())?;
+        let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
+            .map_err(|_| ApiError::internal())?;
+        let sync_after = (rows.len() <= 500 && floor <= sequence).then_some(sequence);
+        Ok(attach(result, rows, sync_after))
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
 pub(crate) fn attach(mut result: Value, rows: Vec<EntityRow>, sync_after: Option<i64>) -> Value {
     if !rows.is_empty() {
         result["_syncEntities"] = Value::Array(

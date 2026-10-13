@@ -41,13 +41,14 @@ async fn cancel(
     ApiJson(body): ApiJson<crate::generated::MonitorId>,
 ) -> Result<Json<Value>, ApiError> {
     if let Some(Extension(runtime)) = runtime {
-        return tokio::task::spawn_blocking(move || {
-            runtime.cancel(&body.id, None, event_write::unix_time()?)
-        })
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map(Json)
-        .map_err(error);
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let result = super::sync_delta::write_external(
+            store,
+            move || runtime.cancel(&body.id, None, event_write::unix_time()?),
+            error,
+        )
+        .await?;
+        return Ok(Json(result));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = super::sync_delta::write(

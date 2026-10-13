@@ -87,6 +87,7 @@ pub struct MonitorRuntime {
     output: MonitorOutput,
     scan: Mutex<Scan>,
     wake: Arc<Notify>,
+    last_tick_error: Mutex<Option<String>>,
 }
 
 impl MonitorRuntime {
@@ -100,62 +101,127 @@ impl MonitorRuntime {
                 recovering_rules: true,
                 ..Scan::default()
             }),
+            last_tick_error: Mutex::new(None),
         }
+    }
+
+    /// Last timer failure, cleared after a successful tick. The host can inspect
+    /// this while the consumer retries transient transport and storage failures.
+    pub fn last_tick_error(&self) -> Option<String> {
+        self.last_tick_error
+            .lock()
+            .expect("monitor tick diagnostic")
+            .clone()
     }
 
     /// Caller supplies wall time once per batch; tests can drive time deterministically.
     pub fn tick(&self, now: f64) -> Result<(), MonitorError> {
+        let result = self.tick_inner(now);
+        *self
+            .last_tick_error
+            .lock()
+            .expect("monitor tick diagnostic") = result.as_ref().err().map(ToString::to_string);
+        result
+    }
+
+    fn tick_inner(&self, now: f64) -> Result<(), MonitorError> {
         let mut scan = self
             .scan
             .try_lock()
             .map_err(|_| MonitorError::Refused("Monitor tick already running"))?;
-        // If recovery fails, do not describe a possibly finished command as stalled.
-        if monitor_receipts::recover_pending(&self.store, BATCH)? == BATCH {
-            self.wake.notify_one();
-            return Ok(());
-        }
+        // If recovery fills its batch, continue other work but defer stall decisions.
+        let result_batch_full = monitor_receipts::recover_pending(&self.store, BATCH)? == BATCH;
         self.attach_batch(&mut scan, now)?;
+        let mut drained = false;
+        let mut failure = None;
         for _ in 0..BATCH {
-            let Some(delivery) = self.port.next()? else {
-                // Results were drained above. Recover cancellation intents before
-                // rule evaluation so an unavailable rule adapter cannot starve them.
-                for id in monitor_driver::pending_cancel_ids(&self.store)? {
-                    let _response =
-                        monitor_driver::cancel(&self.store, self.port.as_ref(), &id, None, now)?;
+            let delivery = match self.port.next() {
+                Ok(Some(delivery)) => delivery,
+                Ok(None) => {
+                    drained = true;
+                    break;
                 }
-                let rules = if scan.recovering_rules {
-                    rules_tick::recover_batch(&self.store, scan.rule, now, self.port.as_ref())?
-                } else {
-                    rules_tick::tick_batch(
-                        &self.store,
-                        scan.rule,
-                        now,
-                        &rules_tick::LocalRuleFiles,
-                        self.port.as_ref(),
-                    )?
-                };
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            };
+            if let Err(error) = self.deliver(&delivery, now) {
+                failure = Some(error);
+                break;
+            }
+            // A failed ACK leaves an exact replay, never an instruction to resend.
+            if let Err(error) = self.port.acknowledge(&delivery) {
+                failure = Some(error);
+                break;
+            }
+        }
+
+        // Cancellation receipts and rule pages progress even under sustained stream
+        // output. Their exact identities and replay receipts make this safe.
+        match monitor_driver::pending_cancel_ids(&self.store) {
+            Ok(ids) => {
+                for id in ids {
+                    if let Err(error) =
+                        monitor_driver::cancel(&self.store, self.port.as_ref(), &id, None, now)
+                    {
+                        record_tick_failure(&mut failure, error);
+                    }
+                }
+            }
+            Err(error) => {
+                record_tick_failure(&mut failure, error);
+            }
+        }
+        let rules = if scan.recovering_rules {
+            rules_tick::recover_batch(&self.store, scan.rule, now, self.port.as_ref())
+        } else {
+            rules_tick::tick_batch(
+                &self.store,
+                scan.rule,
+                now,
+                &rules_tick::LocalRuleFiles,
+                self.port.as_ref(),
+            )
+        };
+        match rules {
+            Ok(rules) => {
                 scan.rule = rules.next_rowid.unwrap_or(0);
                 if rules.next_rowid.is_none() {
                     scan.recovering_rules = false;
                 }
-                for (id, effect) in monitor_runtime::tick(&self.store, now)? {
-                    if let crate::monitor_policy::Effect::Probe {
-                        generation,
-                        command,
-                    } = effect
-                    {
-                        self.port.probe(&id, generation, &command)?;
+            }
+            Err(error) => {
+                // A failed batch may already have committed a launch intent.
+                // Reconcile it from the same cursor before ordinary rule ticks resume.
+                scan.recovering_rules = true;
+                record_tick_failure(&mut failure, error.into());
+            }
+        }
+
+        // Output-age stall decisions require a drained result queue and recovered
+        // result receipts. Cancellation and rule work above does not.
+        if drained && !result_batch_full && failure.is_none() {
+            match monitor_runtime::tick(&self.store, now) {
+                Ok(effects) => {
+                    for (id, effect) in effects {
+                        if let crate::monitor_policy::Effect::Probe {
+                            generation,
+                            command,
+                        } = effect
+                            && let Err(error) = self.port.probe(&id, generation, &command)
+                        {
+                            record_tick_failure(&mut failure, error);
+                        }
                     }
                 }
-                self.wake.notify_one();
-                return Ok(());
-            };
-            self.deliver(&delivery, now)?;
-            // A failed ACK leaves an exact replay, never an instruction to resend.
-            self.port.acknowledge(&delivery)?;
+                Err(error) => {
+                    record_tick_failure(&mut failure, error);
+                }
+            }
         }
-        // Drain retained output/results before evaluating output-age stalls.
-        Ok(())
+        self.wake.notify_one();
+        failure.map_or(Ok(()), Err)
     }
 
     fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<(), MonitorError> {
@@ -205,7 +271,9 @@ impl MonitorRuntime {
                     .store
                     .transaction_with(|tx| monitor_runtime::snapshot(tx, &delivery.id))?;
                 if snapshot.operation() != Some(&delivery.operation) {
-                    return Err(MonitorError::Refused("Monitor result identity changed"));
+                    return Err(MonitorError::InvalidDeliveryIdentity(
+                        "result operation changed",
+                    ));
                 }
                 monitor_receipts::finish(
                     &self.store,
@@ -231,7 +299,9 @@ impl MonitorRuntime {
                 self.store.transaction_with(|tx| {
                     let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
                     if snapshot.operation() != Some(&delivery.operation) {
-                        return Err(MonitorError::Refused("Monitor probe identity changed"));
+                        return Err(MonitorError::InvalidDeliveryIdentity(
+                            "probe operation changed",
+                        ));
                     }
                     let decision = crate::monitor_policy::probe_result(
                         &snapshot,
@@ -306,6 +376,15 @@ impl MonitorRuntime {
     }
 }
 
+fn record_tick_failure(current: &mut Option<MonitorError>, incoming: MonitorError) {
+    if current
+        .as_ref()
+        .is_none_or(|error| !error.fatal_for_tick() && incoming.fatal_for_tick())
+    {
+        *current = Some(incoming);
+    }
+}
+
 /// P01 owns this task and the retained transport. Signal shutdown and await the
 /// returned handle before closing the store; do not abort a commit in progress.
 pub fn start(
@@ -324,11 +403,46 @@ pub fn start(
                     if changed.is_err() || *shutdown.borrow() { return Ok(()); }
                 }
                 _ = timer.tick() => {
-                    let runtime = runtime.clone();
-                    tokio::task::spawn_blocking(move || runtime.tick(event_write::unix_time()?))
-                        .await.map_err(|_| MonitorError::Refused("Monitor runtime task failed"))??;
+                    let tick_runtime = runtime.clone();
+                    let result = tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?))
+                        .await.map_err(|_| MonitorError::TaskFailed)?;
+                    match result {
+                        Err(error) if error.fatal_for_tick() => return Err(error),
+                        _ => {}
+                    }
                 }
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_tick_failure;
+    use crate::monitor_policy::MonitorError;
+
+    #[test]
+    fn fatal_phase_error_replaces_an_earlier_retryable_error() {
+        let mut failure = Some(MonitorError::Refused("transport unavailable"));
+        record_tick_failure(&mut failure, MonitorError::InvalidResultReceipt("json"));
+        assert!(matches!(
+            failure.as_ref(),
+            Some(MonitorError::InvalidResultReceipt("json"))
+        ));
+
+        record_tick_failure(&mut failure, MonitorError::Refused("transient"));
+        assert!(matches!(
+            failure.as_ref(),
+            Some(MonitorError::InvalidResultReceipt("json"))
+        ));
+
+        let malformed_rule = studio_runtime_store::RuleRecord::from_value(serde_json::json!({
+            "agent": "agent-without-id"
+        }))
+        .expect_err("persisted rule without string id");
+        let rule_error = MonitorError::Rules(crate::rules_tick::RulesTickError::Store(
+            malformed_rule.into(),
+        ));
+        assert!(rule_error.fatal_for_tick());
+    }
 }

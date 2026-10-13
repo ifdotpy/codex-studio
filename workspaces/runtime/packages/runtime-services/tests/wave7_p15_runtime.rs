@@ -6,13 +6,18 @@ mod fixtures;
 mod prepared_python_support;
 
 use serde_json::{Value, json};
+use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 use studio_runtime_services::{
     monitor_policy::Input,
     monitor_receipts::{self, ResultReceipt},
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
-use studio_runtime_store::{MonitorsRepository, RuntimeStore};
+use studio_runtime_store::{
+    AgentRecord, AgentRepository, MonitorsRepository, RuleRecord, RulesRepository, RuntimeStore,
+};
 use tokio::sync::Notify;
 
 #[path = "wave7_p15_support/mod.rs"]
@@ -22,6 +27,13 @@ fn record(store: &RuntimeStore, id: &str) -> Value {
     MonitorsRepository::get(&store.read().expect("read"), id)
         .expect("get")
         .expect("monitor")
+        .value()
+        .clone()
+}
+fn rule_record(store: &RuntimeStore, id: &str) -> Value {
+    RulesRepository::get(&store.read().expect("read"), id)
+        .expect("get rule")
+        .expect("rule")
         .value()
         .clone()
 }
@@ -42,6 +54,26 @@ fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
         cursor: cursor.into(),
         event,
     }
+}
+
+fn due_rule_case() -> Value {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let python = prepared_python_support::prepared_python(&manifest.join("../../apps/server/src"));
+    let output = Command::new(python)
+        .arg("-B")
+        .arg(manifest.join("tests/rules_engine/oracle.py"))
+        .output()
+        .expect("rules oracle starts");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<Vec<Value>>(&output.stdout)
+        .expect("rules oracle JSON")
+        .into_iter()
+        .find(|case| case["name"] == "interval-boundary--1")
+        .expect("due interval rule case")
 }
 
 #[test]
@@ -93,6 +125,53 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
         count += 1;
     }
     assert!(count >= 4);
+}
+
+#[test]
+fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
+    let root = fixtures::tempdir();
+    let monitor_cases = fixtures::corpus(root.path());
+    let store = Arc::new(fixtures::store(root.path(), "rule-retry"));
+    fixtures::seed(&store, &running(&monitor_cases));
+    let rule_case = due_rule_case();
+    let rule = rule_case["rule"].clone();
+    let rule_id = rule["id"].as_str().expect("rule id").to_owned();
+    let now = rule_case["now"].as_f64().expect("rule time");
+    store
+        .transaction(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(rule_case["owner"].clone())?)?;
+            RulesRepository::put(tx, &RuleRecord::from_value(rule)?)
+        })
+        .expect("seed due rule and owner");
+
+    let port = Arc::new(Port::default());
+    let runtime = runtime(&store, &port);
+    runtime.tick(now).expect("startup rule reconciliation");
+    *port.rule_available.lock().expect("rule availability") = true;
+    port.availability_overrides
+        .lock()
+        .expect("rule availability")
+        .extend([true, false]);
+
+    assert!(runtime.tick(now + 1.0).is_err());
+    assert_eq!(rule_record(&store, &rule_id)["inFlight"], true);
+    let reserved = rule_record(&store, &rule_id)["launchIntent"].clone();
+    assert!(runtime.last_tick_error().is_some());
+
+    *port
+        .reconcile_not_submitted
+        .lock()
+        .expect("reconcile proof") = true;
+    runtime
+        .tick(now + 2.0)
+        .expect("retry reconciles saved launch intent");
+    assert!(runtime.last_tick_error().is_none());
+    let launches = port.rule_checks.lock().expect("rule checks");
+    assert_eq!(launches.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&launches[0]).expect("check JSON"),
+        reserved
+    );
 }
 
 #[test]
@@ -187,7 +266,14 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
         offset: 0,
         bytes: b"tamper".to_vec(),
     };
-    assert!(runtime.deliver(&changed, 1999.0).is_err());
+    let error = runtime
+        .deliver(&changed, 1999.0)
+        .expect_err("changed bytes at a committed output offset");
+    assert!(matches!(
+        error,
+        studio_runtime_services::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+    ));
+    assert!(error.fatal_for_tick());
     runtime.tick(1999.0).expect("output replay");
     port.deliveries.lock().expect("queue").push_back(delivery(
         &case,
@@ -228,8 +314,8 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     let port = Arc::new(Port::default());
     let runtime = runtime(&store, &port);
     runtime.tick(2000.0).expect("attach");
-    let id = case["before"]["id"].as_str().expect("id");
-    assert_eq!(record(&store, id)["reattachedConnectionId"], "restarted");
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
+    assert_eq!(record(&store, &id)["reattachedConnectionId"], "restarted");
     assert!(port.submitted.lock().expect("submitted").is_empty());
     let input = Input {
         text: "hello".into(),
@@ -238,16 +324,16 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
         close_stdin: false,
     };
     runtime
-        .input(id, "acknowledged", &input, 2001.0)
+        .input(&id, "acknowledged", &input, 2001.0)
         .expect("input reply");
-    assert!(runtime.input(id, "acknowledged", &input, 2001.0).is_err());
+    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_err());
     *port.unknown.lock().expect("unknown") = true;
-    assert!(runtime.input(id, "unknown", &input, 2002.0).is_err());
-    assert!(runtime.input(id, "retry", &input, 2003.0).is_err());
-    runtime.cancel(id, None, 2004.0).expect("cancel");
-    runtime.cancel(id, None, 2005.0).expect("duplicate cancel");
+    assert!(runtime.input(&id, "unknown", &input, 2002.0).is_err());
+    assert!(runtime.input(&id, "retry", &input, 2003.0).is_err());
+    runtime.cancel(&id, None, 2004.0).expect("cancel");
+    runtime.cancel(&id, None, 2005.0).expect("duplicate cancel");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
-    assert_eq!(record(&store, id)["inputAttempt"]["status"], "uncertain");
+    assert_eq!(record(&store, &id)["inputAttempt"]["status"], "uncertain");
 }
 
 #[tokio::test(start_paused = true)]
@@ -376,7 +462,10 @@ fn foreign_exit_cannot_poison_the_first_result_journal() {
     );
     let mut foreign = exit.clone();
     foreign.operation.connection_id = "foreign".into();
-    assert!(runtime.deliver(&foreign, 2000.0).is_err());
+    assert!(matches!(
+        runtime.deliver(&foreign, 2000.0),
+        Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
+    ));
     assert!(!store.root().join("monitor-results").exists());
     runtime.deliver(&exit, 2000.0).expect("exact result");
     assert_eq!(fixtures::events(&store), case["events"]);
@@ -422,17 +511,17 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    let id = case["before"]["id"].as_str().expect("id");
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
     let store = fixtures::store(root.path(), "cancel-restart");
     fixtures::seed(&store, &case);
 
     // Crash witness: the reservation commits, then the process stops before the
     // native port is called. The next runtime must recover this exact intent.
     let (_, operation) = store
-        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, id, None, 2000.0))
+        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, &id, None, 2000.0))
         .expect("cancel reservation");
     assert!(operation.is_some());
-    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "pending");
+    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
     let state = store.root().to_owned();
     drop(store);
 
@@ -441,18 +530,18 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     *port.not_sent.lock().expect("not sent") = true;
     let restarted_runtime = runtime(&store, &port);
     restarted_runtime.tick(2001.0).expect("proven not sent");
-    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "pending");
+    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
 
     *port.not_sent.lock().expect("not sent") = false;
     restarted_runtime.tick(2002.0).expect("written receipt");
-    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "written");
+    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
     let submitted = port.submitted.lock().expect("submitted");
     assert_eq!(submitted.len(), 2);
     assert_eq!(submitted[0], submitted[1]);
     drop(submitted);
     restarted_runtime
-        .cancel(id, None, 2003.0)
+        .cancel(&id, None, 2003.0)
         .expect("cancel replay");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
 
@@ -475,24 +564,114 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     assert_eq!(unknown_port.submitted.lock().expect("submitted").len(), 1);
 }
 
-#[tokio::test(start_paused = true)]
-async fn timer_commits_a_stall_then_shutdown_joins_the_consumer() {
+#[test]
+fn cancellation_recovery_runs_after_a_full_delivery_batch() {
+    use studio_runtime_services::monitor_driver;
+
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    case["before"]["activityAt"] = json!(1);
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
+    let store = Arc::new(fixtures::store(root.path(), "cancel-full-batch"));
+    case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
+    fixtures::seed(&store, &case);
+    let (_, operation) = store
+        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, &id, None, 2000.0))
+        .expect("cancel reservation");
+    assert!(operation.is_some());
+
+    let port = Arc::new(Port::default());
+    for offset in 0..64 {
+        port.deliveries
+            .lock()
+            .expect("deliveries")
+            .push_back(delivery(
+                &case,
+                &format!("out:{offset}"),
+                MonitorEvent::Output {
+                    offset,
+                    bytes: vec![b'x'],
+                },
+            ));
+    }
+    let runtime = runtime(&store, &port);
+    runtime.tick(2001.0).expect("full output batch");
+    assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
+    assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    case["before"]["activityAt"] = json!(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64()
+    );
+    case["before"]["stallTimeoutSeconds"] = json!(86400);
     let store = Arc::new(fixtures::store(root.path(), "timer"));
+    let id = case["before"]["id"].as_str().expect("id").to_owned();
+    case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
     fixtures::seed(&store, &case);
     let port = Arc::new(Port::default());
+    port.deliveries
+        .lock()
+        .expect("deliveries")
+        .push_back(delivery(
+            &case,
+            "out:0",
+            MonitorEvent::Output {
+                offset: 0,
+                bytes: b"marker".to_vec(),
+            },
+        ));
+    *port.fail_ack.lock().expect("ack") = true;
+    let first_ack_attempt = Arc::new(Notify::new());
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *port.fail_ack_gate.lock().expect("ack gate") = Some((first_ack_attempt.clone(), release_rx));
     let wake = Arc::new(Notify::new());
-    let runtime = Arc::new(MonitorRuntime::new(store.clone(), port, wake.clone()));
+    let runtime = Arc::new(MonitorRuntime::new(
+        store.clone(),
+        port.clone(),
+        wake.clone(),
+    ));
     let (stop, receiver) = tokio::sync::watch::channel(false);
-    let task = studio_runtime_services::monitor_runtime_wiring::start(runtime, receiver);
-    wake.notified().await;
+    let task = studio_runtime_services::monitor_runtime_wiring::start(runtime.clone(), receiver);
+    tokio::time::timeout(Duration::from_secs(5), first_ack_attempt.notified())
+        .await
+        .expect("first ACK attempt");
+    assert_eq!(port.deliveries.lock().expect("deliveries").len(), 1);
+    release_tx.send(()).expect("release failed ACK");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime.last_tick_error().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed tick is observable");
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !port.deliveries.lock().expect("deliveries").is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retry tick");
+    assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while runtime.last_tick_error().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("successful retry clears diagnostic");
+    assert_eq!(record(&store, &id)["bytes"], 6);
     stop.send(true).expect("shutdown request");
     task.await.expect("task join").expect("clean stop");
     let events = fixtures::events(&store);
-    let events = events.as_array().expect("events");
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["kind"], "monitor_stall");
+    assert!(events.as_array().expect("events").is_empty());
 }
