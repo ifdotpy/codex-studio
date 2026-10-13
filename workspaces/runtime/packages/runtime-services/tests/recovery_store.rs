@@ -138,13 +138,32 @@ fn preparation_retry_after_response_loss_preserves_exact_input() {
     assert_eq!(queue, vec![("event".into(), "pending".into())]);
 }
 fn stale_epoch_connection_and_uncertain_input_write_nothing() {
-    for change in ["epoch", "connection", "uncertain"] {
+    for change in ["epoch", "connection", "uncertain", "other_uncertain"] {
         let root = fixture();
         let store = RuntimeStore::open(Some(root.path())).expect("valid recovery fixture");
         let before = snapshot(&store);
-        store.transaction(|tx| {match change {"epoch"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',1) WHERE id='agent'",[])?;},"uncertain"=>{tx.execute("UPDATE runtime_events SET status='uncertain' WHERE id='event'",[])?;},_=>{}}Ok(())}).expect("valid recovery fixture");
+        store
+            .transaction(|tx| {
+                match change {
+                    "epoch" => {
+                        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',1) WHERE id='agent'", [])?;
+                    }
+                    "uncertain" => {
+                        tx.execute("UPDATE runtime_events SET status='uncertain' WHERE id='event'", [])?;
+                    }
+                    "other_uncertain" => {
+                        // The attempted input stays pending: only the global uncertainty
+                        // guard can prevent recovery while another input is unresolved.
+                        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('other','agent','user','unresolved input','uncertain',2,0,NULL,NULL)", [])?;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+            .expect("valid recovery fixture");
         let prior = snapshot(&store).record().clone();
         let queue = events(&store);
+        let renderer = projection(&store);
         assert!(matches!(
             apply(
                 &store,
@@ -159,6 +178,7 @@ fn stale_epoch_connection_and_uncertain_input_write_nothing() {
         ));
         assert_eq!(snapshot(&store).record(), &prior);
         assert_eq!(events(&store), queue);
+        assert_eq!(projection(&store), renderer);
     }
 }
 fn preparation_transaction_failpoints_roll_back_every_row() {
