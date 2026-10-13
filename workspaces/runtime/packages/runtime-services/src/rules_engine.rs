@@ -281,7 +281,8 @@ impl RuleSnapshot {
             && r.file_generation as i64 > r.stall_wake_generation
     }
     pub fn fingerprint_path(&self, now: f64) -> Option<&str> {
-        (self.rule.status == Status::Active
+        (self.rule.kind == Kind::File
+            && self.rule.status == Status::Active
             && !self.rule.in_flight
             && !self.owner.deleted()
             && self.owner.auto_wake
