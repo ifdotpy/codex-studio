@@ -69,6 +69,10 @@ test-server-load suite="":
 runtime-load-message-acceptance *args:
     @node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/message_acceptance.mjs {{args}}
 
+[doc("Run the announced one-tab, 16-worker Runtime callback and UI load profile.")]
+runtime-load-browser-16 *args:
+    @node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/run.mjs --teams 1 --workers-per-team 16 --rounds 1 --steady-seconds 3 --offered-rate 16 --transports 1 --producer-pool-size 1 {{args}}
+
 [doc("Measure Rust HTTP operations and discovered harness-suite conformance; writes full results beneath XDG_CACHE_HOME.")]
 rust-http-conformance-ledger:
     @cargo build -p studio-runtime-server

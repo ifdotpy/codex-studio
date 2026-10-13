@@ -51,6 +51,8 @@ just runtime-load-message-acceptance
 
 It sends at most 144 POST requests (128 unique messages and 16 same-ID retries), plus 48 read-only queue, receipt, and history checks. It has a 10-second per-request timeout and a 120-second hard deadline, then shuts down only its own isolated fixture. The report includes both the Git revision and a digest of measured source files, because local runs may use an uncommitted source change. This is a performance measurement, so run it only as an announced isolated run, never alongside ordinary checks or another load run.
 
+After a scheduler change, `just runtime-load-browser-16 --output /tmp/runtime-load-browser-16.json` runs a separate one-team, one-tab profile with 16 synthetic workers. It uses fake AppServer callbacks and no provider or native sessions; the workload has one round, a short steady phase, one fake transport, and the serial producer. Use it as an announced isolated run to inspect callback queue growth and drain alongside browser responsiveness. The runner has a 240-second hard deadline and records resource peaks but does not enforce a CPU or memory cap. A prior one-tab quick check initialized successfully but failed to render its transcript witness, so a renderer witness failure remains meaningful evidence. See [`run.mjs`](run.mjs) for the enforced profile options and acceptance checks.
+
 Pass `--output /tmp/report.json` through the recipe to choose an external report path. The equivalent direct runner command is available for source-root comparisons, but the `just` recipe is the designated load entry point.
 
 ```sh
