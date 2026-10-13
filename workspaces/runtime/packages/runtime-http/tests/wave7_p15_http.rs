@@ -1,4 +1,4 @@
-#[path = "../../runtime-services/tests/monitors/fixtures.rs"]
+#[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
 mod fixtures;
 #[path = "../../runtime-services/tests/support/prepared_python.rs"]
 mod prepared_python_support;

@@ -1,5 +1,5 @@
 //! P15 uses Python-written records and the real Python oracle via the canonical fixture.
-#[path = "monitors/fixtures.rs"]
+#[path = "wave7_p15_support/fixtures.rs"]
 mod fixtures;
 #[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
@@ -77,7 +77,18 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
         );
         assert_eq!(fixtures::events(&store), case["events"], "{}", case["name"]);
         let probes = std::mem::take(&mut *port.probes.lock().expect("probes"));
-        let expected: Vec<_> = case["probes"].as_array().expect("probes").iter().map(|probe| (probe[0].as_str().expect("id").to_owned(), probe[1].as_i64().expect("generation"), probe[3].as_str().expect("command").to_owned())).collect();
+        let expected: Vec<_> = case["probes"]
+            .as_array()
+            .expect("probes")
+            .iter()
+            .map(|probe| {
+                (
+                    probe[0].as_str().expect("id").to_owned(),
+                    probe[1].as_i64().expect("generation"),
+                    probe[3].as_str().expect("command").to_owned(),
+                )
+            })
+            .collect();
         assert_eq!(probes, expected, "{}", case["name"]);
         count += 1;
     }
@@ -398,4 +409,26 @@ fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_write_f
             assert_eq!(record(&store, id)["cancelRequested"], true);
         }
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn timer_commits_a_stall_then_shutdown_joins_the_consumer() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    case["before"]["activityAt"] = json!(1);
+    let store = Arc::new(fixtures::store(root.path(), "timer"));
+    fixtures::seed(&store, &case);
+    let port = Arc::new(Port::default());
+    let wake = Arc::new(Notify::new());
+    let runtime = Arc::new(MonitorRuntime::new(store.clone(), port, wake.clone()));
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    let task = studio_runtime_services::monitor_runtime_wiring::start(runtime, receiver);
+    wake.notified().await;
+    stop.send(true).expect("shutdown request");
+    task.await.expect("task join").expect("clean stop");
+    let events = fixtures::events(&store);
+    let events = events.as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["kind"], "monitor_stall");
 }
