@@ -49,6 +49,8 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<TaskRecord>(&connection)?,
             check_table::<PlanRecord>(&connection)?,
             check_table::<AnnotationRecord>(&connection)?,
+            check_table::<crate::budget::BudgetRecord>(&connection)?,
+            crate::budget::check_usage_readonly(&connection)?,
             check_table::<RequestRecord>(&connection)?,
             check_table::<ComplaintRecord>(&connection)?,
             check_table::<CheckpointRecord>(&connection)?,
