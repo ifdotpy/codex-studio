@@ -17,6 +17,7 @@ pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
+pub use repositories::system_reads;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
