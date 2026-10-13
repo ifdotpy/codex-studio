@@ -272,22 +272,16 @@ mod room_preparation_tests {
     #[test]
     fn paths_are_prepared_without_transaction_and_snapshot_is_rechecked() {
         let root = tempfile::tempdir().expect("isolated state");
-        let store = studio_runtime_store::RuntimeStore::open(Some(root.path())).expect("store");
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
-                    [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
-                )?;
-                Ok(())
-            })
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT);").expect("tables");
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
+                [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
+            )
             .expect("project");
-        let mut connection = store.read().expect("read");
         let prepared = RoomDirectory::prepare(&connection).expect("prepare outside transaction");
-        store.transaction(|tx| {
-            tx.execute("UPDATE runtime_projects SET record=json_set(record,'$.name','after') WHERE id='project'", [])?;
-            Ok(())
-        }).expect("concurrent project edit");
+        connection.execute("UPDATE runtime_projects SET record=json_set(record,'$.name','after') WHERE id='project'", []).expect("project edit between prepare and transaction");
         let tx = connection.transaction().expect("read transaction");
         assert!(!prepared.matches(&tx).expect("check database preconditions"));
         assert!(
