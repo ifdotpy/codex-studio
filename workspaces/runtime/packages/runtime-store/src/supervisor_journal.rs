@@ -80,6 +80,15 @@ impl SupervisorJournal {
         db.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=100;",
         )?;
+        let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| {
+            r.get::<_, u32>(0).map(u64::from)
+        })?;
+        let existing: u64 = db.query_row("PRAGMA page_count", [], |r| {
+            r.get::<_, u32>(0).map(u64::from)
+        })?;
+        // Preserve oversized existing journals while refusing further growth.
+        let maximum = (1024 * 1024 * 1024 / page_size.max(1)).max(existing);
+        db.pragma_update(None, "max_page_count", sql(maximum)?)?;
         migrate(&db)?;
         let journal = Self { db: Mutex::new(db) };
         // Check every existing handle before any process effects.
@@ -279,11 +288,24 @@ impl SupervisorJournal {
     ) -> Result<()> {
         self.transaction(|tx| {
             tx.execute("INSERT INTO recovery_events(at,handle,pid,start_time,outcome,detail) VALUES (?,?,?,?,?,?)",params![now,row.id,row.pid,row.start_time.as_deref().unwrap_or(""),outcome,detail])?;
+            tx.execute("DELETE FROM recovery_events WHERE handle=? AND id NOT IN (SELECT id FROM recovery_events WHERE handle=? ORDER BY id DESC LIMIT 16)",params![row.id,row.id])?;
             let closed = matches!(outcome, "already-exited"|"terminated"|"killed"|"identity-mismatch").then_some(now);
             tx.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",params![closed,detail,row.id])?;
             if matches!(outcome,"already-exited"|"terminated"|"killed") {
                 tx.execute("INSERT OR REPLACE INTO degraded_handles VALUES (?,?,?,?)",params![row.id,row.pid,row.start_time,now])?;
             }
+            Ok(())
+        })
+    }
+    pub fn close_unknown(&self, expected: &StoredHandle, now: f64, recovery: &Value) -> Result<()> {
+        self.transaction(|tx| {
+            let current = stored(tx, &expected.id)?.ok_or(Refusal("Unknown supervisor handle"))?;
+            if current.closed_at.is_some() || current.pid != expected.pid
+                || current.start_time != expected.start_time || current.signature != expected.signature {
+                return Err(Refusal("Operator close refused: handle identity changed").into());
+            }
+            tx.execute("UPDATE handles SET closed_at=?,closed_reason='Closed by operator after verified test/unknown-client ownership' WHERE id=?", params![now,expected.id])?;
+            tx.execute("INSERT INTO supervisor_state VALUES ('recovery',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [recovery.to_string()])?;
             Ok(())
         })
     }

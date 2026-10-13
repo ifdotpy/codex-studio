@@ -78,5 +78,25 @@
         "after": "if true || seq <= current.record.acknowledged =>"
       }
     ]
+  },
+  {
+    "id": "unknown-recovery-forgotten",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "let closed = matches!(outcome, \"already-exited\"|\"terminated\"|\"killed\"|\"identity-mismatch\").then_some(now);",
+        "after": "let closed = Some(now);"
+      }
+    ]
+  },
+  {
+    "id": "recovery-audit-bound",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "ORDER BY id DESC LIMIT 16",
+        "after": "ORDER BY id DESC LIMIT 17"
+      }
+    ]
   }
 ]

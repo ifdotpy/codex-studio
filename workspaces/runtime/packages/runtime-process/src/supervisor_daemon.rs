@@ -173,9 +173,54 @@ impl Supervisor {
                 }
                 let mut children = lock(&self.children)?;
                 let row = self.saved(&handle)?;
-                let child = children.get(&handle).ok_or(Error::Refused(
-                    "Operator close refused: no in-memory child owner exists",
-                ))?;
+                if !children.contains_key(&handle) {
+                    if row.closed_at.is_some()
+                        || row.pid != expected_pid
+                        || row.signature != expected_signature
+                        || row.start_time.as_deref().unwrap_or("") != expected_start_time
+                    {
+                        return Err(Error::Refused(
+                            "Operator close refused: handle identity changed; refresh status and verify ownership",
+                        ));
+                    }
+                    if let Some(expected) = &row.start_time {
+                        match start_time(row.pid, false)? {
+                            None => {}
+                            Some(actual) if actual == *expected => {
+                                stop_verified(
+                                    row.pid,
+                                    row.pgid
+                                        .ok_or(Error::Refused("Missing child process group"))?,
+                                    expected,
+                                )?;
+                            }
+                            Some(_) => {
+                                return Err(Error::Refused(
+                                    "Operator close refused: child identity changed",
+                                ));
+                            }
+                        }
+                    }
+                    // Exact operator acknowledgement clears unknown ownership without
+                    // inventing a process identity or resending any accepted input.
+                    let unresolved = self
+                        .journal
+                        .handles(true)?
+                        .iter()
+                        .any(|h| h.id != handle && !children.contains_key(&h.id));
+                    let mut recovery = lock(&self.recovery)?;
+                    let mut clean = recovery.clone();
+                    if !unresolved {
+                        clean["blocked"] = Value::Null;
+                        clean["fallbackReady"] = clean["degraded"].clone();
+                    }
+                    self.journal.close_unknown(&row, now()?, &clean)?;
+                    *recovery = clean;
+                    return Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}));
+                }
+                let child = children
+                    .get(&handle)
+                    .ok_or(Error::Refused("Unknown supervisor handle"))?;
                 let _write = lock(&child.write_lock)?;
                 if row.closed_at.is_some()
                     || row.pid != expected_pid
@@ -504,10 +549,12 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         if supervisor.connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
             supervisor.connections.fetch_sub(1, Ordering::AcqRel);
             socket.set_write_timeout(Some(Duration::from_secs(1)))?;
-            let _ = write_frame(
+            if write_frame(
                 &mut socket,
                 &json!({"error":"Supervisor connection capacity reached"}),
-            );
+            )
+            .is_err()
+            { /* The rejected connection may already have closed. */ }
             continue;
         }
         let copy = supervisor.clone();

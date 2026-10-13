@@ -9,6 +9,13 @@ use studio_runtime_store::{
     supervisor_journal::{AppendResult, SupervisorJournal},
 };
 
+fn disposable_root() -> tempfile::TempDir {
+    match std::env::var_os("STUDIO_SUPERVISOR_TEST_ROOT") {
+        Some(root) => tempfile::tempdir_in(root).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    }
+}
+
 fn template(corpus: bool) -> tempfile::TempDir {
     template_mode(if corpus {
         "--corpus"
@@ -17,7 +24,7 @@ fn template(corpus: bool) -> tempfile::TempDir {
     })
 }
 fn template_mode(mode: &str) -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let root = disposable_root();
     let python = std::env::var_os("CODEX_AGENTS_PYTHON")
         .expect("set CODEX_AGENTS_PYTHON to isolated prepared Python");
     let mut command = Command::new(python);
@@ -39,7 +46,8 @@ fn supervisor_python_written_decision_corpus() {
     let root = template(true);
     let cases: Vec<Value> =
         serde_json::from_slice(&fs::read(root.path().join("cases.json")).unwrap()).unwrap();
-    assert_eq!(cases.len(), 39);
+    let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
+    assert_eq!(cases.len(), if full { 111 } else { 39 });
     for case in cases {
         let state = HandleSnapshot::from_record(case["row"].clone()).unwrap();
         if case["action"] == "cursor" {
@@ -187,7 +195,7 @@ fn supervisor_journal_sql_failpoints_roll_back_before_restart() {
         ("ack", "handles", "UPDATE"),
     ];
     for (action, table, event) in stages {
-        let root = tempfile::tempdir().unwrap();
+        let root = disposable_root();
         fs::copy(
             source.path().join("supervisor.sqlite3"),
             root.path().join("supervisor.sqlite3"),
@@ -316,7 +324,10 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
         ("opened", "child_identities", "INSERT"),
         ("opened", "degraded_handles", "DELETE"),
         ("close", "handles", "UPDATE"),
+        ("close-unknown", "handles", "UPDATE"),
+        ("close-unknown", "supervisor_state", "INSERT"),
         ("recover", "recovery_events", "INSERT"),
+        ("recover", "recovery_events", "DELETE"),
         ("recover", "handles", "UPDATE"),
         ("recover", "degraded_handles", "INSERT"),
         ("retire", "events", "DELETE"),
@@ -327,7 +338,7 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
         ("recovery", "supervisor_state", "INSERT"),
     ];
     for (action, table, event) in stages {
-        let root = tempfile::tempdir().unwrap();
+        let root = disposable_root();
         fs::copy(
             source.path().join("supervisor.sqlite3"),
             root.path().join("supervisor.sqlite3"),
@@ -335,6 +346,11 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
         .unwrap();
         let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
         db.execute_batch("UPDATE handles SET id='server-command:fixture'; UPDATE child_identities SET handle='server-command:fixture'; INSERT INTO degraded_handles VALUES ('server-command:fixture',123,'fixture-start',10); INSERT INTO operations(handle,operation_id,digest,accepted,generation) VALUES ('server-command:fixture','one','digest',10,1); INSERT INTO events VALUES ('server-command:fixture',0,'stdout','null',4,1);").unwrap();
+        if action == "recover" && event == "DELETE" {
+            for _ in 0..16 {
+                db.execute("INSERT INTO recovery_events(at,handle,pid,start_time,outcome,detail) VALUES (1,'server-command:fixture',123,'fixture-start','missing-identity','old')", []).unwrap();
+            }
+        }
         let before = durable_rows(root.path());
         db.execute_batch(&format!("CREATE TRIGGER stop BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;")).unwrap();
         let journal = SupervisorJournal::open(root.path()).unwrap();
@@ -344,6 +360,13 @@ fn supervisor_journal_lifecycle_failpoints_preserve_all_rows() {
             "reserve-existing" => journal.reserve(handle, "new", 100.0).is_err(),
             "opened" => journal.opened(handle, "new", 456, "new-start").is_err(),
             "close" => journal.close(handle, "closed", 100.0).is_err(),
+            "close-unknown" => journal
+                .close_unknown(
+                    &journal.handle(handle).unwrap().unwrap(),
+                    100.0,
+                    &json!({"blocked":null}),
+                )
+                .is_err(),
             "recover" => journal
                 .recovered(
                     &journal.handle(handle).unwrap().unwrap(),
@@ -495,13 +518,13 @@ fn supervisor_inconsistent_child_identity_refuses_before_recovery() {
 fn supervisor_uncertain_recovery_remains_visible_after_each_restart() {
     let source = template(false);
     for outcome in ["missing-identity", "termination-failed"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = disposable_root();
         fs::copy(
             source.path().join("supervisor.sqlite3"),
             root.path().join("supervisor.sqlite3"),
         )
         .unwrap();
-        for restart in 0..2 {
+        for restart in 0..18 {
             let journal = SupervisorJournal::open(root.path()).unwrap();
             let handles = journal.handles(true).unwrap();
             assert_eq!(
@@ -521,6 +544,22 @@ fn supervisor_uncertain_recovery_remains_visible_after_each_restart() {
                 .unwrap()
                 .closed_at
                 .is_none()
+        );
+        let db = rusqlite::Connection::open(root.path().join("supervisor.sqlite3")).unwrap();
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM recovery_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 16);
+        journal
+            .close("fixture", "operator acknowledgement", 200.0)
+            .unwrap();
+        drop(journal);
+        assert!(
+            SupervisorJournal::open(root.path())
+                .unwrap()
+                .handles(true)
+                .unwrap()
+                .is_empty()
         );
     }
 }

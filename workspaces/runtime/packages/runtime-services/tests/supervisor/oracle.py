@@ -1,5 +1,6 @@
 """Actual Python supervisor decisions and Python-written journal template; no child launch."""
 import io
+import os
 import json
 import sys
 import threading
@@ -65,12 +66,17 @@ child.process = SimpleNamespace(supervisor=supervisor, stdin=io.StringIO(), poll
 child.paused = threading.Event()
 supervisor.children["fixture"] = child
 cases = []
-for index, message in enumerate([
+messages = [
     {"method": "echo", "params": {}},
     {"method": "echo", "params": {"text": "é雪😀", "fraction": 1e-6}},
     {"method": "initialized"},
     {"id": 991, "result": {"ok": True}},
-]):
+]
+if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL") == "1":
+    messages.extend({"method": "echo", "params": {"payload": value}} for value in [
+        None, True, False, 0, -1, 1e20, 1e-20, "\u0000", "\t\n", "𝄞" * 4, [], {"nested": [{}, None]},
+    ])
+for index, message in enumerate(messages):
     for native in (None, 17):
         operation = f"monitor:{index}:{native}"
         for retry in ("new", "duplicate", "conflict"):
