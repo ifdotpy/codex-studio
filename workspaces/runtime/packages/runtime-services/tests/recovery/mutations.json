@@ -1,0 +1,81 @@
+[
+  {
+    "id": "R1",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_policy.rs",
+    "edits": [
+      {
+        "before": "    let orphan_busy = has(a, \"inFlight\")",
+        "after": "    let orphan_busy = !has(a, \"inFlight\")"
+      }
+    ],
+    "witnesses": ["python_written_eligibility_corpus"]
+  },
+  {
+    "id": "R2",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_policy.rs",
+    "edits": [
+      {
+        "before": "|| item[\"exitCode\"].is_u64())",
+        "after": "|| item[\"exitCode\"].is_u64() || item[\"exitCode\"].is_null())"
+      }
+    ],
+    "witnesses": ["python_written_eligibility_corpus"]
+  },
+  {
+    "id": "R3",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "        if response.scope != self.scope {",
+        "after": "        if false && response.scope != self.scope {"
+      }
+    ],
+    "witnesses": ["foreign_transport_receipt_is_refused_before_use"]
+  },
+  {
+    "id": "R4",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
+    "edits": [
+      {
+        "before": "return if previous == item {",
+        "after": "return if previous != item {"
+      }
+    ],
+    "witnesses": ["conflicting_duplicate_items_are_not_a_receipt"]
+  },
+  {
+    "id": "R5",
+    "file": "workspaces/runtime/packages/runtime-services/src/task_recovery.rs",
+    "edits": [
+      {
+        "before": "        if self.has_local_receipt() {",
+        "after": "        if false && self.has_local_receipt() {"
+      }
+    ],
+    "witnesses": [
+      "exact_task_receipts_match_python_and_unknown_local_outcomes_override_native"
+    ]
+  },
+  {
+    "id": "R6",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_store.rs",
+    "edits": [
+      {
+        "before": "            if &current != a {",
+        "after": "            if false && &current != a {"
+      }
+    ],
+    "witnesses": ["recovery_transaction_restart_matrix"]
+  },
+  {
+    "id": "R7",
+    "file": "workspaces/runtime/packages/runtime-services/src/recovery_store.rs",
+    "edits": [
+      {
+        "before": "status IN ('reserved','dispatching','uncertain')",
+        "after": "status IN ('reserved','dispatching')"
+      }
+    ],
+    "witnesses": ["recovery_transaction_restart_matrix"]
+  }
+]

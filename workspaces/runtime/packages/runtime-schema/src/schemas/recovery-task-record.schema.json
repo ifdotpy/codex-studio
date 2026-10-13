@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "minLength": 1,
+      "title": "Agent",
+      "type": "string"
+    },
+    "created": {
+      "minimum": 0,
+      "title": "Created",
+      "type": "number"
+    },
+    "id": {
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "itemId": {
+      "minLength": 1,
+      "title": "Itemid",
+      "type": "string"
+    },
+    "kind": {
+      "title": "Kind",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "turnId": {
+      "minLength": 1,
+      "title": "Turnid",
+      "type": "string"
+    },
+    "type": {
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "agent",
+    "itemId",
+    "turnId",
+    "type",
+    "kind",
+    "status",
+    "created"
+  ],
+  "title": "RecoveryTaskRecord",
+  "type": "object"
+}
