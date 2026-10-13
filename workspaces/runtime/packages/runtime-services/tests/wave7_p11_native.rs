@@ -697,7 +697,7 @@ fn stored_native_action_errors_name_the_table_and_row() {
     let tx = db.unchecked_transaction().expect("begin");
     assert!(matches!(
         reserve(&tx, &request, "attempt", 1.0, &Gate),
-        Err(NativeError::InvalidStored { table: "runtime_agents", ref id, .. }) if id == "lead"
+        Err(NativeError::Store(studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_agents", ref id })) if id == "lead"
     ));
     drop(tx);
     db.execute(

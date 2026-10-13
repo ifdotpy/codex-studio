@@ -154,6 +154,7 @@ for pages in (([{'itemId':'other','processId':'17'}], [{'itemId':'item','process
 branch_data={'id':'branch-request','message_id':'lead:message','before':True}
 restore_data={'checkpoint_id':'checkpoint','expectedTree':'tree-hash'}
 a=agent()
+a.update(workspaceOperation='branch',workspaceReservationId='branch-request')
 output['forks'].append(dict(agent=a,source=WorkspaceMixin._workspace_source(a),
     branch=dict(data=branch_data,id=WorkspaceMixin._workspace_operation_id('branch','lead',branch_data)),
     restore=dict(data=restore_data,id=WorkspaceMixin._workspace_operation_id('restore','lead',restore_data),
