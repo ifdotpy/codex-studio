@@ -451,6 +451,17 @@ impl SessionControl {
         result
     }
 
+    /// Capture a prefix of the retained adapter's journal. The account owner must
+    /// still commit through this cursor before completing its external barrier.
+    pub async fn journal_barrier(&self) -> Result<EventCursor, SessionTaskError> {
+        let (reply, receipt) = oneshot::channel();
+        self.commands
+            .send(Command::Barrier { reply })
+            .await
+            .map_err(|_| SessionTaskError::Closed)?;
+        receipt.await.map_err(|_| SessionTaskError::Closed)?
+    }
+
     /// Call only after durable settlement. Success means recorded for contiguous
     /// forwarding; it is not a receipt that the supervisor has already ACKed.
     pub async fn settled(&self, cursor: EventCursor) -> Result<(), SessionTaskError> {
@@ -487,6 +498,9 @@ struct Settlement {
     reply: oneshot::Sender<Result<(), SessionTaskError>>,
 }
 enum Command {
+    Barrier {
+        reply: oneshot::Sender<Result<EventCursor, SessionTaskError>>,
+    },
     Prepare {
         prepared: PreparedRequest,
         reply: oneshot::Sender<Result<PreparedRequest, SessionTaskError>>,
@@ -698,6 +712,10 @@ impl SessionTask {
         let mut stop = self.stop.subscribe();
         let mut callback_turn = false;
         let mut acknowledgement_turn = true;
+        let mut barrier: Option<(
+            usize,
+            oneshot::Sender<Result<EventCursor, SessionTaskError>>,
+        )> = None;
         loop {
             self.publish(adapter);
             if !self.attachment_known
@@ -708,6 +726,21 @@ impl SessionTask {
             }
             if *stop.borrow() {
                 return Ok(());
+            }
+            if barrier
+                .as_ref()
+                .is_some_and(|(remaining, _)| *remaining == 0)
+                && self.retained.pending.is_none()
+                && self.retained.control.is_none()
+                && let Some((_, reply)) = barrier.take()
+            {
+                let cursor = self
+                    .seen
+                    .keys()
+                    .next_back()
+                    .copied()
+                    .unwrap_or(self.acknowledged.0);
+                let _ignored = reply.send(Ok(EventCursor(cursor)));
             }
             if flight.is_none() {
                 let has_write = self.retained.initialized.is_some()
@@ -817,12 +850,19 @@ impl SessionTask {
                     self.retained.pending = Some(SessionEvent { journal: Some(entry), outcomes: vec![] });
                     #[cfg(test)] if flight.is_some() { tests::panic_at(3); }
                     self.process_journal()?;
+                    if let Some((remaining, _)) = &mut barrier { *remaining = remaining.saturating_sub(1); }
                 }
                 _ = async { match due { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } }, if due.is_some() && self.retained.pending.is_none() && self.retained.control.is_none() => {
                     self.retained.actions = self.state.expire(self.clock.now_ms()).1;
                     self.apply_actions(true)?;
                 }
-                command = self.commands.recv(), if self.retained.pending.is_none() && self.retained.control.is_none() => {
+                command = self.commands.recv(), if barrier.is_none() && self.retained.pending.is_none() && self.retained.control.is_none() => {
+                    if let Some(Command::Barrier { reply }) = command {
+                        // Count only the prefix already queued at admission; a
+                        // replenished journal must not postpone the barrier forever.
+                        barrier = Some((adapter.journal.len(), reply));
+                        continue;
+                    }
                     self.retained.command = command;
                     if self.retained.command.is_none() { return Ok(()); }
                     self.command(writes)?;
@@ -917,6 +957,7 @@ impl SessionTask {
             .as_ref()
             .ok_or(SessionTaskError::Invalid)?
         {
+            Command::Barrier { .. } => return Err(SessionTaskError::Invalid),
             Command::Prepare { prepared, .. } => {
                 let spec = &prepared.spec;
                 let result = if self.records.len() >= MAX_PENDING_RESPONSES {
@@ -1289,6 +1330,9 @@ impl SessionTask {
 
 fn reject_command(command: Command) {
     match command {
+        Command::Barrier { reply } => {
+            let _ignored = reply.send(Err(SessionTaskError::Closed));
+        }
         Command::Prepare { reply, .. } => {
             let _ignored = reply.send(Err(SessionTaskError::Closed));
         }

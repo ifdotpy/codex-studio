@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod retained;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{path::PathBuf, process::Command};

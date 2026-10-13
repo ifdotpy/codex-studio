@@ -33,6 +33,8 @@ use tokio::{
 pub mod callback;
 pub(crate) mod history;
 pub mod preparation;
+pub mod retained;
+pub mod retained_frame;
 mod store;
 
 impl From<rusqlite::Error> for WorkerError {
@@ -194,20 +196,36 @@ impl Drop for AccountLease {
 }
 
 pub enum AccountCommand {
+    RetainedRequest(Box<retained::RequestCommand>),
+    CommittedFrame(Box<retained_frame::FrameCommand>),
+    JournalBarrier(retained::BarrierCommand),
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
-    Wake { agent_id: String, epoch: i64 },
+    Wake {
+        agent_id: String,
+        epoch: i64,
+    },
     /// Revoke the epoch and interrupt any observed native turn, including before its reply.
-    Stop { agent_id: String },
+    Stop {
+        agent_id: String,
+    },
 }
 
 pub struct AccountHandle {
+    scope: crate::recovery_history::ConnectionScope,
     commands: mpsc::Sender<AccountCommand>,
     stop: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
 }
 impl AccountHandle {
+    pub fn retained_session(&self) -> retained::RetainedSessionPort {
+        retained::RetainedSessionPort {
+            scope: self.scope.clone(),
+            commands: self.commands.clone(),
+            stop: self.stop.clone(),
+        }
+    }
     pub async fn send(&self, command: AccountCommand) -> Result<(), WorkerError> {
         let mut stop = self.stop.subscribe();
         tokio::select! { biased; _ = Shutdown::cancelled(&mut stop) => Err(WorkerError::Closed), result = self.commands.send(command) => result.map_err(|_|WorkerError::Closed) }
@@ -268,6 +286,18 @@ pub async fn start_account_worker_with_preparation(
         })
         .await?;
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
+    let recovery_account = account.clone();
+    let retained = bridge
+        .worker_run("recover_retained", move |s| {
+            retained::recover(s, &recovery_account, generation.0)
+        })
+        .await?;
+    config
+        .recovered
+        .extend(retained.iter().map(|(_, request)| request.clone()));
+    if config.recovered.len() > MAX_PENDING_RESPONSES {
+        return Err(WorkerError::Capacity);
+    }
     let timeout_ms = config.timeout_ms;
     let mut session = SessionHandle::open(
         factory,
@@ -310,6 +340,12 @@ pub async fn start_account_worker_with_preparation(
         streams,
         deferred: VecDeque::new(),
         callbacks: BTreeMap::new(),
+        retained_requests: retained
+            .into_iter()
+            .map(|(pending, request)| (request.ticket.id, pending))
+            .collect(),
+        retained_barriers: Vec::new(),
+        retained_frames: BTreeMap::new(),
         effects,
         closing: false,
     };
@@ -331,6 +367,11 @@ pub async fn start_account_worker_with_preparation(
         result
     });
     Ok(AccountHandle {
+        scope: crate::recovery_history::ConnectionScope {
+            account,
+            connection: generation.0.to_string(),
+            generation: generation.0,
+        },
         commands,
         stop,
         task,
@@ -371,6 +412,9 @@ enum Effect {
     Wake(String, i64),
 }
 struct Worker {
+    retained_requests: BTreeMap<RequestId, retained::PendingRequest>,
+    retained_frames: BTreeMap<String, retained_frame::PendingFrame>,
+    retained_barriers: Vec<retained::PendingBarrier>,
     resources: preparation::PreparationResources,
     bridge: StoreBridge,
     account: String,
@@ -449,6 +493,9 @@ impl Worker {
                 command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
                     Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
+                    Some(AccountCommand::CommittedFrame(command)) => self.committed_frame(*command).await?,
+                    Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await?,
+                    Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
                     None => return Ok(()),
@@ -795,6 +842,24 @@ impl Worker {
             if let SessionOutcome::Write {
                 operation_id,
                 ticket: None,
+                outcome: result,
+                ..
+            } = &outcome
+                && self
+                    .retained_frame_outcome(&operation_id.0, *result)
+                    .await?
+            {
+                continue;
+            }
+            if self
+                .retained_outcome(&outcome, event.journal.as_ref().map_or(0, |e| e.cursor.0))
+                .await?
+            {
+                continue;
+            }
+            if let SessionOutcome::Write {
+                operation_id,
+                ticket: None,
                 outcome,
                 ..
             } = &outcome
@@ -852,6 +917,7 @@ impl Worker {
                 }
             }
         }
+        self.complete_retained().await?;
         Ok(())
     }
     async fn journal(&mut self, entry: JournalEntry) -> Result<(), WorkerError> {

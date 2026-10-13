@@ -25,7 +25,7 @@ pub(super) fn receipt(
         .map(|r| serde_json::from_str(&r.result).map_err(|_| invalid(operation)))
         .transpose()
 }
-fn save(
+pub(super) fn save(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
     phase: &str,
@@ -46,10 +46,10 @@ fn save(
     )?;
     Ok(())
 }
-fn record(request: &RecoveredRequest) -> Value {
+pub(super) fn record(request: &RecoveredRequest) -> Value {
     json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
 }
-fn decode(record: &Value) -> Result<RecoveredRequest, WorkerError> {
+pub(super) fn decode(record: &Value) -> Result<RecoveredRequest, WorkerError> {
     let invalid = || invalid("recovery");
     Ok(RecoveredRequest {
         ticket: studio_runtime_providers::RequestTicket {
@@ -974,7 +974,7 @@ fn forget_request(
     Ok(())
 }
 
-fn replace(
+pub(super) fn replace(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
     phase: &str,
@@ -983,7 +983,7 @@ fn replace(
     tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,value.to_string()])?;
     Ok(())
 }
-fn checkpoint(
+pub(super) fn checkpoint(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     generation: u64,
