@@ -160,41 +160,11 @@ fn rollup(
     options: &AnalyticsOptions,
     scope: &str,
 ) -> Result<Value, AnalyticsError> {
-    let all_agents = records(
-        db,
-        "SELECT record FROM analytics_agents",
-        [],
-        "analytics_agents",
-    )?;
     let agent_id = options.agent.as_deref();
-    let selected = agent_id.and_then(|id| all_agents.iter().find(|row| row["id"] == id));
-    if scope != "all" && selected.is_none() {
-        return Err(AnalyticsError::InvalidRequest(
-            "Select an agent for analytics",
-        ));
-    }
-    let root = selected
-        .and_then(|row| row.get("rootId"))
-        .and_then(Value::as_str)
-        .or(agent_id)
-        .unwrap_or_default();
-    let agents: Vec<Value> = all_agents
-        .iter()
-        .filter(|row| match scope {
-            "all" => true,
-            "agent" => row.get("id").and_then(Value::as_str) == agent_id,
-            _ => {
-                row.get("rootId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_else(|| row["id"].as_str().unwrap_or_default())
-                    == root
-            }
-        })
-        .cloned()
-        .collect();
+    let (root, mut agents) = selected_agents(db, options, scope, false)?;
     let limit = options.limit.unwrap_or(50).clamp(1, 500);
     let offset = options.offset.unwrap_or(0).max(0);
-    let usage_filter = scope_filter(scope, agent_id, root, options.from, options.to, None);
+    let usage_filter = scope_filter(scope, agent_id, &root, options.from, options.to, None);
     let usage_where = usage_filter.sql.as_str();
     let usage_sql = format!("SELECT record FROM analytics_usage {usage_where} ORDER BY at,seq");
     let usage_rows = records(
@@ -203,7 +173,7 @@ fn rollup(
         params_from_iter(usage_filter.params.clone()),
         "analytics_usage",
     )?;
-    let turn_filter = scope_filter(scope, agent_id, root, None, None, None);
+    let turn_filter = scope_filter(scope, agent_id, &root, None, None, None);
     let authoritative: HashSet<(String, String, String)> = {
         let mut statement = db.prepare(&format!(
             "SELECT DISTINCT agent,COALESCE(thread,''),COALESCE(turn,'') FROM analytics_usage {} AND json_extract(record,'$.responseId') IS NOT NULL",
@@ -289,54 +259,26 @@ fn rollup(
     let call_filter = scope_filter(
         scope,
         agent_id,
-        root,
+        &root,
         options.from,
         options.to,
         Some(options.tool.as_deref().unwrap_or_default()),
     );
-    let call_where = call_filter.sql.as_str();
-    let calls_total: i64 = db.query_row(
-        &format!("SELECT COUNT(*) FROM analytics_items {call_where}"),
-        params_from_iter(call_filter.params.clone()),
-        |r| r.get(0),
-    )?;
-    let page_sql = format!(
-        "SELECT record FROM analytics_items {call_where} ORDER BY at DESC,id{}",
-        if options.export {
-            String::new()
-        } else {
-            " LIMIT ? OFFSET ?".to_owned()
-        }
-    );
-    let mut page_params = call_filter.params.clone();
-    if !options.export {
-        page_params.push(SqlValue::Integer(limit));
-        page_params.push(SqlValue::Integer(offset));
-    }
-    let calls = records(
+    let calls_total = call_filter.count(db, "analytics_items")?;
+    let calls = call_filter.page(
         db,
-        &page_sql,
-        params_from_iter(page_params),
         "analytics_items",
+        "at DESC,id",
+        if options.export { -1 } else { limit },
+        if options.export { 0 } else { offset },
     )?;
-    let items = records(
+    let items = usage_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
+    let turns = usage_filter.page(
         db,
-        &format!("SELECT record FROM analytics_items {usage_where} ORDER BY at DESC,id"),
-        params_from_iter(usage_filter.params.clone()),
-        "analytics_items",
-    )?;
-    let turns = records(
-        db,
-        &format!(
-            "SELECT record FROM analytics_turns {usage_where} ORDER BY at DESC,id DESC{}",
-            if options.export {
-                String::new()
-            } else {
-                " LIMIT 100".to_owned()
-            }
-        ),
-        params_from_iter(usage_filter.params.clone()),
         "analytics_turns",
+        "at DESC,id DESC",
+        if options.export { -1 } else { 100 },
+        0,
     )?;
     for row in &items {
         if let (Some(agent), Some(turn)) = (
@@ -350,11 +292,7 @@ fn rollup(
         .iter()
         .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect();
-    let total_turns: i64 = db.query_row(
-        &format!("SELECT COUNT(*) FROM analytics_turns {usage_where}"),
-        params_from_iter(usage_filter.params.clone()),
-        |r| r.get(0),
-    )?;
+    let total_turns = usage_filter.count(db, "analytics_turns")?;
     let tracking_raw = db
         .query_row(
             "SELECT value FROM analytics_meta WHERE key='trackingSince'",
@@ -592,64 +530,10 @@ fn rollup(
             .collect::<Result<Vec<_>, _>>()?
     };
     let breakdown = item_breakdown(db, &usage_filter)?;
-    let mut agents = agents;
-    for record in &mut agents {
-        let id = string(record, "id");
-        if let Some(runtime) = read_runtime_agent(db, &id)?
-            && let (Some(dst), Some(src)) = (record.as_object_mut(), runtime.as_object())
-        {
-            for key in [
-                "name",
-                "deletedAt",
-                "model",
-                "effort",
-                "fastMode",
-                "threadId",
-                "accountKey",
-                "rootId",
-                "parentId",
-                "cwd",
-            ] {
-                if let Some(value) = src.get(key) {
-                    dst.insert(key.to_owned(), value.clone());
-                }
-            }
-        }
-    }
-    let accounts: BTreeSet<String> = agents
-        .iter()
-        .map(|a| string_default(a, "accountKey", "default"))
-        .collect();
-    let (limit_clause, limit_params) = limit_filter(&accounts, options.from, options.to);
-    let total_limits: i64 = db.query_row(
-        &format!("SELECT COUNT(*) FROM analytics_limits {limit_clause}"),
-        params_from_iter(limit_params.clone()),
-        |r| r.get(0),
-    )?;
-    let rate_rows: Vec<(i64, String, f64)> = db
-        .prepare(&format!(
-            "SELECT id,account,at FROM analytics_limits {limit_clause} ORDER BY at DESC,id DESC{}",
-            if options.export {
-                String::new()
-            } else {
-                " LIMIT 100".into()
-            }
-        ))?
-        .query_map(params_from_iter(limit_params), |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
-        .collect::<Result<_, _>>()?;
-    let mut rates = Vec::new();
-    for (id, account, at) in rate_rows {
-        let raw = db.query_row(
-            "SELECT record FROM analytics_limits WHERE id=?1",
-            [id],
-            |r| r.get::<_, String>(0),
-        )?;
-        let data: Value = serde_json::from_str(&raw)
-            .map_err(|_| AnalyticsError::InvalidStoredObject("analytics_limits"))?;
-        rates.push(json!({"accountKey":account,"at":at,"data":data}));
-    }
+    overlay_agents(db, &mut agents)?;
+    let rate_filter = account_filter(&agents, options);
+    let total_limits = rate_filter.count(db, "analytics_limits")?;
+    let rates = rate_filter.rates(db, if options.export { -1 } else { 100 }, 0)?;
     let observed_agents: HashSet<String> = per_agent
         .keys()
         .cloned()
@@ -1174,39 +1058,91 @@ fn within_range(value: Option<f64>, from: Option<f64>, to: Option<f64>) -> bool 
         && from.is_none_or(|f| value.is_some_and(|n| n >= f))
         && to.is_none_or(|t| value.is_some_and(|n| n <= t))
 }
-fn limit_filter(
-    accounts: &BTreeSet<String>,
-    from: Option<f64>,
-    to: Option<f64>,
-) -> (String, Vec<SqlValue>) {
-    let mut conditions = Vec::new();
-    let mut params = Vec::new();
-    if accounts.is_empty() {
-        conditions.push("0".into())
-    } else {
-        conditions.push(format!(
-            "account IN ({})",
-            std::iter::repeat_n("?", accounts.len())
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
-        params.extend(accounts.iter().cloned().map(SqlValue::Text));
-    }
-    if let Some(n) = from {
-        conditions.push("at>=?".into());
-        params.push(SqlValue::Real(n));
-    }
-    if let Some(n) = to {
-        conditions.push("at<=?".into());
-        params.push(SqlValue::Real(n));
-    }
-    (format!("WHERE {}", conditions.join(" AND ")), params)
-}
+#[derive(Clone)]
 struct ScopeFilter {
     sql: String,
     params: Vec<SqlValue>,
 }
-
+impl ScopeFilter {
+    fn new() -> Self {
+        Self {
+            sql: "WHERE 1".into(),
+            params: Vec::new(),
+        }
+    }
+    fn and(mut self, predicate: &str, params: impl IntoIterator<Item = SqlValue>) -> Self {
+        self.sql.push_str(" AND ");
+        self.sql.push_str(predicate);
+        self.params.extend(params);
+        self
+    }
+    fn members(self, column: &str, values: impl IntoIterator<Item = String>) -> Self {
+        let values: Vec<_> = values.into_iter().collect();
+        self.and(
+            &format!("{column} IN (SELECT value FROM json_each(?))"),
+            [SqlValue::Text(json!(values).to_string())],
+        )
+    }
+    fn range(mut self, column: &str, from: Option<f64>, to: Option<f64>) -> Self {
+        for (op, value) in [(">=", from), ("<=", to)] {
+            if let Some(value) = value {
+                self = self.and(&format!("{column}{op}?"), [SqlValue::Real(value)]);
+            }
+        }
+        self
+    }
+    fn count(&self, db: &Connection, table: &str) -> Result<i64, AnalyticsError> {
+        Ok(db.query_row(
+            &format!("SELECT COUNT(*) FROM {table} {}", self.sql),
+            params_from_iter(&self.params),
+            |r| r.get(0),
+        )?)
+    }
+    fn page(
+        &self,
+        db: &Connection,
+        table: &'static str,
+        order: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, AnalyticsError> {
+        let mut params = self.params.clone();
+        params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
+        records(
+            db,
+            &format!(
+                "SELECT record FROM {table} {} ORDER BY {order} LIMIT ? OFFSET ?",
+                self.sql
+            ),
+            params_from_iter(params),
+            table,
+        )
+    }
+    fn rates(
+        &self,
+        db: &Connection,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, AnalyticsError> {
+        let mut params = self.params.clone();
+        params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
+        let mut stmt = db.prepare(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
+        let rows = stmt.query_map(params_from_iter(params), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (account, at, raw) = row?;
+            let data: Value = serde_json::from_str(&raw)
+                .map_err(|_| AnalyticsError::InvalidStoredObject("analytics_limits"))?;
+            Ok(json!({"accountKey":account,"at":at,"data":data}))
+        })
+        .collect()
+    }
+}
 fn scope_filter(
     scope: &str,
     agent: Option<&str>,
@@ -1215,45 +1151,91 @@ fn scope_filter(
     to: Option<f64>,
     tool: Option<&str>,
 ) -> ScopeFilter {
-    let mut parts = Vec::new();
-    let mut params = Vec::new();
-    match scope {
-        "agent" => {
-            parts.push("agent=?");
-            params.push(SqlValue::Text(agent.unwrap_or_default().into()));
-        }
-        "team" => {
-            parts.push("root=?");
-            params.push(SqlValue::Text(root.into()));
-        }
-        _ => {}
-    }
-    if from.is_some() {
-        parts.push("at>=?");
-        params.push(SqlValue::Real(from.unwrap_or_default()));
-    }
-    if to.is_some() {
-        parts.push("at<=?");
-        params.push(SqlValue::Real(to.unwrap_or_default()));
-    }
-    if tool.is_some() {
-        parts.push("is_tool=1");
-    }
-    if let Some(tool) = tool.filter(|name| !name.is_empty()) {
-        parts.push("name=?");
-        params.push(SqlValue::Text(tool.into()));
-    }
-    ScopeFilter {
-        sql: format!(
-            "WHERE {}",
-            if parts.is_empty() {
-                "1".to_owned()
-            } else {
-                parts.join(" AND ")
-            }
+    let mut filter = ScopeFilter::new().range("at", from, to);
+    filter = match scope {
+        "agent" => filter.and(
+            "agent=?",
+            [SqlValue::Text(agent.unwrap_or_default().into())],
         ),
-        params,
+        "team" => filter.and("root=?", [SqlValue::Text(root.into())]),
+        _ => filter,
+    };
+    if let Some(tool) = tool {
+        filter = filter.and("is_tool=1", []);
+        if !tool.is_empty() {
+            filter = filter.and("name=?", [SqlValue::Text(tool.into())]);
+        }
     }
+    filter
+}
+fn account_filter(agents: &[Value], options: &AnalyticsOptions) -> ScopeFilter {
+    ScopeFilter::new()
+        .members(
+            "account",
+            agents
+                .iter()
+                .map(|a| string_default(a, "accountKey", "default")),
+        )
+        .range("at", options.from, options.to)
+}
+fn selected_agents(
+    db: &Connection,
+    options: &AnalyticsOptions,
+    scope: &str,
+    overlay_first: bool,
+) -> Result<(String, Vec<Value>), AnalyticsError> {
+    let mut agents = records(
+        db,
+        "SELECT record FROM analytics_agents",
+        [],
+        "analytics_agents",
+    )?;
+    if overlay_first {
+        overlay_agents(db, &mut agents)?;
+    }
+    let selected = options
+        .agent
+        .as_ref()
+        .and_then(|id| agents.iter().find(|row| row["id"] == *id));
+    if scope != "all" && selected.is_none() {
+        return Err(AnalyticsError::InvalidRequest(
+            "Select an agent for analytics",
+        ));
+    }
+    let root = selected
+        .and_then(|row| row["rootId"].as_str())
+        .or(options.agent.as_deref())
+        .unwrap_or_default()
+        .to_owned();
+    agents.retain(|row| match scope {
+        "all" => true,
+        "agent" => row["id"].as_str() == options.agent.as_deref(),
+        _ => row["rootId"].as_str().or(row["id"].as_str()) == Some(&root),
+    });
+    Ok((root, agents))
+}
+fn overlay_agents(db: &Connection, agents: &mut [Value]) -> Result<(), AnalyticsError> {
+    for record in agents {
+        if let Some(runtime) = read_runtime_agent(db, &string(record, "id"))? {
+            for key in [
+                "name",
+                "deletedAt",
+                "model",
+                "effort",
+                "fastMode",
+                "threadId",
+                "accountKey",
+                "rootId",
+                "parentId",
+                "cwd",
+            ] {
+                if let Some(value) = runtime.get(key) {
+                    record[key] = value.clone();
+                }
+            }
+        }
+    }
+    Ok(())
 }
 fn read_runtime_agent(db: &Connection, id: &str) -> Result<Option<Value>, AnalyticsError> {
     let raw = db
@@ -1310,113 +1292,37 @@ fn detail(
             "Unknown analytics detail page",
         ));
     }
-    let mut agents = records(
-        db,
-        "SELECT record FROM analytics_agents",
-        [],
-        "analytics_agents",
-    )?;
-    for agent_row in &mut agents {
-        let id = string(agent_row, "id");
-        if let Some(runtime) = read_runtime_agent(db, &id)?
-            && let (Some(dst), Some(src)) = (agent_row.as_object_mut(), runtime.as_object())
-        {
-            for key in [
-                "name",
-                "deletedAt",
-                "model",
-                "effort",
-                "fastMode",
-                "threadId",
-                "accountKey",
-                "rootId",
-                "parentId",
-                "cwd",
-            ] {
-                if let Some(value) = src.get(key) {
-                    dst.insert(key.to_owned(), value.clone());
-                }
-            }
-        }
-    }
-    let agent = options.agent.as_deref();
-    let selected = agent.and_then(|id| agents.iter().find(|a| a["id"] == id));
-    if scope != "all" && selected.is_none() {
-        return Err(AnalyticsError::InvalidRequest(
-            "Select an agent for analytics",
-        ));
-    }
+    let (root, agents) = selected_agents(db, options, scope, true)?;
     let limit = options.limit.unwrap_or(100).clamp(1, 100);
     let offset = options.offset.unwrap_or(0).max(0);
-    let root = selected
-        .and_then(|a| a.get("rootId"))
-        .and_then(Value::as_str)
-        .or(agent)
-        .unwrap_or_default();
-    let (clause, params) = if detail == "turns" {
-        let filter = scope_filter(scope, agent, root, options.from, options.to, None);
-        (filter.sql, filter.params)
+    let filter = if detail == "turns" {
+        scope_filter(
+            scope,
+            options.agent.as_deref(),
+            &root,
+            options.from,
+            options.to,
+            None,
+        )
     } else {
-        let relevant = agents
-            .iter()
-            .filter(|a| match scope {
-                "all" => true,
-                "agent" => a["id"].as_str() == agent,
-                _ => {
-                    a.get("rootId")
-                        .and_then(Value::as_str)
-                        .unwrap_or_else(|| a["id"].as_str().unwrap_or_default())
-                        == root
-                }
-            })
-            .collect::<Vec<_>>();
-        let accounts: BTreeSet<String> = relevant
-            .iter()
-            .map(|a| string_default(a, "accountKey", "default"))
-            .collect();
-        limit_filter(&accounts, options.from, options.to)
+        account_filter(&agents, options)
     };
     let table = if detail == "turns" {
         "analytics_turns"
     } else {
         "analytics_limits"
     };
-    let total: i64 = db.query_row(
-        &format!("SELECT COUNT(*) FROM {table} {clause}"),
-        params_from_iter(params.clone()),
-        |r| r.get(0),
-    )?;
-    let key = detail;
-    let mut page_params = params.clone();
-    page_params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
+    let total = filter.count(db, table)?;
     let page = if detail == "turns" {
-        records(
-            db,
-            &format!(
-                "SELECT record FROM analytics_turns {clause} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?"
-            ),
-            params_from_iter(page_params),
-            "analytics_turns",
-        )?
+        filter.page(db, table, "at DESC,id DESC", limit, offset)?
     } else {
-        let refs:Vec<(i64,String,f64)>=db.prepare(&format!("SELECT id,account,at FROM analytics_limits {clause} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?"))?.query_map(params_from_iter(page_params),|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<Result<_,_>>()?;
-        let mut values = Vec::new();
-        for (id, account, at) in refs {
-            let raw = db.query_row(
-                "SELECT record FROM analytics_limits WHERE id=?1",
-                [id],
-                |r| r.get::<_, String>(0),
-            )?;
-            let data: Value = serde_json::from_str(&raw)
-                .map_err(|_| AnalyticsError::InvalidStoredObject("analytics_limits"))?;
-            values.push(json!({"accountKey":account,"at":at,"data":data}));
-        }
-        values
+        filter.rates(db, limit, offset)?
     };
     Ok(
-        json!({key:page,"pagination":{"limit":limit,"offset":offset,"total":total,"hasMore":offset+(page.len() as i64)<total}}),
+        json!({detail:page,"pagination":{"limit":limit,"offset":offset,"total":total,"hasMore":offset+(page.len() as i64)<total}}),
     )
 }
+
 fn turn_errors(
     db: &Connection,
     options: &AnalyticsOptions,

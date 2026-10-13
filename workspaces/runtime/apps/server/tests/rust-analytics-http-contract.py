@@ -80,6 +80,57 @@ try:
         db.execute('INSERT INTO analytics_items(id,agent,root,thread,turn,at,type,name,is_tool,record) VALUES (?,?,?,?,?,?,?,?,?,?)',
             ('analytics-message','analytics-contract-agent','analytics-contract-agent','analytics-thread',
              'analytics-turn',104,'agentMessage','',0,json.dumps(message)))
+    # Independent population: bounded pages, null measurements, odd/even duration
+    # samples, both tool boundaries, compaction precedence and hour overlap.
+    population = {{**agent, 'id':'analytics-population','rootId':'analytics-population',
+                  'accountKey':'population-account'}}
+    with runtime.lock, runtime.db(analytics=True) as db:
+        runtime.put(db, 'agents', population, sync_rooms=False)
+        runtime.analytics_agent(db, population)
+        for index in range(106):
+            row = {{**usage, 'id':f'population-usage-{{index:03}}',
+                   'agentId':population['id'],'rootId':population['id'],
+                   'at':index + 1000, 'responseId':f'population-usage-{{index:03}}',
+                   'accountKey':'population-account'}}
+            if index < 105:
+                row.pop('responseId')
+            db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+                       (row['id'],population['id'],population['id'],'analytics-thread','analytics-turn',row['at'],json.dumps(row)))
+        for index, duration in enumerate([None, 0, 10, 20, 30, 40]):
+            model = index < 4
+            row = {{**item,'id':f'population-item-{{index}}','itemId':f'population-item-{{index}}',
+                   'agentId':population['id'],'rootId':population['id'],'at':1100 + index,
+                   'type':'modelToolCall' if model else 'commandExecution',
+                   'name':'model-tool' if model else 'shell',
+                   'payloadBoundary':'model' if model else 'protocol',
+                   'status':'failed' if index == 2 else 'completed','durationMs':duration}}
+            if index == 0:
+                row['input'] = None
+                row['output'] = None
+            runtime.analytics_store_item(db, row)
+        for index, kind in enumerate(['contextCompaction','compactionSnapshot','compactionSnapshot']):
+            row = {{**message,'id':f'population-compaction-{{index}}', 'itemId':f'population-compaction-{{index}}',
+                   'agentId':population['id'],'rootId':population['id'],'type':kind,'at':1200 + index,
+                   'turnId':'analytics-turn' if index < 2 else 'snapshot-turn'}}
+            runtime.analytics_store_item(db, row)
+        for index in range(3):
+            db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)',
+                       ('population-account',1100 + index,json.dumps({{'fixture':index}})))
+            db.execute('INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?)',
+                       (f'population-notification-{{index}}',population['id'],population['id'],'fixture',index*3600,index+1,index*10))
+    cases = [{{}}, {{'tool':'model-tool'}}, {{'tool':'missing'}}, {{'from':1100,'to':1102}},
+             {{'from':99,'to':99}}, {{'scope':'team'}}, {{'limit':1,'offset':1}},
+             {{'view':'detail','detail':'rateLimits','limit':1,'offset':1}},
+             {{'view':'detail','detail':'turns','limit':1}}]
+    oracle = []
+    for options in cases:
+        value = runtime.analytics(population['id'], **options)
+        if options.get('view') != 'detail':
+            value = {{key:value[key] for key in ('summary','tools','notifications','rateLimits',
+                'timeline','timelineTotal','provisionalUsage','calls','itemRecords','itemRecordsTotal',
+                'compactions','compactionSnapshots','pagination','detailPagination')}}
+        oracle.append({{'options':options,'value':value}})
+    (Path(os.environ['CODEX_CANVAS_CWD']) / 'analytics-oracle.json').write_text(json.dumps(oracle))
     assert runtime.analytics('analytics-contract-agent')['summary']['usageSamples'] == 1
     from codex_session_costs import SessionCostReader
     from codex_cost_usage import source_state as cost_source_state
@@ -132,6 +183,21 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.backend.stop()
 
+    def test_differential_populations_and_pages(self) -> None:
+        from urllib.parse import urlencode
+        cases = json.loads((self.backend.cwd / "analytics-oracle.json").read_text())
+        for case in cases:
+            options = {"agent": "analytics-population", **case["options"]}
+            for old, new in (("from", "from_time"), ("to", "to_time")):
+                if old in options:
+                    options[new] = options.pop(old)
+            with self.subTest(options=options):
+                response = self.backend.request("GET", "/api/analytics?" + urlencode(options), headers=self._headers())
+                self.assertEqual(response.status, 200, response.body[:1000])
+                value = response.json()
+                for key, expected in case["value"].items():
+                    self.assertEqual(value[key], expected, key)
+
     def _headers(self):
         return {"Origin": self.backend.origin or "",
                 "X-Canvas-Token": self.backend.session["token"],
@@ -149,7 +215,7 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(self.backend.request("GET", root + "&tool=missing", headers=headers).json()["pagination"]["total"], 0)
         all_scope = self.backend.request("GET", "/api/analytics?scope=all", headers=headers)
         self.assertEqual(all_scope.status, 200, all_scope.body[:1000])
-        self.assertEqual(all_scope.json()["pagination"]["total"], 2)
+        self.assertEqual(all_scope.json()["pagination"]["total"], 8)
         team_scope = self.backend.request("GET", root + "&scope=team", headers=headers)
         self.assertEqual(team_scope.status, 200, team_scope.body[:1000])
         self.assertEqual(len(team_scope.json()["agents"]), 2)
