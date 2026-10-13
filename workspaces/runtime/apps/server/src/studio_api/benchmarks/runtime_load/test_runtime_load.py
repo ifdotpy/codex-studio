@@ -52,6 +52,11 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
                         with runtime.db() as db:
                             self.assertEqual(
                                 db.execute("PRAGMA synchronous").fetchone()[0], expected)
+                    with runtime.db(analytics=True) as db:
+                        attached = {
+                            row[1] for row in db.execute("PRAGMA database_list")
+                        }
+                        self.assertIn("analytics", attached)
 
     def test_diagnostic_synchronous_rejects_unsupported_modes(self):
         for mode in ("OFF", "EXTRA", "2"):

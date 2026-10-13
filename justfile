@@ -65,6 +65,10 @@ test-server-opt-in category="automated":
 test-server-load suite="":
     @node {{quote(facade)}} test-server-load {{quote(suite)}}
 
+[doc("Run the isolated 16-worker HTTP message acceptance performance measurement; announce it as a load run.")]
+runtime-load-message-acceptance *args:
+    @node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/message_acceptance.mjs {{args}}
+
 [doc("Measure Rust HTTP operations and discovered harness-suite conformance; writes full results beneath XDG_CACHE_HOME.")]
 rust-http-conformance-ledger:
     @cargo build -p studio-runtime-server
