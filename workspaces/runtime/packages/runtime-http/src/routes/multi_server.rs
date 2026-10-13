@@ -232,6 +232,10 @@ fn unavailable_for(method: &str, path: &str, dependencies: &'static [Dependency]
 fn map_credential_error(error: CredentialError) -> ApiError {
     match error {
         CredentialError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        CredentialError::Identity(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Invalid stored object multi-server/identity.json",
+        ),
         CredentialError::InvalidJournal => {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         }

@@ -195,9 +195,12 @@ fn private_directory(root: &Path) -> Result<(), CredentialError> {
     }
     #[cfg(windows)]
     {
-        return Err(CredentialError::Storage);
+        Err(CredentialError::Storage)
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
 }
 
 fn write_identity(
@@ -270,6 +273,7 @@ fn pem(label: &str, der: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn generated_private_identity_round_trips_and_signs_transport_bytes() {
         let root = tempfile::tempdir().expect("temporary credential root");
