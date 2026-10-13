@@ -117,6 +117,9 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             if text(&r, "acceptedTurnId") != turn_id {
                 return Ok(Decision::default());
             }
+            if text(&r, "status") == "finished" {
+                return Ok(Decision::default());
+            }
             patch(&mut r, json!({"status":"finished","dueAt":null}));
             if completed {
                 remove(&mut agent, "nativeFailureHold");

@@ -113,6 +113,21 @@ pub fn drive_with_hooks(
     hooks.fault.at(Boundary::AfterCommit)?;
     Ok(decision)
 }
+pub(crate) fn apply_in_transaction(
+    tx: &Transaction<'_>,
+    snapshot: &Snapshot,
+    table: ContinuationTable,
+    decision: &Decision,
+    now: f64,
+) -> Result<()> {
+    let mut fault = NoFault;
+    let mut hooks = DriverHooks {
+        fault: &mut fault,
+        capacity_admission: &mut MissingCapacityAdmission,
+    };
+    apply(tx, snapshot, table, decision, now, &mut hooks)
+}
+
 fn apply(
     tx: &Transaction<'_>,
     snapshot: &Snapshot,

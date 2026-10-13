@@ -410,30 +410,35 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
 /// One successful turn is proof only for older auth waits on the same account.
 pub fn completed_proof(s: &Snapshot, account_key: &str, now: f64) -> Result<Decision> {
     now_checked(now)?;
-    let Some(r) = &s.record else {
-        return Ok(Decision::default());
-    };
-    if account(r) != account_key
-        || text(r, "cause") != "auth"
-        || text(r, "status") != "scheduled"
-        || number(r, "failedAt").is_none_or(|t| t >= now)
-    {
+    let proof = s.record.as_ref().filter(|r| {
+        account(r) == account_key
+            && text(r, "cause") == "auth"
+            && text(r, "status") == "scheduled"
+            && !present(r, "proofAt")
+            && number(r, "failedAt").is_some_and(|t| t < now)
+    });
+    let reset_attempt = s.current("usageResume")
+        && text(&s.agent["usageResume"], "cause") == "auth"
+        && text(&s.agent["usageResume"], "status") == "started";
+    if proof.is_none() && !reset_attempt {
         return Ok(Decision::default());
     }
-    let mut r = r.clone();
-    patch(&mut r, json!({"proofAt":now,"dueAt":now}));
-    let agent = if s.current("usageResume") {
-        let mut a = s.agent.clone();
-        a["usageResume"] = r.clone();
-        Some(a)
-    } else {
-        None
-    };
-    Ok(Decision {
-        agent,
-        record: Some(r),
-        ..Decision::default()
-    })
+    let mut decision = Decision::default();
+    if let Some(record) = proof {
+        let mut record = record.clone();
+        patch(&mut record, json!({"proofAt":now,"dueAt":now}));
+        if s.current("usageResume") {
+            let mut agent = s.agent.clone();
+            agent["usageResume"] = record.clone();
+            decision.agent = Some(agent);
+        }
+        decision.record = Some(record);
+    }
+    if reset_attempt {
+        let agent = decision.agent.get_or_insert_with(|| s.agent.clone());
+        agent["authResumeAttempt"] = json!(0);
+    }
+    Ok(decision)
 }
 
 fn recoverable_error(error: &Value, provider: &str) -> Result<bool> {
