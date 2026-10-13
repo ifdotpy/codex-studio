@@ -1,12 +1,153 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "PersistedRuleLaunchIntent": {
+      "additionalProperties": false,
+      "description": "Exact request reserved before handing a rule command to the monitor driver.",
+      "properties": {
+        "accountKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountkey"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "checkNumber": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Checknumber",
+          "type": "integer"
+        },
+        "command": {
+          "maxLength": 12000,
+          "title": "Command",
+          "type": "string"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "liveness": {
+          "title": "Liveness",
+          "type": "boolean"
+        },
+        "monitorId": {
+          "title": "Monitorid",
+          "type": "string"
+        },
+        "ruleId": {
+          "title": "Ruleid",
+          "type": "string"
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Threadid"
+        },
+        "timeoutMs": {
+          "maximum": 86400000,
+          "minimum": 1000,
+          "title": "Timeoutms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ruleId",
+        "checkNumber",
+        "agentId",
+        "epoch",
+        "accountKey",
+        "threadId",
+        "monitorId",
+        "command",
+        "timeoutMs",
+        "liveness"
+      ],
+      "title": "PersistedRuleLaunchIntent",
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
+  "description": "Open rule records; only fields consumed by the rule engine are constrained.",
   "properties": {
+    "activeWorkers": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Activeworkers",
+      "type": "integer"
+    },
     "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "alerted": {
+      "title": "Alerted",
+      "type": "boolean"
+    },
+    "at": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "At"
+    },
+    "checks": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Checks",
+      "type": "integer"
+    },
+    "command": {
+      "maxLength": 12000,
+      "title": "Command",
+      "type": "string"
+    },
+    "created": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Created"
+    },
+    "durationMinutes": {
+      "maximum": 525600,
+      "minimum": 1,
+      "title": "Durationminutes",
+      "type": "integer"
+    },
+    "epoch": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "error": {
       "anyOf": [
         {
           "type": "string"
@@ -15,24 +156,126 @@
           "type": "null"
         }
       ],
-      "title": "Agent"
+      "title": "Error"
     },
-    "alerted": {
+    "event": {
+      "title": "Event",
+      "type": "string"
+    },
+    "eventText": {
+      "maxLength": 12000,
+      "title": "Eventtext",
+      "type": "string"
+    },
+    "fileActivityAt": {
       "anyOf": [
         {
-          "type": "boolean"
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Fileactivityat"
+    },
+    "fileGeneration": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Filegeneration",
+      "type": "integer"
+    },
+    "fingerprint": {
+      "anyOf": [
+        {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            },
+            {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
         },
         {
           "type": "null"
         }
       ],
-      "title": "Alerted"
+      "title": "Fingerprint"
     },
     "id": {
       "title": "Id",
       "type": "string"
     },
+    "inFlight": {
+      "title": "Inflight",
+      "type": "boolean"
+    },
+    "intervalSeconds": {
+      "maximum": 31536000,
+      "minimum": 10,
+      "title": "Intervalseconds",
+      "type": "integer"
+    },
     "kind": {
+      "enum": ["interval", "once", "file", "event", "low_workers"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "lastAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Lastat"
+    },
+    "lastEvent": {
+      "title": "Lastevent",
+      "type": "string"
+    },
+    "lastExitCode": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Lastexitcode"
+    },
+    "lastFinished": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Lastfinished"
+    },
+    "lastOutput": {
+      "maxLength": 12000,
+      "title": "Lastoutput",
+      "type": "string"
+    },
+    "lastStallError": {
       "anyOf": [
         {
           "type": "string"
@@ -41,7 +284,44 @@
           "type": "null"
         }
       ],
-      "title": "Kind"
+      "title": "Laststallerror"
+    },
+    "lastStallExitCode": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Laststallexitcode"
+    },
+    "lastStallFinished": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Laststallfinished"
+    },
+    "launchIntent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedRuleLaunchIntent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "livenessCommand": {
+      "maxLength": 12000,
+      "title": "Livenesscommand",
+      "type": "string"
     },
     "lowSince": {
       "anyOf": [
@@ -57,6 +337,39 @@
       ],
       "title": "Lowsince"
     },
+    "minimumWorkers": {
+      "maximum": 255,
+      "minimum": 1,
+      "title": "Minimumworkers",
+      "type": "integer"
+    },
+    "name": {
+      "maxLength": 120,
+      "title": "Name",
+      "type": "string"
+    },
+    "nextAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "integer"
+        }
+      ],
+      "title": "Nextat"
+    },
+    "path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Path"
+    },
     "restartCheck": {
       "anyOf": [
         {
@@ -70,6 +383,49 @@
         }
       ],
       "title": "Restartcheck"
+    },
+    "rootId": {
+      "title": "Rootid",
+      "type": "string"
+    },
+    "stallEventKey": {
+      "title": "Stalleventkey",
+      "type": "string"
+    },
+    "stallProbe": {
+      "title": "Stallprobe",
+      "type": "boolean"
+    },
+    "stallText": {
+      "title": "Stalltext",
+      "type": "string"
+    },
+    "stallTimeoutSeconds": {
+      "maximum": 31536000,
+      "minimum": 0,
+      "title": "Stalltimeoutseconds",
+      "type": "integer"
+    },
+    "stallWakeGeneration": {
+      "maximum": 9007199254740991,
+      "minimum": -1,
+      "title": "Stallwakegeneration",
+      "type": "integer"
+    },
+    "status": {
+      "enum": ["active", "paused", "completed"],
+      "title": "Status",
+      "type": "string"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "wakes": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Wakes",
+      "type": "integer"
     }
   },
   "required": ["id"],

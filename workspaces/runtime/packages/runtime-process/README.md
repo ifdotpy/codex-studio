@@ -252,10 +252,12 @@ cancellation, deadline, caller-drop, and process-group cleanup checks.
 ## Owned local pipe children
 
 [`StreamChild`](src/stream_child.rs) uses Tokio and process-wrap process groups;
-process-wrap's kill-on-drop feature stays disabled. A retained actor handles
-termination and reaping when its handle is dropped. Shut down the application by
-awaiting `close()` on each owned child before stopping the Tokio runtime. These
-children cannot be recovered by saved PID after a backend restart.
+process-wrap's kill-on-drop feature stays disabled. Each child has an owner thread
+with a private Tokio runtime. The owner awaits process-group termination, reaping,
+and pipe closure before destroying that runtime; handle drop signals and joins it.
+`close()` exposes cleanup errors. Cleanup therefore survives application runtime
+shutdown. These children cannot be recovered by saved PID after a backend restart.
+An optional inherited lease remains in the child until its descriptors close.
 
 `ChildSpec` supplies the complete environment after `env_clear`. A sign-in caller
 selects its isolated configuration home and CLI search path; a monitor caller

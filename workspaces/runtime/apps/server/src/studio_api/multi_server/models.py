@@ -7,6 +7,8 @@ from pydantic import BeforeValidator, ConfigDict, Field, StrictInt
 from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, require_strict_integer
 
 ACCESS_PROTOCOL_VERSION = 1
+# Visible characters, with ASCII spaces only between visible characters.
+SERVER_NAME_PATTERN = r"^[^\s\p{C}](?:[^\s\p{C}]| +[^\s\p{C}])*$"
 
 
 class ServerIdentity(ContractModel):
@@ -147,12 +149,12 @@ class SetServerAlias(ContractModel):
 class SetServerName(ContractModel):
     action: Literal["name"]
     serverId: str = Field(min_length=1, max_length=128)
-    label: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=80, pattern=SERVER_NAME_PATTERN)
     requestId: str = Field(min_length=1, max_length=128)
 
 
 class RenameServer(ContractModel):
-    label: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=80, pattern=SERVER_NAME_PATTERN)
     requestId: str = Field(min_length=1, max_length=128)
 
 

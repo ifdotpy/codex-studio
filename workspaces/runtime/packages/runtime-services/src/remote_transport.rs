@@ -135,6 +135,12 @@ impl RemoteIdentity {
 
 /// Read Python's existing `multi-server/identity.json` without creating or replacing it.
 pub fn load_multi_server_identity(state_root: &Path) -> RemoteTransportResult<RemoteIdentity> {
+    read_multi_server_identity(state_root)?.signing_identity()
+}
+
+pub(crate) fn read_multi_server_identity(
+    state_root: &Path,
+) -> RemoteTransportResult<StoredMultiServerIdentity> {
     #[cfg(windows)]
     {
         let _ = state_root;
@@ -192,17 +198,8 @@ pub fn load_multi_server_identity(state_root: &Path) -> RemoteTransportResult<Re
                 key: "serverId".to_owned(),
             }
         })?;
-        let id = record.server_id;
-        RemoteIdentity::from_key_fields(
-            id.clone(),
-            record.label,
-            record.private_key.as_bytes(),
-            record.public_key,
-        )
-        .map_err(|_| RemoteTransportError::InvalidStoredObject {
-            table: "multi-server/identity.json",
-            key: id,
-        })
+        record.signing_identity()?;
+        Ok(record)
     }
 }
 
@@ -231,13 +228,28 @@ pub fn load_federation_identity(store: &RuntimeStore) -> RemoteTransportResult<R
     .map_err(|_| invalid())
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredMultiServerIdentity {
-    server_id: String,
-    label: String,
-    private_key: String,
-    public_key: String,
+pub(crate) struct StoredMultiServerIdentity {
+    pub(crate) server_id: String,
+    pub(crate) label: String,
+    pub(crate) private_key: String,
+    pub(crate) public_key: String,
+}
+
+impl StoredMultiServerIdentity {
+    pub(crate) fn signing_identity(&self) -> RemoteTransportResult<RemoteIdentity> {
+        RemoteIdentity::from_key_fields(
+            self.server_id.clone(),
+            self.label.clone(),
+            self.private_key.as_bytes(),
+            self.public_key.clone(),
+        )
+        .map_err(|_| RemoteTransportError::InvalidStoredObject {
+            table: "multi-server/identity.json",
+            key: "local".to_owned(),
+        })
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1081,7 +1093,7 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         MultiServerExchangeInput, MultiServerRequest, MultiServerSigningInput, RemoteIdentity,
         canonical_json, ed25519_public_key, federation_message_signing_bytes,
@@ -1164,7 +1176,7 @@ mod tests {
         .expect("fixed RFC Ed25519 fixture loads")
     }
 
-    fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
+    pub(crate) fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
         use std::fs;
         use std::time::{SystemTime, UNIX_EPOCH};
 

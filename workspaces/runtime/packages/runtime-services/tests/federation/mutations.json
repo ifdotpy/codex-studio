@@ -1,0 +1,62 @@
+[
+  {
+    "id": "replay-hash",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": "if previous[\"hash\"] != hash {",
+        "after": "if false && previous[\"hash\"] != hash {"
+      }
+    ]
+  },
+  {
+    "id": "peer-local-approval",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": "self.status == PeerStatus::Approved && self.local_approved && self.remote_approved",
+        "after": "self.status == PeerStatus::Approved && self.remote_approved"
+      }
+    ]
+  },
+  {
+    "id": "monotonic-room-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": ".filter(|s| *s > room.remote_sequence)",
+        "after": ".filter(|s| *s >= room.remote_sequence)"
+      }
+    ]
+  },
+  {
+    "id": "nonce-replay",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_effects.rs",
+    "edits": [
+      {
+        "before": "if !RemoteTransportRepository::consume_federation_nonce(tx, peer, nonce, timestamp, now)? {",
+        "after": "if false && !RemoteTransportRepository::consume_federation_nonce(tx, peer, nonce, timestamp, now)? {"
+      }
+    ]
+  },
+  {
+    "id": "untrusted-model-data",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": "\"untrusted_remote\":true",
+        "after": "\"untrusted_remote\":false"
+      }
+    ]
+  },
+  {
+    "id": "sender-name-approval",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": "if message.payload.get(\"senderName\").unwrap_or(&Value::Null)",
+        "after": "if false && message.payload.get(\"senderName\").unwrap_or(&Value::Null)"
+      }
+    ]
+  }
+]

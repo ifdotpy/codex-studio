@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "MonitorOperationRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Exact native command ownership; extra transport evidence remains readable.",
+      "properties": {
+        "accountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "agent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "connectionId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Connectionid",
+          "type": "string"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        }
+      },
+      "required": ["agent", "epoch", "accountKey", "connectionId"],
+      "title": "MonitorOperationRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "First definitive command result, flushed before the monitor/event transaction.",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Code"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 12000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "finished": {
+      "exclusiveMinimum": 0,
+      "title": "Finished",
+      "type": "number"
+    },
+    "key": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Key",
+      "type": "string"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorOperationRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": ["version", "key", "code", "operation", "finished"],
+  "title": "PersistedMonitorResult",
+  "type": "object"
+}

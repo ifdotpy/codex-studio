@@ -1,5 +1,5 @@
 //! Owned, bounded pipe child. Callers supply an explicitly selected environment.
-//! Drop requests group termination; the retained actor kills and reaps its own child.
+//! Drop joins an owner whose private runtime awaits group termination and reaping.
 //! Output ordering is per pipe. Completion is published only after both pipes drain.
 
 use std::collections::BTreeMap;
@@ -81,6 +81,7 @@ pub struct StreamChild {
     completion: watch::Receiver<Option<Result<ChildEvent, ChildError>>>,
     exit_delivered: bool,
     pid: Option<u32>,
+    owner: Option<std::thread::JoinHandle<()>>,
 }
 
 impl StreamChild {
@@ -91,34 +92,44 @@ impl StreamChild {
                 "invalid child deadline",
             ));
         }
-        let mut command = tokio::process::Command::new(spec.program);
-        command
-            .args(spec.args)
-            .current_dir(spec.cwd)
-            .env_clear()
-            .envs(spec.environment)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(lease) = spec.inherited_lease {
-            command.as_std_mut().preserved_fds(vec![lease.into()]);
-        }
-        let mut wrapped = CommandWrap::from(command);
-        wrapped.wrap(ProcessGroup::leader());
-        let child = wrapped.spawn()?;
-        let pid = child.id();
-        // Release the parent copy held by the command after successful inheritance.
-        drop(wrapped);
         let (input_tx, input_rx) = mpsc::channel(INPUT_SLOTS);
         let (output_tx, output_rx) = mpsc::channel(OUTPUT_SLOTS);
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let (done_tx, done_rx) = watch::channel(None);
-        // This task is deliberately retained after handle drop to finish kill + wait.
-        // Application shutdown must close handles before stopping the Tokio runtime.
-        tokio::spawn(async move {
-            let result = run_child(child, input_rx, output_tx, cancel_rx, spec.timeout).await;
-            done_tx.send_replace(Some(result));
-        });
+        let (ready_tx, ready_rx) = oneshot::channel();
+        // The owner keeps its own runtime alive through kill + reap. Dropping an
+        // application runtime cannot discard cleanup, and dropping this handle joins it.
+        let owner = std::thread::Builder::new()
+            .name("stream-child".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                let runtime = match runtime {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _delivery = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let lifetime = spec.timeout;
+                    match spawn_process(spec) {
+                        Ok(child) => {
+                            let _delivery = ready_tx.send(Ok(child.id()));
+                            let result =
+                                run_child(child, input_rx, output_tx, cancel_rx, lifetime).await;
+                            done_tx.send_replace(Some(result));
+                        }
+                        Err(error) => {
+                            let _delivery = ready_tx.send(Err(error));
+                        }
+                    }
+                });
+            })?;
+        let pid = ready_rx
+            .await
+            .map_err(|_| io::Error::other("child owner failed"))??;
         Ok(Self {
             input: input_tx,
             output: output_rx,
@@ -126,6 +137,7 @@ impl StreamChild {
             completion: done_rx,
             exit_delivered: false,
             pid,
+            owner: Some(owner),
         })
     }
     pub fn pid(&self) -> Option<u32> {
@@ -203,7 +215,32 @@ impl StreamChild {
 impl Drop for StreamChild {
     fn drop(&mut self) {
         self.cancel.send_replace(true);
+        if let Some(owner) = self.owner.take() {
+            // Cleanup is awaited by the owner even when no application runtime exists.
+            let _cleanup = owner.join();
+        }
     }
+}
+
+fn spawn_process(spec: ChildSpec) -> io::Result<Box<dyn ChildWrapper>> {
+    let mut command = tokio::process::Command::new(spec.program);
+    command
+        .args(spec.args)
+        .current_dir(spec.cwd)
+        .env_clear()
+        .envs(spec.environment)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(lease) = spec.inherited_lease {
+        command.as_std_mut().preserved_fds(vec![lease.into()]);
+    }
+    let mut wrapped = CommandWrap::from(command);
+    wrapped.wrap(ProcessGroup::leader());
+    let child = wrapped.spawn()?;
+    // Release the parent lease copy after successful inheritance.
+    drop(wrapped);
+    Ok(child)
 }
 
 async fn run_child(
@@ -283,6 +320,19 @@ async fn run_child(
         .await
         .map_err(|_| ChildError::Cleanup)?
         .map_err(|_| ChildError::Cleanup)?;
+    // A descendant may retain either pipe after the leader exits. Require EOF
+    // after group termination, within the same bounded cleanup contract.
+    timeout(REAP_DEADLINE, async {
+        let mut stdout_sink = tokio::io::sink();
+        let mut stderr_sink = tokio::io::sink();
+        tokio::try_join!(
+            tokio::io::copy(&mut stdout, &mut stdout_sink),
+            tokio::io::copy(&mut stderr, &mut stderr_sink)
+        )
+    })
+    .await
+    .map_err(|_| ChildError::Cleanup)?
+    .map_err(|_| ChildError::Cleanup)?;
     Ok(ChildEvent::Exited {
         code: exit.unwrap_or(status).code(),
         reason,
@@ -504,23 +554,63 @@ mod tests {
     #[tokio::test]
     async fn lifetime_timer_kills_and_reaps_without_more_output() {
         let root = tempfile::tempdir().expect("timer root");
-        let mut child = StreamChild::spawn(spec("printf ready; read line", root.path()))
-            .await
-            .expect("timer child");
+        let process = spawn_process(spec("printf ready; read line", root.path())).expect("process");
+        let (_input, input_rx) = mpsc::channel(INPUT_SLOTS);
+        let (output, mut output_rx) = mpsc::channel(OUTPUT_SLOTS);
+        let (_cancel, cancel_rx) = watch::channel(false);
+        let actor = tokio::spawn(run_child(
+            process,
+            input_rx,
+            output,
+            cancel_rx,
+            Duration::from_secs(60),
+        ));
         assert!(matches!(
-            child.next_event().await,
+            output_rx.recv().await,
             Some(ChildEvent::Output { .. })
         ));
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(61)).await;
         tokio::time::resume();
         assert!(matches!(
-            child.next_event().await,
-            Some(ChildEvent::Exited {
+            actor.await.expect("actor"),
+            Ok(ChildEvent::Exited {
                 reason: ExitReason::TimedOut,
                 ..
             })
         ));
-        child.close().await.expect("timer cleanup");
+    }
+
+    #[test]
+    fn owner_reaps_descendant_holding_pipe_after_application_runtime_shutdown() {
+        let root = tempfile::tempdir().expect("root");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let mut child = runtime
+            .block_on(StreamChild::spawn(spec(
+                "mkfifo input; sh -c 'printf descendant; read line < input' & wait",
+                root.path(),
+            )))
+            .expect("child");
+        let pid = child.pid().expect("pid");
+        let done = child.completion.clone();
+        assert!(matches!(
+            runtime.block_on(child.next_event()),
+            Some(ChildEvent::Output { .. })
+        ));
+        drop(runtime);
+        drop(child); // Joins the owner, which awaits process-group kill and reap.
+        assert!(matches!(
+            done.borrow().as_ref(),
+            Some(Ok(ChildEvent::Exited {
+                reason: ExitReason::Cancelled,
+                ..
+            }))
+        ));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        // The descendant opened the inherited pipe; completion cannot depend on EOF.
+        assert!(root.path().join("input").exists());
     }
 }

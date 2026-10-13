@@ -1,0 +1,99 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "attempts": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Attempts",
+      "type": "integer"
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Hash"
+    },
+    "id": {
+      "maxLength": 128,
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["chat-message", "room-invite", "room-accept"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "nextAt": {
+      "title": "Nextat",
+      "type": "number"
+    },
+    "payload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Payload",
+      "type": "object"
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Receipt"
+    },
+    "room": {
+      "maxLength": 128,
+      "title": "Room",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["queued", "delivered"],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "room",
+    "payload",
+    "created",
+    "status",
+    "attempts",
+    "nextAt"
+  ],
+  "title": "PersistedFederationOutbox",
+  "type": "object"
+}

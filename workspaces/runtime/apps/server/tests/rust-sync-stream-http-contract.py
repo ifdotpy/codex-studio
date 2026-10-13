@@ -169,6 +169,11 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             second = read_event(response)
             self.assertEqual([first["event"], second["event"]], ["api-schema", "resources"])
             self.assertEqual(first["data"], {"hash": self.backend.schema_hash})
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                rates = read_event(response)
+                self.assertEqual(rates["event"], "token-rates")
+                self.assertEqual(rates["data"]["rates"], {})
+                self.assertEqual(rates["data"]["teams"], {})
             initial = second["data"]
             self.assertEqual(initial["protocol"], 3)
             self.assertTrue(initial["workspaceId"])
