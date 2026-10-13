@@ -270,6 +270,8 @@ for line in sys.stdin:
  if method=='initialize':
   print(json.dumps({'method':'test/duringInitialize','params':{'ready':False}}),flush=True)
   print(json.dumps({'id':m['id'],'result':{'ok':True}}),flush=True)
+ elif method=='initialized' and 'INITIALIZED_BARRIER' in os.environ:
+  with open(os.environ['INITIALIZED_BARRIER'],'w',encoding='utf-8') as f: f.write('x')
  elif method=='trigger': print(json.dumps({'method':'test/backlog','params':{'ready':True}}),flush=True)
  elif 'id' in m: print(json.dumps({'id':m['id'],'result':{'method':method}}),flush=True)
 "#
@@ -368,8 +370,20 @@ fn provider_session_defers_initialization_notifications_and_reattaches_backlog()
     let workspace = harness.root.join("provider-workspace");
     fs::create_dir_all(&workspace).unwrap();
     let audit = workspace.join("methods.log");
+    let initialized_barrier = workspace.join("initialized.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&initialized_barrier)
+            .status()
+            .unwrap()
+            .success()
+    );
     let handle = ProviderHandle::for_account("session-test");
-    let spec = launch_spec(&workspace, &audit, false);
+    let mut spec = launch_spec(&workspace, &audit, false);
+    spec.environment.insert(
+        "INITIALIZED_BARRIER".into(),
+        initialized_barrier.to_string_lossy().into_owned(),
+    );
     let launch = Arc::new(Mutex::new(spec.clone()));
     let resolver_launch = Arc::clone(&launch);
     let expected = handle.clone();
@@ -395,6 +409,12 @@ fn provider_session_defers_initialization_notifications_and_reattaches_backlog()
     // Runtime state committed this notification, but its ACK has not reached
     // the supervisor when the process connection is lost.
     launch.lock().unwrap().handled_cursor = cursor;
+    // `connect` becomes ready before its asynchronous writer flushes
+    // `initialized`. Wait for the child to process that write before injecting
+    // the trigger, so the audit sequence has an observable barrier.
+    let mut initialized_signal = File::open(&initialized_barrier).unwrap();
+    let mut signal = [0];
+    std::io::Read::read_exact(&mut initialized_signal, &mut signal).unwrap();
     let mut client = harness.client();
     let status = client
         .status(HandleRequest {

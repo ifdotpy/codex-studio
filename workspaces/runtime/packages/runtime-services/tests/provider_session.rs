@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::result_large_err)]
 
-use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -793,7 +792,7 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
 
     let acknowledged = Arc::new(AtomicU64::new(0));
     let (progress_sender, progress_receiver) = mpsc::channel();
-    let (attempt_sender, attempt_receiver) = mpsc::channel();
+    let (blocked_sender, blocked_receiver) = mpsc::channel::<Sender<()>>();
     let (input_sender, input_receiver) = mpsc::sync_channel(1);
     let mut script = vec![(json!({"id":"__initialize__","result":{}}), None)];
     script.extend((1..=100).map(|cursor| {
@@ -806,25 +805,23 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
     process.output_capacity = 64;
     process.resumed = true;
     process.progress_sender = Some(progress_sender);
-    let waiters = Arc::new(Mutex::new(VecDeque::<Sender<()>>::new()));
-    let sink_waiters = Arc::clone(&waiters);
-    let sink: ProviderSessionInputSink = Arc::new(move |input: ProviderSessionInput| {
-        let _ignored = attempt_sender.send(());
-        match input_sender.try_send(input) {
-            Ok(()) => Ok(()),
-            Err(mpsc::TrySendError::Full(input)) => {
-                let (available_sender, capacity_available) = mpsc::channel();
-                sink_waiters.lock().unwrap().push_back(available_sender);
-                Err(ProviderSessionInputSendError::Full {
-                    input,
-                    capacity_available,
-                })
-            }
-            Err(mpsc::TrySendError::Disconnected(input)) => {
-                Err(ProviderSessionInputSendError::Closed { input })
-            }
-        }
-    });
+    let sink: ProviderSessionInputSink =
+        Arc::new(
+            move |input: ProviderSessionInput| match input_sender.try_send(input) {
+                Ok(()) => Ok(()),
+                Err(mpsc::TrySendError::Full(input)) => {
+                    let (capacity_sender, capacity_available) = mpsc::channel();
+                    let _ignored = blocked_sender.send(capacity_sender);
+                    Err(ProviderSessionInputSendError::Full {
+                        input,
+                        capacity_available,
+                    })
+                }
+                Err(mpsc::TrySendError::Disconnected(input)) => {
+                    Err(ProviderSessionInputSendError::Closed { input })
+                }
+            },
+        );
     let mut session = ProviderSession::begin_connect_recovering(
         Box::new(process),
         ProviderSessionConfig::new(),
@@ -833,36 +830,32 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
     )
     .unwrap();
 
-    for _ in 0..2 {
-        attempt_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("reader should fill the bounded account input channel");
-    }
+    let first_blocked = blocked_receiver
+        .recv()
+        .expect("reader should report a registered capacity waiter");
     let mut output_chunks = 0;
+    // The reader is parked on the account-channel waiter, so 66 successful
+    // sends means one chunk is being handled and the 64-slot output channel
+    // is full. The writer's progress channel makes this saturation observable.
     while output_chunks < 66 {
         output_chunks = progress_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv()
             .expect("provider output queue should fill behind the blocked account channel");
     }
     assert!(!session.is_ready());
 
     let initialize = input_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv()
         .expect("cached initialize reply remains available ahead of the replay backlog");
-    if let Some(waiter) = waiters.lock().unwrap().pop_front() {
-        let _ignored = waiter.send(());
-    }
+    let _ignored = first_blocked.send(());
     session.handle_input(initialize).unwrap();
     assert!(session.is_ready());
 
     let mut replayed = 0;
     while replayed < 100 {
         let input = input_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv()
             .expect("startup must keep draining while replay backlog is full");
-        if let Some(waiter) = waiters.lock().unwrap().pop_front() {
-            let _ignored = waiter.send(());
-        }
         for (event, cursor) in session.handle_input(input).unwrap() {
             if matches!(event, ProviderSessionEvent::Inbound(_)) {
                 replayed += 1;
@@ -871,22 +864,23 @@ fn startup_drains_replay_when_both_bounded_queues_are_full() {
                     .unwrap();
             }
         }
+        if replayed < 100 {
+            let waiter = blocked_receiver
+                .recv()
+                .expect("reader registers a waiter before the next replay frame");
+            let _ignored = waiter.send(());
+        }
     }
     assert_eq!(replayed, 100);
     assert_eq!(acknowledged.load(Ordering::Acquire), 100);
-    loop {
-        let input = input_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("reader should finish after draining the replay backlog");
-        if let Some(waiter) = waiters.lock().unwrap().pop_front() {
-            let _ignored = waiter.send(());
-        }
-        let ended = matches!(input, ProviderSessionInput::End);
-        let _events = session.handle_input(input).unwrap();
-        if ended {
-            break;
-        }
+    if let Ok(waiter) = blocked_receiver.try_recv() {
+        let _ignored = waiter.send(());
     }
+    let end = input_receiver
+        .recv()
+        .expect("reader should finish after draining the replay backlog");
+    assert!(matches!(end, ProviderSessionInput::End));
+    let _events = session.handle_input(end).unwrap();
     session.quiesce().unwrap();
 }
 
