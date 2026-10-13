@@ -1,4 +1,5 @@
 //! Bounded snapshot reads for lifecycle decisions; no independent connection.
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{
     AgentRecord, AgentRepository, RequestRecord, StoreError, StoreResult, Table, WorkItemRecord,
 };
@@ -110,11 +111,23 @@ pub fn cancel_pending(transaction: &Transaction<'_>, agent: &str) -> StoreResult
     Ok(())
 }
 
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+    tables: &[TableRequirement {
+        name: "runtime_events",
+        columns: &["id", "agent", "status", "epoch"],
+    }],
+    conditional_tables: &[],
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: &[],
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
+};
+
 inventory::submit! {
     super::SchemaRegistration {
         repository: "agent_management",
-        requirements: &crate::schema::SchemaRequirements {
-            tables: &[], conditional_tables: &[], triggers: &[], conditional_triggers: &[], connection_functions: &[], bootstrap_tables: &[], bootstrap_triggers: &[], bootstrap_connection_functions: &[],
-        },
+        requirements: &REQUIREMENTS,
     }
 }
