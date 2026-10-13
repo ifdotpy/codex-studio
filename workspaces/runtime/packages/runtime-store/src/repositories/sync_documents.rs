@@ -238,11 +238,7 @@ impl SyncDocumentsRepository {
 }
 
 pub(crate) fn hash_payload(payload: &str) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(payload.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sha256_hex(payload.as_bytes())
 }
 
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {

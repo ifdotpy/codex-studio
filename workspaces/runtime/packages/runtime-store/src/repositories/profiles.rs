@@ -116,7 +116,10 @@ impl ProfileRepository {
         }
         bytes[6] = (bytes[6] & 0x0f) | 0x40;
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        Ok(format_uuid(&bytes))
+        let bytes: [u8; 16] = bytes.try_into().map_err(|_| {
+            StoreError::SchemaMismatch("SQLite returned invalid UUID bytes".to_owned())
+        })?;
+        Ok(uuid::Uuid::from_bytes(bytes).to_string())
     }
 }
 
@@ -130,17 +133,4 @@ fn decode_record(id: &str, stored: SqlValue) -> StoreResult<ProfileRecord> {
         return Err(invalid());
     }
     Ok(profile)
-}
-
-fn format_uuid(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(36);
-    for (index, byte) in bytes.iter().enumerate() {
-        if matches!(index, 4 | 6 | 8 | 10) {
-            value.push('-');
-        }
-        value.push(char::from(HEX[usize::from(*byte >> 4)]));
-        value.push(char::from(HEX[usize::from(*byte & 0x0f)]));
-    }
-    value
 }
