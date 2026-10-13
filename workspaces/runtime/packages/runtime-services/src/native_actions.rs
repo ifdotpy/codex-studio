@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc};
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, ContextRepairRepository, RuntimeStore, StoreError,
+    python_json_with_separators, AgentRecord, AgentRepository, ContextRepairRepository,
+    RuntimeStore, StoreError,
 };
 use thiserror::Error;
 
@@ -63,7 +64,7 @@ impl Request {
         }
         bounded(&self.context, "context")?;
         let signature = json!({"agent":self.agent,"action":self.action,"context":self.context});
-        Ok(python_json(&signature))
+        Ok(python_json_with_separators(&signature, ",", ":"))
     }
 }
 
@@ -517,22 +518,6 @@ fn located(error: NativeError, table: &'static str, id: &str) -> NativeError {
     }
 }
 
-fn python_json(value: &Value) -> String {
-    let encoded = value.to_string();
-    let mut output = String::with_capacity(encoded.len());
-    for character in encoded.chars() {
-        if character.is_ascii() {
-            output.push(character);
-        } else {
-            let mut utf16 = [0_u16; 2];
-            for unit in character.encode_utf16(&mut utf16).iter() {
-                output.push_str(&format!("\\u{unit:04x}"));
-            }
-        }
-    }
-    output
-}
-
 /// Native command IDs are scoped to both their task item and owning thread.
 /// A process number alone is insufficient after recovery.
 pub struct CommandSnapshot {
@@ -694,6 +679,11 @@ pub fn command_cancel_claim(
             return Err(NativeError::Conflict);
         }
         let saved_result: Value = serde_json::from_str(&saved.result)?;
+        let saved_request: NativeRequest =
+            decode(saved_result["request"].clone(), "command.receipt")?;
+        if saved_request != request {
+            return Err(NativeError::Conflict);
+        }
         return match saved_result["status"].as_str() {
             Some("acknowledged") => Ok(CommandCancelClaim::Replay(saved_result["result"].clone())),
             Some("unknown") => Err(NativeError::Unknown),

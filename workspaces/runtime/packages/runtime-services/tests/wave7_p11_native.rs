@@ -403,6 +403,15 @@ fn native_command_cancel_list_terminate_and_replay_match_python() {
             command_cancel_claim(&tx, &snapshot, &cancel_ticket, &list),
             Ok(CommandCancelClaim::Replay(ref value)) if value == &case["result"]
         ));
+        let mut changed_ticket = cancel_ticket.clone();
+        changed_ticket.connection.push_str("-changed");
+        let mut changed_list = list.clone();
+        changed_list.ticket = changed_ticket.clone();
+        changed_list.ticket.request.push_str(":list");
+        assert!(matches!(
+            command_cancel_claim(&tx, &snapshot, &changed_ticket, &changed_list),
+            Err(NativeError::Conflict)
+        ));
     }
 }
 struct Hanging;
@@ -681,6 +690,15 @@ fn commands_commit_before_send_and_reject_changed_input() {
     assert!(matches!(
         command_cancel_claim(&tx, &snapshot, &t, &receipt),
         Ok(CommandCancelClaim::Replay(ref value)) if value == &json!({"terminated":true})
+    ));
+    let mut changed_ticket = t.clone();
+    changed_ticket.generation += 1;
+    let mut changed_list = receipt.clone();
+    changed_list.ticket = changed_ticket.clone();
+    changed_list.ticket.request.push_str(":list");
+    assert!(matches!(
+        command_cancel_claim(&tx, &snapshot, &changed_ticket, &changed_list),
+        Err(NativeError::Conflict)
     ));
 }
 

@@ -64,7 +64,8 @@ class RuntimePort:
 
 output = {"outcomes":[],"actions":[],"reviews":[],"rewrites":[],"commands":[],"cancellations":[],"forks":[]}
 for action in ("compact","review"):
-    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},{"threadId":"thread Ω 😀"}):
+    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},
+                    {"threadId":"thread Ω 😀"},{"threadId":"thread\x7f"},{"epoch":3.0}):
         a=agent(); rt=RuntimePort(a)
         if "threadId" in context:
             a["threadId"] = context["threadId"]
