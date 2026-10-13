@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "PersistedFederationParticipant": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "enum": ["lead", "agent"],
+          "title": "Role",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        }
+      },
+      "required": ["id", "role"],
+      "title": "PersistedFederationParticipant",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "room": {
+      "maxLength": 128,
+      "title": "Room",
+      "type": "string"
+    },
+    "participants": {
+      "items": {
+        "$ref": "#/$defs/PersistedFederationParticipant"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Participants",
+      "type": "array"
+    },
+    "shareNames": {
+      "title": "Sharenames",
+      "type": "boolean"
+    },
+    "shareStatus": {
+      "title": "Sharestatus",
+      "type": "boolean"
+    }
+  },
+  "required": ["room", "participants", "shareNames", "shareStatus"],
+  "title": "FederationRoomPayload",
+  "type": "object"
+}

@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "hash": {
+      "title": "Hash",
+      "type": "string"
+    },
+    "receipt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Receipt",
+      "type": "object"
+    },
+    "ack": {
+      "enum": ["pending", "sent", "confirmed"],
+      "title": "Ack",
+      "type": "string"
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "enum": ["chat-message", "room-invite", "room-accept"],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Kind"
+    },
+    "room": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Room"
+    }
+  },
+  "required": ["hash", "receipt", "ack", "created"],
+  "title": "PersistedFederationInbox",
+  "type": "object"
+}

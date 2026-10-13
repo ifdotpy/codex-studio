@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "stateId": {
+      "maxLength": 128,
+      "title": "Stateid",
+      "type": "string"
+    },
+    "label": {
+      "title": "Label",
+      "type": "string"
+    },
+    "origin": {
+      "title": "Origin",
+      "type": "string"
+    },
+    "publicKey": {
+      "title": "Publickey",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["approved", "pending", "revoked"],
+      "title": "Status",
+      "type": "string"
+    },
+    "localApproved": {
+      "title": "Localapproved",
+      "type": "boolean"
+    },
+    "remoteApproved": {
+      "title": "Remoteapproved",
+      "type": "boolean"
+    },
+    "whoisUser": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Whoisuser"
+    }
+  },
+  "required": [
+    "stateId",
+    "label",
+    "origin",
+    "publicKey",
+    "status",
+    "localApproved",
+    "remoteApproved"
+  ],
+  "title": "PersistedFederationPeer",
+  "type": "object"
+}
