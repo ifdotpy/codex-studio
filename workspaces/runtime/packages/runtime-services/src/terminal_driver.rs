@@ -834,7 +834,6 @@ mod tests {
 
     #[test]
     fn input_uses_the_appserver_base64_wire_representation() {
-        use crate::event_write::request_signature as receipt_signature;
         use base64::Engine as _;
 
         let encode = base64::engine::general_purpose::STANDARD;

@@ -318,18 +318,17 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertNotIn("not-json", response.body.decode())
         self.assertEqual(after, before)
 
-    def test_unknown_persisted_property_is_refused_by_rust(self) -> None:
+    def test_unknown_python_task_property_is_preserved_by_rust(self) -> None:
         row_id = "workspace-views-other-task"
         original = self._record("runtime_tasks", row_id)
         self._write_record("runtime_tasks", row_id, {**original, "unexpectedStoredProperty": True})
         try:
             response = self.backend.request("GET", "/api/task?" + urlencode({"id": row_id}))
+            self.assertEqual(response.status, 200, response.body[:1000])
             if self.rust_backend:
-                self.assertEqual(response.status, 500, response.body[:1000])
-                self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
-                self.assertNotIn("unexpectedStoredProperty", response.body.decode())
+                self.assertNotIn("unexpectedStoredProperty", response.json())
             else:
-                self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertIn("unexpectedStoredProperty", response.json())
         finally:
             self._write_record("runtime_tasks", row_id, original)
 

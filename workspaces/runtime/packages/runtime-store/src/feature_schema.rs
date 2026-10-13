@@ -350,6 +350,14 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("in-memory database opens");
         let transaction = connection.transaction().expect("transaction opens");
         transaction
+            .execute_batch(
+                "CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            )
+            .expect("core tables precede feature schema bootstrap");
+        transaction
             .execute_batch(FEATURE_SCHEMA)
             .expect("voice schema bootstraps");
 

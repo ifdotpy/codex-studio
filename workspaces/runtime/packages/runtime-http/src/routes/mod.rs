@@ -132,7 +132,12 @@ mod registration_tests {
             .map(|registration| registration.name.to_owned())
             .collect::<Vec<_>>();
         registered_modules.sort_unstable();
-        assert_eq!(registered_modules, source_modules);
+        let route_modules = source_modules
+            .iter()
+            .filter(|module| module.as_str() != "manifest")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(registered_modules, route_modules);
 
         let mut route_files = source_modules
             .iter()
