@@ -18,20 +18,50 @@ spec.loader.exec_module(module)
 
 
 class RuntimeLoadHelpersTests(unittest.TestCase):
-    def test_runtime_db_timing_preserves_busy_timeout_keyword(self):
+    def test_benchmark_resource_scheduler_publishes_without_dispatch(self):
+        class Changed:
+            def wait(self):
+                return True
+
+            def clear(self):
+                return None
+
+        class Fixture:
+            closed = False
+            changed = Changed()
+            published = 0
+
+            def _publish_committed_resource_changes(self):
+                self.published += 1
+                self.closed = True
+
+            def dispatch(self, **_kwargs):
+                self.fail("benchmark resource publisher must not dispatch")
+
+            def fail(self, message):
+                raise AssertionError(message)
+
+        fixture = Fixture()
+        with mock.patch.dict(
+            "os.environ", {"BENCH_PUBLISH_RESOURCE_INVALIDATIONS": "1"}
+        ):
+            module.BenchmarkRuntimeMixin.schedule(fixture)
+        self.assertEqual(fixture.published, 1)
+
+    def test_runtime_db_timing_forwards_supported_keywords(self):
         observed = []
 
         @contextmanager
-        def original_runtime_db(*, busy_timeout=None):
-            observed.append(busy_timeout)
+        def original_runtime_db(*, busy_timeout=None, analytics=False):
+            observed.append((busy_timeout, analytics))
             yield object()
 
         with module.measured_runtime_db_context(
-            original_runtime_db, False, busy_timeout=50
+            original_runtime_db, False, busy_timeout=50, analytics=True
         ):
             pass
 
-        self.assertEqual(observed, [50])
+        self.assertEqual(observed, [(50, True)])
 
     def test_runtime_fixture_sets_synchronous_mode_on_each_connection(self):
         from codex_runtime import Runtime
@@ -52,6 +82,11 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
                         with runtime.db() as db:
                             self.assertEqual(
                                 db.execute("PRAGMA synchronous").fetchone()[0], expected)
+                    with runtime.db(analytics=True) as db:
+                        attached = {
+                            row[1] for row in db.execute("PRAGMA database_list")
+                        }
+                        self.assertIn("analytics", attached)
 
     def test_diagnostic_synchronous_rejects_unsupported_modes(self):
         for mode in ("OFF", "EXTRA", "2"):
