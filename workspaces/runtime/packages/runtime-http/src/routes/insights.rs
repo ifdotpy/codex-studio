@@ -140,6 +140,8 @@ fn map_costs_error(error: CostsError) -> ApiError {
             | studio_runtime_store::CostUsageRepositoryError::RecordLimit,
         )
         | CostsError::Grouping(_)
+        | CostsError::Repository(_)
+        | CostsError::Sqlite(_)
         | CostsError::InvalidPricing
         | CostsError::Computation => ApiError::internal(),
     }
