@@ -58,7 +58,7 @@ class AccountLoginHTTPContract(unittest.TestCase):
         scratch = os.environ.get("TMPDIR")
         if not scratch:
             raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
-        cls.backend = BackendProcess(Path(scratch))
+        cls.backend = BackendProcess(Path(scratch), claude_bin=None)
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
         cls.backend.extra_home = cls.backend.root / "extra-codex-profile"
         write_auth(cls.backend.extra_home, "fixture-account-two")
