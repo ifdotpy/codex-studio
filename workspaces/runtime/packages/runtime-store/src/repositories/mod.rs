@@ -5,6 +5,7 @@ pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
 pub(crate) mod monitors;
+pub(crate) mod notification_dispatch;
 pub(crate) mod profiles;
 pub(crate) mod questions_reads;
 pub(crate) mod queue_write;
@@ -30,6 +31,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &queue_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
     &monitors::REQUIREMENTS,
+    &notification_dispatch::REQUIREMENTS,
     &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,
     &questions_reads::REQUIREMENTS,
