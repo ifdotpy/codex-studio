@@ -32,7 +32,6 @@ const TOOL_CATALOG_DEPENDENCIES: &[Dependency] =
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const NATIVE_COMMAND_DEPENDENCIES: &[Dependency] =
     &[Dependency::new("turn-path/native-command-input")];
-const SYNC_NOTIFY_DEPENDENCIES: &[Dependency] = &[Dependency::new("sync-policy/resource-notify")];
 const VM_FINDER_DEPENDENCIES: &[Dependency] = &[Dependency::new("vm-agents/finder-view")];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -59,7 +58,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/sync/notify",
-            OperationStatus::partial(SYNC_NOTIFY_DEPENDENCIES),
+            OperationStatus::Implemented,
             sync_notify,
         ),
     ])
@@ -339,14 +338,10 @@ async fn native_command(
 }
 
 async fn sync_notify(
-    State(_state): State<HttpState>,
-    ApiJson(_body): ApiJson<Value>,
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "POST",
-        "/api/sync/notify",
-        SYNC_NOTIFY_DEPENDENCIES,
-    )?)
+    super::sync_stream::notify_resources(state, body).await
 }
 
 #[derive(Deserialize)]
@@ -477,7 +472,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "provider-service/claude-discovery",
-            "sync-policy/resource-notify",
             "thread-preparation/tool-catalog",
             "turn-path/native-command-input",
             "vm-agents/finder-view",

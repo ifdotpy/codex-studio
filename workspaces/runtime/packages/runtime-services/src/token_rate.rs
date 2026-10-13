@@ -1,10 +1,15 @@
 //! Bounded, latest-value token-rate publication for resource streams.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
+
+use crate::change_notifications::ChangeNotificationHub;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::watch;
+
+pub const MAX_SNAPSHOT_BYTES: usize = 262_144;
 
 const MAX_AGENTS: usize = 1024;
 const MAX_ID_BYTES: usize = 200;
@@ -19,16 +24,47 @@ pub struct TokenRateValue {
     output_tokens: FiniteRate,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct FiniteRate(f64);
+#[derive(Clone, Debug)]
+struct FiniteRate(serde_json::Number);
+
+// Python compares integers and floats numerically, including beyond f64's exact integer range.
+impl PartialEq for FiniteRate {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.0.as_u64(), other.0.as_u64()) {
+            (Some(left), Some(right)) => left == right,
+            (Some(integer), None) | (None, Some(integer)) => {
+                let float = if self.0.as_u64().is_none() {
+                    self.0.as_f64()
+                } else {
+                    other.0.as_f64()
+                };
+                float.is_some_and(|value| {
+                    value.fract() == 0.0
+                        && value < 18446744073709551616.0
+                        && value as u64 == integer
+                })
+            }
+            _ => self.0.as_f64() == other.0.as_f64(),
+        }
+    }
+}
+
+impl Default for FiniteRate {
+    fn default() -> Self {
+        Self(0.into())
+    }
+}
 
 impl<'de> Deserialize<'de> for FiniteRate {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let value = f64::deserialize(deserializer)?;
-        if value.is_finite() && value >= 0.0 {
+        let value = serde_json::Number::deserialize(deserializer)?;
+        if value
+            .as_f64()
+            .is_some_and(|value| value.is_finite() && value >= 0.0)
+        {
             Ok(Self(value))
         } else {
             Err(serde::de::Error::custom(
@@ -43,7 +79,7 @@ impl Serialize for FiniteRate {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_f64(self.0)
+        self.0.serialize(serializer)
     }
 }
 
@@ -64,10 +100,14 @@ pub enum TokenRateError {
 #[derive(Clone)]
 pub struct TokenRateHub {
     sender: watch::Sender<TokenRateSnapshot>,
+    changes: Option<Arc<ChangeNotificationHub>>,
 }
 
 impl TokenRateSnapshot {
     pub fn from_value(value: serde_json::Value) -> Result<Self, TokenRateError> {
+        if value.to_string().len() > MAX_SNAPSHOT_BYTES || !valid_snapshot_schema(&value)? {
+            return Err(TokenRateError::InvalidSnapshot);
+        }
         let snapshot: Self =
             serde_json::from_value(value).map_err(|_| TokenRateError::InvalidSnapshot)?;
         if snapshot.rates.len() > MAX_AGENTS
@@ -110,6 +150,16 @@ impl TokenRateHub {
     pub fn new() -> Self {
         Self {
             sender: watch::channel(TokenRateSnapshot::empty()).0,
+            changes: None,
+        }
+    }
+
+    /// Bind token-only publication to the shared cursor without invalidating other resources.
+    #[must_use]
+    pub fn with_change_hub(changes: Arc<ChangeNotificationHub>) -> Self {
+        Self {
+            changes: Some(changes),
+            ..Self::new()
         }
     }
 
@@ -129,6 +179,8 @@ impl TokenRateHub {
         Ok(self.sender.send_if_modified(|current| {
             if *current == snapshot {
                 false
+            } else if let Some(changes) = &self.changes {
+                changes.try_publish(1, false, |_| *current = snapshot)
             } else {
                 *current = snapshot;
                 true
@@ -153,10 +205,27 @@ fn valid_id(value: &str) -> bool {
 
 fn valid_rate(value: &TokenRateValue) -> bool {
     valid_id(&value.turn_id)
-        && value.rate.0.is_finite()
-        && value.rate.0 >= 0.0
-        && value.output_tokens.0.is_finite()
-        && value.output_tokens.0 >= 0.0
+}
+
+fn valid_snapshot_schema(value: &serde_json::Value) -> Result<bool, TokenRateError> {
+    static VALIDATOR: OnceLock<Result<jsonschema::Validator, String>> = OnceLock::new();
+    let validator = VALIDATOR
+        .get_or_init(|| {
+            let document = crate::sync_views::openapi_document();
+            let mut schema = document["components"]["schemas"]["ResourceTokenRatesEvent"].clone();
+            schema["properties"]
+                .as_object_mut()
+                .ok_or("missing token-rate properties")?
+                .retain(|name, _| matches!(name.as_str(), "rates" | "teams"));
+            schema["required"] = serde_json::json!(["rates", "teams"]);
+            schema["components"] = document["components"].clone();
+            jsonschema::options()
+                .build(&schema)
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|_| TokenRateError::InvalidSnapshot)?;
+    Ok(validator.is_valid(value))
 }
 
 #[cfg(test)]
@@ -177,7 +246,7 @@ mod tests {
             subscriber.borrow_and_update().rates["agent-a"]
                 .output_tokens
                 .0,
-            17.0
+            serde_json::Number::from(17)
         );
     }
 

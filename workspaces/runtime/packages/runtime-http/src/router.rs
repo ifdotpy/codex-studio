@@ -43,6 +43,8 @@ pub struct HttpState {
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
     pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
+    pub(crate) resource_notifications:
+        Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
@@ -91,8 +93,13 @@ impl HttpState {
             tool_catalog: None,
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
-            sync_changes,
-            token_rates: Arc::new(TokenRateHub::new()),
+            resource_notifications: Arc::new(
+                studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
+                    &sync_changes,
+                )),
+            ),
+            sync_changes: Arc::clone(&sync_changes),
+            token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
@@ -150,6 +157,12 @@ impl HttpState {
         &self,
     ) -> studio_runtime_services::model_catalog::ModelCatalogService {
         self.model_catalog.clone()
+    }
+
+    pub fn resource_notifications_handle(
+        &self,
+    ) -> Arc<studio_runtime_services::resource_notify::ResourceNotifications> {
+        Arc::clone(&self.resource_notifications)
     }
 
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {

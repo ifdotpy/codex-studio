@@ -10,6 +10,8 @@ pub const MAX_SAFE_REVISION: i64 = 9_007_199_254_740_991;
 pub struct ChangeSnapshot {
     pub epoch: String,
     pub revision: i64,
+    /// Last broad invalidation; token and explicit-resource publications leave it unchanged.
+    pub resource_revision: i64,
     pub closed: bool,
 }
 
@@ -30,6 +32,7 @@ impl ChangeNotificationHub {
         let (sender, _) = watch::channel(ChangeSnapshot {
             epoch: process_epoch(),
             revision: 0,
+            resource_revision: 0,
             closed: false,
         });
         Self { sender }
@@ -46,11 +49,31 @@ impl ChangeNotificationHub {
 
     /// Publish a successful store commit or progress-file change.
     pub fn notify_one(&self) {
-        self.sender.send_modify(|snapshot| {
-            if !snapshot.closed {
-                snapshot.revision = snapshot.revision.saturating_add(1).min(MAX_SAFE_REVISION);
+        self.try_publish(1, true, |_| {});
+    }
+
+    /// Decide closure, advance the cursor and record publication under the same guard.
+    /// The callback must not read this hub or block on another publisher.
+    pub fn try_publish(
+        &self,
+        steps: u32,
+        invalidate_all: bool,
+        record: impl FnOnce(&ChangeSnapshot),
+    ) -> bool {
+        self.sender.send_if_modified(|snapshot| {
+            if snapshot.closed {
+                return false;
             }
-        });
+            snapshot.revision = snapshot
+                .revision
+                .saturating_add(i64::from(steps))
+                .min(MAX_SAFE_REVISION);
+            if invalidate_all {
+                snapshot.resource_revision = snapshot.revision;
+            }
+            record(snapshot);
+            true
+        })
     }
 
     /// Wake active streams and prevent later writes from publishing revisions.
@@ -101,5 +124,46 @@ mod tests {
 
         assert!(receiver.borrow_and_update().closed);
         assert_eq!(receiver.borrow().revision, MAX_SAFE_REVISION);
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn publication_guard_finishes_record_before_racing_close() {
+        let hub = ChangeNotificationHub::new();
+        let (recording, record_started) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let publisher = {
+            let hub = hub.clone();
+            std::thread::spawn(move || {
+                hub.try_publish(1, false, |snapshot| {
+                    assert!(!snapshot.closed);
+                    recording.send(snapshot.revision).expect("record starts");
+                    gate.recv().expect("release record");
+                })
+            })
+        };
+        assert_eq!(record_started.recv().expect("publication gate"), 1);
+        let (closing, close_started) = mpsc::channel();
+        let closer = {
+            let hub = hub.clone();
+            std::thread::spawn(move || {
+                closing.send(()).expect("close starts");
+                hub.close();
+            })
+        };
+        close_started
+            .recv()
+            .expect("close raced with guarded record");
+        release.send(()).expect("finish publication");
+        assert!(publisher.join().expect("publisher"));
+        closer.join().expect("closer");
+        assert!(hub.snapshot().closed);
+        assert_eq!(hub.snapshot().revision, 1);
+        assert!(!hub.try_publish(1, false, |_| panic!("closed publication")));
     }
 }

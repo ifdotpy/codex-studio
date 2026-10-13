@@ -91,6 +91,7 @@ pub mod recovery_runtime;
 pub mod recovery_store;
 pub mod relocation;
 pub mod remote_transport;
+pub mod resource_notify;
 pub mod rules;
 pub mod rules_engine;
 pub mod rules_tick;
