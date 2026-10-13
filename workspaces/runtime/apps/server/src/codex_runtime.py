@@ -46,6 +46,8 @@ from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
+                               MIN_SUBAGENT_CONCURRENCY, MIN_TEAM_AGENTS,
+                               TEAM_AGENT_HEADROOM,
                                global_concurrency_limit)
 from codex_startup_memory import mark as startup_memory_mark
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
@@ -4805,11 +4807,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Select an existing project directory")
             concurrency = data.get("concurrency", DEFAULT_SUBAGENT_CONCURRENCY)
             max_agents = int(data.get("maxAgents", DEFAULT_MAX_TEAM_AGENTS))
-            if type(concurrency) is not int or not 0 <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not 1 <= max_agents <= MAX_TEAM_AGENTS:
-                raise ValueError(f"Concurrency must be 0 to {MAX_SUBAGENT_CONCURRENCY}; team size must be 1 to {MAX_TEAM_AGENTS}")
+            if type(concurrency) is not int or not MIN_SUBAGENT_CONCURRENCY <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not MIN_TEAM_AGENTS <= max_agents <= MAX_TEAM_AGENTS:
+                raise ValueError(f"Concurrency must be {MIN_SUBAGENT_CONCURRENCY} to {MAX_SUBAGENT_CONCURRENCY}; team size must be {MIN_TEAM_AGENTS} to {MAX_TEAM_AGENTS}")
             max_agents_explicit = "maxAgents" in data
             if is_lead and not max_agents_explicit:
-                max_agents = max(max_agents, concurrency + 2)
+                max_agents = max(max_agents, concurrency + TEAM_AGENT_HEADROOM)
             budget = data.get("tokenBudget") or None
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
@@ -11439,8 +11441,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError('Configure only team storage and token limits')
             limit = data.get("maxAgents", root["maxAgents"])
             budget = data.get("tokenBudget", root["tokenBudget"])
-            if type(limit) is not int or not 1 <= limit <= MAX_TEAM_AGENTS:
-                raise ValueError(f"Team size must be an integer from 1 to {MAX_TEAM_AGENTS}")
+            if type(limit) is not int or not MIN_TEAM_AGENTS <= limit <= MAX_TEAM_AGENTS:
+                raise ValueError(f"Team size must be an integer from {MIN_TEAM_AGENTS} to {MAX_TEAM_AGENTS}")
             if budget is not None and (type(budget) is not int or budget <= 0):
                 raise ValueError("Token budget must be positive or null")
             for a in self.team_agents(db, key, include_deleted=True):

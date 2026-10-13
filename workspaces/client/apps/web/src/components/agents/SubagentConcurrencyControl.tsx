@@ -2,12 +2,17 @@ import { SegmentedControl } from "@mantine/core";
 import { serverLocalStorage as localStorage } from "../../servers/storage";
 import { useEffect, useRef, useState } from "react";
 import { post, ApiError, errorText, type PostBody } from "../../api";
+import {
+  DEFAULT_SUBAGENT_CONCURRENCY,
+  MAX_SUBAGENT_CONCURRENCY,
+  MIN_SUBAGENT_CONCURRENCY,
+} from "../../generated/apiSchema";
 import type { Agent } from "../../types";
 import "./subagent-concurrency-control.css";
 
-const DEFAULT_CONCURRENCY = 32;
-const MIN_CONCURRENCY = 0;
-const MAX_CONCURRENCY = 2048;
+const DEFAULT_CONCURRENCY = DEFAULT_SUBAGENT_CONCURRENCY;
+const MIN_CONCURRENCY = MIN_SUBAGENT_CONCURRENCY;
+const MAX_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY;
 const CONCURRENCY_HELP =
   "0 disables subagents. The lead does not count. Extra work waits in the queue.";
 const UNSUPPORTED_HELP =
@@ -221,7 +226,10 @@ function ScopedConcurrencyControl({
       return;
     const validDraft = validConcurrency(target);
     if (!stored.pending && (!validDraft || target === confirmed.concurrency)) {
-      if (!validDraft) setError("Enter a whole number from 0 to 2048.");
+      if (!validDraft)
+        setError(
+          `Enter a whole number from ${MIN_CONCURRENCY} to ${MAX_CONCURRENCY}.`,
+        );
       else dirty.current = false;
       return;
     }

@@ -7,6 +7,14 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
+from codex_agent_modes import (
+    DEFAULT_MAX_TEAM_AGENTS,
+    DEFAULT_SUBAGENT_CONCURRENCY,
+    MAX_SUBAGENT_CONCURRENCY,
+    MAX_TEAM_AGENTS,
+    MIN_TEAM_AGENTS,
+    MIN_SUBAGENT_CONCURRENCY,
+)
 from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
 )
@@ -261,8 +269,8 @@ class CreateAgentRequest(ContractModel):
     account_key: str = Field(default="default", max_length=200)
     worker_defaults: WorkerDefaults | None = None
     profile_id: str | None = Field(default=None, max_length=200)
-    concurrency: SafeInt = Field(default=32, ge=0, le=2048)
-    maxAgents: SafeInt = Field(default=64, ge=1, le=2050)
+    concurrency: SafeInt = Field(default=DEFAULT_SUBAGENT_CONCURRENCY, ge=MIN_SUBAGENT_CONCURRENCY, le=MAX_SUBAGENT_CONCURRENCY)
+    maxAgents: SafeInt = Field(default=DEFAULT_MAX_TEAM_AGENTS, ge=MIN_TEAM_AGENTS, le=MAX_TEAM_AGENTS)
     tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 class ConversationRequest(ContractModel):
@@ -279,7 +287,7 @@ class ConversationRequest(ContractModel):
     worker_defaults: WorkerDefaults | None = None
     review_defaults: ReviewDefaults | None = None
     agent_mode: AgentMode | None = None
-    subagent_concurrency: SafeInt = Field(default=32, ge=0, le=2048)
+    subagent_concurrency: SafeInt = Field(default=DEFAULT_SUBAGENT_CONCURRENCY, ge=MIN_SUBAGENT_CONCURRENCY, le=MAX_SUBAGENT_CONCURRENCY)
     expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
     excluded_account_keys: list[Annotated[str, Field(min_length=1, pattern=r"\S")]] = Field(
         default_factory=list,
@@ -299,10 +307,10 @@ class ConversationRequest(ContractModel):
 
 class ConfigureRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
-    concurrency: SafeInt = Field(default=32, ge=0, le=2048)
+    concurrency: SafeInt = Field(default=DEFAULT_SUBAGENT_CONCURRENCY, ge=MIN_SUBAGENT_CONCURRENCY, le=MAX_SUBAGENT_CONCURRENCY)
     expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
     request_id: str | None = Field(default=None, min_length=1, max_length=200)
-    maxAgents: SafeInt = Field(default=64, ge=1, le=2050)
+    maxAgents: SafeInt = Field(default=DEFAULT_MAX_TEAM_AGENTS, ge=MIN_TEAM_AGENTS, le=MAX_TEAM_AGENTS)
     tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 

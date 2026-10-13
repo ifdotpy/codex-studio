@@ -25,7 +25,7 @@ test-plan package case="" *args:
 check package *args:
     @node {{quote(facade)}} check {{quote(package)}} {{args}}
 
-[doc("Check generated API contracts in read-only drift mode.")]
+[doc("Check generated API and persisted-state contracts in read-only drift mode.")]
 contracts-check:
     @node {{quote(facade)}} contracts-check
 

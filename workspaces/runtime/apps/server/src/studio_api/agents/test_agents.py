@@ -1,10 +1,12 @@
 """Unit coverage for the agent API's boundary models."""
 
 import unittest
+import json
 from typing import Callable, cast
 
 from pydantic import TypeAdapter, ValidationError
 from codex_runtime import Runtime
+from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS
 from studio_api.models import JsonValue
 from studio_api.sync.models import CapacityRetrySettingsDto
 
@@ -41,23 +43,23 @@ class AgentRequestModelTests(unittest.TestCase):
         )
 
     def test_subagent_limits_accept_2048_and_team_headroom_2050(self) -> None:
-        lead = CreateAgentRequest.model_validate_json(
-            '{"prompt":"x","concurrency":2048,"maxAgents":2050}'
-        )
-        conversation = ConversationRequest.model_validate_json(
-            '{"id":"lead","subagent_concurrency":2048}'
-        )
-        configure = ConfigureRequest.model_validate_json(
-            '{"id":"lead","concurrency":2048,"maxAgents":2050}'
-        )
-        self.assertEqual((lead.concurrency, lead.maxAgents), (2048, 2050))
-        self.assertEqual(conversation.subagent_concurrency, 2048)
-        self.assertEqual((configure.concurrency, configure.maxAgents), (2048, 2050))
+        lead = CreateAgentRequest.model_validate_json(json.dumps(
+            {"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS}
+        ))
+        conversation = ConversationRequest.model_validate_json(json.dumps(
+            {"id": "lead", "subagent_concurrency": MAX_SUBAGENT_CONCURRENCY}
+        ))
+        configure = ConfigureRequest.model_validate_json(json.dumps(
+            {"id": "lead", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS}
+        ))
+        self.assertEqual((lead.concurrency, lead.maxAgents), (MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS))
+        self.assertEqual(conversation.subagent_concurrency, MAX_SUBAGENT_CONCURRENCY)
+        self.assertEqual((configure.concurrency, configure.maxAgents), (MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS))
         for model, body in (
-            (CreateAgentRequest, '{"prompt":"x","concurrency":2049}'),
-            (ConversationRequest, '{"id":"lead","subagent_concurrency":2049}'),
-            (ConfigureRequest, '{"id":"lead","concurrency":2049}'),
-            (CreateAgentRequest, '{"prompt":"x","concurrency":2048,"maxAgents":2051}'),
+            (CreateAgentRequest, json.dumps({"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (ConversationRequest, json.dumps({"id": "lead", "subagent_concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (ConfigureRequest, json.dumps({"id": "lead", "concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (CreateAgentRequest, json.dumps({"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS + 1})),
         ):
             with self.subTest(model=model.__name__, body=body), self.assertRaises(ValidationError):
                 model.model_validate_json(body)

@@ -130,6 +130,7 @@ fn snapshot(op: &Value, agent: &Value) -> Snapshot {
 #[test]
 fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record() {
     let (mut op, agent, _) = fixture();
+    let max_records = studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
     let records = |op: &mut Value, count: usize| {
         (0..count)
             .map(|index| {
@@ -138,7 +139,7 @@ fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record
                 } else {
                     format!("worker-{index}")
                 };
-                if index > 0 && index < 2050 {
+                if index > 0 && index < max_records {
                     op["members"][&id] = json!({
                         "phase":"waiting",
                         "sourceAccountKey":"source",
@@ -152,10 +153,10 @@ fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record
             .collect::<Vec<_>>()
     };
 
-    let at_limit = records(&mut op, 2050);
+    let at_limit = records(&mut op, max_records);
     Snapshot::read(&op.to_string(), at_limit)
-        .expect("lead, 2048 workers, and one queued worker fit the team limit");
-    let above_limit = records(&mut op, 2051);
+        .expect("lead and workers fit the generated transfer member limit");
+    let above_limit = records(&mut op, max_records + 1);
     let error = Snapshot::read(&op.to_string(), above_limit)
         .err()
         .expect("a transfer snapshot above the team limit is refused");

@@ -1649,14 +1649,17 @@ function byWorkspaceDependency(manifestPath, dependency, packages) {
 }
 
 export function runContractsCheck(root = rootFrom()) {
-  process.stdout.write(
-    "Checking generated API contracts without writing files: pnpm run api:check\n",
-  );
-  const result = spawnSync("pnpm", ["run", "api:check"], {
-    cwd: root,
-    stdio: "inherit",
-  });
-  return result.status ?? 1;
+  for (const script of ["api:check", "state-schemas:check"]) {
+    process.stdout.write(
+      `Checking generated contracts without writing files: pnpm run ${script}\n`,
+    );
+    const result = spawnSync("pnpm", ["run", script], {
+      cwd: root,
+      stdio: "inherit",
+    });
+    if (result.status !== 0) return result.status ?? 1;
+  }
+  return 0;
 }
 
 function runAffected(root, base, dryRun) {
