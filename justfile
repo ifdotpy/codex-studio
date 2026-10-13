@@ -84,7 +84,7 @@ test-heavy:
 
 [doc("Run the complete deterministic Rust subsystem corpus matrices by hand.")]
 test-rust-runtime-corpora:
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) or binary(monitor_recovery)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery)'
 
 [doc("Run seeded monitor mutations in an external isolated target directory.")]
 test-rust-monitors-mutations target:
