@@ -6,10 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
-use studio_runtime_services::scheduler::consume_wake;
+use studio_runtime_services::scheduler::{SchedulerError, claim_intent, settle_start_outcome};
 use studio_runtime_services::scheduler::{
-    TurnDriver, TurnIntent, TurnOutcome, TurnStart, WakeSignal, mark_submitted_for_provider,
-    settle_started, settle_started_provider, settle_terminal,
+    TurnIntent, TurnStart, mark_submitted_for_provider, settle_started_provider,
 };
 use studio_runtime_store::{
     AgentId, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent, QueueEventId,
@@ -245,7 +244,18 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
     assert_eq!(delivered, 1);
     drop(reader);
     assert!(
-        settle_terminal(&store, &intent, "late-turn", TurnOutcome::Completed,)
+        store
+            .transaction(
+                |tx| studio_runtime_store::SchedulerRepository::settle_terminal(
+                    tx,
+                    &intent.agent_id,
+                    intent.epoch,
+                    &intent.attempt_id,
+                    "late-turn",
+                    AgentStatus::Completed,
+                    None
+                )
+            )
             .expect("terminal callback settles")
     );
     let reader = store.read().expect("terminal scheduler state reads");
@@ -320,7 +330,7 @@ fn submitted_marker_survives_settlement_write_failure() {
 }
 
 #[test]
-fn restart_keeps_a_known_submitted_turn_live_without_replaying_events() {
+fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     let state = TemporaryState::new();
     let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
     let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
@@ -351,10 +361,14 @@ fn restart_keeps_a_known_submitted_turn_live_without_replaying_events() {
     let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
         .expect("agent reads")
         .expect("agent exists");
-    assert_eq!(agent_record.status, AgentStatus::Running);
+    assert_eq!(agent_record.status, AgentStatus::Interrupted);
     assert_eq!(agent_record.extra["turnId"], "known-restart-turn");
-    assert_eq!(agent_record.extra["autoWake"], true);
-    assert_eq!(agent_record.extra["inFlight"], true);
+    assert_eq!(agent_record.extra["autoWake"], false);
+    assert_eq!(agent_record.extra["inFlight"], false);
+    assert_eq!(
+        agent_record.extra["restartRecovery"]["turnId"],
+        "known-restart-turn"
+    );
     let (delivered, pending): (i64, i64) = reader
         .query_row(
             "SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",
@@ -494,6 +508,7 @@ impl TurnDriver for StartAndAcceptDriver<'_> {
         assert!(
             settle_started_provider(self.0, &intent, request_id, 1, "known-restart-turn")
                 .expect("provider acceptance settles once")
+                .is_some()
         );
         TurnStart::Accepted {
             turn_id: "known-restart-turn".to_owned(),
@@ -666,4 +681,45 @@ impl Drop for TemporaryState {
             eprintln!("temporary scheduler state cleanup failed: {error}");
         }
     }
+}
+
+trait TurnDriver {
+    fn start(&mut self, intent: TurnIntent) -> TurnStart;
+}
+trait WakeSignal {
+    fn consume(&mut self) -> bool;
+}
+fn consume_wake(
+    store: &RuntimeStore,
+    wake: &mut impl WakeSignal,
+    agent: &str,
+    epoch: i64,
+    attempt: &str,
+    created: f64,
+    driver: &mut impl TurnDriver,
+) -> Result<bool, SchedulerError> {
+    if !wake.consume() {
+        return Ok(false);
+    }
+    if let Some(intent) = claim_intent(store, agent, epoch, attempt, created)? {
+        let outcome = driver.start(intent.clone());
+        settle_start_outcome(store, &intent, outcome)?;
+    }
+    Ok(true)
+}
+
+fn settle_started(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    turn: &str,
+) -> Result<bool, SchedulerError> {
+    Ok(store.transaction(|tx| {
+        studio_runtime_store::SchedulerRepository::settle_started(
+            tx,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+            turn,
+        )
+    })?)
 }
