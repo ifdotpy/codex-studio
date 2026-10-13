@@ -7,7 +7,7 @@ use crate::error::ApiError;
 use axum::Json;
 use serde_json::Value;
 const SESSION: [Dependency; 1] = [Dependency::new("provider-session/claude-controls")];
-fn routes() -> RouteGroup {
+pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/claude/session",
         OperationStatus::partial(&SESSION),

@@ -36,6 +36,8 @@ impl ControlSession for Native {
                     }
                     json!({"threadId":"thread","nativeId":"restored"})
                 }
+                "claude/commands" => json!({"commands":["/fixture"]}),
+                "claude/stopTask" => json!({"stopped":true}),
                 _ => unreachable!(),
             })
         })
@@ -68,6 +70,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let corpus: Value = serde_json::from_slice(&output.stdout).expect("Python corpus");
     for unknown in [false, true] {
         let state = root.path().join(format!("state-{unknown}"));
         std::fs::create_dir(&state).expect("valid fixture");
@@ -82,6 +85,16 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         });
         let adapter = Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {})));
         let service = Controls::new(adapter.clone(), native.clone());
+        for row in corpus["reads"].as_array().expect("read corpus") {
+            assert_eq!(
+                service
+                    .read_or_stop(&row["agent"], &row["body"], None)
+                    .await
+                    .expect("read action"),
+                row["expected"]
+            );
+        }
+
         let request = || {
             ControlRequest::from_value(&json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
         };
