@@ -25,6 +25,11 @@ from typing import Any, Protocol, cast
 import uuid
 import zlib
 
+from codex_multi_server_transport_limits import (
+    MULTI_SERVER_MAX_REQUEST_BYTES,
+    MULTI_SERVER_MAX_REQUEST_LABEL,
+)
+
 TIMEOUT = 20
 MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
@@ -33,7 +38,8 @@ EXPORT_AGE = 86400
 INPUT_ATTEMPTS = 8
 SPAWN_ATTEMPTS = 8
 PATH = '/api/servers/orchestration'
-MAX_REQUEST = 256 * 1024
+# Public alias used by move-validation callers.
+MAX_REQUEST = MULTI_SERVER_MAX_REQUEST_BYTES
 MAX_UNPACKED = 16 * 1024 * 1024
 # A Claude move check and its descriptor carry the exact tool schemas.
 PACKED_ACTIONS = frozenset({'move_validate', 'move_begin'})
@@ -370,7 +376,7 @@ class MultiServerService:
     def queue(self, db: Any, server: str, action: str, payload: dict[str, Any], key: str) -> str:
         body = request_body(key, action, payload)
         if len(body.encode('utf-8')) > MAX_REQUEST:
-            raise ValueError('The remote request exceeds 256 KiB; use a smaller batch')
+        raise ValueError(f'The remote request exceeds {MULTI_SERVER_MAX_REQUEST_LABEL}; use a smaller batch')
         # The identity of a packed request is its content, not its compressed bytes.
         digest = hashlib.sha256(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()).hexdigest()
         row = db.execute('SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
@@ -1327,8 +1333,8 @@ class MultiServerService:
         if action == 'exec':
             payload = validate(payload, allow_foreign_windows_path=server != self.server_id)
         key = identity(actor['id'], action, key)
-        if len(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()) > 256 * 1024:
-            raise ValueError('The encoded command request exceeds 256 KiB')
+        if len(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()) > MAX_REQUEST:
+            raise ValueError(f'The encoded command request exceeds {MULTI_SERVER_MAX_REQUEST_LABEL}')
         with self.runtime.lock, self.runtime.db() as db:
             current = self.runtime.checked_actor(db, actor['id'], actor['id'])
             if not current.get('isLead') or current['epoch'] != actor['epoch']:

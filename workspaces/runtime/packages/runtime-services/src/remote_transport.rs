@@ -21,8 +21,7 @@ use crate::event_write::python_json_compact;
 use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
-pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
-pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+include!("multi_server_transport_limits.rs");
 pub const MAX_IDENTITY_BYTES: usize = 16 * 1024;
 
 const MULTI_SERVER_DOMAIN: &str = "studio-multi-server-v1";
