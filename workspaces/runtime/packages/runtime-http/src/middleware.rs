@@ -139,6 +139,10 @@ pub(crate) async fn boundary(
             .validators
             .has_body_schema(method.as_str(), &path)
             .unwrap_or(false);
+        let has_opaque_json_schema = state
+            .validators
+            .has_opaque_body(method.as_str(), &path)
+            .unwrap_or(false);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -195,7 +199,9 @@ pub(crate) async fn boundary(
                 }
                 Ok(value) => {
                     parsed_body = Some(value);
-                    raw_body = Some(bytes.to_vec());
+                    if has_opaque_json_schema {
+                        raw_body = Some(bytes.clone());
+                    }
                 }
             }
         }
