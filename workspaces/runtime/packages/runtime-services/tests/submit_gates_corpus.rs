@@ -1,4 +1,6 @@
 //! Pure gates versus real Python functions, with an isolated, guarded oracle.
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -17,8 +19,9 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared isolated interpreter");
+        let python = prepared_python::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         for key in ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
             assert!(
                 std::env::var(key)

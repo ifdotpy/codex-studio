@@ -1,4 +1,6 @@
 //! Real Python decisions over immutable observations; no Runtime or provider is created.
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -14,8 +16,9 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the equipped isolated interpreter (read-only)");
+        let python = prepared_python::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let mut child = Command::new(python)
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_prepare/oracle.py"))

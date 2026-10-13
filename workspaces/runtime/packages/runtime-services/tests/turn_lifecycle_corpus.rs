@@ -1,4 +1,6 @@
 //! Both sides start from a committed Python-written database, never a Rust snapshot.
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -16,8 +18,9 @@ struct Oracle {
 }
 impl Oracle {
     fn new(root: &Path) -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared interpreter (read-only)");
+        let python = prepared_python::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(root)
@@ -640,7 +643,9 @@ fn python_written_turn_lifecycle_corpus() {
 
 #[test]
 fn oracle_guard_refuses_synthetic_provider_home_access() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared interpreter");
+    let python = prepared_python::prepared_python(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = Command::new(python)
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))

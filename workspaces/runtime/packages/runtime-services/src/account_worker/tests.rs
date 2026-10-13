@@ -127,7 +127,9 @@ fn template() -> (PathBuf, Value) {
         std::fs::create_dir_all(&root).unwrap();
         let output = Command::new("timeout")
             .arg("120")
-            .arg(std::env::var_os("CODEX_AGENTS_PYTHON").unwrap())
+            .arg(crate::agents_create::prepared_python(
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+            ))
             .arg("-c")
             .arg(CREATE_AGENTS)
             .arg(&root)

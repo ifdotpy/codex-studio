@@ -1,4 +1,6 @@
 //! Complete provider requests and receipt patches against the real Python seam.
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -13,8 +15,9 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the equipped isolated interpreter");
+        let python = prepared_python::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let mut child = Command::new(python)
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
@@ -469,7 +472,9 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
 
 #[test]
 fn oracle_guard_blocks_content_metadata_processes_and_network() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated interpreter");
+    let python = prepared_python::prepared_python(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let result = Command::new(python)
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
@@ -646,7 +651,9 @@ fn malformed_stored_catalog_family_never_panics() {
 
 #[test]
 fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated interpreter");
+    let python = prepared_python::prepared_python(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let result = Command::new(python)
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
