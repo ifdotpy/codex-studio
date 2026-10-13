@@ -8,6 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.persisted_account_transfer import PersistedAccountTransferRecord, PersistedTransferAgentRecord
 
 
 def _unicode_scalar(value: str) -> str:
@@ -272,6 +273,7 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-account-transfer-record.schema.json": PersistedAccountTransferRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-task-record.schema.json": PersistedTaskRecord,
     "persisted-plan-record.schema.json": PersistedPlanRecord,
@@ -285,6 +287,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
     "persisted-rule-record.schema.json": PersistedRuleRecord,
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
+    "persisted-transfer-agent-record.schema.json": PersistedTransferAgentRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-profile-record.schema.json": PersistedProfileRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,

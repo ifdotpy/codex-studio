@@ -8,11 +8,15 @@ use serde_json::{Value, json};
 
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";
+const ACCOUNT_TRANSFER_URI: &str =
+    "https://codex-studio.invalid/persisted-account-transfer-record.schema.json";
 const USAGE_LIMITS_URI: &str = "https://codex-studio.invalid/workspace-usage-limits.schema.json";
 const TRANSCRIPT_ASSET_URI: &str =
     "https://codex-studio.invalid/runtime-transcript-asset.schema.json";
 const TRANSCRIPT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-transcript-record.schema.json";
+const TRANSFER_AGENT_URI: &str =
+    "https://codex-studio.invalid/persisted-transfer-agent-record.schema.json";
 const EVENT_METADATA_URI: &str = "https://codex-studio.invalid/runtime-event-metadata.schema.json";
 const AGENT_RECORD_URI: &str = "https://codex-studio.invalid/persisted-agent-record.schema.json";
 const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-record.schema.json";
@@ -64,9 +68,17 @@ const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.s
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (
+        ACCOUNT_TRANSFER_URI,
+        include_bytes!("schemas/persisted-account-transfer-record.schema.json"),
+    ),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
     (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
+    (
+        TRANSFER_AGENT_URI,
+        include_bytes!("schemas/persisted-transfer-agent-record.schema.json"),
+    ),
     (EVENT_METADATA_URI, EVENT_METADATA),
     (AGENT_RECORD_URI, AGENT_RECORD),
     (TASK_RECORD_URI, TASK_RECORD),
@@ -128,6 +140,7 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_account_transfers" => "PersistedAccountTransferRecord",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
@@ -208,7 +221,9 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     for (name, uri) in [
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
+        ("PersistedTransferAgentRecord", TRANSFER_AGENT_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedTaskRecord", TASK_RECORD_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),

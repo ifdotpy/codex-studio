@@ -49,6 +49,10 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
+[doc("Run the full account transfer corpus and durable failpoint matrix (manual heavy tier).")]
+test-rust-runtime-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^account_transfer/)'
+
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy

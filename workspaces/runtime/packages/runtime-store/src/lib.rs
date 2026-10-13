@@ -9,6 +9,9 @@ mod state_check;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
 pub use repositories::account_state;
+pub use repositories::account_transfer::{
+    AccountTransferRecord, AccountTransferRepository, MAX_TRANSFER_RECORD_BYTES,
+};
 pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,

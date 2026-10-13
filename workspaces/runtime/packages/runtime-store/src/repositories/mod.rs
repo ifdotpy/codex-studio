@@ -1,4 +1,5 @@
 pub mod account_state;
+pub(crate) mod account_transfer;
 pub(crate) mod agents;
 pub mod analytics;
 pub(crate) mod checkpoints;
