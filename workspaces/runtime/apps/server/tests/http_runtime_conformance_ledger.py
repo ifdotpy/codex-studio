@@ -1605,11 +1605,30 @@ def run_suite(
         "failed": sum(case["status"] in {"fail", "error"} for case in cases),
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
-    reported_counts = {name: result.get(name, 0) or 0 for name in observed_counts}
-    if observed_counts != reported_counts:
+    ran_summary = re.search(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
+    suite_summary = re.search(
+        r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
+        log_text,
+    )
+    structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
+    if ran_summary is None or suite_summary is None:
+        raise RuntimeError(f"consumer result summary missing in {relative}")
+    expected_reported_counts = {
+        "passed": observed_counts["passed"] + int(suite_summary.group(1)),
+        "failed": observed_counts["failed"] + max(
+            0, int(suite_summary.group(2)) - structured_failed_suites
+        ),
+        "skipped": observed_counts["skipped"] + int(suite_summary.group(3)) + int(suite_summary.group(4)),
+    }
+    reported_counts = {name: result.get(name, 0) or 0 for name in expected_reported_counts}
+    if (
+        sum(observed_counts.values()) != int(ran_summary.group(1))
+        or expected_reported_counts != reported_counts
+    ):
         raise RuntimeError(
             f"consumer result-count mismatch in {relative}: "
-            f"parsed={observed_counts}, reported={reported_counts}"
+            f"parsed={observed_counts}, reported={reported_counts}, "
+            f"expected-reported={expected_reported_counts}, ran={ran_summary.group(1)}"
         )
     requests: list[dict[str, Any]] = []
     if trace_path.exists():
