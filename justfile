@@ -51,7 +51,7 @@ test-server-shard index count:
 
 [doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
 test-rust-runtime-corpora *args:
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/) | test(every_scenario_recovers_at_every_bridge_boundary) | binary(/^claude_/) | binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/) | package(studio-process-supervisor) | binary(/^continuation_recovery$/) | binary(/^analytics_history_checkpoint$/) | binary(/^portable_history_python_parity$/) | binary(/^payload_safety_oracle$/) | binary(provider_binaries_differential)' {{args}}
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/) | test(every_scenario_recovers_at_every_bridge_boundary) | binary(/^claude_/) | binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/) | package(studio-process-supervisor) | binary(/^continuation_recovery$/) | binary(/^analytics_history_checkpoint$/) | binary(/^portable_history_python_parity$/) | binary(/^payload_safety_oracle$/) | binary(provider_binaries_differential) | binary(/^wave7_p03_message_ingress$/)' {{args}}
 
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
@@ -89,14 +89,6 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
-
-[doc("Run the full Rust readiness, lifecycle, notification, preparation and subsystem matrices (manual heavy tier; no load generators).")]
-test-rust-runtime-corpora:
-    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates|budget|radio_policy|voice_provider|recovery|catalog_reads)_corpus$/) or binary(/^wave7_p03_message_ingress$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
-
-    @cargo nextest run -p studio-runtime-services -E 'binary(/^claude_/) or binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/)'
-    @cargo nextest run -p studio-process-supervisor
 
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:
