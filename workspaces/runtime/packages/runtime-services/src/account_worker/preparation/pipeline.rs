@@ -6,6 +6,7 @@ use std::time::Instant;
 use studio_runtime_store::Transaction;
 
 pub(crate) struct CommitGuard {
+    native_params: Option<Value>,
     selection: gates::ExecutionSelection,
     token: crate::workspace_ready::ReadyToken,
     resources: PreparationResources,
@@ -124,7 +125,7 @@ fn preconditions(
     {
         return Err(refusal("preparation/ownership-changed".into()));
     }
-    if intent.provider != "codex"
+    if !matches!(intent.provider.as_str(), "codex" | "claude")
         || ["claudePreInputRetry", "claudeAuthWait"]
             .iter()
             .any(|k| record.get(*k).is_some_and(|v| !v.is_null()))
@@ -312,6 +313,7 @@ pub(crate) fn prepare_ready(
             Ok::<_, WorkerError>((snapshot, turn_snapshot, events, prepared_intent))
         })?;
     let mut guard = CommitGuard {
+        native_params: None,
         selection,
         token,
         resources: resources.clone(),
@@ -397,7 +399,7 @@ pub(crate) fn prepare_ready(
         "clientUserMessageId".into(),
         json!(compiled.event_ids.first()),
     );
-    let submission = crate::notification_dispatch::PreparedSubmission {
+    let mut submission = crate::notification_dispatch::PreparedSubmission {
         first_event_id: compiled.event_ids[0].clone(),
         submitted_at: turn_snapshot.prepared_at,
         created_at: prepared_intent.events[0].created,
@@ -419,6 +421,25 @@ pub(crate) fn prepare_ready(
             .collect(),
         assets: json!(compiled.transcript.assets),
     };
+    if intent.provider == "claude" {
+        let prepared = scheduler::lifecycle_transaction_with(store, |tx| {
+            Ok::<_, WorkerError>(crate::claude_input_recovery::runtime::start_input(
+                tx,
+                &intent.agent_id,
+                &intent.attempt_id,
+                claude_transport(&intent.account_key, generation)?,
+                Value::Object(params.clone()),
+                submission.text.clone(),
+            )?)
+        })?;
+        params = prepared
+            .params
+            .as_object()
+            .cloned()
+            .ok_or_else(|| invalid("claude params"))?;
+        submission.text = prepared.text;
+    }
+    guard.native_params = Some(Value::Object(params.clone()));
     prepared_intent.thread_id = snapshot.actor.thread_id;
     Ok(RequestPreparation {
         intent: prepared_intent,
@@ -613,4 +634,39 @@ pub(crate) fn persist_compilation(
         )?;
     }
     Ok(())
+}
+
+/// Binding comes from the retained account generation, never the native reply.
+pub(crate) fn claude_transport(
+    account: &str,
+    generation: u64,
+) -> Result<crate::claude_input_recovery::TransportSnapshot, WorkerError> {
+    decode(
+        json!({"accountKey":account,"connectionId":generation.to_string(),"supervisorIdentity":null,"closed":false}),
+        "retained Claude binding",
+    )
+}
+pub(crate) fn commit_claude(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    request_id: &str,
+    generation: u64,
+    submission: &crate::notification_dispatch::PreparedSubmission,
+    guard: &CommitGuard,
+) -> Result<bool, WorkerError> {
+    crate::claude_input_recovery::runtime::submission::commit_start(
+        tx,
+        intent,
+        request_id,
+        crate::claude_input_recovery::runtime::SubmittedBinding {
+            transport: claude_transport(&intent.account_key, generation)?,
+            generation,
+        },
+        guard
+            .native_params
+            .as_ref()
+            .ok_or_else(|| invalid("Claude prepared params"))?,
+        submission,
+    )?;
+    Ok(true)
 }

@@ -190,3 +190,5 @@ pub(super) struct PendingBarrier {
 mod runtime;
 mod storage;
 pub(super) use storage::recover;
+
+pub mod consumers;

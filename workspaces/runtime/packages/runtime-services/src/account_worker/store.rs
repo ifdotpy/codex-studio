@@ -338,6 +338,14 @@ pub(super) fn submitted(
             preparation::commit(tx, context, guard)?;
         }
         let authorized = match context.method()? {
+            Method::TurnStart if i.provider == "claude" => preparation::commit_claude(
+                tx,
+                i,
+                &id_string(&request.ticket.id),
+                request.ticket.generation,
+                submission.ok_or_else(|| invalid(&i.attempt_id))?,
+                guard.ok_or_else(|| invalid("Claude commit guard"))?,
+            )?,
             Method::TurnStart => commit_prepared_turn(
                 tx,
                 i,

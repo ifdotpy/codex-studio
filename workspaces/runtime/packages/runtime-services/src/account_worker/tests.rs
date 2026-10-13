@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+mod claude_preparation;
 mod retained;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
@@ -238,6 +239,7 @@ struct Wire {
     receipt: oneshot::Sender<CommandReceipt>,
 }
 struct Peer {
+    claude: bool,
     account: String,
     generation: Generation,
     factory: Arc<Factory>,
@@ -351,6 +353,7 @@ impl Peer {
             ProviderAttachment::from_task(commands, journal, observed, stop.clone(), task),
         ))));
         Self {
+            claude: false,
             account: account.into(),
             generation,
             factory,
@@ -396,7 +399,7 @@ impl Peer {
             SessionTaskConfig {
                 initialize_params: json!({}),
                 generation: self.generation,
-                claude: false,
+                claude: self.claude,
                 timeout_ms: 60_000,
                 initialize_operation: OperationId("init".into()),
                 request_id_prefix: None,

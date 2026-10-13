@@ -266,3 +266,48 @@ async fn retained_response_before_write_receipt_stays_positive() {
     ));
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
+    use crate::claude_controls::service::{ControlScope, ControlSession};
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let session = std::sync::Arc::new(worker.claude_session().unwrap());
+    let scope = ControlScope {
+        agent: state.agent.clone(),
+        epoch: state.epoch.try_into().unwrap(),
+        request_id: Some("stop-task-request".into()),
+    };
+    let copy = session.clone();
+    let call_scope = scope.clone();
+    let task = tokio::spawn(async move {
+        copy.call_scoped(
+            call_scope,
+            "claude/stopTask",
+            json!({"threadId":"fake-thread-0","taskId":"task"}),
+        )
+        .await
+    });
+    let request = peer.write("claude/stopTask").await;
+    peer.reply(&request, json!({"status":"stopped"})).await;
+    assert_eq!(task.await.unwrap().unwrap(), json!({"status":"stopped"}));
+    assert_eq!(
+        session
+            .call_scoped(
+                scope.clone(),
+                "claude/stopTask",
+                json!({"threadId":"fake-thread-0","taskId":"task"})
+            )
+            .await
+            .unwrap(),
+        json!({"status":"stopped"})
+    );
+    worker.shutdown().await.unwrap();
+    assert!(
+        session
+            .call_scoped(scope, "claude/state", json!({"threadId":"fake-thread-0"}))
+            .await
+            .is_err()
+    );
+}
