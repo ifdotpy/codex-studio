@@ -154,14 +154,20 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
         if scope != self.port.scope() {
             return Err(HistoryError::Identity);
         }
-        let operation =
+        let query =
             crate::event_write::request_signature(&json!([scope, method.as_str(), &params]));
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| HistoryError::Unavailable)?;
+        let operation = format!(
+            "recovery-history:{query}:{}",
+            studio_runtime_store::sha256_hex(&nonce)
+        );
         let receipt = self
             .runtime
             .block_on(self.port.request(SessionRequest {
                 scope: scope.clone(),
                 actor: self.actor.clone(),
-                operation: format!("recovery-history:{operation}"),
+                operation,
                 method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
                 params,
                 deadline,

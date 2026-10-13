@@ -90,6 +90,121 @@ async fn retained_scope_epoch_and_expired_queue_refuse_before_write() {
     assert_eq!(port.request(call).await.unwrap_err(), PortError::NotSent);
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn retained_authorization_refuses_deleted_agent() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
+                    [agent],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        port.request(request(&state, &port, "deleted-agent"))
+            .await
+            .unwrap_err(),
+        PortError::Identity
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn repeated_retained_history_reads_observe_fresh_provider_state() {
+    use crate::{
+        account_worker::retained::consumers::HistoryPort,
+        recovery_history::{HistoryMethod, HistoryReceipt},
+        recovery_runtime::RetainedHistory,
+    };
+
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let retained = worker.retained_session();
+    let scope = retained.scope().clone();
+    let first_history = HistoryPort::new(
+        retained.clone(),
+        RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        },
+        tokio::runtime::Handle::current(),
+    );
+    let first_deadline =
+        (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
+    let params = json!({"threadId":"fake-thread-0","includeTurns":false});
+
+    let first_scope = scope.clone();
+    let first_params = params.clone();
+    let first = tokio::task::spawn_blocking(move || {
+        let mut history = first_history;
+        history.request(
+            &first_scope,
+            HistoryMethod::Thread,
+            first_params,
+            first_deadline,
+        )
+    });
+    let first_wire = peer.write("thread/read").await;
+    peer.reply(
+        &first_wire,
+        json!({"thread":{"id":"fake-thread-0","revision":1}}),
+    )
+        .await;
+    let first_result: HistoryReceipt = first.await.unwrap().unwrap();
+
+    let second_scope = scope.clone();
+    let second_params = params.clone();
+    let second_deadline =
+        (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
+    let second_history = HistoryPort::new(
+        retained,
+        RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        },
+        tokio::runtime::Handle::current(),
+    );
+    let second = tokio::task::spawn_blocking(move || {
+        let mut history = second_history;
+        history.request(
+            &second_scope,
+            HistoryMethod::Thread,
+            second_params,
+            second_deadline,
+        )
+    });
+    let mut second = second;
+    let second_wire = tokio::select! {
+        wire = peer.next_write() => wire.value,
+        _result = &mut second => panic!("repeated history read reused an earlier receipt"),
+    };
+    assert_eq!(second_wire["method"], "thread/read");
+    assert_ne!(first_wire["id"], second_wire["id"]);
+    peer.reply(
+        &second_wire,
+        json!({"thread":{"id":"fake-thread-0","revision":2}}),
+    )
+        .await;
+    let second_result = second.await.unwrap().unwrap();
+    assert_eq!(first_result.body["thread"]["revision"], 1);
+    assert_eq!(second_result.body["thread"]["revision"], 2);
+    worker.shutdown().await.unwrap();
+}
 #[tokio::test(start_paused = true)]
 async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     let state = State::new().await;

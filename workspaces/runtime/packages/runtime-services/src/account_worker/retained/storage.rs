@@ -10,6 +10,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
             .and_then(Value::as_str)
             .unwrap_or("default")
             == call.scope.account
+        && !studio_runtime_store::truthy(agent.extra.get("deletedAt"))
         && agent.extra.get("deleted") != Some(&json!(true))
         && call.params["threadId"].as_str().is_some_and(|thread| {
             agent.extra.get("threadId").and_then(Value::as_str) == Some(thread)
