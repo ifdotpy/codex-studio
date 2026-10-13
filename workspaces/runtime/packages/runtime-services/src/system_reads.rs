@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct DirectoryListing {
     pub path: String,
     pub parent: Option<String>,
@@ -30,13 +30,7 @@ pub enum SystemReadError {
 }
 
 pub fn directories(path: Option<&str>) -> Result<DirectoryListing, SystemReadError> {
-    let raw = path.unwrap_or("");
-    let raw = if raw.is_empty() {
-        std::env::current_dir().map_err(|_| SystemReadError::UnavailableDirectory)?
-    } else {
-        expand_home(raw)?
-    };
-    let directory = resolve_non_strict(&raw)?;
+    let directory = resolve_path(path.unwrap_or(""))?;
     match fs::metadata(&directory) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Err(SystemReadError::UnavailableDirectory),
@@ -50,14 +44,11 @@ pub fn directories(path: Option<&str>) -> Result<DirectoryListing, SystemReadErr
         if name.starts_with('.') {
             continue;
         }
-        match entry.file_type().map_err(directory_io_error)?.is_dir() {
-            true => {}
-            false => match fs::metadata(entry.path()) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(directory_io_error(error)),
-            },
+        match fs::metadata(entry.path()) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(directory_io_error(error)),
         }
         directories.push(DirectoryEntry {
             name,
@@ -69,14 +60,11 @@ pub fn directories(path: Option<&str>) -> Result<DirectoryListing, SystemReadErr
 
     Ok(DirectoryListing {
         path: directory.to_string_lossy().into_owned(),
-        parent: parent(&directory).map(|path| path.to_string_lossy().into_owned()),
+        parent: directory
+            .parent()
+            .map(|path| path.to_string_lossy().into_owned()),
         directories,
     })
-}
-
-fn parent(directory: &Path) -> Option<PathBuf> {
-    let parent = directory.parent()?;
-    (parent != directory).then(|| parent.to_path_buf())
 }
 
 fn expand_home(path: &str) -> Result<PathBuf, SystemReadError> {
@@ -137,11 +125,7 @@ fn named_home(_user: &str) -> Result<Option<PathBuf>, SystemReadError> {
 }
 
 pub(crate) fn resolve_path(path: &str) -> Result<PathBuf, SystemReadError> {
-    resolve_non_strict(&expand_home(path)?)
-}
-
-fn resolve_non_strict(path: &Path) -> Result<PathBuf, SystemReadError> {
-    resolve_links(path, &mut 0)
+    resolve_links(&expand_home(path)?, &mut 0)
 }
 
 fn resolve_links(path: &Path, links: &mut usize) -> Result<PathBuf, SystemReadError> {
