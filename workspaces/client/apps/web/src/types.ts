@@ -58,6 +58,8 @@ type ProjectionSnapshotFields = {
   chats: Chat[];
   nodes: Array<Agent | Chat>;
   edges: Edge[];
+  /** The server's preference records by scope, as the entity projection holds them. */
+  uiPreferences?: Record<string, components["schemas"]["UiPreferencesDto"]>;
 };
 
 export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };

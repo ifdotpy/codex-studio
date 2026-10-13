@@ -62,6 +62,9 @@ The merge is idempotent, including after a lost response.
 `POST /api/sync/preferences` uses the existing permission and schema checks.
 The existing entity pull and state resource stream deliver changes.
 The shell connects to each paired server and merges user fields from all servers.
+A server frame reads the rows from its own entity projection and only sends edits.
+The combined sidebar shows each compact and collapse field with the latest edit time
+from the frame snapshot and the shell copy, so a late snapshot cannot show an older value.
 A retry retains field versions. An unavailable server receives the cache after reconnection.
 Credentials never enter the preference entity.
 

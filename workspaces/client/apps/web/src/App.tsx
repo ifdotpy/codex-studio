@@ -400,9 +400,25 @@ export default function App() {
       };
     }
   }, []);
+  // The frame's entity projection already pulls the preference records. A second pull
+  // and stream would hold one more of the browser's few connections to the server.
+  const preferenceConnection = useRef<ReturnType<
+    typeof connectUiPreferences
+  > | null>(null);
   useEffect(() => {
     if (!isServerView) return;
-    return connectUiPreferences(apiOrigin(), serverFetch, localStorage);
+    const connection = connectUiPreferences(
+      apiOrigin(),
+      serverFetch,
+      localStorage,
+      undefined,
+      { entityProjection: true },
+    );
+    preferenceConnection.current = connection;
+    return () => {
+      preferenceConnection.current = null;
+      connection();
+    };
   }, []);
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
@@ -684,6 +700,12 @@ export default function App() {
     });
     return () => controller.abort();
   }, [schemaMismatch, rendererBusy, canUpdateRenderer]);
+  const projectedPreferences = data?.uiPreferences;
+  const projectionLoaded = !!data;
+  useEffect(() => {
+    if (projectionLoaded)
+      preferenceConnection.current?.receive(projectedPreferences || {});
+  }, [projectedPreferences, projectionLoaded]);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),

@@ -172,6 +172,10 @@ function projectSnapshotCollections(
     prior && !changed.has("work")
       ? prior.runtime.work
       : entityValues(values, "work");
+  const uiPreferences =
+    prior && !changed.has("uiPreferences")
+      ? prior.uiPreferences
+      : Object.fromEntries(values.uiPreferences);
   const workspace = values.workspace.get("current");
   const runtime = {
     ...workspace,
@@ -200,6 +204,7 @@ function projectSnapshotCollections(
         : [...agents, ...chats],
     edges,
     runtime,
+    uiPreferences,
   };
 }
 

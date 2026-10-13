@@ -158,6 +158,45 @@ describe("paired server preference replication", () => {
       stops.forEach((stop) => stop());
     }
   });
+  it("takes records from the window's entity projection without its own pull or stream", async () => {
+    const theme = '["codex-studio-preferences-v1","theme"]';
+    const size = '["codex-studio-preferences-v1","mainFontSize"]';
+    const server = backend("https://frame.invalid", {
+      [size]: { value: 18, timestamp: 6, writer: "server" },
+    });
+    const requests: string[] = [];
+    const connection = connectUiPreferences(
+      "https://frame.invalid",
+      (request) => {
+        requests.push(new URL(request.url).pathname);
+        return server.fetch(request);
+      },
+      localStorage,
+      undefined,
+      { entityProjection: true },
+    );
+    try {
+      capturePreferenceWrite(
+        "codex-studio-preferences-v1",
+        '{"theme":"dark"}',
+        '{"theme":"auto"}',
+      );
+      // Nothing is sent before the projection shows the server's records.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(server.writes).toHaveLength(0);
+      connection.receive({ user: { fields: server.fields } });
+      await vi.waitFor(() => expect(server.fields[theme]?.value).toBe("dark"));
+      expect(
+        JSON.parse(
+          localStorage.getItem("studio-ui-preference-fields-v1:user")!,
+        )[size].value,
+      ).toBe(18);
+      expect(requests).not.toContain("/api/sync/pull");
+      expect(streams.has("https://frame.invalid")).toBe(false);
+    } finally {
+      connection();
+    }
+  });
   it("recovers a lost success through entity pull without changing the field version", async () => {
     const theme = '["codex-studio-preferences-v1","theme"]';
     const server = backend("https://lost.invalid", {});

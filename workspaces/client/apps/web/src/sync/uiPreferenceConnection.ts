@@ -20,12 +20,15 @@ import type { components } from "../generated/api";
 type Pull = components["schemas"]["SyncPullResponse"];
 type Fetch = (request: Request) => Promise<Response>;
 
-/** Uses the existing entity pull and state resource stream for each paired server. */
+/** Uses the existing entity pull and state resource stream for each paired server. With
+ * `entityProjection`, the caller passes the records that its own entity pull received, and
+ * this connection only sends edits: one pull and one stream for each server window. */
 export function connectUiPreferences(
   origin: string,
   fetchRequest: Fetch,
   storage: Storage,
   onIdentity?: (workspaceId: string) => void,
+  options: { entityProjection?: boolean } = {},
 ) {
   let stopped = false;
   let ready = false;
@@ -84,8 +87,14 @@ export function connectUiPreferences(
     if (stopped || retry) return;
     retry = setTimeout(() => {
       retry = undefined;
-      void pull().then(openStream).catch(scheduleRetry);
+      if (options.entityProjection) void send();
+      else void pull().then(openStream).catch(scheduleRetry);
     }, 3000);
+  };
+  const receiveEntity = (scope: string, fields: PreferenceFields) => {
+    if (scope !== "user" && scope !== "server") return;
+    receivePreferenceFields(scope, fields, storage);
+    confirmed[scope] = JSON.stringify(fields);
   };
   const send = async () => {
     if (!ready || stopped) return;
@@ -148,15 +157,8 @@ export function connectUiPreferences(
           for (const document of response.documents) {
             if (document._deleted) continue;
             const entity = JSON.parse(document.payload);
-            if (
-              entity.collection === "uiPreferences" &&
-              ["user", "server"].includes(entity.id)
-            ) {
-              receivePreferenceFields(entity.id, entity.value.fields, storage);
-              confirmed[entity.id as PreferenceScope] = JSON.stringify(
-                entity.value.fields,
-              );
-            }
+            if (entity.collection === "uiPreferences")
+              receiveEntity(entity.id, entity.value.fields);
           }
           cursor = response.checkpoint.seq;
           more = cursor < (response.maxSeq ?? cursor);
@@ -194,10 +196,12 @@ export function connectUiPreferences(
   const resume = () => {
     void pull().then(openStream).catch(scheduleRetry);
   };
-  window.addEventListener("online", resume);
-  window.addEventListener("focus", resume);
-  void pull().then(openStream).catch(scheduleRetry);
-  return () => {
+  if (!options.entityProjection) {
+    window.addEventListener("online", resume);
+    window.addEventListener("focus", resume);
+    void pull().then(openStream).catch(scheduleRetry);
+  }
+  const stop = () => {
     stopped = true;
     controller.abort();
     stream?.close();
@@ -206,4 +210,14 @@ export function connectUiPreferences(
     window.removeEventListener("online", resume);
     window.removeEventListener("focus", resume);
   };
+  return Object.assign(stop, {
+    /** Apply the preference records of the caller's entity projection. */
+    receive(records: Record<string, { fields?: PreferenceFields }>) {
+      if (stopped) return;
+      for (const [scope, value] of Object.entries(records))
+        receiveEntity(scope, value.fields || {});
+      ready = true;
+      void send();
+    },
+  });
 }
