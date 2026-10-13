@@ -1,0 +1,32 @@
+[
+  {
+    "id": "payload-threshold",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;",
+        "after": "const EXTERNALIZE_THRESHOLD: usize = 80 * 1024;"
+      }
+    ]
+  },
+  {
+    "id": "safety-response-started",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && !self.response_started\n",
+        "after": "            && self.response_started\n"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "        && receipt.get(\"epoch\").and_then(Value::as_i64)\n            == agent.get(\"epoch\").and_then(Value::as_i64)\n",
+        "after": "        && receipt.get(\"epoch\").and_then(Value::as_i64)\n            != agent.get(\"epoch\").and_then(Value::as_i64)\n"
+      }
+    ]
+  }
+]
