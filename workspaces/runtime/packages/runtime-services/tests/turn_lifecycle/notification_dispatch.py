@@ -17,7 +17,7 @@ import codex_runtime
 import codex_streaming
 from codex_runtime import Runtime
 
-TABLES = ('runtime_plans', 'runtime_compactions', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
+TABLES = ('runtime_native_limit_refreshes', 'runtime_plans', 'runtime_compactions', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
           'runtime_events', 'runtime_event_meta', 'runtime_operation_receipts',
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
@@ -107,7 +107,7 @@ def seed(runtime, case):
         for asset in case.get('assets', []):
             runtime.put(db, 'assets', asset)
         for item in case.get('items', []):
-            runtime.item(db, 'agent', item['id'], 'assistant', item.get('text', ''), **item.get('metadata', {}))
+            runtime.item(db, 'agent', item['id'], item.get('role', 'assistant'), item.get('text', ''), **item.get('metadata', {}))
             if 'created' in item:
                 db.execute('UPDATE runtime_items SET created=? WHERE id=?', (item['created'], 'agent:' + item['id']))
         for related in case.get('related', []):
@@ -227,7 +227,8 @@ def transition(runtime, case):
         for index, step in enumerate(case['steps']):
             if step.get('rollback'): continue  # Discarded Rust caller transaction has no committed Python equivalent.
             agent_id = step.get('agent', 'agent')
-            frame = step['frame']
+            frame = copy.deepcopy(step['frame'])
+            signature = digest({'agent':agent_id, 'notification':frame})
             generation = step.get('generation', 7)
             params = frame.get('params', {})
             key = ('default', 'connection-' + str(generation), params.get('threadId'), params.get('turnId'), params.get('itemId'), frame['method'])
@@ -235,7 +236,9 @@ def transition(runtime, case):
             agent = runtime.agent(agent_id)
             if agent.get('deletedAt'):
                 outcome = {'status':'ignored','reason':'deleted-agent'}
-            elif params.get('turnId') and params['turnId'] != agent.get('turnId'):
+            elif (frame['method'] in {'item/started', 'item/completed', 'item/agentMessage/delta',
+                                     'item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'}
+                  and params.get('turnId') and params['turnId'] != agent.get('turnId')):
                 outcome = {'status':'ignored','reason':'stale-turn-item'}
             runtime.notification(frame, 'default', 'connection-' + str(generation))
             if frame['method'] == 'thread/tokenUsage/updated':
@@ -246,7 +249,7 @@ def transition(runtime, case):
                 outcome = {'status': 'requiresservice', 'service': step['required_service']}
             identity = {'providerHandle': 'account:default', 'generation': generation, 'cursor': step.get('cursor', index + 1)}
             with runtime.db() as db:
-                runtime.save_receipt(db, 'provider-notification:' + digest(identity), digest({'agent':agent_id, 'notification':frame}), outcome)
+                runtime.save_receipt(db, 'provider-notification:' + digest(identity), signature, outcome)
             if step.get('tick'):
                 runtime._stream_buffer._tick()
         with runtime.db() as db:

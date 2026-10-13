@@ -134,8 +134,12 @@ pub(super) fn task_transition(
     }
     if method == "item/completed" {
         if !task["durationMs"].is_number() {
-            task["durationMs"] =
-                json!(((at - task["created"].as_f64().unwrap_or(at)) * 1000.0).max(0.0));
+            let elapsed = (at - task["created"].as_f64().unwrap_or(at)) * 1000.0;
+            task["durationMs"] = if elapsed <= 0.0 {
+                json!(0)
+            } else {
+                json!(elapsed)
+            };
         }
         task["status"] = json!(tool_status(item, false));
         task["finished"] = json!(at);
@@ -236,6 +240,7 @@ pub(super) fn non_text(
                     decision
                         .task
                         .as_ref()
+                        .or(previous_task)
                         .and_then(|t| t.get("durationMs"))
                         .cloned()
                 }

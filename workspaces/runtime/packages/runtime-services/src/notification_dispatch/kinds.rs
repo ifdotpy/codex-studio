@@ -51,7 +51,8 @@ pub(super) fn apply(
             "{id}:native-notice:hook:{}",
             p["run"]["id"].as_str().unwrap_or_default()
         );
-        let old = NotificationDispatchRepository::transcript_item(tx, &id, &item_id)?.map(|v| v.0);
+        let old =
+            NotificationDispatchRepository::notification_item(tx, &id, &item_id)?.map(|v| v.0);
         let snapshot = NotificationSnapshot::from_records(agent.clone(), None, old)?;
         let decision =
             notices::decide(&snapshot, method, kind, p, account, identity.generation, at)?;
@@ -322,7 +323,7 @@ fn write_item(
                 .ok_or(NotificationDispatchError::InvalidNotification)?
                 .clone(),
         );
-    NotificationDispatchRepository::put_transcript_item(tx, &id, agent, &record, at, text, true)?;
+    NotificationDispatchRepository::put_notification_item(tx, &id, agent, &record, at, text, true)?;
     Ok(())
 }
 
@@ -336,7 +337,7 @@ pub(super) fn flush_command(
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
     let id = format!("{agent_id}:{}", key.item);
-    let Some((record, _)) = NotificationDispatchRepository::transcript_item(tx, agent_id, &id)?
+    let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent_id, &id)?
     else {
         NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         streams.discard(key);
@@ -364,16 +365,12 @@ pub(super) fn flush_command(
         }
         return Ok(());
     }
-    let mut item = serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default())
+    let saved = serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default())
         .ok()
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
-    let previous = super::durable_stream_base(tx, streams, key)?.unwrap_or_else(|| {
-        super::suffix(
-            item["aggregatedOutput"].as_str().unwrap_or_default(),
-            items::TOOL_OUTPUT_CHARS,
-        )
-    });
+        .filter(Value::is_object);
+    let previous = super::durable_stream_base(tx, streams, key)?
+        .unwrap_or_else(|| command_base(saved.as_ref(), task.as_ref()));
+    let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
     if let Some((text, count, params)) = streams.flush(key, &previous) {
         NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         let truncated = item["outputTruncated"] == true
@@ -391,7 +388,7 @@ pub(super) fn flush_command(
                 .chain(["aggregatedOutput", "outputTruncated"].map(str::to_owned)),
         );
         let record = json!({"id":id,"role":"output","title":"commandExecution","text":text.chars().take(super::ITEM_PREVIEW_CHARS).collect::<String>(),"truncated":text.chars().count()>super::ITEM_PREVIEW_CHARS,"at":at,"toolStatus":"running","turnId":key.turn.as_ref().map(|v|json!(v)).unwrap_or_else(||agent["turnId"].clone())});
-        NotificationDispatchRepository::put_transcript_item(
+        NotificationDispatchRepository::put_notification_item(
             tx, &id, agent_id, &record, at, &text, false,
         )?;
         if let Some(task) = &mut task {
@@ -423,13 +420,17 @@ pub(super) fn preserve_command_base(
     key: &super::StreamKey,
 ) -> Result<(), NotificationDispatchError> {
     let id = format!("{agent}:{}", key.item);
-    let previous = NotificationDispatchRepository::transcript_item(tx, agent, &id)?
+    let saved = NotificationDispatchRepository::notification_item(tx, agent, &id)?
         .and_then(|(record, _)| {
             serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default()).ok()
         })
-        .and_then(|item| item["aggregatedOutput"].as_str().map(str::to_owned))
-        .unwrap_or_default();
-    let previous = super::suffix(&previous, items::TOOL_OUTPUT_CHARS);
+        .filter(Value::is_object);
+    let task = if saved.is_none() {
+        Table::<TaskRecord>::new(tx).get(&TaskId::from(id.as_str()))?
+    } else {
+        None
+    };
+    let previous = command_base(saved.as_ref(), task.as_ref().map(|task| task.value()));
     if streams.preserve_base(key, super::sha256_hex(previous.as_bytes())) {
         NotificationDispatchRepository::put_stream_base(
             tx,
@@ -438,6 +439,16 @@ pub(super) fn preserve_command_base(
         )?;
     }
     Ok(())
+}
+
+fn command_base(saved: Option<&Value>, task: Option<&Value>) -> String {
+    let text = if let Some(item) = saved {
+        item["aggregatedOutput"].as_str().unwrap_or_default()
+    } else {
+        task.and_then(|task| task["tail"].as_str())
+            .unwrap_or_default()
+    };
+    super::suffix(text, items::TOOL_OUTPUT_CHARS)
 }
 
 fn write_historical_item(
@@ -450,7 +461,8 @@ fn write_historical_item(
     let id = task["id"]
         .as_str()
         .ok_or(NotificationDispatchError::InvalidNotification)?;
-    let Some((record, _)) = NotificationDispatchRepository::transcript_item(tx, agent, id)? else {
+    let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent, id)?
+    else {
         return Ok(());
     };
     let saved = serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default()).ok();
@@ -505,11 +517,11 @@ fn write_historical_item(
             "completedAtMs",
         ]
     };
-    let text = notices::ascii_text(&notices::ordered_text(
+    let text = notices::ordered_ascii(
         &item,
         keys.into_iter()
             .chain(appended.iter().map(|v| v.to_string())),
-    ));
+    );
     write_item(
         tx,
         agent,

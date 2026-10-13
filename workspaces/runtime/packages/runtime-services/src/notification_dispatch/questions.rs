@@ -105,7 +105,7 @@ pub(super) fn completed(
                 "Respond to each complaint with orchestration_complaint action=respond before finishing. The full complaint is in this message. No separate read call is required."
             )
         );
-        crate::event_write::enqueue_event(
+        let inserted = crate::event_write::enqueue_event(
             tx,
             &lead,
             format!("complaint:{complaint_id}"),
@@ -114,6 +114,12 @@ pub(super) fn completed(
             at,
         )
         .map_err(|_| stored("runtime_events", &complaint_id))?;
+        if inserted && lead.extra.get("autoWake") == Some(&json!(false)) {
+            tx.execute(
+                "UPDATE runtime_event_meta SET record=json_set(record,'$.timing.fastSkipReason','autoWake') WHERE id=?1",
+                [format!("complaint:{complaint_id}")],
+            ).map_err(studio_runtime_store::StoreError::from)?;
+        }
     }
     Ok(())
 }
