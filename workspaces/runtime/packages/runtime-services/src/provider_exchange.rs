@@ -50,6 +50,7 @@ pub(crate) fn try_admit() -> Option<ExchangeAdmission> {
 pub(crate) type ExchangeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + Send + 'a>>;
 
 pub(crate) struct ExchangeSpec {
+    pub cleanup_report: Option<Arc<std::sync::Mutex<Option<String>>>>,
     pub timeout: Duration,
     pub shutdown: Shutdown,
     pub initialize_operation: OperationId,
@@ -185,12 +186,26 @@ where
         }
     };
     let closed = session.shutdown().await;
+    if let Some(report) = spec.cleanup_report {
+        record_cleanup_failure(&report, closed.adapter.as_ref());
+    }
     if !matches!(closed.result, Ok(()) | Err(SessionTaskError::Closed))
-        || closed.adapter.is_none_or(|exit| exit.result.is_err())
+        || closed
+            .adapter
+            .is_none_or(|exit| exit.result.is_err() || exit.cleanup_error.is_some())
     {
         return Err(());
     }
     result
+}
+
+fn record_cleanup_failure(
+    report: &std::sync::Mutex<Option<String>>,
+    exit: Option<&studio_runtime_process::provider_seam::TaskExit>,
+) {
+    if let Some(error) = exit.and_then(|exit| exit.cleanup_error.as_ref()) {
+        *report.lock().expect("provider cleanup report") = Some(error.clone());
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +215,29 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn request_failure_does_not_become_a_catalog_cleanup_failure() {
+        use studio_runtime_process::provider_seam::{AdapterError, TaskExit};
+        let report = std::sync::Mutex::new(None);
+        let request_failed = TaskExit {
+            result: Err(AdapterError::Timeout),
+            cleanup_error: None,
+            recovery_needed: None,
+        };
+        super::record_cleanup_failure(&report, Some(&request_failed));
+        assert!(report.lock().expect("report lock").is_none());
+        let cleanup_failed = TaskExit {
+            result: Err(AdapterError::Timeout),
+            cleanup_error: Some("termination unconfirmed".into()),
+            recovery_needed: None,
+        };
+        super::record_cleanup_failure(&report, Some(&cleanup_failed));
+        assert_eq!(
+            report.lock().expect("report lock").as_deref(),
+            Some("termination unconfirmed")
+        );
+    }
 
     #[tokio::test]
     async fn burst_admission_never_exceeds_shared_child_bound() {

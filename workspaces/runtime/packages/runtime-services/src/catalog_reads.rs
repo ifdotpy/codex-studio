@@ -79,6 +79,7 @@ pub async fn provider_exchange(
         home,
         isolated,
         crate::provider_exchange::ExchangeSpec {
+            cleanup_report: None,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("catalog-reads-initialize".into()),
@@ -114,6 +115,7 @@ pub async fn cancel_terminal(
         home,
         isolated,
         crate::provider_exchange::ExchangeSpec {
+            cleanup_report: None,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("native-command-cancel-initialize".into()),
@@ -741,6 +743,7 @@ mod tests {
                     drop(state);
                     TaskExit {
                         result: Ok(()),
+                        cleanup_error: None,
                         recovery_needed: None,
                     }
                 });
@@ -895,6 +898,7 @@ mod tests {
             launch,
             started,
             crate::provider_exchange::ExchangeSpec {
+                cleanup_report: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-init".into()),
@@ -941,6 +945,7 @@ mod tests {
             launch,
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
+                cleanup_report: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-init".into()),
@@ -982,6 +987,7 @@ mod tests {
             launch,
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
+                cleanup_report: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-mismatch-init".into()),
@@ -1019,6 +1025,7 @@ mod tests {
         let result = crate::provider_exchange::run_with_factory(
             factory, launch, Instant::now(),
             crate::provider_exchange::ExchangeSpec {
+                cleanup_report: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-item-mismatch-init".into()),

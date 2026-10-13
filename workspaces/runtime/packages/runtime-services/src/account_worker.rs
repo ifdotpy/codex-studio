@@ -42,6 +42,7 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
+const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
@@ -70,9 +71,6 @@ pub enum WorkerError {
     Capacity,
     #[error("provider callback response is unresolved; recovery required")]
     CallbackUnknown,
-    #[cfg(test)]
-    #[error("injected worker crash")]
-    InjectedCrash,
 }
 
 /// Share one bridge among all account workers of a runtime. The permit bounds
@@ -119,15 +117,16 @@ impl StoreBridge {
     }
     async fn worker_run<T: Send + 'static>(
         &self,
+        _name: &'static str,
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
         #[cfg(test)]
-        let index = self.faults.before()?;
+        let index = self.faults.before(_name)?;
         #[cfg(test)]
         self.faults.pause(index).await;
         let result = self.run(operation).await;
         #[cfg(test)]
-        self.faults.after(index)?;
+        self.faults.after(index, result.is_ok())?;
         result
     }
 }
@@ -230,7 +229,9 @@ pub async fn start_account_worker_with_preparation(
     let recovery_account = account.clone();
     let generation = config.generation;
     let recovered = bridge
-        .worker_run(move |store| store::recover(store, &recovery_account, generation))
+        .worker_run("recover", move |store| {
+            store::recover(store, &recovery_account, generation)
+        })
         .await?;
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let timeout_ms = config.timeout_ms;
@@ -243,7 +244,7 @@ pub async fn start_account_worker_with_preparation(
     .await?;
     let effect_account = account.clone();
     let (effects, streams) = bridge
-        .worker_run(move |store| {
+        .worker_run("restore_effects_streams", move |store| {
             Ok((
                 store::recover_effects(store, &effect_account)?,
                 store::restore_streams(store, &effect_account)?,
@@ -268,6 +269,8 @@ pub async fn start_account_worker_with_preparation(
             .into_iter()
             .map(|(context, record)| (record.ticket.id, context))
             .collect(),
+        flush_at: (streams.pending_bytes() > 0)
+            .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
         streams,
         deferred: VecDeque::new(),
         callbacks: BTreeMap::new(),
@@ -344,6 +347,7 @@ struct Worker {
     inbox: mpsc::Receiver<AccountCommand>,
     pending: BTreeMap<RequestId, Pending>,
     streams: NotificationStreamBuffer,
+    flush_at: Option<tokio::time::Instant>,
     deferred: VecDeque<JournalEntry>,
     effects: VecDeque<Effect>,
     closing: bool,
@@ -353,10 +357,6 @@ impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
         let result = self.serve().await;
         self.control.cancel();
-        #[cfg(test)]
-        if matches!(result, Err(WorkerError::InjectedCrash)) {
-            return result;
-        }
         let exit = self.session.completion().await;
         // Completion has an independent lane. Drain bounded delivered and retained
         // evidence before persisting disconnect; abandoned cursors are never ACKed.
@@ -367,12 +367,15 @@ impl Worker {
         }
     }
     async fn serve(&mut self) -> Result<(), WorkerError> {
-        let cadence = std::time::Duration::from_millis(750);
-        let mut flush = tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
-        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if self.closing || *self.stop.borrow() {
                 return Ok(());
+            }
+            if self
+                .flush_at
+                .is_some_and(|at| at <= tokio::time::Instant::now())
+            {
+                self.flush().await?;
             }
             if self.session.status.borrow().initialization == InitializationStatus::Ready
                 && let Some(effect) = self.effects.pop_front()
@@ -391,8 +394,10 @@ impl Worker {
                 if !self.closing
                     && let Some(key) = durable
                 {
-                    self.db(move |store| store::complete_effect(store, &key))
-                        .await?;
+                    self.db("complete_effect", move |store| {
+                        store::complete_effect(store, &key)
+                    })
+                    .await?;
                 }
                 continue;
             }
@@ -401,6 +406,7 @@ impl Worker {
             tokio::select! {
                 biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
+                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 command = self.inbox.recv(), if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
                     Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
@@ -409,7 +415,6 @@ impl Worker {
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
-                _ = flush.tick(), if self.streams.pending_bytes() > 0 => self.flush().await?,
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
             }
             // One ready event after a command prevents a command flood starving evidence.
@@ -420,10 +425,11 @@ impl Worker {
     }
     async fn db<T: Send + 'static>(
         &mut self,
+        name: &'static str,
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
         let bridge = self.bridge.clone();
-        let job = bridge.worker_run(operation);
+        let job = bridge.worker_run(name, operation);
         tokio::pin!(job);
         tokio::select! { biased;
             _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
@@ -440,6 +446,7 @@ impl Worker {
         loop {
             tokio::select! { biased;
                 _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); },
+                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 result = &mut future => return result.map_err(Into::into),
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
             }
@@ -451,7 +458,9 @@ impl Worker {
         }
         let account = self.account.clone();
         let candidate = self
-            .db(move |store| store::claim(store, &account, &agent, epoch))
+            .db("claim", move |store| {
+                store::claim(store, &account, &agent, epoch)
+            })
             .await?;
         if let Some(intent) = candidate {
             self.submit(intent, Method::ThreadResume, None).await?;
@@ -477,7 +486,9 @@ impl Worker {
                 method.as_str()
             );
             if self
-                .db(move |store| store::was_submitted(store, &operation))
+                .db("was_submitted", move |store| {
+                    store::was_submitted(store, &operation)
+                })
                 .await?
             {
                 return Ok(());
@@ -491,7 +502,7 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(selection) = self
-                .db(move |s| {
+                .db("preparation", move |s| {
                     store::preparation_step(s, &i, || preparation::admit(s, &resources, &i))
                 })
                 .await?
@@ -500,7 +511,9 @@ impl Worker {
             };
             let i = intent.clone();
             let Some(token) = self
-                .db(move |s| store::preparation_step(s, &i, || preparation::workspace(s, &i)))
+                .db("workspace", move |s| {
+                    store::preparation_step(s, &i, || preparation::workspace(s, &i))
+                })
                 .await?
             else {
                 return Ok(());
@@ -508,7 +521,7 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(prepared) = self
-                .db(move |s| {
+                .db("preparation", move |s| {
                     store::preparation_step(s, &i, || {
                         preparation::prepare_ready(
                             s, &resources, &i, method, generation, selection, token,
@@ -548,7 +561,9 @@ impl Worker {
         }
         let prior = operation.clone();
         if self
-            .db(move |store| store::was_submitted(store, &prior))
+            .db("was_submitted", move |store| {
+                store::was_submitted(store, &prior)
+            })
             .await?
         {
             return Ok(());
@@ -580,7 +595,7 @@ impl Worker {
         let save_context = context.clone();
         let account = self.account.clone();
         let authorized = self
-            .db(move |store| {
+            .db("submitted", move |store| {
                 store::submitted(
                     store,
                     &save_context,
@@ -597,35 +612,54 @@ impl Worker {
         }
         self.pending.insert(id.clone(), context);
         let control = self.control.clone();
-        if let Err(error) = self.drive(control.submit(prepared)).await {
-            // Only the session's explicit pre-admission rejection proves NotSent.
-            // A failure while draining unrelated evidence may follow an enqueued write.
-            let outcome = if definite_rejection(&error) {
-                WriteOutcome::NotSent
-            } else {
-                WriteOutcome::Unknown
-            };
-            self.event(SessionEvent {
-                journal: None,
-                outcomes: vec![SessionOutcome::Write {
-                    operation_id: OperationId(String::new()),
-                    ticket: Some(studio_runtime_providers::RequestTicket {
-                        id,
-                        generation: self.generation.0,
-                        method,
-                    }),
-                    outcome,
-                    recovery: None,
-                }],
-            })
-            .await?;
+        let admission = control.submit(prepared);
+        #[cfg(test)]
+        let faults = self.bridge.faults.clone();
+        #[cfg(test)]
+        let admission = async move {
+            let receipt = admission.await;
+            if method == Method::TurnStart
+                && faults
+                    .hold_admission
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                faults.admission_held.notify_one();
+                faults.release_admission.notified().await;
+            }
+            receipt
+        };
+        match self.drive(admission).await {
+            Ok(_ticket) => {}
+            Err(error) => {
+                // Only the session's explicit pre-admission rejection proves NotSent.
+                // A failure while draining unrelated evidence may follow an enqueued write.
+                let outcome = if definite_rejection(&error) {
+                    WriteOutcome::NotSent
+                } else {
+                    WriteOutcome::Unknown
+                };
+                self.event(SessionEvent {
+                    journal: None,
+                    outcomes: vec![SessionOutcome::Write {
+                        operation_id: OperationId(String::new()),
+                        ticket: Some(studio_runtime_providers::RequestTicket {
+                            id,
+                            generation: self.generation.0,
+                            method,
+                        }),
+                        outcome,
+                        recovery: None,
+                    }],
+                })
+                .await?;
+            }
         }
         Ok(())
     }
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let effect = self
-            .db(move |store| store::stop(store, &account, &agent))
+            .db("stop", move |store| store::stop(store, &account, &agent))
             .await?;
         if let Some(effect) = effect {
             self.push(effect)?;
@@ -639,7 +673,9 @@ impl Worker {
         turn: String,
     ) -> Result<(), WorkerError> {
         let intent = self
-            .db(move |store| store::interrupt_intent(store, &agent, &thread))
+            .db("interrupt_intent", move |store| {
+                store::interrupt_intent(store, &agent, &thread)
+            })
             .await?;
         if let Some((intent, stop_epoch)) = intent {
             self.submit(intent, Method::TurnInterrupt, Some((turn, stop_epoch)))
@@ -668,14 +704,16 @@ impl Worker {
                 let operation = operation_id.0.clone();
                 let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
-                self.db(move |store| store::callback_written(store, &operation, write_outcome))
-                    .await?;
+                self.db("callback_written", move |store| {
+                    store::callback_written(store, &operation, write_outcome)
+                })
+                .await?;
                 if !written {
                     return Err(WorkerError::CallbackUnknown);
                 }
                 let account = self.account.clone();
                 let generation = self.generation.0;
-                self.db(move |store| {
+                self.db("callback_settled", move |store| {
                     store::callback_settled(store, &account, generation, cursor.0)
                 })
                 .await?;
@@ -694,7 +732,7 @@ impl Worker {
             let account = self.account.clone();
             let resources = self.resources.clone();
             let (retire, effect) = self
-                .db(move |store| {
+                .db("outcome", move |store| {
                     store::outcome(store, &account, &resources, pending.as_ref(), outcome)
                 })
                 .await?;
@@ -722,13 +760,13 @@ impl Worker {
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
         let (entry, previous, committed) = self
-            .db(move |store| {
-                let result = store::journal(store, &account, &streams, &entry)?;
+            .db("journal", move |store| {
+                let result = store::journal(store, &account, &streams, &entry);
                 Ok((entry, streams, result))
             })
             .await?;
-        let Some((streams, effect)) = committed else {
-            self.streams = previous;
+        self.streams = previous;
+        let Some((streams, effect)) = committed? else {
             if self.deferred.len() == MAX_UNSETTLED {
                 return Err(WorkerError::Capacity);
             }
@@ -741,6 +779,7 @@ impl Worker {
             .journal_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
+        self.arm_flush();
         if let Some(effect) = effect {
             self.push(effect)?;
         }
@@ -780,7 +819,9 @@ impl Worker {
         let account = self.account.clone();
         let generation = self.generation.0;
         let admission = self
-            .db(move |store| store::callback_admission(store, &key, &account, generation, cursor.0))
+            .db("callback_admission", move |store| {
+                store::callback_admission(store, &key, &account, generation, cursor.0)
+            })
             .await?;
         if admission {
             self.control.settled(cursor).await?;
@@ -794,7 +835,7 @@ impl Worker {
         if let Err(error) = self.drive(control.submit_frame(prepared)).await {
             if definite_rejection(&error) {
                 self.callbacks.remove(&operation);
-                self.db(move |store| {
+                self.db("callback_written", move |store| {
                     store::callback_written(store, &operation, WriteOutcome::NotSent)
                 })
                 .await?;
@@ -803,12 +844,23 @@ impl Worker {
         }
         Ok(())
     }
+    fn arm_flush(&mut self) {
+        if self.streams.pending_bytes() == 0 {
+            self.flush_at = None;
+        } else if self.flush_at.is_none() {
+            self.flush_at = Some(tokio::time::Instant::now() + STREAM_CADENCE);
+        }
+    }
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
         self.streams = self
-            .db(move |store| store::flush_streams(store, &account, streams))
+            .db("flush_streams", move |store| {
+                store::flush_streams(store, &account, streams)
+            })
             .await?;
+        self.flush_at = None;
+        self.arm_flush();
         Ok(())
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
@@ -828,7 +880,7 @@ impl Worker {
         let account = self.account.clone();
         let generation = self.generation.0;
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
-        self.db(move |store| {
+        self.db("finish", move |store| {
             if let Some(recovery) = recovery {
                 store::save_recovery(store, &account, &recovery)?;
             }

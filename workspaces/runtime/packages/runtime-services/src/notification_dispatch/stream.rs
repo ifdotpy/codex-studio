@@ -5,8 +5,10 @@ use serde_json::Value;
 const MAX_STREAMS: usize = 8_192;
 const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct StreamKey {
+    #[serde(default)]
+    pub agent_id: String,
     pub account: String,
     pub generation: u64,
     pub thread: String,
@@ -14,6 +16,19 @@ pub(super) struct StreamKey {
     pub item: String,
     pub method: String,
 }
+
+impl PartialEq for StreamKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.account == other.account
+            && self.generation == other.generation
+            && self.thread == other.thread
+            && self.turn == other.turn
+            && self.item == other.item
+            && self.method == other.method
+    }
+}
+
+impl Eq for StreamKey {}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Entry {
@@ -55,7 +70,21 @@ impl NotificationStreamBuffer {
                     entry.key.thread.clone(),
                 )
             })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect()
+    }
+
+    pub(super) fn has_pending(&self, key: &StreamKey) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| &entry.key == key && entry.count > 0)
+    }
+
+    pub(super) fn has_base(&self, key: &StreamKey) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| &entry.key == key && entry.base.is_some())
     }
 
     pub(super) fn base(&self, key: &StreamKey) -> Option<&str> {
@@ -122,15 +151,7 @@ impl NotificationStreamBuffer {
         }
         entry.pending.push_str(delta);
         if entry.key.method == "item/commandExecution/outputDelta" {
-            entry.pending = entry
-                .pending
-                .chars()
-                .rev()
-                .take(12_000)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+            entry.pending = super::suffix(&entry.pending, 12_000);
         }
         EnqueueResult::Buffered
     }
@@ -168,7 +189,7 @@ impl NotificationStreamBuffer {
         delta: Option<&str>,
     ) -> Option<(String, u64, Value)> {
         let entry = self.entries.iter_mut().find(|entry| &entry.key == key)?;
-        if entry.count == 0 {
+        if entry.count == 0 && entry.base.is_none() {
             return None;
         }
         entry.flushed = true;
@@ -179,14 +200,7 @@ impl NotificationStreamBuffer {
             text.push_str(delta);
         }
         if key.method == "item/commandExecution/outputDelta" {
-            text = text
-                .chars()
-                .rev()
-                .take(12_000)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+            text = super::suffix(&text, 12_000);
         }
         let count = std::mem::take(&mut entry.count);
         let mut params = std::mem::take(&mut entry.params);
@@ -212,9 +226,40 @@ impl NotificationStreamBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_closed_stream_matches_owner_enriched_key() {
+        let mut streams: NotificationStreamBuffer = serde_json::from_value(serde_json::json!({
+            "entries": [],
+            "closed": [{
+                "account": "default",
+                "generation": 1,
+                "thread": "thread",
+                "turn": "turn",
+                "item": "answer",
+                "method": "item/agentMessage/delta"
+            }]
+        }))
+        .expect("legacy stream metadata");
+        let key = StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 1,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "answer".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        assert!(matches!(
+            streams.enqueue_delta(key, "late text", &Value::Null),
+            EnqueueResult::Closed
+        ));
+    }
+
     #[test]
     fn account_worker_command_output_keeps_python_character_tail() {
         let key = StreamKey {
+            agent_id: "agent".into(),
             account: "default".into(),
             generation: 1,
             thread: "thread".into(),

@@ -53,7 +53,10 @@ fn assert_reaped(pid: u32) {
 async fn explicit_cancel_stops_and_reaps_child() {
     let mut attachment = child(WAIT).await;
     let pid = pid(&attachment);
-    attachment.journal.recv().await.expect("child ready");
+    tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+        .await
+        .expect("journal deadline")
+        .expect("child ready");
     assert!(attachment.shutdown().await.result.is_ok());
     assert_reaped(pid);
 }
@@ -62,7 +65,10 @@ async fn explicit_cancel_stops_and_reaps_child() {
 async fn deadline_stops_and_reaps_child() {
     let mut attachment = child(WAIT).await;
     let pid = pid(&attachment);
-    attachment.journal.recv().await.expect("child ready");
+    tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+        .await
+        .expect("journal deadline")
+        .expect("child ready");
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(30)).await;
     // Reaping observes an OS process; its grace period uses real time.
@@ -78,7 +84,10 @@ async fn deadline_stops_and_reaps_child() {
 async fn dropping_caller_future_stops_and_reaps_child() {
     let mut attachment = child(WAIT).await;
     let pid = pid(&attachment);
-    attachment.journal.recv().await.expect("child ready");
+    tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+        .await
+        .expect("journal deadline")
+        .expect("child ready");
     let mut status = attachment.status.clone();
     let caller = tokio::spawn(async move {
         let _owned = attachment;
@@ -113,7 +122,10 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     let mut attachment = child(r#"exec /usr/bin/python3 -c 'import os,signal,fcntl,json; print(json.dumps({"method":"pipe-ready","params":{"capacity":fcntl.fcntl(0,fcntl.F_GETPIPE_SZ)}}),flush=True); os.read(0,1); print("{\"method\":\"stdin-progress\"}",flush=True); signal.pause()'"#).await;
     let pid = pid(&attachment);
-    let ready = attachment.journal.recv().await.expect("child ready");
+    let ready = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+        .await
+        .expect("journal deadline")
+        .expect("child ready");
     let JournalPayload::Frame(Frame::UnknownMethod(ready)) = ready.payload else {
         panic!("child reports its pipe capacity");
     };
@@ -136,10 +148,9 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
         .expect("command admitted");
     // One byte has reached the child. It consumes no further input, so the
     // frame, larger than the measured capacity, cannot finish writing.
-    attachment
-        .journal
-        .recv()
+    tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
         .await
+        .expect("stdin progress deadline")
         .expect("stdin write reached the child");
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(30)).await;
@@ -185,9 +196,15 @@ async fn cancellation_stops_the_entire_owned_process_group() {
         )
         .await
         .expect("group starts");
-    let (mut connection, _) = listener.accept().await.expect("child connected");
+    let (mut connection, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+        .await
+        .expect("connect deadline")
+        .expect("child connected");
     let parent = pid(&attachment);
-    let entry = attachment.journal.recv().await.expect("group ready");
+    let entry = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+        .await
+        .expect("journal deadline")
+        .expect("group ready");
     let JournalPayload::Frame(studio_runtime_providers::Frame::UnknownMethod(frame)) =
         entry.payload
     else {
@@ -199,6 +216,12 @@ async fn cancellation_stops_the_entire_owned_process_group() {
     assert_reaped(parent);
     // Both processes keep this connection open until exit. EOF observes the
     // descendant's termination without racing /proc's transient process state.
-    assert_eq!(connection.read(&mut [0_u8; 1]).await.expect("group EOF"), 0);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), connection.read(&mut [0_u8; 1]))
+            .await
+            .expect("group exit deadline")
+            .expect("group EOF"),
+        0
+    );
     std::fs::remove_file(socket_path).expect("remove test socket");
 }

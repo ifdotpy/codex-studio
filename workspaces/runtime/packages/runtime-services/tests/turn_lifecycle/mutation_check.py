@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import shutil
 import subprocess
 import tempfile
@@ -78,7 +79,7 @@ def main():
     targets["workspace_ready"] = ["--lib"]
     results = []
 
-    def run(identity, tier, table, witness_filter=None):
+    def run(identity, tier, table, witness_filter=None, witnesses=()):
         command = ["cargo", "nextest", "run", "--max-fail", "1:immediate", "-p", "studio-runtime-services",
                    *targets[table], "-E", args.filter or witness_filter or filters[table]]
         env = dict(environment)
@@ -91,7 +92,13 @@ def main():
             result = subprocess.run(command, cwd=work, env=env, stdout=output, stderr=subprocess.STDOUT, check=False)
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         status = {0: "survived", 100: "caught"}.get(result.returncode, "invalid")
+        output = log.read_text()
+        failures = sorted(set(re.findall(r"^\s*FAIL \[.*?\] \(.*?\) \S+ (\S+)$", output, re.MULTILINE)))
+        detected = [name for name in witnesses if any(test.endswith("::"+name) or test == name for test in failures)]
+        if status == "caught" and witnesses and not detected:
+            status = "unwitnessed"
         row = dict(id=identity, table=table, tier=tier, status=status, exit=result.returncode,
+                   failedTests=failures, detectedWorkerWitnesses=detected,
                    wallSeconds=time.monotonic()-start,
                    cpuSeconds=after.ru_utime+after.ru_stime-cpu.ru_utime-cpu.ru_stime,
                    log=str(log))
@@ -116,7 +123,7 @@ def main():
             try:
                 path.write_text(changed)
                 for tier in tiers:
-                    run(mutation["id"], tier, mutation["table"], mutation.get("filter"))
+                    run(mutation["id"], tier, mutation["table"], mutation.get("filter"), mutation.get("workerWitnesses", ()))
             finally:
                 path.write_text(original)
         survivors = [r for r in results if not r["id"].startswith("baseline-") and r["status"] != "caught"]
