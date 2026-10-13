@@ -538,7 +538,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
     },
     ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
     ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
@@ -581,11 +581,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/voice/end"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
     },
     ("POST", "/api/voice/speech"): {
         "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {

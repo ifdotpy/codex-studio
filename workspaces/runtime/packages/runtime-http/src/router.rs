@@ -21,6 +21,8 @@ pub struct HttpState {
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    pub(crate) voice_provider:
+        Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -63,6 +65,7 @@ impl HttpState {
         Self {
             account_driver: None,
             claude_login: None,
+            voice_provider: None,
             token,
             workspace_id,
             native_path,
@@ -85,6 +88,15 @@ impl HttpState {
         driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
     ) -> Self {
         self.account_driver = Some(driver);
+        self
+    }
+
+    /// Attach the account worker's generic provider-session voice adapter.
+    pub fn with_voice_provider(
+        mut self,
+        provider: Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>,
+    ) -> Self {
+        self.voice_provider = Some(provider);
         self
     }
 
