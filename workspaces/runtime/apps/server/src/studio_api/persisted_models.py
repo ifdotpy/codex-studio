@@ -465,6 +465,23 @@ class PersistedRuleLaunchIntent(ContractModel):
     liveness: StrictBool
 
 
+class PersistedExecutionRunRecord(ContractModel):
+    """Execution metadata fields consumed by work submission."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    agent: StrictStr
+    accountKey: StrictStr
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    status: StrictStr
+    created: StrictFloat | StrictInt
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    latestAttemptId: StrictStr | None = None
+
+
 class PersistedRuleRecord(_OpenPersistedRecord):
     """Open rule records; only fields consumed by the rule engine are constrained."""
 
@@ -647,6 +664,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
+    "persisted-execution-run-record.schema.json": PersistedExecutionRunRecord,
     "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-message-event.schema.json": PersistedMessageEvent,
