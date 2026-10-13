@@ -82,6 +82,51 @@ fn initialize_handshake_and_python_caller_request_shapes() {
 }
 
 #[test]
+fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
+    let shapes = [
+        (
+            Method::SkillsList,
+            json!({"cwds":["/repo"],"forceReload":false}),
+        ),
+        (
+            Method::McpServerStatusList,
+            json!({"threadId":"thread","limit":100}),
+        ),
+        (
+            Method::ThreadBackgroundTerminalsList,
+            json!({"threadId":"thread","limit":100}),
+        ),
+        (
+            Method::ThreadBackgroundTerminalsTerminate,
+            json!({"threadId":"thread","processId":"42"}),
+        ),
+    ];
+    for (method, params) in shapes {
+        let mut session = state(false);
+        let (ticket, actions) = session
+            .submit(method, params.clone(), 1, 10, None, true)
+            .expect("one-off request is admitted");
+        let request = &outgoing(&actions)[0];
+        assert_eq!(request["method"], method.as_str());
+        assert_eq!(request["params"], params);
+        let settled = session
+            .receive(Frame::Response {
+                id: ticket.id,
+                body: ResponseBody::Result(json!({"ok":true})),
+                fields: Default::default(),
+            })
+            .expect("provider reply is correlated");
+        assert!(matches!(
+            &settled[0],
+            Action::Resolve {
+                outcome: RequestOutcome::Reply { late: false, .. },
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn recovered_requests_keep_a_finite_configured_deadline() {
     let recovered_id = RequestId::Number(88);
     let (mut state, _) = SessionState::new_with_recovered(
