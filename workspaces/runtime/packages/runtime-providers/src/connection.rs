@@ -536,11 +536,10 @@ impl SessionState {
         let expired = self
             .pending
             .iter()
-            .filter_map(|(id, pending)| {
-                (now_ms >= pending.deadline_ms
-                    && self.book.state(id) == Some(RequestState::Pending))
-                .then(|| id.clone())
+            .filter(|(id, pending)| {
+                now_ms >= pending.deadline_ms && self.book.state(id) == Some(RequestState::Pending)
             })
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         if expired.is_empty() {
             return (Ok(()), Vec::new());

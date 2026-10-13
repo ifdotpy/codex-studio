@@ -980,7 +980,7 @@ fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
     let mut stale = ticket.clone();
     stale.generation += 1;
     assert!(session.reject_unsent(&stale).is_err());
-    let _ = session.expire(10);
+    let _ignored = session.expire(10);
     assert!(
         session
             .reject_unsent(&ticket)
