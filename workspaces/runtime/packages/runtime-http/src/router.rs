@@ -27,6 +27,8 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
+    pub account_driver:
+        Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
@@ -53,9 +55,19 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
+            account_driver: None,
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
+    }
+
+    /// Attach the retained account refresh driver used by account admission.
+    pub fn with_account_driver(
+        mut self,
+        driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
+    ) -> Self {
+        self.account_driver = Some(driver);
+        self
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.

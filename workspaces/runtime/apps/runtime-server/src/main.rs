@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
 use tokio::net::TcpListener;
@@ -63,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?,
     );
+    let account_driver = Arc::new(AccountDriver::open(&registry_path)?);
     for diagnostic in account_policy.limits_diagnostics() {
         eprintln!(
             "invalid persisted limits at {}/{}/{} ({})",
@@ -74,16 +76,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let app = router(HttpState::new(
-        token,
-        workspace_id,
-        native_path,
-        state_dir,
-        address.port(),
-        public_origin,
-        Some(store),
-        Some(account_policy),
-    ))?;
+    let app = router(
+        HttpState::new(
+            token,
+            workspace_id,
+            native_path,
+            state_dir,
+            address.port(),
+            public_origin,
+            Some(store),
+            Some(account_policy),
+        )
+        .with_account_driver(account_driver),
+    )?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(
         listener,

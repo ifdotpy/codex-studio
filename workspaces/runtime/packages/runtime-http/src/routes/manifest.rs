@@ -40,6 +40,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "workspace-state/snapshot",
     "coordination-policy/chat-history",
     "coordination-policy/room-visibility",
+    "agent-management/conversation-termination",
     "event-driver/message-receipts",
     "event-driver/message-send",
     "federation-driver/rooms",
