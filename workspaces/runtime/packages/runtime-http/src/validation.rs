@@ -143,16 +143,6 @@ impl Registry {
         })
     }
 
-    /// Compatibility adapter for callers migrating persisted-object checks to `Table<R>`.
-    #[allow(
-        dead_code,
-        reason = "remove after open slice branches migrate to Table<R>"
-    )]
-    pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
-        studio_runtime_schema::validate(schema, value)
-            .expect("stored schema registry configuration is valid")
-    }
-
     pub(crate) fn validate(
         &self,
         operation_id: &str,
@@ -925,19 +915,6 @@ mod tests {
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
-
-    #[test]
-    fn shared_registry_exposes_stored_validation_for_migrating_callers() {
-        let registry = Registry::compile(&[]).expect("request and record schemas compile");
-        assert!(registry.validate_stored(
-            "WorkItem",
-            &json!({
-                "id":"task-1","rootId":"agent-1","title":"T",
-                "status":"ready","created":1,"updated":1,"version":1
-            })
-        ));
-        assert!(!registry.validate_stored("WorkItem", &json!([])));
-    }
 
     fn compile_for_test(
         document: &Value,

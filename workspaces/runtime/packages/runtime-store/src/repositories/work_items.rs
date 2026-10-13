@@ -1,31 +1,43 @@
-//! Read the persisted work-item, plan and queue state without creating tables.
+//! Read and write persisted work-item, plan, and queue state.
 
-use rusqlite::{Connection, OptionalExtension, params, types::ValueRef};
+use rusqlite::{Connection, params};
 use serde_json::Value;
 
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::records::{
+    EventMetadataRecord, JsonRecord, QueueEventId, Table, TaskId, TranscriptAssetId,
+    TranscriptAssetRecord, WorkItemRecord,
+};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
-macro_rules! optional_read {
-    ($table:literal) => {
-        ConditionalTableRequirement {
-            table_exists: $table,
-            tables: &[TableRequirement {
-                name: $table,
-                columns: &["id", "record"],
-            }],
-        }
-    };
-}
+const TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_work",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_plans",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_event_meta",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_assets",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_events",
+        columns: &[
+            "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
+        ],
+    },
+];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[],
-    conditional_tables: &[
-        optional_read!("runtime_work"),
-        optional_read!("runtime_plans"),
-        optional_read!("runtime_annotations"),
-        optional_read!("runtime_event_meta"),
-    ],
+    tables: TABLES,
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -35,12 +47,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StoredRecord {
-    pub id: String,
-    pub record: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct StoredQueueEvent {
     pub id: String,
     pub kind: String,
@@ -48,7 +54,7 @@ pub struct StoredQueueEvent {
     pub status: String,
     pub created: f64,
     pub error: Option<String>,
-    pub metadata: Option<String>,
+    pub metadata: Option<Value>,
     pub valid: bool,
 }
 
@@ -56,28 +62,44 @@ pub struct StoredQueueEvent {
 pub struct WorkItemsRepository;
 
 impl WorkItemsRepository {
-    pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
-        Ok(connection
-            .query_row("SELECT record FROM runtime_work WHERE id=?1", [id], |row| {
-                row.get(0)
-            })
-            .optional()?)
+    pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        Ok(Table::<WorkItemRecord>::new(connection)
+            .get(&TaskId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
-    pub fn put_work(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
-        connection.execute(
-            "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
-            params![id, serde_json::to_string(record)?],
-        )?;
+    pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        let record = WorkItemRecord::from_value(value.clone())?;
+        if record.id().as_ref() != id {
+            return Err(StoreError::InvalidStoredObject {
+                table: WorkItemRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        Table::<WorkItemRecord>::new(connection).put(&record)
+    }
+
+    pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        let record = WorkItemRecord::from_value(value.clone())?;
+        if record.id().as_ref() != id {
+            return Err(StoreError::InvalidStoredObject {
+                table: WorkItemRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        Table::<WorkItemRecord>::new(connection).update(&record)?;
         Ok(())
     }
 
-    pub fn update_work(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
-        connection.execute(
-            "UPDATE runtime_work SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(record)?, id],
-        )?;
-        Ok(())
+    pub fn validate_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        let record = WorkItemRecord::from_value(value.clone())?;
+        if record.id().as_ref() != id {
+            return Err(StoreError::InvalidStoredObject {
+                table: WorkItemRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        Table::<WorkItemRecord>::new(connection).validate(&record)
     }
 
     pub fn close_review_event(
@@ -112,38 +134,18 @@ impl WorkItemsRepository {
         Ok(())
     }
 
-    pub fn work(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
-        if !table_exists(connection, "runtime_work")? {
-            return Ok(Vec::new());
-        }
-        let mut statement =
-            connection.prepare("SELECT id, record FROM runtime_work ORDER BY rowid")?;
-        let rows = statement.query_map([], |row| {
-            Ok(StoredRecord {
-                id: row.get(0)?,
-                record: text_column(row.get_ref(1)?),
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+    pub fn work(connection: &Connection) -> StoreResult<Vec<Value>> {
+        Ok(Table::<WorkItemRecord>::new(connection)
+            .list()?
+            .into_iter()
+            .map(|record| record.value().clone())
+            .collect())
     }
 
-    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<StoredRecord>> {
-        if !table_exists(connection, "runtime_plans")? {
-            return Ok(None);
-        }
-        Ok(connection
-            .query_row(
-                "SELECT id, record FROM runtime_plans WHERE id = ?1",
-                [id],
-                |row| {
-                    Ok(StoredRecord {
-                        id: row.get(0)?,
-                        record: text_column(row.get_ref(1)?),
-                    })
-                },
-            )
-            .optional()?)
+    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        Ok(Table::<crate::PlanRecord>::new(connection)
+            .get(&crate::AgentId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
     pub fn queue(
@@ -151,17 +153,11 @@ impl WorkItemsRepository {
         agent: &str,
         epoch: i64,
     ) -> StoreResult<Vec<StoredQueueEvent>> {
-        let sql = if table_exists(connection, "runtime_event_meta")? {
-            "SELECT e.id, e.kind, e.text, e.status, e.created, e.error, m.record \
-             FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
-             WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
-             AND e.kind IN ('user','followup') ORDER BY e.created, e.rowid"
-        } else {
-            "SELECT e.id, e.kind, e.text, e.status, e.created, e.error, NULL \
-             FROM runtime_events e WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
-             AND e.kind IN ('user','followup') ORDER BY e.created, e.rowid"
-        };
-        let mut statement = connection.prepare(sql)?;
+        let mut statement = connection.prepare(
+            "SELECT id,kind,text,status,created,error FROM runtime_events \
+             WHERE agent=?1 AND epoch=?2 AND status='pending' \
+             AND kind IN ('user','followup') ORDER BY created,rowid",
+        )?;
         let rows = statement.query_map(params![agent, epoch], |row| {
             let (id, id_valid) = row.get::<_, String>(0).map_or_else(
                 |_| ("<invalid id>".to_owned(), false),
@@ -180,8 +176,6 @@ impl WorkItemsRepository {
                 .get::<_, f64>(4)
                 .map_or_else(|_| (f64::NAN, false), |value| (value, value.is_finite()));
             let (error, error_valid) = row.get_ref(5).map(optional_text).unwrap_or((None, false));
-            let (metadata, metadata_valid) =
-                row.get_ref(6).map(optional_text).unwrap_or((None, false));
             Ok(StoredQueueEvent {
                 id,
                 kind,
@@ -189,50 +183,43 @@ impl WorkItemsRepository {
                 status,
                 created,
                 error,
-                metadata,
+                metadata: None,
                 valid: id_valid
                     && kind_valid
                     && text_valid
                     && status_valid
                     && created_valid
-                    && error_valid
-                    && metadata_valid,
+                    && error_valid,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+        let mut events = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let metadata = Table::<EventMetadataRecord>::new(connection);
+        for event in &mut events {
+            if let Some(record) = metadata.get(&QueueEventId::from(event.id.as_str()))? {
+                event.metadata = Some(record.value().clone());
+            }
+        }
+        Ok(events)
     }
 
-    pub fn assets(connection: &Connection, ids: &[String]) -> StoreResult<Vec<StoredRecord>> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut statement = connection.prepare("SELECT record FROM runtime_assets WHERE id=?1")?;
+    pub fn assets(connection: &Connection, ids: &[String]) -> StoreResult<Vec<Value>> {
+        let table = Table::<TranscriptAssetRecord>::new(connection);
         let mut result = Vec::with_capacity(ids.len());
         let mut seen = std::collections::BTreeSet::new();
         for id in ids.iter().filter(|id| seen.insert(id.as_str())) {
-            if let Some(record) = statement
-                .query_row([id], |row| Ok(text_column(row.get_ref(0)?)))
-                .optional()?
-            {
-                result.push(StoredRecord {
-                    id: id.clone(),
-                    record,
-                });
+            if let Some(record) = table.get(&TranscriptAssetId::from(id.as_str()))? {
+                result.push(record.value().clone());
             }
         }
         Ok(result)
     }
 }
 
-fn text_column(value: ValueRef<'_>) -> Option<String> {
-    value.as_str().ok().map(str::to_owned)
-}
-
-fn optional_text(value: ValueRef<'_>) -> (Option<String>, bool) {
+fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool) {
     match value {
-        ValueRef::Null => (None, true),
-        ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+        rusqlite::types::ValueRef::Null => (None, true),
+        rusqlite::types::ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
             Ok(text) => (Some(text.to_owned()), true),
             Err(_) => (None, false),
         },
@@ -240,31 +227,35 @@ fn optional_text(value: ValueRef<'_>) -> (Option<String>, bool) {
     }
 }
 
-fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE)",
-        [table],
-        |row| row.get(0),
-    )?)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::WorkItemsRepository;
+    use super::{REQUIREMENTS, WorkItemsRepository};
     use rusqlite::Connection;
 
     #[test]
-    fn absent_work_tables_are_an_empty_read() {
+    fn bootstrapped_tables_are_required_and_empty_reads_succeed() {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        for table in REQUIREMENTS.tables {
+            let columns = table.columns.join(" TEXT,");
+            connection
+                .execute_batch(&format!("CREATE TABLE {}({columns} TEXT)", table.name))
+                .expect("required family creates");
+        }
+        assert!(REQUIREMENTS.conditional_tables.is_empty());
         assert!(
             WorkItemsRepository::work(&connection)
-                .expect("missing work table is optional")
+                .expect("empty work list")
                 .is_empty()
         );
-        assert_eq!(
+        assert!(
             WorkItemsRepository::plan(&connection, "agent-a")
-                .expect("missing plan table is optional"),
-            None
+                .expect("missing plan row")
+                .is_none()
+        );
+        assert!(
+            WorkItemsRepository::queue(&connection, "agent-a", 0)
+                .expect("empty queue")
+                .is_empty()
         );
     }
 }
