@@ -62,6 +62,16 @@ voice.record(
     agent_id, "python-session", "python-courier-record", "courier",
     "Courier reply.", payload={{"utterance_order": 2}},
 )
+voice.record(
+    agent_id, "python-session", "python-stopped-agent-record", "user",
+    "Wake the stopped agent.", payload={{"utterance_order": 3}},
+)
+with runtime.db() as connection:
+    connection.execute(
+        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        ("conflicting-message", agent_id, "user", "Different transcript", "pending", 1, 0, None, None),
+    )
 runtime.close()
 """
     backend.stop()
@@ -99,9 +109,14 @@ def voice_snapshot(state: Path):
             name: connection.execute(f"SELECT * FROM {name} ORDER BY rowid").fetchall()
             for name in (
                 "voice_sessions", "voice_records", "voice_deliveries",
-                "voice_approvals", "runtime_events",
+                "voice_approvals", "voice_speech_requests", "runtime_events",
+                "runtime_event_meta", "runtime_operation_receipts", "sync_entities",
+                "sync_documents", "sync_versions",
             )
         }
+        tables["runtime_agents"] = connection.execute(
+            "SELECT id,record FROM runtime_agents ORDER BY id"
+        ).fetchall()
     audio = state / "voice-audio"
     return {"tables": tables, "audio": sorted(path.name for path in audio.iterdir()) if audio.exists() else []}
 
@@ -153,10 +168,11 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         history = self.request("/api/voice/records", {"agent": self.lead_id, "after": 0})
         self.assertEqual(history.status, 200, history.body[:1000])
-        self.assertEqual(
-            [record["id"] for record in history.json()["records"]],
-            ["python-user-record", "python-courier-record"],
-        )
+        record_ids = [record["id"] for record in history.json()["records"]]
+        self.assertEqual(record_ids[:3], [
+            "python-user-record", "python-courier-record", "python-stopped-agent-record",
+        ])
+        self.assertTrue(all(record_id.startswith("approval-speech:") for record_id in record_ids[3:]))
         session = history.json()["session"]
         self.assertEqual(session["session_id"], "python-session")
         self.assertEqual(session["state"], "lost")
@@ -212,8 +228,46 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(delivery_count, 1)
         self.assertEqual(event_count, 1)
-        self.assertIn("Read the stored Python transcript.", event_text)
-        self.assertIn("Courier reply.", event_text)
+        self.assertEqual(
+            event_text,
+            "Voice conversation, full transcript (speech recognition can contain errors):\n\n"
+            "User: Read the stored Python transcript.\n\nVoice courier: Courier reply.",
+        )
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            delivery = connection.execute(
+                "SELECT id,agent,records,text,edited_text FROM voice_deliveries WHERE id='voice-message'"
+            ).fetchone()
+            metadata = json.loads(connection.execute(
+                "SELECT record FROM runtime_event_meta WHERE id='voice-message'"
+            ).fetchone()[0])
+            receipt = connection.execute(
+                "SELECT id,signature,result FROM runtime_operation_receipts WHERE id='voice-message'"
+            ).fetchone()
+            event = connection.execute(
+                "SELECT id,agent,kind,text,status,error FROM runtime_events WHERE id='voice-message'"
+            ).fetchone()
+        self.assertEqual(delivery, (
+            "voice-message", self.lead_id,
+            json.dumps(["python-user-record", "python-courier-record"])
+            if not self.rust_backend else '["python-user-record","python-courier-record"]',
+            event_text, None,
+        ))
+        self.assertEqual(metadata.get("assets"), [])
+        self.assertEqual(metadata.get("delivery"), "queue")
+        self.assertIsInstance(metadata.get("acceptedAt"), (int, float))
+        self.assertEqual(event[:4], ("voice-message", self.lead_id, "user", event_text))
+        self.assertIn(event[4], {
+            "pending", "reserved", "dispatching", "uncertain", "cancelled",
+        })
+        self.assertIsNone(event[5])
+        if self.rust_backend:
+            signature_source = json.dumps(
+                {"agent": self.lead_id, "text": event_text, "assets": []},
+                sort_keys=True, ensure_ascii=False,
+            )
+            self.assertEqual(receipt[0], "voice-message")
+            self.assertEqual(receipt[1], signature_source)
+            self.assertEqual(json.loads(receipt[2]), {"id": "voice-message", "status": "queued"})
 
         before = voice_snapshot(self.backend.state)
         refused = self.request("/api/voice/submit", {
@@ -222,11 +276,105 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(refused.status, 400, refused.body[:1000])
         self.assertEqual(voice_snapshot(self.backend.state), before)
 
+    def test_request_and_ownership_refusals_do_not_write(self):
+        before = voice_snapshot(self.backend.state)
+        cases = (
+            ("/api/voice/status", {"agent": "voice-nonlead-owner"}),
+            ("/api/voice/record", {
+                "agent": self.lead_id, "session_id": "", "event_id": "", "kind": "event",
+            }),
+            ("/api/voice/record", {
+                "agent": self.lead_id, "session_id": "other-session", "event_id": "wrong-session",
+                "kind": "event",
+            }),
+            ("/api/voice/submit", {
+                "agent": self.lead_id, "message_id": "wrong-owner", "record_ids": ["missing-owner-record"],
+            }),
+        )
+        for path, body in cases:
+            with self.subTest(path=path, body=body):
+                response = self.request(path, body)
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertEqual(voice_snapshot(self.backend.state), before)
+
+    def test_submit_manually_wakes_a_stopped_agent(self):
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            record = json.loads(connection.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.lead_id,),
+            ).fetchone()[0])
+            record["autoWake"] = False
+            record["error"] = "previous failure"
+            record["nativeFailureHold"] = True
+            record["complaintMisses"] = 3
+            connection.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(record), self.lead_id),
+            )
+        before = voice_snapshot(self.backend.state)
+        response = self.request("/api/voice/submit", {
+            "agent": self.lead_id, "message_id": "wake-voice-agent",
+            "record_ids": ["python-stopped-agent-record"],
+        })
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["status"], "queued")
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            agent = json.loads(connection.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.lead_id,),
+            ).fetchone()[0])
+        self.assertTrue(agent["autoWake"])
+        self.assertIsNone(agent.get("error"))
+        self.assertNotIn("nativeFailureHold", agent)
+        self.assertEqual(agent["complaintMisses"], 0)
+        after = voice_snapshot(self.backend.state)
+        self.assertNotEqual(after, before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_existing_event_conflict_and_post_delivery_failure_roll_back(self):
+        before = voice_snapshot(self.backend.state)
+        response = self.request("/api/voice/submit", {
+            "agent": self.lead_id, "message_id": "conflicting-message",
+            "record_ids": ["python-user-record"],
+        })
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(voice_snapshot(self.backend.state), before)
+
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            connection.execute(
+                "CREATE TRIGGER fail_voice_event BEFORE INSERT ON runtime_events "
+                "WHEN NEW.id='fail-after-delivery' BEGIN SELECT RAISE(ABORT, 'injected'); END"
+            )
+        before = voice_snapshot(self.backend.state)
+        failed = self.request("/api/voice/submit", {
+            "agent": self.lead_id, "message_id": "fail-after-delivery",
+            "record_ids": ["python-user-record"],
+        })
+        self.assertEqual(failed.status, 500, failed.body[:1000])
+        self.assertEqual(voice_snapshot(self.backend.state), before)
+
     def test_unknown_voice_action_keeps_the_python_error_contract(self):
         before = voice_snapshot(self.backend.state)
         response = self.request("/api/voice/not-a-route", {"anything": True})
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json()["error"], "Unknown voice action")
+        after = voice_snapshot(self.backend.state)
+        self.assertEqual(
+            {name: before["tables"][name] for name in (
+                "voice_sessions", "voice_records", "voice_deliveries",
+                "voice_approvals", "voice_speech_requests",
+            )},
+            {name: after["tables"][name] for name in (
+                "voice_sessions", "voice_records", "voice_deliveries",
+                "voice_approvals", "voice_speech_requests",
+            )},
+        )
+        non_object = self.backend.request(
+            "POST", "/api/voice/not-a-route", body=[1], headers=self.headers(),
+        )
+        self.assertEqual(non_object.status, 400, non_object.body[:1000])
+        missing = self.backend.request(
+            "POST", "/api/voice/not-a-route", headers=self.headers(),
+        )
+        self.assertEqual(missing.status, 415, missing.body[:1000])
         self.assertEqual(voice_snapshot(self.backend.state), before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
@@ -234,15 +382,10 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = voice_snapshot(self.backend.state)
         requests = (
             ("start", {"agent": self.lead_id, "session_id": "unused", "sdp": "offer"}),
-            ("end", {"agent": self.lead_id, "session_id": "python-session"}),
-            ("speech", {
-                "agent": self.lead_id, "session_id": "python-session", "record_id": "python-courier-record",
-            }),
             ("audio", {
                 "agent": self.lead_id, "session_id": "python-session", "chunk_id": "unused",
                 "audio": "", "mime": "audio/webm",
             }),
-            ("approval_speech", {"agent": self.lead_id, "request_id": "python-approval"}),
             ("approve", {
                 "agent": self.lead_id, "session_id": "python-session", "speech_id": "unused",
                 "transcript_id": "unused",
@@ -254,6 +397,38 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(response.status, 501, response.body[:1000])
                 self.assertIn("Not implemented: requires ", response.json()["error"])
                 self.assertEqual(voice_snapshot(self.backend.state), before)
+        ended = self.request("/api/voice/end", {
+            "agent": self.lead_id, "session_id": "python-session",
+        })
+        self.assertEqual(ended.status, 200, ended.body[:1000])
+        self.assertEqual(ended.json()["state"], "lost")
+
+        self.backend.stop()
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            connection.execute(
+                "INSERT INTO voice_speech_requests(id,session,record_id,state,error) "
+                "VALUES(?,?,?,?,?)",
+                ("python-session:python-courier-record", "python-session", "python-courier-record", "failed", "saved failure"),
+            )
+        self.backend.start()
+        self.backend.ready_samples.append(self.backend.ready_seconds or 0)
+        receipt = self.request("/api/voice/speech", {
+            "agent": self.lead_id, "session_id": "python-session",
+            "record_id": "python-courier-record",
+        })
+        self.assertEqual(receipt.status, 200, receipt.body[:1000])
+        self.assertEqual(receipt.json(), {
+            "id": "python-session:python-courier-record", "session": "python-session",
+            "record_id": "python-courier-record", "state": "failed", "error": "saved failure",
+        })
+        speech = self.request("/api/voice/approval_speech", {
+            "agent": self.lead_id, "request_id": "python-approval",
+        })
+        self.assertEqual(speech.status, 200, speech.body[:1000])
+        self.assertEqual(speech.json()["kind"], "orchestrator")
+        approval_payload = json.loads(speech.json()["payload"])
+        self.assertEqual(approval_payload["request_id"], "python-approval")
+        self.assertRegex(approval_payload["fingerprint"], r"^[0-9a-f]{64}$")
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_voice_record_is_refused_without_writes(self):
@@ -268,6 +443,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.request("/api/voice/records", {"agent": self.lead_id, "after": 0})
         self.assertEqual(response.status, 500, response.body[:1000])
         self.assertIn("voice_records", response.json()["error"])
+        self.assertIn("python-user-record", response.json()["error"])
         self.assertEqual(voice_snapshot(self.backend.state), before)
         self.backend.stop()
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:

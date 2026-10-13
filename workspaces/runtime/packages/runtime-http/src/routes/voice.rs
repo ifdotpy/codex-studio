@@ -20,8 +20,8 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/voice/approval_speech",
-            OperationStatus::partial(&VOICE_PROVIDER),
-            refuse,
+            OperationStatus::Implemented,
+            approval_speech,
         ),
         post(
             "/api/voice/approvals",
@@ -41,14 +41,14 @@ pub(crate) fn routes() -> RouteGroup {
         post(
             "/api/voice/end",
             OperationStatus::partial(&VOICE_PROVIDER),
-            refuse,
+            end,
         ),
         post("/api/voice/record", OperationStatus::Implemented, record),
         post("/api/voice/records", OperationStatus::Implemented, records),
         post(
             "/api/voice/speech",
             OperationStatus::partial(&VOICE_PROVIDER),
-            refuse,
+            speech,
         ),
         post(
             "/api/voice/start",
@@ -67,9 +67,13 @@ pub(crate) fn fallback() -> Router<HttpState> {
 async fn unknown_action(
     State(state): State<HttpState>,
     Path(_action): Path<String>,
+    Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     if state.store.is_none() {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "Not found"));
+    }
+    if !body.is_object() {
+        return Err(ApiError::validation(vec![Value::String("body".into())]));
     }
     Err(ApiError::new(
         StatusCode::BAD_REQUEST,
@@ -130,6 +134,7 @@ async fn record(
                 item_id: item,
                 previous_item_id: previous,
                 payload,
+                internal: false,
             },
         )
     })
@@ -172,6 +177,54 @@ async fn approvals(
     >(result)?))
 }
 
+async fn approval_speech(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceApprovalSpeechRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (agent, request_id) = (body.agent, body.request_id);
+    let result =
+        tokio::task::spawn_blocking(move || voice::approval_speech(&store, &agent, &request_id))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(voice_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceRecordResponse,
+    >(result)?))
+}
+
+async fn end(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceEndRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (agent, session) = (body.agent, body.session_id);
+    let result = tokio::task::spawn_blocking(move || voice::end(&store, &agent, &session))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(voice_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceSessionResponse,
+    >(result)?))
+}
+
+async fn speech(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceSpeechRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (agent, session, record) = (body.agent, body.session_id, body.record_id);
+    let result = tokio::task::spawn_blocking(move || {
+        voice::speech_receipt(&store, &agent, &session, &record, None)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceSpeechReceiptResponse,
+    >(result)?))
+}
+
 async fn submit(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceSubmitRequest>,
@@ -209,10 +262,42 @@ fn voice_error(error: VoiceError) -> ApiError {
     match error {
         VoiceError::InvalidRequest(_) => ApiError::validation(vec![Value::String("body".into())]),
         VoiceError::Conflict(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
-        VoiceError::InvalidStoredObject { object } => ApiError::new(
+        VoiceError::InvalidStoredObject { object, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid stored object {object}"),
+            format!("Invalid stored object {object}/{id}"),
         ),
+        VoiceError::RequiresDependency(dependency) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {dependency}"),
+        ),
+        VoiceError::Coordination(error) => match error {
+            studio_runtime_services::coordination::CoordinationError::RequiresDependency(dep) => {
+                ApiError::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    format!("Not implemented: requires {dep}"),
+                )
+            }
+            studio_runtime_services::coordination::CoordinationError::InvalidRequest(message)
+            | studio_runtime_services::coordination::CoordinationError::Conflict(message) => {
+                ApiError::new(StatusCode::BAD_REQUEST, message)
+            }
+            studio_runtime_services::coordination::CoordinationError::InvalidStored {
+                object,
+                id,
+            } => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            ),
+            studio_runtime_services::coordination::CoordinationError::Store(_) => {
+                ApiError::internal()
+            }
+        },
+        VoiceError::Store(studio_runtime_store::StoreError::InvalidStoredRecord { object, id }) => {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
         VoiceError::Store(studio_runtime_store::StoreError::AlreadyOwned) => ApiError::new(
             StatusCode::CONFLICT,
             "another runtime owns the state directory",

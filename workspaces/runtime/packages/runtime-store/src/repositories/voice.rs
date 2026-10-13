@@ -1,9 +1,10 @@
 //! Persisted native voice records, sessions, deliveries and approval inputs.
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
@@ -41,17 +42,9 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         columns: &["id", "session", "record_id", "state", "error"],
     },
 ];
-const REQUESTS: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_requests",
-    columns: &["id", "record"],
-}];
-
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[ConditionalTableRequirement {
-        table_exists: "runtime_requests",
-        tables: REQUESTS,
-    }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -60,8 +53,9 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct VoiceRecord {
+    #[serde(rename = "seq")]
     pub sequence: i64,
     pub id: String,
     pub agent: String,
@@ -76,33 +70,17 @@ pub struct VoiceRecord {
 
 impl VoiceRecord {
     pub fn value(&self) -> StoreResult<Value> {
-        Ok(serde_json::json!({
-            "seq": self.sequence,
-            "id": self.id,
-            "agent": self.agent,
-            "session": self.session,
-            "kind": self.kind,
-            "text": self.text,
-            "item_id": self.item_id,
-            "previous_item_id": self.previous_item_id,
-            "payload": self.payload,
-            "created": self.created,
-        }))
+        Ok(serde_json::to_value(self)?)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceDelivery {
+    pub id: String,
     pub agent: String,
     pub records: String,
     pub text: String,
     pub edited_text: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct VoiceRequest {
-    pub id: String,
-    pub record: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -154,12 +132,50 @@ impl VoiceRepository {
             .map_err(StoreError::from)
     }
 
-    pub fn delivered(connection: &Connection, agent: &str) -> StoreResult<Vec<String>> {
+    pub fn session(connection: &Connection, id: &str, agent: &str) -> StoreResult<Option<Value>> {
+        connection
+            .query_row(
+                "SELECT id,state,answer,error,ended FROM voice_sessions WHERE id=?1 AND agent=?2",
+                params![id, agent],
+                |row| {
+                    Ok(serde_json::json!({
+                        "session_id": row.get::<_, String>(0)?,
+                        "state": row.get::<_, Option<String>>(1)?,
+                        "sdp": row.get::<_, Option<String>>(2)?,
+                        "error": row.get::<_, Option<String>>(3)?,
+                        "ended": row.get::<_, Option<f64>>(4)?,
+                    }))
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    pub fn speech_receipt(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        connection
+            .query_row(
+                "SELECT id,session,record_id,state,error FROM voice_speech_requests WHERE id=?1",
+                [id],
+                |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, String>(0)?,
+                        "session": row.get::<_, String>(1)?,
+                        "record_id": row.get::<_, String>(2)?,
+                        "state": row.get::<_, String>(3)?,
+                        "error": row.get::<_, Option<String>>(4)?,
+                    }))
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    pub fn delivered(connection: &Connection, agent: &str) -> StoreResult<Vec<(String, String)>> {
         let mut statement = connection.prepare(
-            "SELECT records FROM voice_deliveries WHERE agent=?1 \
+            "SELECT id,records FROM voice_deliveries WHERE agent=?1 \
              AND id IN (SELECT id FROM runtime_events)",
         )?;
-        let rows = statement.query_map([agent], |row| row.get::<_, String>(0))?;
+        let rows = statement.query_map([agent], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -202,14 +218,15 @@ impl VoiceRepository {
     pub fn delivery(connection: &Connection, id: &str) -> StoreResult<Option<VoiceDelivery>> {
         connection
             .query_row(
-                "SELECT agent,records,text,edited_text FROM voice_deliveries WHERE id=?1",
+                "SELECT id,agent,records,text,edited_text FROM voice_deliveries WHERE id=?1",
                 [id],
                 |row| {
                     Ok(VoiceDelivery {
-                        agent: row.get(0)?,
-                        records: row.get(1)?,
-                        text: row.get(2)?,
-                        edited_text: row.get(3)?,
+                        id: row.get(0)?,
+                        agent: row.get(1)?,
+                        records: row.get(2)?,
+                        text: row.get(3)?,
+                        edited_text: row.get(4)?,
                     })
                 },
             )
@@ -217,10 +234,10 @@ impl VoiceRepository {
             .map_err(StoreError::from)
     }
 
-    pub fn deliveries(connection: &Connection, agent: &str) -> StoreResult<Vec<String>> {
+    pub fn deliveries(connection: &Connection, agent: &str) -> StoreResult<Vec<(String, String)>> {
         let mut statement =
-            connection.prepare("SELECT records FROM voice_deliveries WHERE agent=?1")?;
-        let rows = statement.query_map([agent], |row| row.get::<_, String>(0))?;
+            connection.prepare("SELECT id,records FROM voice_deliveries WHERE agent=?1")?;
+        let rows = statement.query_map([agent], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -238,28 +255,6 @@ impl VoiceRepository {
             params![id, agent, records, text, edited_text],
         )?;
         Ok(())
-    }
-
-    pub fn requests(connection: &Connection) -> StoreResult<Vec<VoiceRequest>> {
-        let exists = connection
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_requests'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Ok(Vec::new());
-        }
-        let mut statement = connection.prepare("SELECT id,record FROM runtime_requests")?;
-        let rows = statement.query_map([], |row| {
-            Ok(VoiceRequest {
-                id: row.get(0)?,
-                record: row.get(1)?,
-            })
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
     }
 }
 
