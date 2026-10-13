@@ -81,6 +81,7 @@ test-heavy:
 [doc("Run the full Rust lifecycle and notification matrices (manual heavy tier; no load generators).")]
 test-rust-runtime-corpora:
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services --test thread_prepare_corpus
 
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:

@@ -31,6 +31,7 @@ pub(crate) mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod terminal_driver;
+pub mod thread_prepare;
 pub mod transcript;
 pub mod turn_driver;
 pub mod usage;
