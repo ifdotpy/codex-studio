@@ -165,73 +165,31 @@ fn rollup(
     let limit = options.limit.unwrap_or(50).clamp(1, 500);
     let offset = options.offset.unwrap_or(0).max(0);
     let usage_filter = scope_filter(scope, agent_id, &root, options.from, options.to, None);
+    usage_filter.validate(db, "analytics_usage")?;
+    usage_filter.validate(db, "analytics_items")?;
     let usage_where = usage_filter.sql.as_str();
-    let usage_sql = format!("SELECT record FROM analytics_usage {usage_where} ORDER BY at,seq");
-    let usage_rows = records(
+    let billable = usage_filter.clone().and(BILLABLE_USAGE, []);
+    let provisional_filter = usage_filter
+        .clone()
+        .and(&format!("NOT ({BILLABLE_USAGE})"), []);
+    let provisional_total = provisional_filter.count(db, "analytics_usage")? as usize;
+    let mut provisional = provisional_filter.page(
         db,
-        &usage_sql,
-        params_from_iter(usage_filter.params.clone()),
         "analytics_usage",
+        "at DESC,seq DESC",
+        if options.export { -1 } else { 100 },
+        0,
     )?;
-    let turn_filter = scope_filter(scope, agent_id, &root, None, None, None);
-    let authoritative: HashSet<(String, String, String)> = {
-        let mut statement = db.prepare(&format!(
-            "SELECT DISTINCT agent,COALESCE(thread,''),COALESCE(turn,'') FROM analytics_usage {} AND json_extract(record,'$.responseId') IS NOT NULL",
-            turn_filter.sql
-        ))?;
-        statement
-            .query_map(params_from_iter(turn_filter.params), |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?
-            .collect::<Result<_, _>>()?
-    };
-    let mut provisional = Vec::new();
-    let mut timeline = Vec::new();
-    let mut chart_points: HashMap<i64, Value> = HashMap::new();
-    let mut chart_width = 3600.0;
-    let mut turns_seen = HashSet::new();
-    for row in usage_rows {
-        let key = (
-            string(&row, "agentId"),
-            string(&row, "threadId"),
-            string(&row, "turnId"),
-        );
-        if !truthy(row.get("responseId")) && authoritative.contains(&key) {
-            provisional.push(row);
-            continue;
-        }
-        let agent = key.0.clone();
-        if let Some(turn) = row.get("turnId").and_then(Value::as_str) {
-            turns_seen.insert((agent.clone(), turn.to_owned()));
-        }
-        timeline.push(row.clone());
-        if !options.export && timeline.len() > 500 {
-            timeline.remove(0);
-        }
-        if let (Some(at), Some(percent)) = (number_at(&row, "at"), context_percent(&row)) {
-            let bucket = (at / chart_width) as i64;
-            let replace = chart_points
-                .get(&bucket)
-                .is_none_or(|old| context_percent(old).unwrap_or(0.0) < percent);
-            if replace {
-                chart_points.insert(bucket, row);
-            }
-            if !options.export && chart_points.len() > 500 {
-                chart_width *= 2.0;
-                let mut compacted = HashMap::new();
-                for point in chart_points.into_values() {
-                    let key = (number_at(&point, "at").unwrap_or_default() / chart_width) as i64;
-                    let replace = compacted.get(&key).is_none_or(|old: &Value| {
-                        context_percent(old).unwrap_or(0.0) < context_percent(&point).unwrap_or(0.0)
-                    });
-                    if replace {
-                        compacted.insert(key, point);
-                    }
-                }
-                chart_points = compacted;
-            }
-        }
-    }
+    provisional.reverse();
+    let mut timeline = billable.page(
+        db,
+        "analytics_usage",
+        "at DESC,seq DESC",
+        if options.export { -1 } else { 500 },
+        0,
+    )?;
+    timeline.reverse();
+    let chart = chart_rows(db, &billable, options.export)?;
     let usage_totals = usage_aggregate(db, &usage_filter, None)?;
     let per_model = usage_grouped(
         db,
@@ -244,18 +202,6 @@ fn rollup(
         "COALESCE(json_extract(record,'$.accountKey'),'default')",
     )?;
     let per_agent = usage_grouped(db, &usage_filter, "agent")?;
-    let mut chart_rows: Vec<_> = chart_points.into_values().collect();
-    chart_rows.sort_by(|a, b| {
-        number_at(a, "at")
-            .partial_cmp(&number_at(b, "at"))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let chart = chart_rows;
-    let provisional_total = provisional.len();
-    if !options.export && provisional.len() > 100 {
-        provisional.drain(..provisional.len() - 100);
-    }
-
     let call_filter = scope_filter(
         scope,
         agent_id,
@@ -272,7 +218,6 @@ fn rollup(
         if options.export { -1 } else { limit },
         if options.export { 0 } else { offset },
     )?;
-    let items = usage_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
     let turns = usage_filter.page(
         db,
         "analytics_turns",
@@ -280,14 +225,7 @@ fn rollup(
         if options.export { -1 } else { 100 },
         0,
     )?;
-    for row in &items {
-        if let (Some(agent), Some(turn)) = (
-            row.get("agentId").and_then(Value::as_str),
-            row.get("turnId").and_then(Value::as_str),
-        ) {
-            turns_seen.insert((agent.to_owned(), turn.to_owned()));
-        }
-    }
+    let (observed_agents, turns_seen) = observed_counts(db, &usage_filter)?;
     let selected_ids: BTreeSet<String> = agents
         .iter()
         .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_owned))
@@ -436,61 +374,47 @@ fn rollup(
             notification_rows.push(json!({"id":id,"agent":agent,"root":root,"method":method,"hour":hour,"count":count,"bytes":bytes}));
         }
     }
-    let mut by_tool: BTreeMap<(String, String), ItemTotals> = BTreeMap::new();
-    let mut tool_order = Vec::new();
-    let mut agent_calls: BTreeMap<(String, String), ItemTotals> = BTreeMap::new();
-    let mut non_tool = Vec::new();
-    let mut non_tool_total = 0usize;
-    let mut compactions = Vec::new();
-    let mut snapshots = Vec::new();
-    let mut all_tool = ItemTotals::default();
-    let mut model_tool = ItemTotals::default();
-    let mut protocol_tool = ItemTotals::default();
-    for row in &items {
-        let kind = string_default(row, "type", "");
-        let boundary = string_default(row, "payloadBoundary", "protocol");
-        if kind == "contextCompaction" && row.get("finishedAt").is_some_and(|v| !v.is_null()) {
-            compactions.push(row.clone());
-        }
-        if kind == "compactionSnapshot" {
-            snapshots.push(row.clone());
-        }
-        if row.get("isTool").and_then(Value::as_bool) != Some(true) {
-            non_tool_total += 1;
-            if options.export || non_tool.len() < 100 {
-                non_tool.push(row.clone());
-            }
-            continue;
-        }
-        let name = string_default(row, "name", "");
-        let key = (name.clone(), kind.clone());
-        if !by_tool.contains_key(&key) {
-            tool_order.push(key.clone());
-        }
-        by_tool.entry(key).or_default().add(row);
-        let is_model = boundary == "model";
-        if options
-            .tool
-            .as_deref()
-            .filter(|tool| !tool.is_empty())
-            .is_none_or(|tool| tool == name)
-        {
-            all_tool.add(row);
-            if is_model {
-                model_tool.add(row)
-            } else {
-                protocol_tool.add(row)
-            }
-            agent_calls
-                .entry((
-                    string(row, "agentId"),
-                    if is_model { "model" } else { "protocol" }.into(),
-                ))
-                .or_default()
-                .add(row);
-        }
-    }
-    let native_compactions: HashSet<(String, String)> = compactions
+    let tool_filter = usage_filter.clone().and("is_tool=1", []);
+    let tools = item_grouped(
+        db,
+        &tool_filter,
+        "COALESCE(json_extract(record,'$.name'),'')",
+        "COALESCE(json_extract(record,'$.type'),'')",
+    )?
+    .into_iter()
+    .map(|((name, kind), totals)| totals.tool(name, kind))
+    .collect::<Vec<_>>();
+    let agent_calls: BTreeMap<_, _> = item_grouped(db, &call_filter, "agent", TOOL_BOUNDARY)?
+        .into_iter()
+        .collect();
+    let boundary_totals: BTreeMap<_, _> = item_grouped(db, &call_filter, "''", TOOL_BOUNDARY)?
+        .into_iter()
+        .collect();
+    let model_tool = boundary_totals
+        .get(&(String::new(), "model".into()))
+        .cloned()
+        .unwrap_or_default();
+    let protocol_tool = boundary_totals
+        .get(&(String::new(), "protocol".into()))
+        .cloned()
+        .unwrap_or_default();
+    let non_tools = usage_filter.clone().and("is_tool!=1", []);
+    let non_tool_total = non_tools.count(db, "analytics_items")? as usize;
+    let non_tool = non_tools.page(
+        db,
+        "analytics_items",
+        "at DESC,id",
+        if options.export { -1 } else { 100 },
+        0,
+    )?;
+    let native_filter = usage_filter.clone().and(
+        "type='contextCompaction' AND json_extract(record,'$.finishedAt') IS NOT NULL",
+        [],
+    );
+    let mut compactions = native_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
+    let snapshot_filter = usage_filter.clone().and("type='compactionSnapshot'", []);
+    let snapshots = snapshot_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
+    let native_compactions: HashSet<_> = compactions
         .iter()
         .map(|r| (string(r, "agentId"), string(r, "turnId")))
         .collect();
@@ -500,29 +424,6 @@ fn rollup(
             .filter(|r| !native_compactions.contains(&(string(r, "agentId"), string(r, "turnId"))))
             .cloned(),
     );
-    let mut tools: Vec<Value> = tool_order
-        .iter()
-        .filter_map(|key| {
-            by_tool.get(key).map(|v| {
-                v.tool(
-                    key.0.clone(),
-                    key.1.clone(),
-                    string_default(
-                        v.first.as_ref().unwrap_or(&Value::Null),
-                        "payloadBoundary",
-                        "protocol",
-                    ),
-                )
-            })
-        })
-        .collect();
-    tools.sort_by(|a, b| {
-        b["outputBytes"]
-            .as_f64()
-            .unwrap_or(0.0)
-            .partial_cmp(&a["outputBytes"].as_f64().unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
     let item_counts: Vec<Value> = {
         let mut stmt = db.prepare(&format!("SELECT COALESCE(json_extract(record,'$.type'),''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END,MIN(at),MIN(id) FROM analytics_items {usage_where} GROUP BY json_extract(record,'$.type') ORDER BY MIN(at),MIN(id)"))?;
         stmt.query_map(params_from_iter(usage_filter.params.clone()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<f64>>(2)?, r.get::<_, Option<f64>>(3)?)))?
@@ -534,18 +435,13 @@ fn rollup(
     let rate_filter = account_filter(&agents, options);
     let total_limits = rate_filter.count(db, "analytics_limits")?;
     let rates = rate_filter.rates(db, if options.export { -1 } else { 100 }, 0)?;
-    let observed_agents: HashSet<String> = per_agent
-        .keys()
-        .cloned()
-        .chain(items.iter().map(|row| string(row, "agentId")))
-        .collect();
     let mut summary = json!({
-        "agents": observed_agents.len(), "turns": turns_seen.len(), "usageSamples": usage_totals.count,
+        "agents": observed_agents, "turns": turns_seen, "usageSamples": usage_totals.count,
         "provisionalUsageSamples": provisional_total, "exactResponseSamples": usage_totals.exact,
         "legacyUsageSamples": usage_totals.legacy, "tokens": usage_totals.tokens(),
         "tokenObservations": usage_totals.observations(), "peakContextTokens":usage_totals.peak_context,
         "peakContextPercent":usage_totals.peak_percent,"baselineMissingSamples":usage_totals.baseline_missing,
-        "modelToolCalls":model_tool.count,"protocolToolCalls":protocol_tool.count,"observedToolRows":all_tool.count,"toolCalls":model_tool.count,"failedToolCalls":model_tool.failed,
+        "modelToolCalls":model_tool.count,"protocolToolCalls":protocol_tool.count,"observedToolRows":calls_total,"toolCalls":model_tool.count,"failedToolCalls":model_tool.failed,
         "modelFailedToolCalls":model_tool.failed,"protocolFailedToolCalls":protocol_tool.failed,"compactions":compactions.len(),
         "cacheHitRateSamples":usage_totals.cache_pairs,"cacheHitRateTotalSamples":usage_totals.count
     });
@@ -831,7 +727,7 @@ fn usage_grouped(
     let cache_input = "CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN json_extract(record,'$.delta.inputTokens')+json_extract(record,'$.delta.cachedInputTokens')+COALESCE(json_extract(record,'$.delta.cacheWriteInputTokens'),0) ELSE json_extract(record,'$.delta.inputTokens') END";
     let sums = TOKEN_FIELDS.map(|field| format!("SUM(json_extract(record,'$.delta.{field}')),COUNT(json_extract(record,'$.delta.{field}'))")).join(",");
     let sql = format!(
-        "SELECT {group},COUNT(*),SUM(CASE WHEN {exact} THEN 1 ELSE 0 END),SUM(CASE WHEN json_extract(record,'$.baselineMissing')=1 THEN 1 ELSE 0 END),MAX(json_extract(record,'$.last.totalTokens')),MAX(CASE WHEN json_extract(record,'$.modelContextWindow')>0 THEN json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow')*100 END),SUM(CASE WHEN {cache_ok} THEN 1 ELSE 0 END),SUM(CASE WHEN {cache_ok} THEN {cache_input} ELSE 0 END),{sums} FROM analytics_usage {0} AND ({exact} OR NOT EXISTS(SELECT 1 FROM analytics_usage auth WHERE auth.agent=analytics_usage.agent AND auth.thread IS analytics_usage.thread AND auth.turn IS analytics_usage.turn AND NULLIF(json_extract(auth.record,'$.responseId'),'') IS NOT NULL)) GROUP BY {group} ORDER BY {group}",
+        "SELECT {group},COUNT(*),SUM(CASE WHEN {exact} THEN 1 ELSE 0 END),SUM(CASE WHEN json_extract(record,'$.baselineMissing')=1 THEN 1 ELSE 0 END),MAX(json_extract(record,'$.last.totalTokens')),MAX(CASE WHEN json_extract(record,'$.modelContextWindow')>0 THEN json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow')*100 END),SUM(CASE WHEN {cache_ok} THEN 1 ELSE 0 END),SUM(CASE WHEN {cache_ok} THEN {cache_input} ELSE 0 END),{sums} FROM analytics_usage {0} AND {BILLABLE_USAGE} GROUP BY {group} ORDER BY {group}",
         filter.sql
     );
     let mut statement = db.prepare(&sql)?;
@@ -886,90 +782,165 @@ fn item_breakdown(db: &Connection, filter: &ScopeFilter) -> Result<Vec<Value>, A
     }))).collect::<Result<Vec<_>,_>>().map_err(AnalyticsError::from)
 }
 
+const TOOL_BOUNDARY: &str =
+    "CASE WHEN json_extract(record,'$.payloadBoundary')='model' THEN 'model' ELSE 'protocol' END";
+const BILLABLE_USAGE: &str = "(NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM analytics_usage auth WHERE auth.agent=analytics_usage.agent AND auth.thread IS analytics_usage.thread AND auth.turn IS analytics_usage.turn AND NULLIF(json_extract(auth.record,'$.responseId'),'') IS NOT NULL))";
+
+#[derive(Clone, Default, serde::Serialize)]
+struct Duration {
+    count: i64,
+    min: Option<f64>,
+    max: Option<f64>,
+    mean: Option<f64>,
+    p50: Option<f64>,
+    p95: Option<f64>,
+}
 #[derive(Clone, Default)]
 struct ItemTotals {
-    count: usize,
-    failed: usize,
-    input_measurements: usize,
-    output_measurements: usize,
-    values: BTreeMap<(String, String), f64>,
-    durations: Vec<f64>,
-    duration_total: Vec<f64>,
-    first: Option<Value>,
+    count: i64,
+    failed: i64,
+    input_measurements: i64,
+    output_measurements: i64,
+    input_bytes: Option<i64>,
+    output_bytes: Option<i64>,
+    image_count: Option<i64>,
+    duration_total: Option<f64>,
+    duration: Duration,
+    boundary: String,
 }
 impl ItemTotals {
-    fn add(&mut self, row: &Value) {
-        if self.first.is_none() {
-            self.first = Some(row.clone())
+    fn size(&self, dir: &str, _field: &str) -> Option<f64> {
+        if dir == "input" {
+            self.input_bytes.map(|n| n as f64)
+        } else {
+            self.output_bytes.map(|n| n as f64)
         }
-        self.count += 1;
-        self.failed += usize::from(row.get("status").and_then(Value::as_str) == Some("failed"));
-        for dir in ["input", "output"] {
-            let value = row.get(dir).filter(|v| !v.is_null());
-            if value.is_some() {
-                if dir == "input" {
-                    self.input_measurements += 1
-                } else {
-                    self.output_measurements += 1
-                }
-            }
-            for field in ["bytes", "chars", "imageCount"] {
-                if let Some(n) = value.and_then(|v| v.get(field)).and_then(Value::as_f64) {
-                    *self.values.entry((dir.into(), field.into())).or_default() += n;
-                }
-            }
-        }
-        if let Some(n) = row.get("durationMs").and_then(Value::as_f64) {
-            self.duration_total.push(n);
-            if n.is_finite() && n >= 0.0 {
-                self.durations.push(n)
-            }
-        }
-    }
-    fn size(&self, dir: &str, field: &str) -> Option<f64> {
-        self.values.get(&(dir.into(), field.into())).copied()
     }
     fn duration_total(&self) -> Option<f64> {
-        if self.duration_total.is_empty() {
-            None
-        } else {
-            Some(self.duration_total.iter().sum())
-        }
+        self.duration_total
     }
     fn duration(&self) -> Value {
-        let mut v = self.durations.clone();
-        v.sort_by(f64::total_cmp);
-        let n = v.len();
-        let mean = if n == 0 {
-            None
-        } else {
-            Some(v.iter().sum::<f64>() / n as f64)
-        };
-        let median = if n == 0 {
-            None
-        } else if n % 2 == 1 {
-            Some(v[n / 2])
-        } else {
-            Some((v[n / 2 - 1] + v[n / 2]) / 2.0)
-        };
-        let p95 = if n == 0 {
-            None
-        } else {
-            Some(v[((n as f64 * 0.95).ceil() as usize).saturating_sub(1)])
-        };
-        json!({"count":n,"min":v.first(),"max":v.last(),"mean":mean,"p50":median,"p95":p95})
+        json!(self.duration)
     }
-    fn tool(&self, name: String, kind: String, boundary: String) -> Value {
-        json!({"name":name,"type":kind,"payloadBoundary":boundary,"calls":self.count,"failed":self.failed,"inputBytes":number_value(self.size("input","bytes")),"outputBytes":number_value(self.size("output","bytes")),"modelInputBytes":if kind=="modelToolCall"{number_value(self.size("input","bytes"))}else{Value::Null},"modelOutputBytes":if kind=="modelToolCall"{number_value(self.size("output","bytes"))}else{Value::Null},"durationMs":self.duration_total(),"imageCount":number_value(nullable_sum([self.size("input","imageCount"),self.size("output","imageCount")])),"inputMeasurements":self.input_measurements,"outputMeasurements":self.output_measurements,"duration":self.duration()})
+    fn tool(&self, name: String, kind: String) -> Value {
+        json!({"name":name,"type":kind,"payloadBoundary":self.boundary,"calls":self.count,"failed":self.failed,
+            "inputBytes":self.input_bytes,"outputBytes":self.output_bytes,
+            "modelInputBytes":if kind=="modelToolCall"{self.input_bytes}else{None},
+            "modelOutputBytes":if kind=="modelToolCall"{self.output_bytes}else{None},
+            "durationMs":self.duration_total,"imageCount":self.image_count,
+            "inputMeasurements":self.input_measurements,"outputMeasurements":self.output_measurements,"duration":self.duration})
     }
 }
-fn nullable_sum(values: [Option<f64>; 2]) -> Option<f64> {
-    let known: Vec<_> = values.into_iter().flatten().collect();
-    if known.is_empty() {
-        None
-    } else {
-        Some(known.iter().sum())
+fn item_grouped(
+    db: &Connection,
+    filter: &ScopeFilter,
+    key: &str,
+    kind: &str,
+) -> Result<Vec<((String, String), ItemTotals)>, AnalyticsError> {
+    let sql = format!("WITH population AS (
+        SELECT {key} AS k,{kind} AS t,record,ROW_NUMBER() OVER(ORDER BY at DESC,id) AS position,
+            json_extract(record,'$.durationMs') AS duration,
+            FIRST_VALUE(COALESCE(json_extract(record,'$.payloadBoundary'),'protocol')) OVER(PARTITION BY {key},{kind} ORDER BY at DESC,id) AS boundary
+        FROM analytics_items {}),
+        ordered AS (SELECT k,t,duration,ROW_NUMBER() OVER(PARTITION BY k,t ORDER BY duration) AS rank,
+            COUNT(*) OVER(PARTITION BY k,t) AS n FROM population WHERE duration>=0),
+        durations AS (SELECT k,t,COUNT(*) AS n,MIN(duration) AS low,MAX(duration) AS high,AVG(duration) AS mean,
+            AVG(CASE WHEN rank IN ((n+1)/2,(n+2)/2) THEN duration END) AS median,
+            MAX(CASE WHEN rank=(n*95+99)/100 THEN duration END) AS p95 FROM ordered GROUP BY k,t)
+        SELECT p.k,p.t,COUNT(*),SUM(json_extract(record,'$.status')='failed'),
+            COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')),
+            SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),
+            CASE WHEN COUNT(json_extract(record,'$.input.imageCount'))+COUNT(json_extract(record,'$.output.imageCount'))>0
+                THEN COALESCE(SUM(json_extract(record,'$.input.imageCount')),0)+COALESCE(SUM(json_extract(record,'$.output.imageCount')),0) END,
+            SUM(duration),boundary,COALESCE(d.n,0),d.low,d.high,d.mean,d.median,d.p95
+        FROM population p LEFT JOIN durations d ON p.k=d.k AND p.t=d.t GROUP BY p.k,p.t
+        ORDER BY COALESCE(SUM(json_extract(record,'$.output.bytes')),0) DESC,MIN(position)",filter.sql);
+    let mut stmt = db.prepare(&sql)?;
+    Ok(stmt
+        .query_map(params_from_iter(&filter.params), |r| {
+            Ok((
+                (r.get(0)?, r.get(1)?),
+                ItemTotals {
+                    count: r.get(2)?,
+                    failed: r.get::<_, Option<i64>>(3)?.unwrap_or_default(),
+                    input_measurements: r.get(4)?,
+                    output_measurements: r.get(5)?,
+                    input_bytes: r.get(6)?,
+                    output_bytes: r.get(7)?,
+                    image_count: r.get(8)?,
+                    duration_total: r.get(9)?,
+                    boundary: r.get(10)?,
+                    duration: Duration {
+                        count: r.get(11)?,
+                        min: r.get(12)?,
+                        max: r.get(13)?,
+                        mean: r.get(14)?,
+                        p50: r.get(15)?,
+                        p95: r.get(16)?,
+                    },
+                },
+            ))
+        })?
+        .collect::<Result<_, _>>()?)
+}
+fn observed_counts(db: &Connection, filter: &ScopeFilter) -> Result<(i64, i64), AnalyticsError> {
+    let sql = format!("WITH observations AS (
+        SELECT agent,turn FROM analytics_usage {} AND {BILLABLE_USAGE}
+        UNION SELECT agent,turn FROM analytics_items {})
+        SELECT COUNT(DISTINCT agent),(SELECT COUNT(*) FROM observations WHERE turn IS NOT NULL) FROM observations",filter.sql,filter.sql);
+    Ok(db.query_row(
+        &sql,
+        params_from_iter(filter.params.iter().chain(&filter.params)),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
+fn chart_rows(
+    db: &Connection,
+    filter: &ScopeFilter,
+    export: bool,
+) -> Result<Vec<Value>, AnalyticsError> {
+    let sql = format!("SELECT id,record FROM (SELECT id,record,at,seq,
+        ROW_NUMBER() OVER(PARTITION BY CAST(at/3600 AS INTEGER) ORDER BY json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow') DESC,at,seq) AS rank
+        FROM analytics_usage {} AND at>=0 AND json_extract(record,'$.modelContextWindow')!=0 AND json_extract(record,'$.last.totalTokens') IS NOT NULL)
+        WHERE rank=1 ORDER BY at,seq",filter.sql);
+    let points = records(
+        db,
+        &sql,
+        params_from_iter(&filter.params),
+        "analytics_usage",
+    )?;
+    let mut buckets: HashMap<i64, Value> = HashMap::new();
+    let mut width = 3600.0;
+    for point in points {
+        let bucket = (number_at(&point, "at").unwrap_or_default() / width) as i64;
+        if buckets
+            .get(&bucket)
+            .is_none_or(|old| context_percent(old) < context_percent(&point))
+        {
+            buckets.insert(bucket, point);
+        }
+        if !export && buckets.len() > 500 {
+            width *= 2.0;
+            let mut compacted: HashMap<i64, Value> = HashMap::new();
+            for point in buckets.into_values() {
+                let key = (number_at(&point, "at").unwrap_or_default() / width) as i64;
+                if compacted
+                    .get(&key)
+                    .is_none_or(|old| context_percent(old) < context_percent(&point))
+                {
+                    compacted.insert(key, point);
+                }
+            }
+            buckets = compacted;
+        }
     }
+    let mut points: Vec<_> = buckets.into_values().collect();
+    points.sort_by(|a, b| {
+        number_at(a, "at")
+            .partial_cmp(&number_at(b, "at"))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(points)
 }
 fn number_value(value: Option<f64>) -> Value {
     match value {
@@ -1006,8 +977,8 @@ fn records<P: rusqlite::Params>(
     .collect()
 }
 
-fn valid_stored_shape(table: &str, value: &Value) -> bool {
-    let required: &[&str] = match table {
+fn required_fields(table: &str) -> &[&str] {
+    match table {
         "analytics_agents" => &["id"],
         "analytics_usage" => &["agentId", "at"],
         "analytics_items" => &["agentId", "type"],
@@ -1016,8 +987,10 @@ fn valid_stored_shape(table: &str, value: &Value) -> bool {
         "runtime_monitors" => &["id", "agent"],
         "runtime_requests" => &["id", "agent", "status"],
         _ => &[],
-    };
-    required
+    }
+}
+fn valid_stored_shape(table: &str, value: &Value) -> bool {
+    required_fields(table)
         .iter()
         .all(|field| value.get(field).is_some_and(|item| !item.is_null()))
 }
@@ -1090,6 +1063,30 @@ impl ScopeFilter {
             }
         }
         self
+    }
+    fn validate(&self, db: &Connection, table: &'static str) -> Result<(), AnalyticsError> {
+        let missing = required_fields(table)
+            .iter()
+            .map(|field| format!("json_extract(record,'$.{field}') IS NULL"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let invalid = format!(
+            "CASE WHEN NOT json_valid(record) THEN 1 WHEN json_type(record)!='object' THEN 1 ELSE {missing} END"
+        );
+        let id: Option<String> = db
+            .query_row(
+                &format!(
+                    "SELECT id FROM {table} {} AND ({invalid}) LIMIT 1",
+                    self.sql
+                ),
+                params_from_iter(&self.params),
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = id {
+            return Err(AnalyticsError::InvalidStoredRow { table, id });
+        }
+        Ok(())
     }
     fn count(&self, db: &Connection, table: &str) -> Result<i64, AnalyticsError> {
         Ok(db.query_row(

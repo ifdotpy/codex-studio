@@ -96,6 +96,13 @@ try:
                 row.pop('responseId')
             db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
                        (row['id'],population['id'],population['id'],'analytics-thread','analytics-turn',row['at'],json.dumps(row)))
+        for index in range(510):
+            row = {{**usage,'id':f'chart-{{index:03}}','agentId':population['id'],
+                   'rootId':population['id'],'responseId':f'chart-{{index:03}}',
+                   'at':index*3600,'last':{{'totalTokens':index+1}},
+                   'accountKey':'population-account'}}
+            db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+                       (row['id'],population['id'],population['id'],'analytics-thread','analytics-turn',row['at'],json.dumps(row)))
         for index, duration in enumerate([None, 0, 10, 20, 30, 40]):
             model = index < 4
             row = {{**item,'id':f'population-item-{{index}}','itemId':f'population-item-{{index}}',
@@ -127,7 +134,7 @@ try:
         value = runtime.analytics(population['id'], **options)
         if options.get('view') != 'detail':
             value = {{key:value[key] for key in ('summary','tools','notifications','rateLimits',
-                'timeline','timelineTotal','provisionalUsage','calls','itemRecords','itemRecordsTotal',
+                'timeline','chartBuckets','timelineTotal','provisionalUsage','calls','itemRecords','itemRecordsTotal',
                 'compactions','compactionSnapshots','pagination','detailPagination')}}
         oracle.append({{'options':options,'value':value}})
     (Path(os.environ['CODEX_CANVAS_CWD']) / 'analytics-oracle.json').write_text(json.dumps(oracle))
