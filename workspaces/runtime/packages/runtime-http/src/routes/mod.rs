@@ -5,6 +5,7 @@ mod agents_create;
 mod catalog;
 mod checkpoints;
 pub(crate) mod compose;
+mod context_repair;
 mod desktop;
 pub(crate) mod extractors;
 mod federation;

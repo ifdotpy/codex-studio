@@ -44,6 +44,7 @@ pub use records::{
     UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
 };
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
+pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::federation::FederationRepository;
