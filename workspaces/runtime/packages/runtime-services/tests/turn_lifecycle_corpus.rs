@@ -603,7 +603,7 @@ fn python_written_turn_lifecycle_corpus() {
 }
 
 #[test]
-fn oracle_refuses_real_provider_homes() {
+fn oracle_guard_refuses_synthetic_provider_home_access() {
     let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared interpreter");
     let output = Command::new(python)
         .arg("-B")
@@ -618,6 +618,6 @@ fn oracle_refuses_real_provider_homes() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "guard refused both real provider homes"
+        "guard refused synthetic provider-home content and metadata access"
     );
 }
