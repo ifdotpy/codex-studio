@@ -42,8 +42,14 @@ impl ExecutionHistoryRepository {
             |r| r.get::<_, String>(0),
         )
         .optional()?
-        .map(|s| serde_json::from_str(&s).map_err(Into::into))
+        .map(|s| decode("runtime_execution_attempts", id, &s))
         .transpose()
+    }
+    pub(crate) fn invalid(table: &str, id: &str) -> StoreError {
+        StoreError::InvalidSyncObject {
+            scope: table.into(),
+            id: id.into(),
+        }
     }
     pub fn save_claim(
         tx: &Transaction<'_>,
@@ -75,18 +81,18 @@ impl ExecutionHistoryRepository {
             .cloned()
             .unwrap_or(Value::Null);
         let mut run: Option<Value> = tx.query_row(
-            "SELECT r.record FROM runtime_execution_runs r JOIN runtime_execution_attempts a ON a.run=r.id WHERE a.id=?1",
-            [id], |r|r.get::<_,String>(0)).optional()?.map(|s|serde_json::from_str(&s)).transpose()?;
+            "SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_execution_attempts a ON a.run=r.id WHERE a.id=?1",
+            [id], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         if run.is_none() && attempt["events"][0].is_string() {
             run = tx.query_row(
-                "SELECT r.record FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run WHERE i.event=?1 AND r.agent=?2 AND r.account=?3 AND r.epoch=?4 AND r.turn IS NULL ORDER BY r.created DESC LIMIT 1",
-                params![attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()], |r|r.get::<_,String>(0)).optional()?.map(|s|serde_json::from_str(&s)).transpose()?;
+                "SELECT r.id,r.record FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run WHERE i.event=?1 AND r.agent=?2 AND r.account=?3 AND r.epoch=?4 AND r.turn IS NULL ORDER BY r.created DESC LIMIT 1",
+                params![attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         }
         let mut run = run.unwrap_or_else(||json!({"id":format!("run:{id}"),"agent":agent.id.0,"accountKey":account,
             "epoch":attempt["epoch"],"threadId":thread,"turnId":null,"created":attempt.get("created").cloned().unwrap_or_else(||json!(now())),
             "status":"pending","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
         if run["agent"] != agent.id.0 || run["accountKey"] != account || !run["id"].is_string() {
-            return Err(invalid(id));
+            return Err(invalid(run["id"].as_str().unwrap_or(id)));
         }
         let turn = attempt
             .get("turnId")
@@ -176,14 +182,16 @@ impl ExecutionHistoryRepository {
         status: &str,
         error: Option<&Value>,
     ) -> StoreResult<()> {
-        let mut stmt = tx.prepare("SELECT r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=COALESCE(json_extract(a.record,'$.accountKey'),'default') AND r.thread IS json_extract(a.record,'$.threadId') LIMIT 2")?;
+        let mut stmt = tx.prepare("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=COALESCE(json_extract(a.record,'$.accountKey'),'default') AND r.thread IS json_extract(a.record,'$.threadId') LIMIT 2")?;
         let rows = stmt
-            .query_map(params![agent_id, turn_id], |r| r.get::<_, String>(0))?
+            .query_map(params![agent_id, turn_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
-        let [raw] = rows.as_slice() else {
+        let [(id, raw)] = rows.as_slice() else {
             return Err(invalid(agent_id));
         };
-        let mut run: Value = serde_json::from_str(raw)?;
+        let mut run = decode("runtime_execution_runs", id, raw)?;
         run["status"] = json!(status);
         run["finished"] = json!(now());
         run["result"] = json!("");
@@ -217,4 +225,38 @@ fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
+}
+
+fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
+    let invalid = || ExecutionHistoryRepository::invalid(table, id);
+    let record: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    let valid = record.is_object()
+        && record["id"] == id
+        && record["epoch"].is_i64()
+        && if table == "runtime_execution_runs" {
+            ["agent", "accountKey", "status"]
+                .iter()
+                .all(|key| record[*key].is_string())
+                && record["created"].as_f64().is_some_and(f64::is_finite)
+                && [
+                    "threadId",
+                    "turnId",
+                    "firstAttemptId",
+                    "rootAttemptId",
+                    "latestAttemptId",
+                ]
+                .iter()
+                .all(|key| record[*key].is_null() || record[*key].is_string())
+        } else {
+            record["runId"].is_string()
+                && record["events"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().all(Value::is_string))
+                && record.get("claimResult").is_none_or(Value::is_object)
+                && record.get("inputIdentity").is_none_or(Value::is_array)
+        };
+    if !valid {
+        return Err(invalid());
+    }
+    Ok(record)
 }

@@ -1343,3 +1343,508 @@ fn unresolved_completion_queue_has_a_fixed_settlement_limit() {
     assert!(h.fake.acknowledged.load(Ordering::Relaxed) < h.cursor);
     assert_eq!(h.status(0), "dispatching");
 }
+
+#[test]
+fn restart_admits_the_correlated_receipt_before_reholding() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    for n in 0..MAX_SETTLEMENTS - MAX_OUTSTANDING * 2 {
+        h.notice(0, "turn/completed", &format!("unbound-{n}"), "completed");
+    }
+    assert!(h.worker.held);
+    h.worker
+        .sender
+        .transport(ProviderSessionInput::Frame {
+            frame: Frame::Response {
+                id: serde_json::from_value(start["id"].clone()).expect("regression fixture"),
+                body: ResponseBody::Result(json!({"turn":{"id":"ours"}})),
+                fields: Default::default(),
+            },
+            cursor: Some(h.cursor + 1),
+            received_at_ms: 0,
+        })
+        .expect("regression fixture");
+    h.worker
+        .input(AccountInput::Restart)
+        .expect("regression fixture");
+    assert!(!h.worker.held, "restart admits the resolving reply");
+    let input = h
+        .input
+        .receive(h.worker.held, Some(WATCHDOG))
+        .expect("reply admitted");
+    h.worker.input(input).expect("reply settles");
+    assert!(!h.worker.held);
+    assert_eq!(h.status(0), "delivered");
+    assert!(h.worker.deferred.is_empty());
+}
+
+#[test]
+fn recovery_replaces_previous_epoch_receipt() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "first");
+    h.store
+        .transaction(|tx| {
+            SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, true)?;
+            SchedulerRepository::reconcile_generation(tx, "default", 1, 2.0)
+        })
+        .expect("regression fixture");
+    h.notice(0, "turn/completed", "first", "interrupted");
+    let mut a = h.record(0);
+    let old_epoch = a.epoch;
+    a.epoch += 1;
+    a.status = AgentStatus::Queued;
+    a.extra.insert("autoWake".into(), json!(true));
+    a.extra.insert("inFlight".into(), json!(false));
+    h.store
+        .transaction(|tx| AgentRepository::put(tx, &a))
+        .expect("regression fixture");
+    write_annotation(&h.store, &a.id.0, "second-epoch");
+    h.worker
+        .input(AccountInput::Wake(a.id.0.clone(), a.epoch))
+        .expect("regression fixture");
+    let second = h.request("turn/start");
+    h.accepted(&second, "second");
+    h.store
+        .transaction(|tx| {
+            SchedulerRepository::disconnect_account(tx, "default", 1, 3.0, true)?;
+            SchedulerRepository::reconcile_generation(tx, "default", 1, 4.0)
+        })
+        .expect("regression fixture");
+    let a = h.record(0);
+    assert_eq!(a.extra["disconnectRecovery"]["epoch"], old_epoch + 1);
+    assert_eq!(a.status, AgentStatus::Running);
+    h.notice(0, "turn/completed", "second", "interrupted");
+    assert_eq!(h.record(0).extra["lastCompletedTurn"], "second");
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), h.cursor);
+}
+
+#[test]
+fn claim_replay_is_read_only_and_checks_current_scope() {
+    let h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "replay");
+    let first = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "stable-review",
+        10.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    recover_on_startup(&h.store).expect("regression fixture");
+    let before = h.record(0);
+    let replay = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "stable-review",
+        99.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    assert_eq!(replay, first);
+    assert_eq!(h.record(0), before, "receipt replay is read-only");
+    assert!(
+        !mark_submitted_for_provider(&h.store, &replay, "old-ticket", 1)
+            .expect("regression fixture")
+    );
+    for key in ["threadId", "accountKey"] {
+        let mut a = before.clone();
+        a.extra.insert(key.into(), json!("changed-scope"));
+        h.store
+            .transaction(|tx| AgentRepository::put(tx, &a))
+            .expect("regression fixture");
+        assert!(claim_intent(&h.store, &a.id.0, a.epoch, "stable-review", 99.0).is_err());
+        assert_eq!(h.record(0), a);
+    }
+}
+
+#[test]
+fn outcome_rejects_changed_input_membership() {
+    let h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "membership");
+    let intent = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "membership-review",
+        10.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    h.store.transaction(|tx| {tx.execute("UPDATE runtime_events SET text='changed',status='delivered',turn_id='alien' WHERE id='annotation:membership'",[])?;Ok(())}).expect("regression fixture");
+    let before = h.record(0);
+    assert!(settle_start_outcome(&h.store, &intent, TurnStart::NotSubmitted).is_err());
+    assert_eq!(h.record(0), before);
+}
+
+#[test]
+fn one_deferred_frame_bounds_cursor_evidence() {
+    let mut h = Harness::new(1);
+    h.start(0);
+    h.notice(0, "turn/completed", "unbound", "completed");
+    let ack = h.fake.acknowledged.load(Ordering::Relaxed);
+    for n in 0..MAX_SETTLEMENTS + 1 {
+        if h.worker.held {
+            break;
+        }
+        h.frame(json!({"method":"item/started","params":{"threadId":"fake-thread-0","item":{"id":format!("item-{n}")}}}));
+    }
+    assert!(
+        h.worker.held,
+        "cursor gap holds admission even with one deferred settlement"
+    );
+    assert_eq!(h.worker.deferred.len(), 1);
+    assert_eq!(h.fake.acknowledged.load(Ordering::Relaxed), ack);
+    assert!(h.cursor - ack <= MAX_SETTLEMENTS as u64);
+}
+
+#[test]
+fn interrupted_denials_fail_agent_and_execution_history() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "denied");
+    write_annotation(&h.store, &h.agents[0].0, "pending-after-denials");
+    h.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"denied","status":"interrupted","error":{"codexErrorInfo":"tooManyDenials","message":"denied"}}}}));
+    assert_eq!(h.record(0).status, AgentStatus::Failed);
+    assert_eq!(
+        h.record(0).extra.get("nativeFailureHold"),
+        Some(&json!(true))
+    );
+    let status: String = h.store.read().expect("regression fixture").query_row("SELECT json_extract(record,'$.status') FROM runtime_execution_runs WHERE turn='denied'", [], |r| r.get(0)).expect("regression fixture");
+    assert_eq!(status, "failed");
+}
+
+#[test]
+fn malformed_history_is_sanitized_and_names_run() {
+    let h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "invalid-history");
+    let intent = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "invalid-history",
+        10.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    h.store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_execution_runs SET record='[]' WHERE id='run:invalid-history'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("regression fixture");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mark_submitted_for_provider(&h.store, &intent, "ticket", 1)
+    }));
+    let error = result
+        .expect("no panic")
+        .expect_err("invalid stored run refused");
+    assert!(error.to_string().contains("run:invalid-history"));
+    assert!(error.to_string().contains("runtime_execution_runs"));
+}
+
+#[test]
+fn shutdown_commits_proven_not_sent_before_dropping_session() {
+    let mut h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "input-0");
+    let intent = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "unsent-proof",
+        10.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    // A closed writer queue produces a real NotSent: no turn/start can be written.
+    h.worker
+        .session
+        .as_mut()
+        .expect("regression fixture")
+        .quiesce()
+        .expect("regression fixture");
+    h.store.transaction(|tx| {tx.execute_batch("CREATE TRIGGER fail_unsent BEFORE UPDATE OF status ON runtime_events WHEN NEW.status='pending' BEGIN SELECT RAISE(FAIL,'injected'); END;")?;Ok(())}).expect("regression fixture");
+    h.worker.submit(intent).expect("regression fixture");
+    assert!(
+        h.worker
+            .settlements
+            .iter()
+            .any(|s| matches!(s.event, ProviderSessionEvent::NotSent { .. }))
+    );
+    for _ in 0..SETTLEMENT_RETRIES {
+        h.worker.retry_at = None;
+        h.worker.drain_settlements().expect("regression fixture");
+    }
+    assert!(h.worker.held);
+    h.store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fail_unsent")?;
+            Ok(())
+        })
+        .expect("regression fixture");
+    h.shutdown();
+    assert_eq!(h.status(0), "pending");
+    assert!(!h.record(0).extra.contains_key("startAttempt"));
+    recover_on_startup(&h.store).expect("regression fixture");
+    assert_eq!(h.status(0), "pending");
+    assert!(h.requests.try_iter().all(|r| r["method"] != "turn/start"));
+}
+
+#[test]
+fn uncertain_interrupt_is_not_repeated_after_restart() {
+    let mut h = Harness::new(1);
+    let start = h.start(0);
+    h.accepted(&start, "interrupt-unknown");
+    h.worker.timeout_ms = 0;
+    h.stop(0);
+    let first = h.request("turn/interrupt");
+    h.worker
+        .input(AccountInput::Deadline)
+        .expect("regression fixture");
+    assert!(h.worker.held);
+    h.shutdown();
+    recover_on_startup(&h.store).expect("regression fixture");
+    let (tx, rx) = mailbox::channel();
+    h.input = rx;
+    h.worker = AccountWorker::new(
+        h.store.clone(),
+        Arc::new(SharedFake(h.fake.clone())),
+        "default".into(),
+        tx,
+        TurnWakeHandle(Weak::new()),
+        Arc::new(AtomicU64::new(0)),
+        60_000,
+    );
+    h.worker.connect().expect("regression fixture");
+    h.initialize();
+    h.stop(0);
+    assert!(h.worker.held);
+    assert!(
+        h.requests
+            .try_iter()
+            .all(|r| r["method"] != "turn/interrupt")
+    );
+    assert_eq!(
+        h.record(0).extra["startAttempt"]["interrupt"]["requestTicket"],
+        first["id"]
+    );
+}
+
+#[test]
+fn paused_python_submission_gets_attempt_epoch_recovery_hold() {
+    let mut h = Harness::new(1);
+    h.start(0);
+    h.stop(0);
+    let mut a = h.record(0);
+    let attempt = a
+        .extra
+        .get_mut("startAttempt")
+        .expect("regression fixture")
+        .as_object_mut()
+        .expect("regression fixture");
+    attempt.remove("connectionGeneration");
+    attempt.remove("requestTicket");
+    attempt.insert("supervisorIdentity".into(), json!({"generation":1}));
+    attempt.insert("executionOutcome".into(), json!("unknown"));
+    h.store
+        .transaction(|tx| AgentRepository::put(tx, &a))
+        .expect("regression fixture");
+    recover_on_startup(&h.store).expect("regression fixture");
+    let a = h.record(0);
+    assert_eq!(a.status, AgentStatus::Paused);
+    assert_eq!(
+        a.extra["disconnectRecovery"]["epoch"],
+        a.extra["startAttempt"]["epoch"]
+    );
+    assert_eq!(a.extra["restartRecovery"]["stage"], "held");
+    assert_eq!(a.extra.get("nativeFailureHold"), Some(&json!(true)));
+    assert_eq!(h.status(0), "uncertain");
+}
+
+#[test]
+fn invalid_claim_receipt_error_is_sanitized() {
+    let h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "invalid-claim");
+    claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "invalid-claim",
+        10.0,
+    )
+    .expect("regression fixture")
+    .expect("regression fixture");
+    h.store.transaction(|tx| {tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.claimResult.agent.epoch','sensitive-record-value') WHERE id='invalid-claim'",[])?;Ok(())}).expect("regression fixture");
+    let error = claim_intent(
+        &h.store,
+        &h.agents[0].0,
+        h.agents[0].1,
+        "invalid-claim",
+        10.0,
+    )
+    .expect_err("invalid record")
+    .to_string();
+    assert!(!error.contains("sensitive-record-value"));
+    assert!(error.contains("runtime_execution_attempts/invalid-claim"));
+}
+
+fn review_history_snapshot(h: &Harness, stage: &str, native: Option<Value>) -> Value {
+    let agent = serde_json::to_value(h.record(0)).expect("regression fixture");
+    let id = agent["startAttempt"]["id"]
+        .as_str()
+        .expect("regression fixture");
+    let connection = h.store.read().expect("regression fixture");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_attempts WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("regression fixture");
+    let mut attempt: Value = serde_json::from_str(&raw).expect("regression fixture");
+    attempt
+        .as_object_mut()
+        .expect("regression fixture")
+        .remove("inputIdentity");
+    attempt
+        .as_object_mut()
+        .expect("regression fixture")
+        .remove("claimResult");
+    let run_id = attempt["runId"].as_str().expect("regression fixture");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_execution_runs WHERE id=?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .expect("regression fixture");
+    let mut run: Value = serde_json::from_str(&raw).expect("regression fixture");
+    run.as_object_mut()
+        .expect("regression fixture")
+        .remove("finished");
+    let mut stmt = connection
+        .prepare("SELECT event FROM runtime_execution_inputs WHERE run=?1 ORDER BY event")
+        .expect("regression fixture");
+    let events = stmt
+        .query_map([run_id], |r| r.get::<_, String>(0))
+        .expect("regression fixture")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("regression fixture");
+    json!({"stage":stage,"agent":agent,"native":native,"actual":{"attempt":attempt,"run":run,"events":events}})
+}
+
+#[test]
+fn review_history_each_lifecycle_stage_against_python() {
+    let mut h = Harness::new(1);
+    let (agent, epoch) = h.agents[0].clone();
+    write_annotation(&h.store, &agent, "input-0");
+    h.worker
+        .input(AccountInput::Wake(agent, epoch))
+        .expect("regression fixture");
+    let mut snapshots = vec![review_history_snapshot(&h, "claim", None)];
+    let resume = h.request("thread/resume");
+    h.frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}));
+    let start = h.request("turn/start");
+    snapshots.push(review_history_snapshot(&h, "submitted", None));
+    let pending = h
+        .worker
+        .pending
+        .get(&serde_json::from_value::<RequestId>(start["id"].clone()).expect("regression fixture"))
+        .expect("regression fixture");
+    settle_start_outcome(&h.store, &pending.intent, TurnStart::Unknown)
+        .expect("regression fixture");
+    snapshots.push(review_history_snapshot(&h, "unknown", None));
+    h.notice(0, "turn/started", "oracle-turn", "inProgress");
+    snapshots.push(review_history_snapshot(&h, "observed", None));
+    h.accepted(&start, "oracle-turn");
+    snapshots.push(review_history_snapshot(&h, "accepted", None));
+    h.store
+        .transaction(|tx| SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, true))
+        .expect("regression fixture");
+    snapshots.push(review_history_snapshot(&h, "disconnected", None));
+    h.store
+        .transaction(|tx| SchedulerRepository::reconcile_generation(tx, "default", 1, 2.0))
+        .expect("regression fixture");
+    snapshots.push(review_history_snapshot(&h, "reattached", None));
+    let native =
+        json!({"threadId":"fake-thread-0","turn":{"id":"oracle-turn","status":"interrupted"}});
+    h.frame(json!({"method":"turn/completed","params":native}));
+    snapshots.push(review_history_snapshot(&h, "terminal", Some(native)));
+    let script = r#"
+import json,sqlite3,sys
+sys.path.insert(0,sys.argv[1])
+import codex_execution as e
+steps=json.load(sys.stdin)
+db=sqlite3.connect(':memory:'); e.ensure_tables(db)
+db.execute('CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT)')
+previous=None; results=[]
+for step in steps:
+    agent=step['agent']
+    if step['native']:
+        e.observe_native(db,previous,'turn/completed',step['native'])
+    e.reconcile_agent(db,agent,previous)
+    a=json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',(agent['startAttempt']['id'],)).fetchone()[0])
+    r=json.loads(db.execute('SELECT record FROM runtime_execution_runs WHERE id=?',(a['runId'],)).fetchone()[0]); r.pop('finished',None)
+    expected={'attempt':a,'run':r,'events':[x[0] for x in db.execute('SELECT event FROM runtime_execution_inputs WHERE run=? ORDER BY event',(r['id'],))]}
+    results.append({'stage':step['stage'],'equal':expected==step['actual'],'expected':expected,'actual':step['actual']})
+    previous=agent
+print(json.dumps(results))
+"#;
+    let mut child = Command::new(python_executable())
+        .args(["-c", script])
+        .arg(server_source())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("regression fixture");
+    child
+        .stdin
+        .take()
+        .expect("regression fixture")
+        .write_all(json!(snapshots).to_string().as_bytes())
+        .expect("regression fixture");
+    let out = child.wait_with_output().expect("regression fixture");
+    assert!(out.status.success());
+    let results: Value = serde_json::from_slice(&out.stdout).expect("regression fixture");
+    for row in results.as_array().expect("regression fixture") {
+        assert_eq!(row["equal"], true, "history drift at {}", row["stage"]);
+    }
+}
+
+#[test]
+fn submission_refuses_changed_current_native_scope_without_writes() {
+    let h = Harness::new(1);
+    write_annotation(&h.store, &h.agents[0].0, "scope");
+    let intent = claim_intent(&h.store, &h.agents[0].0, h.agents[0].1, "scope-claim", 10.0)
+        .expect("claim")
+        .expect("input");
+    let original = h.record(0);
+    for key in ["threadId", "accountKey"] {
+        let mut agent = original.clone();
+        agent.extra.insert(key.into(), json!("changed"));
+        h.store
+            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .expect("scope change");
+        assert!(
+            !mark_submitted_for_provider(&h.store, &intent, "scope-ticket", 1)
+                .expect("scope refusal")
+        );
+        assert_eq!(h.record(0), agent);
+        let status: String = h
+            .store
+            .read()
+            .expect("read")
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id='annotation:scope'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("event");
+        assert_eq!(status, "reserved");
+    }
+}

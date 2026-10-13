@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 mod mailbox;
+mod settlement_policy;
 use mailbox::{Receiver, Sender};
 #[cfg(test)]
 use std::sync::mpsc::{Receiver as TestReceiver, Sender as TestSender};
@@ -273,6 +274,7 @@ struct AccountWorker {
     quiesced: bool,
     attachment_ready: bool,
     serial: u64,
+    evidence: settlement_policy::EvidenceWindow,
 }
 impl AccountWorker {
     #[allow(clippy::too_many_arguments)]
@@ -306,6 +308,7 @@ impl AccountWorker {
             quiesced: false,
             attachment_ready: false,
             serial: 0,
+            evidence: settlement_policy::EvidenceWindow::default(),
         }
     }
     fn run(&mut self, receiver: Receiver) -> Result<(), TurnRuntimeError> {
@@ -333,6 +336,11 @@ impl AccountWorker {
                 Ok(false) => {}
                 Err(error) => {
                     self.hold(self.settlements.front().and_then(|event| event.cursor));
+                    if self.has_unreplayable() {
+                        // A cursorless NotSent receipt cannot be dropped with the worker.
+                        self.retry_at = Some(Instant::now() + RETRY_DELAY);
+                        continue;
+                    }
                     if self.closing == Some(Closing::Shutdown) {
                         if let Some(session) = self.session.take() {
                             let _ignored = session.close();
@@ -371,6 +379,7 @@ impl AccountWorker {
                 StoreError::SchemaMismatch("provider process attachment unavailable".into())
             })?;
         let generation = process.generation();
+        self.evidence = settlement_policy::EvidenceWindow::new(process.acknowledged_cursor());
         let recovered = self.store.transaction(|tx| {
             SchedulerRepository::reconcile_generation(tx, &self.account, generation, now())?;
             SchedulerRepository::submitted_start_requests(tx, &self.account, Some(generation))
@@ -459,6 +468,13 @@ impl AccountWorker {
                 self.quiesced = true;
             }
             AccountInput::Transport(input) => {
+                if let ProviderSessionInput::Frame {
+                    cursor: Some(cursor),
+                    ..
+                } = &input
+                {
+                    self.evidence.observe(*cursor);
+                }
                 if let Some(session) = &mut self.session {
                     self.settlements.extend(
                         session
@@ -510,6 +526,7 @@ impl AccountWorker {
             }
             AccountInput::Restart => {
                 self.clear_hold()?;
+                self.evidence.restart();
                 self.wake.wake();
                 if self.session.is_none() {
                     self.connect()?;
@@ -547,7 +564,16 @@ impl AccountWorker {
         self.collect_events();
         self.drain_settlements()?;
         // Reserve space for one session transition resolving every admitted request.
-        if self.settlements.len() + self.deferred.len() >= MAX_SETTLEMENTS - MAX_OUTSTANDING * 2 {
+        let handled = self
+            .session
+            .as_ref()
+            .map_or(0, ProviderSession::handled_cursor);
+        if self.evidence.should_hold(
+            handled,
+            self.settlements.len() + self.deferred.len(),
+            MAX_SETTLEMENTS,
+            MAX_OUTSTANDING,
+        ) {
             self.hold(
                 self.settlements
                     .front()
@@ -556,6 +582,7 @@ impl AccountWorker {
             );
         }
         if self.quiesced && (self.settlements.is_empty() || self.held) {
+            self.flush_unreplayable()?;
             self.sender.discard_quiesced_transport();
             if let Some(session) = &self.session {
                 self.store.transaction(|tx| {
@@ -722,6 +749,23 @@ impl AccountWorker {
         self.collect_events();
         Ok(())
     }
+    fn has_unreplayable(&self) -> bool {
+        self.settlements
+            .iter()
+            .any(|s| matches!(s.event, ProviderSessionEvent::NotSent { .. }))
+    }
+    fn flush_unreplayable(&mut self) -> Result<(), TurnRuntimeError> {
+        while let Some(index) = self
+            .settlements
+            .iter()
+            .position(|s| matches!(s.event, ProviderSessionEvent::NotSent { .. }))
+        {
+            let event = self.settlements[index].event.clone();
+            self.settle(&event)?;
+            self.settlements.remove(index);
+        }
+        Ok(())
+    }
     fn drain_settlements(&mut self) -> Result<(), TurnRuntimeError> {
         while !self.held && self.retry_at.is_none() {
             let Some(mut settlement) = self.settlements.pop_front() else {
@@ -766,6 +810,18 @@ impl AccountWorker {
             ProviderSessionEvent::Reply { ticket, body, .. }
                 if ticket.method == Method::TurnInterrupt =>
             {
+                self.store.transaction(|tx| {
+                    SchedulerRepository::settle_interrupt(
+                        tx,
+                        &id_string(&ticket.id),
+                        ticket.generation,
+                        if matches!(body, ResponseBody::Error(_)) {
+                            "rejected"
+                        } else {
+                            "accepted"
+                        },
+                    )
+                })?;
                 if matches!(body, ResponseBody::Error(_)) {
                     self.interrupts.retain(|_, (sent, _)| sent.id != ticket.id);
                     self.hold(None);
@@ -856,6 +912,20 @@ impl AccountWorker {
                         self.pending.remove(&ticket.id);
                     }
                 } else if matches!(ticket.method, Method::TurnInterrupt | Method::Initialize) {
+                    if ticket.method == Method::TurnInterrupt {
+                        self.store.transaction(|tx| {
+                            SchedulerRepository::settle_interrupt(
+                                tx,
+                                &id_string(&ticket.id),
+                                ticket.generation,
+                                if matches!(event, ProviderSessionEvent::NotSent { .. }) {
+                                    "unsent"
+                                } else {
+                                    "unknown"
+                                },
+                            )
+                        })?;
+                    }
                     if matches!(event, ProviderSessionEvent::NotSent { .. }) {
                         self.interrupts.retain(|_, (sent, _)| sent.id != ticket.id);
                     } else if let Some((_, uncertain)) = self
@@ -957,17 +1027,56 @@ impl AccountWorker {
             return Ok(());
         }
 
-        match session.send_request(
+        self.serial += 1;
+        let id = RequestId::String(format!(
+            "interrupt:{}:{agent}:{}:{turn}:{}:{}",
+            agent.len(),
+            turn.len(),
+            now().to_bits(),
+            self.serial
+        ));
+        let params = json!({"threadId":thread,"turnId":turn});
+        session.preflight_request_with_id(
+            id.clone(),
             Method::TurnInterrupt,
-            json!({"threadId":thread,"turnId":turn}),
+            params.clone(),
+            Some(thread.to_owned()),
+            false,
+        )?;
+        if !self.store.transaction(|tx| {
+            SchedulerRepository::prepare_interrupt(
+                tx,
+                agent,
+                thread,
+                turn,
+                session.generation(),
+                &id_string(&id),
+            )
+        })? {
+            self.hold(None);
+            return Ok(());
+        }
+        let ticket = RequestTicket {
+            id: id.clone(),
+            method: Method::TurnInterrupt,
+            generation: session.generation(),
+        };
+        self.interrupts.insert(key, (ticket.clone(), false));
+        match session.send_request_with_id(
+            id,
+            Method::TurnInterrupt,
+            params,
             Some(thread.to_owned()),
             false,
             self.timeout_ms,
         ) {
-            Ok(ticket) => {
-                self.interrupts.insert(key, (ticket, false));
+            Ok(_) => {}
+            Err(ProviderSessionError::NotSent { ticket }) => self
+                .settlements
+                .push_back((ProviderSessionEvent::NotSent { ticket }, None).into()),
+            Err(_) => {
+                self.hold(None);
             }
-            Err(_) => self.hold(None),
         }
         self.collect_events();
         Ok(())

@@ -1,19 +1,15 @@
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use serde_json::{Value, json};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
-use studio_runtime_services::scheduler::{SchedulerError, claim_intent, settle_start_outcome};
 use studio_runtime_services::scheduler::{
-    TurnIntent, TurnStart, mark_submitted_for_provider, settle_started_provider,
+    TurnStart, claim_intent, mark_submitted_for_provider, recover_on_startup, settle_start_outcome,
+    settle_started_provider,
 };
-use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent, QueueEventId,
-    QueueEventRepository, RuntimeStore,
-};
+use studio_runtime_store::{AgentId, AgentRepository, AgentStatus, RuntimeStore};
 
 const CREATE_PYTHON_EVENTS: &str = r#"
 import json, pathlib, sys
@@ -39,571 +35,191 @@ with runtime.lock, runtime.db() as db:
 runtime.close()
 "#;
 
+fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Value) {
+    let state = TemporaryState::new();
+    let fixture: Value = serde_json::from_str(&run_python(&state.0, CREATE_PYTHON_EVENTS, &[]))
+        .expect("Python fixture JSON");
+    let store = RuntimeStore::open(Some(&state.0)).expect("Python-written store");
+    let agent = fixture["agent"].as_str().expect("agent ID").to_owned();
+    let epoch = fixture["epoch"].as_i64().expect("epoch");
+    (state, store, agent, epoch, fixture)
+}
 #[test]
 fn pending_selection_matches_python_and_claims_rust_event_write_events() {
-    let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
-    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
-    let agent = fixture["agent"]
-        .as_str()
-        .expect("Python fixture returns an agent ID");
-    let epoch = fixture["epoch"]
-        .as_i64()
-        .expect("Python fixture returns an epoch");
-    let python_selected = fixture["events"]
-        .as_array()
-        .expect("Python fixture returns selected event IDs")
-        .iter()
-        .map(|value| value.as_str().expect("event ID is a string").to_owned())
-        .collect::<Vec<_>>();
-
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
-    let mut driver = CaptureDriver::default();
-    let mut wake = PendingWake(true);
-    assert!(
-        consume_wake(
-            &store,
-            &mut wake,
-            agent,
-            epoch,
-            "python-attempt",
-            10.0,
-            &mut driver
-        )
-        .expect("Rust consumes wake")
+    let (_state, store, agent, epoch, fixture) = fixture();
+    let intent = claim_intent(&store, &agent, epoch, "python-attempt", 10.0)
+        .expect("claim")
+        .expect("input");
+    assert_eq!(
+        json!(intent.events.iter().map(|e| &e.id).collect::<Vec<_>>()),
+        fixture["events"]
     );
-    assert_eq!(driver.ids, python_selected);
+    let reader = store.read().expect("read");
+    let reserved: i64 = reader
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='reserved'",
+            [&agent],
+            |r| r.get(0),
+        )
+        .expect("reserved events");
+    assert_eq!(reserved, 3);
+    drop(reader);
+    settle_start_outcome(&store, &intent, TurnStart::NotSubmitted)
+        .expect("unsent restores pending");
     store
-        .transaction(|transaction| {
-            let result = annotate(
-                transaction,
+        .transaction(|tx| {
+            annotate(
+                tx,
                 AnnotationWrite {
-                    agent_id: agent.to_owned(),
-                    id: Some("rust-written".to_owned()),
-                    path: "README.md".to_owned(),
+                    agent_id: agent.clone(),
+                    id: Some("rust-written".into()),
+                    path: "README.md".into(),
                     line: 1,
-                    text: "scheduler test annotation".to_owned(),
+                    text: "scheduler annotation".into(),
                     turn_id: None,
-                    signature: "scheduler-test".to_owned(),
+                    signature: "scheduler-test".into(),
                 },
             )
-            .map_err(|error| studio_runtime_store::StoreError::SchemaMismatch(error.to_string()))?;
-            assert!(result.event_inserted);
+            .map_err(|_| {
+                studio_runtime_store::StoreError::SchemaMismatch("annotation fixture".into())
+            })?;
             Ok(())
         })
-        .expect("Rust event-write service creates a durable pending event");
-
-    let mut driver = CaptureDriver::default();
-    let mut wake = PendingWake(false);
-    assert!(
-        !consume_wake(
-            &store,
-            &mut wake,
-            agent,
-            epoch,
-            "no-wake",
-            12.0,
-            &mut driver
-        )
-        .expect("absent wake is consumed as a no-op")
-    );
-    assert!(driver.ids.is_empty());
-
-    let mut driver = InspectingDriver::new(
-        &store,
-        TurnStart::Accepted {
-            turn_id: "turn-1".to_owned(),
-        },
-    );
-    let mut wake = PendingWake(true);
-    consume_wake(
-        &store,
-        &mut wake,
-        agent,
-        epoch,
-        "accepted-attempt",
-        13.0,
-        &mut driver,
-    )
-    .expect("accepted turn intent completes");
+        .expect("Rust event writer");
+    let intent = claim_intent(&store, &agent, epoch, "accepted-attempt", 13.0)
+        .expect("claim")
+        .expect("input");
     assert_eq!(
-        driver.ids.last().map(String::as_str),
+        intent.events.last().map(|e| e.id.as_str()),
         Some("annotation:rust-written")
     );
-    let reader = store.read().expect("accepted event state reads");
+    assert!(mark_submitted_for_provider(&store, &intent, "accepted-request", 1).expect("submit"));
+    assert_eq!(
+        settle_started_provider(&store, &intent, "accepted-request", 1, "turn-1").expect("accept"),
+        Some(false)
+    );
+    let reader = store.read().expect("read");
     let delivered: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='delivered'",
-            [agent],
-            |row| row.get(0),
+            [&agent],
+            |r| r.get(0),
         )
-        .expect("delivered event count reads");
-    assert_eq!(delivered, 0);
-    let (projected_status, projected_in_flight, projected_turn_id): (String, bool, Option<String>) = reader
-        .query_row(
-            "SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",
-            [agent],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("accepted scheduler lifecycle projection reads");
-    assert_eq!(projected_status, "starting");
-    assert!(projected_in_flight);
-    assert_eq!(projected_turn_id, None);
-    drop(reader);
-    drop(store);
-
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust reopens accepted state");
-    store
-        .transaction(|transaction| {
-            let mut agent_record = AgentRepository::get(transaction, &AgentId::from(agent))?
-                .ok_or_else(|| {
-                    studio_runtime_store::StoreError::SchemaMismatch(
-                        "scheduler fixture agent is missing".to_owned(),
-                    )
-                })?;
-            agent_record.status = studio_runtime_store::AgentStatus::Queued;
-            agent_record
-                .extra
-                .insert("inFlight".to_owned(), json!(false));
-            agent_record.extra.remove("startAttempt");
-            agent_record.extra.remove("turnId");
-            AgentRepository::put(transaction, &agent_record)?;
-            transaction.execute(
-                "UPDATE runtime_events SET status='delivered' WHERE agent=?1 AND status='reserved'",
-                [agent],
-            )?;
-            EventWriteRepository::set_agent_sync_status(transaction, agent, "queued")?;
-            QueueEventRepository::put(
-                transaction,
-                &QueueEvent {
-                    id: QueueEventId::from("rust-uncertain"),
-                    agent: AgentId::from(agent),
-                    kind: "user".to_owned(),
-                    text: "uncertain".to_owned(),
-                    status: "pending".to_owned(),
-                    created: 4.0,
-                    epoch,
-                    turn_id: None,
-                    error: None,
-                },
-            )?;
-            Ok(())
-        })
-        .expect("next scheduler input writes");
-    let mut driver = StartThenUnknownDriver(&store);
-    let mut wake = PendingWake(true);
-    consume_wake(
-        &store,
-        &mut wake,
-        agent,
-        epoch,
-        "unknown-attempt",
-        14.0,
-        &mut driver,
-    )
-    .expect("unknown turn outcome is persisted");
-    let reader = store.read().expect("uncertain event state reads");
-    let uncertain: String = reader
-        .query_row(
-            "SELECT status FROM runtime_events WHERE id='rust-uncertain'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("uncertain event status reads");
-    assert_eq!(uncertain, "uncertain");
-    drop(reader);
-
-    let intent = TurnIntent {
-        agent_id: agent.to_owned(),
-        epoch,
-        attempt_id: "unknown-attempt".to_owned(),
-        account_key: "default".to_owned(),
-        provider: "codex".to_owned(),
-        thread_id: Some("fixture-thread".to_owned()),
-        cwd: Some("/tmp".to_owned()),
-        model: Some("fixture-model".to_owned()),
-        events: Vec::new(),
-    };
-    let mut stale_intent = intent.clone();
-    stale_intent.attempt_id = "stale-attempt".to_owned();
-    let mut stale_epoch = intent.clone();
-    stale_epoch.epoch -= 1;
-    assert!(
-        !settle_started(&store, &stale_intent, "late-turn").expect("stale callback is ignored")
-    );
-    assert!(!settle_started(&store, &stale_epoch, "late-turn").expect("stale epoch is ignored"));
-    assert!(settle_started(&store, &intent, "late-turn").expect("late acceptance settles"));
-    let reader = store.read().expect("late acceptance state reads");
-    let delivered: i64 = reader
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_events WHERE id='rust-uncertain' AND status='delivered' AND turn_id='late-turn'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("late accepted event reads");
-    assert_eq!(delivered, 1);
-    drop(reader);
-    assert!(
-        store
-            .transaction(
-                |tx| studio_runtime_store::SchedulerRepository::settle_terminal(
-                    tx,
-                    &intent.agent_id,
-                    intent.epoch,
-                    &intent.attempt_id,
-                    "late-turn",
-                    AgentStatus::Completed,
-                    None
-                )
-            )
-            .expect("terminal callback settles")
-    );
-    let reader = store.read().expect("terminal scheduler state reads");
-    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
-        .expect("terminal agent reads")
-        .expect("terminal agent exists");
-    assert_eq!(
-        agent_record.status,
-        studio_runtime_store::AgentStatus::Completed
-    );
-    assert_eq!(agent_record.extra["inFlight"], false);
-    assert_eq!(agent_record.extra["lastCompletedTurn"], "late-turn");
+        .expect("delivered");
+    assert_eq!(delivered, 4);
+    let projected:(String,bool,String)=reader.query_row("SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("projection");
+    assert_eq!(projected, ("running".into(), true, "turn-1".into()));
 }
-
 #[test]
 fn submitted_marker_survives_settlement_write_failure() {
-    let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
-    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
-    let agent = fixture["agent"].as_str().expect("agent ID is present");
-    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
-    store
-        .transaction(|transaction| {
-            transaction.execute_batch(
-                "CREATE TRIGGER reject_scheduler_delivery BEFORE UPDATE OF status ON runtime_events
-                 WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'injected settlement failure'); END;",
-            )?;
-            Ok(())
-        })
-        .expect("settlement failure trigger installs");
-    let mut driver = CaptureDriver::returning(TurnStart::Accepted {
-        turn_id: "accepted-before-write-failure".to_owned(),
-    });
-    let mut wake = PendingWake(true);
-    assert!(
-        consume_wake(
-            &store,
-            &mut wake,
-            agent,
-            epoch,
-            "settlement-failure-attempt",
-            15.0,
-            &mut driver,
-        )
-        .is_ok()
-    );
-    let reader = store.read().expect("persisted attempt reads");
-    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
-        .expect("agent record reads")
-        .expect("agent record exists");
-    assert_eq!(agent_record.extra["startAttempt"]["submitted"], false);
-    let status: String = reader
+    let (_state, store, agent, epoch, _) = fixture();
+    let intent = claim_intent(&store, &agent, epoch, "failure", 10.0)
+        .expect("claim")
+        .expect("input");
+    assert!(mark_submitted_for_provider(&store, &intent, "failure-request", 1).expect("submit"));
+    store.transaction(|tx| {tx.execute_batch("CREATE TRIGGER reject_delivery BEFORE UPDATE OF status ON runtime_events WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'injected settlement failure'); END;")?;Ok(())}).expect("failure injection");
+    assert!(settle_started_provider(&store, &intent, "failure-request", 1, "accepted").is_err());
+    let reader = store.read().expect("read");
+    let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
+        .expect("agent")
+        .expect("present");
+    assert_eq!(record.extra["startAttempt"]["submitted"], true);
+    let dispatching: i64 = reader
         .query_row(
-            "SELECT status FROM runtime_events WHERE agent=?1 AND status='reserved' LIMIT 1",
-            [agent],
-            |row| row.get(0),
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='dispatching'",
+            [&agent],
+            |r| r.get(0),
         )
-        .expect("submitted input remains unresolved");
-    assert_eq!(status, "reserved");
+        .expect("dispatching");
+    assert_eq!(dispatching, 3);
     drop(reader);
-    assert_eq!(
-        studio_runtime_services::scheduler::recover_on_startup(&store)
-            .expect("proven unsubmitted attempt is released"),
-        3
-    );
-    let reader = store.read().expect("restart recovery state reads");
-    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
-        .expect("recovered agent reads")
-        .expect("recovered agent exists");
-    assert_eq!(agent_record.status, AgentStatus::Queued);
+    assert_eq!(recover_on_startup(&store).expect("uncertain recovery"), 1);
+    let record = AgentRepository::get(&store.read().expect("read"), &AgentId::from(agent.as_str()))
+        .expect("agent")
+        .expect("present");
+    assert_eq!(record.status, AgentStatus::Interrupted);
+    assert_eq!(record.extra["restartRecovery"]["stage"], "held");
 }
-
 #[test]
 fn restart_keeps_a_scoped_receipt_without_replaying_events() {
-    let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
-    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
-    let agent = fixture["agent"].as_str().expect("agent ID is present");
-    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
-    let mut driver = StartAndAcceptDriver(&store);
-    let mut wake = PendingWake(true);
-    consume_wake(
-        &store,
-        &mut wake,
-        agent,
-        epoch,
-        "known-restart-attempt",
-        16.5,
-        &mut driver,
-    )
-    .expect("provider acceptance and turn identity are persisted before restart");
+    let (state, store, agent, epoch, _) = fixture();
+    let intent = claim_intent(&store, &agent, epoch, "restart", 10.0)
+        .expect("claim")
+        .expect("input");
+    assert!(mark_submitted_for_provider(&store, &intent, "restart-request", 1).expect("submit"));
+    assert_eq!(
+        settle_started_provider(&store, &intent, "restart-request", 1, "known").expect("accept"),
+        Some(false)
+    );
     drop(store);
-
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust reopens submitted state");
-    assert_eq!(
-        studio_runtime_services::scheduler::recover_on_startup(&store)
-            .expect("known submitted turn recovers conservatively"),
-        1
-    );
-    let reader = store.read().expect("recovered turn state reads");
-    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
-        .expect("agent reads")
-        .expect("agent exists");
-    assert_eq!(agent_record.status, AgentStatus::Interrupted);
-    assert_eq!(agent_record.extra["turnId"], "known-restart-turn");
-    assert_eq!(agent_record.extra["autoWake"], false);
-    assert_eq!(agent_record.extra["inFlight"], false);
-    assert_eq!(
-        agent_record.extra["restartRecovery"]["turnId"],
-        "known-restart-turn"
-    );
-    let (delivered, pending): (i64, i64) = reader
-        .query_row(
-            "SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",
-            [agent],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("recovered event statuses read");
-    assert_eq!(delivered, 3);
-    assert_eq!(pending, 0);
-    let pending_agents = studio_runtime_store::SchedulerRepository::pending_agents(&reader)
-        .expect("recovered agent is not resubmitted");
-    assert!(pending_agents.is_empty());
+    let store = RuntimeStore::open(Some(&state.0)).expect("reopen");
+    assert_eq!(recover_on_startup(&store).expect("recovery"), 1);
+    let reader = store.read().expect("read");
+    let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
+        .expect("agent")
+        .expect("present");
+    assert_eq!(record.status, AgentStatus::Interrupted);
+    assert_eq!(record.extra["restartRecovery"]["turnId"], "known");
+    assert_eq!(record.extra["inFlight"], false);
+    assert_eq!(record.extra["autoWake"], false);
+    let counts:(i64,i64)=reader.query_row("SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?))).expect("events");
+    assert_eq!(counts, (3, 0));
 }
-
 #[test]
 fn proven_not_submitted_releases_projected_lifecycle() {
-    let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
-    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
-    let agent = fixture["agent"].as_str().expect("agent ID is present");
-    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
-    let mut driver = CaptureDriver::default();
-    let mut wake = PendingWake(true);
-    consume_wake(
-        &store,
-        &mut wake,
-        agent,
-        epoch,
-        "rejected-attempt",
-        15.5,
-        &mut driver,
-    )
-    .expect("proven rejection is safely settled");
-    assert!(!driver.ids.is_empty());
-    let reader = store.read().expect("rejected state reads");
-    let (status, in_flight, turn_id): (String, bool, Option<String>) = reader
-        .query_row(
-            "SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",
-            [agent],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .expect("rejected lifecycle projection reads");
-    assert_eq!(status, "queued");
-    assert!(!in_flight);
-    assert_eq!(turn_id, None);
+    let (_state, store, agent, epoch, _) = fixture();
+    let intent = claim_intent(&store, &agent, epoch, "unsent", 10.0)
+        .expect("claim")
+        .expect("input");
+    settle_start_outcome(&store, &intent, TurnStart::NotSubmitted).expect("unsent");
+    let reader = store.read().expect("read");
+    let projected:(String,bool,Option<String>)=reader.query_row("SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("projection");
+    assert_eq!(projected, ("queued".into(), false, None));
     let pending: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='pending'",
-            [agent],
-            |row| row.get(0),
+            [&agent],
+            |r| r.get(0),
         )
-        .expect("proven rejected input remains pending");
+        .expect("pending");
     assert_eq!(pending, 3);
 }
-
 #[test]
-fn late_acceptance_preserves_a_stopped_agent_and_marks_input_uncertain() {
-    let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
-    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
-    let agent = fixture["agent"].as_str().expect("agent ID is present");
-    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
-    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
-    let mut driver = StoppingDriver {
-        store: &store,
-        agent_id: agent.to_owned(),
-        ids: Vec::new(),
-    };
-    let mut wake = PendingWake(true);
-    consume_wake(
-        &store,
-        &mut wake,
-        agent,
-        epoch,
-        "stopped-attempt",
-        16.0,
-        &mut driver,
-    )
-    .expect("late turn result settles safely");
-    let reader = store.read().expect("stopped state reads");
-    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
-        .expect("agent record reads")
-        .expect("agent record exists");
+fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
+    let (_state, store, agent, epoch, _) = fixture();
+    let intent = claim_intent(&store, &agent, epoch, "stop", 10.0)
+        .expect("claim")
+        .expect("input");
+    assert!(mark_submitted_for_provider(&store, &intent, "stopped-request", 1).expect("submit"));
+    store
+        .transaction(|tx| {
+            let mut record =
+                AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("agent");
+            record.epoch += 1;
+            record.status = AgentStatus::Paused;
+            record.extra.insert("autoWake".into(), json!(false));
+            AgentRepository::put(tx, &record)
+        })
+        .expect("stop revocation");
+    settle_start_outcome(&store, &intent, TurnStart::Unknown).expect("unknown retains input");
+    let mut stale = intent.clone();
+    stale.epoch += 2;
     assert_eq!(
-        agent_record.status,
-        studio_runtime_store::AgentStatus::Paused
+        settle_started_provider(&store, &stale, "stopped-request", 1, "late").expect("stale"),
+        None
     );
-    assert_eq!(agent_record.epoch, epoch + 1);
-    assert_eq!(agent_record.extra["autoWake"], false);
-    let uncertain: i64 = reader
-        .query_row(
-            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='uncertain'",
-            [agent],
-            |row| row.get(0),
-        )
-        .expect("stopped input remains unresolved");
-    assert_eq!(uncertain, 0);
-}
-
-struct CaptureDriver {
-    ids: Vec<String>,
-    outcome: TurnStart,
-}
-
-impl CaptureDriver {
-    fn returning(outcome: TurnStart) -> Self {
-        Self {
-            ids: Vec::new(),
-            outcome,
-        }
-    }
-}
-
-impl Default for CaptureDriver {
-    fn default() -> Self {
-        Self::returning(TurnStart::NotSubmitted)
-    }
-}
-
-impl TurnDriver for CaptureDriver {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart {
-        self.ids = intent.events.into_iter().map(|event| event.id).collect();
-        self.outcome.clone()
-    }
-}
-
-struct StartAndAcceptDriver<'a>(&'a RuntimeStore);
-
-impl TurnDriver for StartAndAcceptDriver<'_> {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart {
-        let request_id = "known-restart-request";
-        assert!(
-            mark_submitted_for_provider(self.0, &intent, request_id, 1)
-                .expect("turn/start identity is persisted")
-        );
-        assert!(
-            settle_started_provider(self.0, &intent, request_id, 1, "known-restart-turn")
-                .expect("provider acceptance settles once")
-                .is_some()
-        );
-        TurnStart::Accepted {
-            turn_id: "known-restart-turn".to_owned(),
-        }
-    }
-}
-
-struct StartThenUnknownDriver<'a>(&'a RuntimeStore);
-
-impl TurnDriver for StartThenUnknownDriver<'_> {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart {
-        assert!(
-            mark_submitted_for_provider(self.0, &intent, "unknown-request", 1)
-                .expect("unknown provider request identity is persisted")
-        );
-        TurnStart::Unknown
-    }
-}
-
-struct InspectingDriver<'a> {
-    store: &'a RuntimeStore,
-    ids: Vec<String>,
-    outcome: TurnStart,
-}
-
-impl<'a> InspectingDriver<'a> {
-    fn new(store: &'a RuntimeStore, outcome: TurnStart) -> Self {
-        Self {
-            store,
-            ids: Vec::new(),
-            outcome,
-        }
-    }
-}
-
-impl TurnDriver for InspectingDriver<'_> {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart {
-        let reader = self.store.read().expect("driver observes committed marker");
-        let agent = AgentRepository::get(&reader, &AgentId::from(intent.agent_id.as_str()))
-            .expect("agent reads before handoff")
-            .expect("agent exists before handoff");
-        assert_eq!(agent.extra["startAttempt"]["submitted"], false);
-        for event in &intent.events {
-            let status: String = reader
-                .query_row(
-                    "SELECT status FROM runtime_events WHERE id=?1",
-                    [&event.id],
-                    |row| row.get(0),
-                )
-                .expect("event reservation reads before handoff");
-            assert_eq!(status, "reserved");
-        }
-        self.ids = intent.events.into_iter().map(|event| event.id).collect();
-        self.outcome.clone()
-    }
-}
-
-struct StoppingDriver<'a> {
-    store: &'a RuntimeStore,
-    agent_id: String,
-    ids: Vec<String>,
-}
-
-impl TurnDriver for StoppingDriver<'_> {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart {
-        self.ids = intent.events.into_iter().map(|event| event.id).collect();
-        self.store
-            .transaction(|transaction| {
-                let mut agent =
-                    AgentRepository::get(transaction, &AgentId::from(self.agent_id.as_str()))?
-                        .ok_or_else(|| {
-                            studio_runtime_store::StoreError::SchemaMismatch(
-                                "scheduler test agent is missing".to_owned(),
-                            )
-                        })?;
-                agent.epoch += 1;
-                agent.status = studio_runtime_store::AgentStatus::Paused;
-                agent.extra.insert("autoWake".to_owned(), json!(false));
-                AgentRepository::put(transaction, &agent)?;
-                EventWriteRepository::set_agent_sync_status(transaction, &self.agent_id, "paused")?;
-                Ok(())
-            })
-            .expect("stop commits while driver call is in progress");
-        TurnStart::Accepted {
-            turn_id: "accepted-after-stop".to_owned(),
-        }
-    }
-}
-
-struct PendingWake(bool);
-
-impl WakeSignal for PendingWake {
-    fn consume(&mut self) -> bool {
-        std::mem::replace(&mut self.0, false)
-    }
+    assert_eq!(
+        settle_started_provider(&store, &intent, "stopped-request", 1, "late").expect("late"),
+        Some(true)
+    );
+    let reader = store.read().expect("read");
+    let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
+        .expect("agent")
+        .expect("present");
+    assert_eq!(record.status, AgentStatus::Paused);
+    assert_eq!(record.epoch, epoch + 1);
+    let delivered:i64=reader.query_row("SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='delivered' AND turn_id='late'",[&agent],|r|r.get(0)).expect("delivered");
+    assert_eq!(delivered, 3);
 }
 
 fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
@@ -681,45 +297,4 @@ impl Drop for TemporaryState {
             eprintln!("temporary scheduler state cleanup failed: {error}");
         }
     }
-}
-
-trait TurnDriver {
-    fn start(&mut self, intent: TurnIntent) -> TurnStart;
-}
-trait WakeSignal {
-    fn consume(&mut self) -> bool;
-}
-fn consume_wake(
-    store: &RuntimeStore,
-    wake: &mut impl WakeSignal,
-    agent: &str,
-    epoch: i64,
-    attempt: &str,
-    created: f64,
-    driver: &mut impl TurnDriver,
-) -> Result<bool, SchedulerError> {
-    if !wake.consume() {
-        return Ok(false);
-    }
-    if let Some(intent) = claim_intent(store, agent, epoch, attempt, created)? {
-        let outcome = driver.start(intent.clone());
-        settle_start_outcome(store, &intent, outcome)?;
-    }
-    Ok(true)
-}
-
-fn settle_started(
-    store: &RuntimeStore,
-    intent: &TurnIntent,
-    turn: &str,
-) -> Result<bool, SchedulerError> {
-    Ok(store.transaction(|tx| {
-        studio_runtime_store::SchedulerRepository::settle_started(
-            tx,
-            &intent.agent_id,
-            intent.epoch,
-            &intent.attempt_id,
-            turn,
-        )
-    })?)
 }
