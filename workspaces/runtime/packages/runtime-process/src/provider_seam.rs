@@ -92,6 +92,7 @@ pub enum AdapterCommand {
     Write {
         write: PreparedWrite,
         reply: oneshot::Sender<CommandReceipt>,
+        observed: oneshot::Receiver<()>,
     },
     /// Only the durable consumer may authorize a contiguous prefix.
     Ack {
@@ -103,12 +104,29 @@ pub enum AdapterCommand {
 impl AdapterCommand {
     pub fn write(write: PreparedWrite) -> (Self, Receipt) {
         let (reply, receiver) = oneshot::channel();
-        (Self::Write { write, reply }, Receipt(receiver))
+        let (observation, observed) = oneshot::channel();
+        (
+            Self::Write {
+                write,
+                reply,
+                observed,
+            },
+            Receipt {
+                receiver,
+                observation: Some(observation),
+            },
+        )
     }
 
     pub fn ack(cursor: EventCursor) -> (Self, Receipt) {
         let (reply, receiver) = oneshot::channel();
-        (Self::Ack { cursor, reply }, Receipt(receiver))
+        (
+            Self::Ack { cursor, reply },
+            Receipt {
+                receiver,
+                observation: None,
+            },
+        )
     }
 
     pub(crate) fn reject(self) {
@@ -119,11 +137,27 @@ impl AdapterCommand {
     }
 }
 
-pub struct Receipt(oneshot::Receiver<CommandReceipt>);
+pub struct Receipt {
+    receiver: oneshot::Receiver<CommandReceipt>,
+    observation: Option<oneshot::Sender<()>>,
+}
 impl Receipt {
     /// A lost receipt is uncertainty, including task panic. Never resubmit it.
-    pub async fn receive(self) -> CommandReceipt {
-        self.0.await.unwrap_or(CommandReceipt::Unknown)
+    pub async fn receive(mut self) -> CommandReceipt {
+        let result = (&mut self.receiver)
+            .await
+            .unwrap_or(CommandReceipt::Unknown);
+        if let Some(observation) = self.observation.take() {
+            let _ = observation.send(());
+        }
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn take_buffered_without_observing(&mut self) -> CommandReceipt {
+        (&mut self.receiver)
+            .await
+            .unwrap_or(CommandReceipt::Unknown)
     }
 }
 

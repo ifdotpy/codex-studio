@@ -445,10 +445,28 @@ impl AdapterTask {
         delivered: EventCursor,
     ) -> Result<(), AdapterError> {
         match command {
-            AdapterCommand::Write { write, reply } => match self.write(rpc, write).await {
+            AdapterCommand::Write {
+                write,
+                reply,
+                observed,
+            } => match self.write(rpc, write).await {
                 Ok(receipt) => {
+                    let needs_observation = matches!(
+                        receipt,
+                        CommandReceipt::Written { .. } | CommandReceipt::CachedInitialize(_)
+                    );
                     if reply.send(receipt).is_err() {
                         return Err(SupervisorError::ConnectionLost.into());
+                    }
+                    if !needs_observation {
+                        return Ok(());
+                    }
+                    // Buffering is not observation. Abandonment of the receipt
+                    // or its receive future fences this attachment before more I/O.
+                    tokio::select! {
+                        biased;
+                        _ = cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
+                        result = observed => if result.is_err() { return Err(SupervisorError::ConnectionLost.into()); },
                     }
                 }
                 Err(error) => {

@@ -274,6 +274,7 @@ async fn cancellation_before_send_is_not_sent_and_missing_receipt_is_unknown() {
                     message: serde_json::json!({"method":"notice"}),
                 },
                 reply: sender,
+                observed: oneshot::channel().1,
             },
             EventCursor(0),
         )
@@ -338,4 +339,49 @@ async fn journal_arrival_clock_is_sampled_before_consumer_admission() {
     assert_eq!(journal.recv().await.unwrap().received_at_ms, 7);
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn abandoned_buffered_write_receipt_or_receive_future_fences_attachment() {
+    for cancel_future in [false, true] {
+        let shutdown = Shutdown::default();
+        let (mut actor, _commands, _journal) = actor(&shutdown);
+        let (socket, server) = tokio::io::duplex(4096);
+        let mut server = BufReader::new(server);
+        let (command, mut receipt) = AdapterCommand::write(PreparedWrite {
+            operation_id: OperationId("once".into()),
+            message: serde_json::json!({"method":"notice"}),
+        });
+        let task = tokio::spawn(async move {
+            let mut rpc = Rpc {
+                stream: BufReader::new(socket),
+                sequence: 0,
+                started: false,
+            };
+            actor.command(&mut rpc, command, EventCursor(0)).await
+        });
+        let request = read_request(&mut server).await;
+        let response = serde_json::json!({"requestId":request["requestId"],"result":{"accepted":true,"duplicate":false,"remoteId":null,"durableMs":0}});
+        server
+            .get_mut()
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .unwrap();
+        // Test-only peek consumes the buffered value but does not acknowledge
+        // observation. The production owner still owns the observation guard.
+        assert!(matches!(
+            receipt.take_buffered_without_observing().await,
+            CommandReceipt::Written { .. }
+        ));
+        if cancel_future {
+            drop(Box::pin(receipt.receive()));
+        } else {
+            drop(receipt);
+        }
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
+        ));
+        assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
+    }
 }
