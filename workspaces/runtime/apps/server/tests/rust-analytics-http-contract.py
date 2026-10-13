@@ -320,7 +320,21 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
         if self.rust_backend:
             self.assertEqual(stale.status, 501, stale.body[:1000])
-            self.assertIn("usage-policy/session-cost-refresh", stale.body.decode("utf-8"))
+            self.assertIn("costs/pricing-refresh", stale.body.decode("utf-8"))
+            pricing = self.backend.state / "model-pricing" / "models-dev-v1.json"
+            pricing.parent.mkdir(parents=True, exist_ok=True)
+            pricing.write_text(json.dumps({
+                "version": 1,
+                "catalog": {"providers": {
+                    "openai": {"models": {"gpt-test": {"cost": {"input": 1, "output": 1}}}},
+                    "anthropic": {"models": {"claude-sonnet-5-5": {"cost": {"input": 1, "output": 1}}}},
+                }},
+            }))
+            computed = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
+            self.assertEqual(computed.status, 200, computed.body[:1000])
+            self.assertEqual(computed.json()["pricingState"], "ready")
+            self.assertIsNone(computed.json()["totalUSD"])
+            self.assertEqual(computed.json()["unknownModels"], ["fixture-model"])
         else:
             self.assertEqual(stale.status, 200, stale.body[:1000])
 
