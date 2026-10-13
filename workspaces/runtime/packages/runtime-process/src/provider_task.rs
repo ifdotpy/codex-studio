@@ -12,7 +12,7 @@ use tokio::sync::Semaphore;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     net::UnixStream,
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     time::Instant,
 };
 
@@ -38,12 +38,93 @@ impl SupervisorProviderTaskFactory {
     }
 }
 
-impl ProviderTaskFactory for SupervisorProviderTaskFactory {
+struct Activation {
+    options: OpenOptions,
+    shutdown: Shutdown,
+    _previous: Shutdown,
+}
+
+/// A verified supervisor attachment paused before replay or provider writes.
+/// The worker installs recovered response mappings when it consumes this factory.
+pub struct PreparedProviderTask {
+    generation: Generation,
+    handle: ProviderHandle,
+    pending: std::sync::Mutex<Option<(ProviderAttachment, oneshot::Sender<Activation>)>>,
+}
+
+impl PreparedProviderTask {
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+}
+
+impl ProviderTaskFactory for PreparedProviderTask {
     fn open(
         &self,
         handle: ProviderHandle,
         options: OpenOptions,
         shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        Box::pin(async move {
+            if handle != self.handle || options.expected_generation != Some(self.generation) {
+                return Err(AdapterError::InvalidConfiguration);
+            }
+            if *shutdown.subscribe().borrow() {
+                return Err(AdapterError::Cancelled);
+            }
+            let (mut attachment, activate) = self
+                .pending
+                .lock()
+                .map_err(|_| AdapterError::TaskFailed)?
+                .take()
+                .ok_or(AdapterError::InvalidConfiguration)?;
+            let previous = std::mem::replace(&mut attachment.shutdown, shutdown.clone());
+            activate
+                .send(Activation {
+                    options,
+                    shutdown,
+                    _previous: previous,
+                })
+                .map_err(|_| AdapterError::TaskFailed)?;
+            Ok(attachment)
+        })
+    }
+}
+
+impl SupervisorProviderTaskFactory {
+    /// Resolve the actual generation through the existing identity/launch checks.
+    /// No replay, initialization, ACK or provider write runs until `open` consumes it.
+    pub async fn prepare(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> Result<PreparedProviderTask, AdapterError> {
+        let (activate, activated) = oneshot::channel();
+        let (ready, readiness) = oneshot::channel();
+        let mut attachment = self
+            .start(handle.clone(), options, shutdown, Some((ready, activated)))
+            .await?;
+        let generation = match tokio::time::timeout(RPC_TIMEOUT * 4, readiness).await {
+            Ok(Ok(generation)) => generation,
+            _ => {
+                let exit = attachment.shutdown().await;
+                return Err(exit.result.err().unwrap_or(AdapterError::Timeout));
+            }
+        };
+        Ok(PreparedProviderTask {
+            generation,
+            handle,
+            pending: std::sync::Mutex::new(Some((attachment, activate))),
+        })
+    }
+
+    fn start(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+        activation: Option<(oneshot::Sender<Generation>, oneshot::Receiver<Activation>)>,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
             if handle.as_str().len() > 180
@@ -72,6 +153,7 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
                 initialization: InitializationStatus::AwaitingReply,
             });
             let actor = AdapterTask {
+                activation,
                 clock: options.clock,
                 handle,
                 open,
@@ -102,6 +184,17 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
                 commands, journal, status, shutdown, task,
             ))
         })
+    }
+}
+
+impl ProviderTaskFactory for SupervisorProviderTaskFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> OpenFuture<'_> {
+        self.start(handle, options, shutdown, None)
     }
 }
 
@@ -186,6 +279,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
 }
 
 struct AdapterTask {
+    activation: Option<(oneshot::Sender<Generation>, oneshot::Receiver<Activation>)>,
     clock: SessionClock,
     handle: ProviderHandle,
     open: OpenRequest,
@@ -308,6 +402,30 @@ impl AdapterTask {
             return Err(AdapterError::UnverifiableChild);
         }
         self.publish();
+        if let Some((ready, activation)) = self.activation.take() {
+            ready
+                .send(opened.generation)
+                .map_err(|_| AdapterError::Cancelled)?;
+            let activated = interruptible(&mut self.stop, async {
+                activation.await.map_err(|_| AdapterError::Cancelled)
+            })
+            .await?;
+            self.stop = activated.shutdown.subscribe();
+            let options = activated.options;
+            if options.expected_generation != Some(opened.generation)
+                || options.launch.handled_cursor > opened.sequence
+                || options.launch.retained_response_ids.len() > MAX_PENDING_RESPONSES
+            {
+                return Err(AdapterError::InvalidConfiguration);
+            }
+            self.handled_cursor = options.launch.handled_cursor;
+            self.response_ids = options
+                .launch
+                .retained_response_ids
+                .into_iter()
+                .map(|(remote, local)| (remote, Value::from(local)))
+                .collect();
+        }
         self.serve(&mut rpc, EventCursor(opened.acknowledged)).await
     }
 

@@ -213,6 +213,7 @@ fn actor(
         initialization: InitializationStatus::AwaitingReply,
     };
     let actor = AdapterTask {
+        activation: None,
         clock: SessionClock::default(),
         handle: ProviderHandle::for_account("unit"),
         open: OpenRequest {
