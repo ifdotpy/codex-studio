@@ -1,0 +1,111 @@
+[
+  {
+    "id": "redirect-path",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "if !target.starts_with('/') || path != input.path {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "redirect-response",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      { "before": "if (300..400).contains(&status) {", "after": "if false {" }
+    ]
+  },
+  {
+    "id": "header-user-agent",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "const SENT_HEADERS: [&str; 3] = [\"user-agent\", \"accept\", \"accept-language\"];",
+        "after": "const SENT_HEADERS: [&str; 3] = [\"accept\", \"accept-language\", \"referer\"];"
+      }
+    ]
+  },
+  {
+    "id": "header-accept",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "const SENT_HEADERS: [&str; 3] = [\"user-agent\", \"accept\", \"accept-language\"];",
+        "after": "const SENT_HEADERS: [&str; 3] = [\"user-agent\", \"accept-language\", \"referer\"];"
+      }
+    ]
+  },
+  {
+    "id": "header-accept-language",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "const SENT_HEADERS: [&str; 3] = [\"user-agent\", \"accept\", \"accept-language\"];",
+        "after": "const SENT_HEADERS: [&str; 3] = [\"user-agent\", \"accept\", \"referer\"];"
+      }
+    ]
+  },
+  {
+    "id": "header-value-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [{ "before": "value.len() <= HEADER_LIMIT", "after": "true" }]
+  },
+  {
+    "id": "head-size-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [{ "before": "data.len() + count > HEAD_LIMIT", "after": "false" }]
+  },
+  {
+    "id": "encoded-body-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "if encoded.len() > BODY_BASE64_LIMIT {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "decoded-body-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      { "before": "if body.len() > BODY_LIMIT {", "after": "if false {" }
+    ]
+  },
+  {
+    "id": "expiry",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [{ "before": "if remaining <= 0.0 {", "after": "if false {" }]
+  },
+  {
+    "id": "active-port-conflict",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "if forwards.values().any(|f| {",
+        "after": "if false && forwards.values().any(|f| {"
+      }
+    ]
+  },
+  {
+    "id": "bridge-replay",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "if let Some(existing) = forwards.get(&input.bridge_id)\n            && !existing.stop.load(Ordering::Acquire)",
+        "after": "if let Some(existing) = forwards.get(&input.bridge_id)\n            && false && !existing.stop.load(Ordering::Acquire)"
+      }
+    ]
+  },
+  {
+    "id": "unknown-never-retried",
+    "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
+    "edits": [
+      {
+        "before": "ExchangeOutcome::Unknown => return Err(BrowserError::Unknown),",
+        "after": "ExchangeOutcome::Unknown => { let _ = exchange.exchange(&input.server, REMOTE_ACTION, &payload, &request_id, now); return Err(BrowserError::Unknown); },"
+      }
+    ]
+  }
+]

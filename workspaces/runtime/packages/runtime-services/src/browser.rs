@@ -50,6 +50,8 @@ pub enum BrowserError {
     Unknown,
     #[error("the paired exchange failed")]
     Exchange,
+    #[error("the paired exchange failed")]
+    EncodedBodyLimit,
     #[error("the browser forward worker stopped unexpectedly")]
     WorkerPanicked,
 }
@@ -73,7 +75,7 @@ pub trait PairedExchange: Send + Sync {
     ) -> Result<ExchangeOutcome, BrowserError>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ForwardInput {
     pub server: String,
     pub bridge_id: String,
@@ -339,6 +341,7 @@ fn serve_forward(
             }
             match handle_connection(&mut stream, &input, exchange.as_ref(), &relays) {
                 Ok(done) if done => break,
+                Err(BrowserError::InvalidForward) => break,
                 Err(_) => {
                     if !respond_best_effort(
                         &mut stream,
@@ -487,7 +490,7 @@ fn cleaned_result(result: &Value) -> Result<(u16, String, Vec<u8>, bool), Browse
         .and_then(Value::as_str)
         .unwrap_or_default();
     if encoded.len() > BODY_BASE64_LIMIT {
-        return Err(BrowserError::Exchange);
+        return Err(BrowserError::EncodedBodyLimit);
     }
     let body = BASE64.decode(encoded).map_err(|_| BrowserError::Exchange)?;
     if body.len() > BODY_LIMIT {
@@ -708,7 +711,7 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserCon
                 .and_then(|value| serde_json::from_str::<Value>(value).ok())
                 .and_then(|value| value.get("browser").cloned())
         {
-            let trusted = json!({"browser":service}).to_string();
+            let trusted = format!("{{\"browser\": {}}}", service);
             env.insert("NODE_REPL_TRUSTED_SERVICES".into(), json!(trusted));
         }
         env.entry("NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME")
@@ -898,6 +901,15 @@ mod tests {
         assert!(matches!(
             cleaned_result(&oversized),
             Err(BrowserError::Exchange)
+        ));
+    }
+
+    #[test]
+    fn oversized_encoded_body_is_refused_before_decode() {
+        let oversized = json!({"status":200,"body":"A".repeat(BODY_BASE64_LIMIT + 1)});
+        assert!(matches!(
+            cleaned_result(&oversized),
+            Err(BrowserError::EncodedBodyLimit)
         ));
     }
 
