@@ -359,6 +359,8 @@ def seed(runtime, case):
         with runtime.db() as db:
             agent = runtime.agent("agent",db)
             agent.update(case.get("agent",{}))
+            for key in case.get("removeAfterRecovery", []):
+                agent.pop(key, None)
             runtime.put(db,"agents",agent)
     for corruption in case.get("corrupt", []):
         table, key = corruption["table"], corruption["id"]

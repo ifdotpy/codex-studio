@@ -8316,5 +8316,15 @@
         }
       ]
     }
+  },
+  {
+    "id": "disconnect_without_start_attempt",
+    "transition": "disconnect",
+    "phase": "submitted",
+    "seedRecovery": "disconnect",
+    "removeAfterRecovery": ["startAttempt"],
+    "tier": "fast",
+    "return": null,
+    "expectedDifferences": []
   }
 ]

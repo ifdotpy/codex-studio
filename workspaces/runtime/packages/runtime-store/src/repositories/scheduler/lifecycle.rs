@@ -86,7 +86,12 @@ impl SchedulerRepository {
         if current_attempt(&agent, identity.epoch) {
             agent.status = AgentStatus::Running;
             agent.extra.insert("inFlight".into(), json!(true));
-            if agent.extra.get("error") == agent.extra["startAttempt"].get("responseError")
+            if agent.extra.get("error")
+                == agent
+                    .extra
+                    .get("startAttempt")
+                    .unwrap_or(&Value::Null)
+                    .get("responseError")
                 || agent.extra.get("error") == Some(&json!(UNKNOWN_START_ERROR))
             {
                 agent.extra.insert("error".into(), Value::Null);
@@ -113,7 +118,7 @@ impl SchedulerRepository {
         restart: bool,
     ) -> StoreResult<()> {
         for mut agent in account_agents(transaction, account, UNRESOLVED_SQL)? {
-            if agent.extra["startAttempt"]["connectionGeneration"]
+            if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
                 .is_none_or(|g| g == generation)
             {
@@ -141,7 +146,7 @@ impl SchedulerRepository {
                 agent.extra.insert("autoWake".into(), json!(true));
                 agent.extra.insert("inFlight".into(), json!(true));
                 agent.extra.insert("error".into(), Value::Null);
-                agent.extra.insert("connectionRecovery".into(),json!({"source":"native_thread_read","at":at,"turnId":agent.extra["turnId"],"outcome":"active","automatic":true,"previousError":previous_error}));
+                agent.extra.insert("connectionRecovery".into(),json!({"source":"native_thread_read","at":at,"turnId":agent.extra.get("turnId").unwrap_or(&Value::Null),"outcome":"active","automatic":true,"previousError":previous_error}));
                 if let Some(marker) = agent.extra.get_mut("restartRecovery") {
                     marker["stage"] = json!("continued");
                     marker["observedAt"] = json!(at);
@@ -157,7 +162,7 @@ impl SchedulerRepository {
                 agent.extra.insert(
                     "connectionRecovery".into(),
                     json!({
-                        "source":"native_thread_read", "at":at, "turnId":agent.extra["turnId"],
+                        "source":"native_thread_read", "at":at, "turnId":agent.extra.get("turnId").unwrap_or(&Value::Null),
                         "outcome":"active", "automatic":true, "previousError":previous_error,
                         "supervisor":null
                     }),
@@ -262,7 +267,7 @@ impl SchedulerRepository {
             params![ticket, generation],
         )?;
         for mut agent in records {
-            let receipt = &agent.extra["startAttempt"]["interrupt"];
+            let receipt = &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
             let previous = receipt["outcome"]
                 .as_str()
                 .ok_or_else(|| invalid_agent(&agent.id.0))?;
@@ -485,7 +490,7 @@ impl SchedulerRepository {
             return Ok(false);
         }
         let mut count = 0;
-        for event_id in agent.extra["startAttempt"]["events"]
+        for event_id in agent.extra.get("startAttempt").unwrap_or(&Value::Null)["events"]
             .as_array()
             .ok_or_else(|| invalid_agent(agent_id))?
         {
@@ -496,7 +501,7 @@ impl SchedulerRepository {
                 params![id, agent_id, epoch],
             )?;
         }
-        let event_count = agent.extra["startAttempt"]["events"]
+        let event_count = agent.extra.get("startAttempt").unwrap_or(&Value::Null)["events"]
             .as_array()
             .map(Vec::len)
             .unwrap_or_default();
@@ -1084,7 +1089,7 @@ pub(super) fn start_error_decision(
     unknown: bool,
     preparation: bool,
 ) -> StartErrorDecision {
-    let attempt = &agent.extra["startAttempt"];
+    let attempt = &agent.extra.get("startAttempt").unwrap_or(&Value::Null);
     let submitted = attempt["submitted"] == true;
     let busy = attempt["activeAtReservation"] == true;
     let current = agent.epoch == epoch;
@@ -1317,11 +1322,7 @@ pub(super) fn disconnect_agent(
     at: f64,
     restart: bool,
 ) -> StoreResult<()> {
-    let attempt = agent
-        .extra
-        .get("startAttempt")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let attempt = stored_attempt(agent).cloned().unwrap_or(Value::Null);
     let epoch = if attempt.is_null() {
         agent.epoch
     } else {
@@ -1349,7 +1350,11 @@ pub(super) fn disconnect_agent(
         previous["startAttempt"] = receipt["startAttempt"].clone();
     }
     if restart {
-        let mut marker = agent.extra["disconnectRecovery"].clone();
+        let mut marker = agent
+            .extra
+            .get("disconnectRecovery")
+            .unwrap_or(&Value::Null)
+            .clone();
         marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
         if unknown || legacy {
             marker["reason"] = json!(if legacy {
@@ -1442,7 +1447,11 @@ pub(super) fn restart_continuation_allowed(agent: &AgentRecord) -> bool {
     continuation_allowed(agent)
         && recovering(agent, agent.epoch)
         && matches!(marker["stage"].as_str(), Some("pending" | "superseded"))
-        && agent.extra["disconnectRecovery"]["autoWake"] == true
+        && agent
+            .extra
+            .get("disconnectRecovery")
+            .unwrap_or(&Value::Null)["autoWake"]
+            == true
         && marker["turnId"].is_string()
         && marker.get("turnId") == agent.extra.get("turnId")
         && marker["epoch"] == agent.epoch
@@ -1616,7 +1625,10 @@ pub(super) fn acceptance_decision(
         return AcceptanceDecision::InterruptOnly;
     }
     if authority == AttemptAuthority::Inactive
-        || agent.extra["startAttempt"]
+        || agent
+            .extra
+            .get("startAttempt")
+            .unwrap_or(&Value::Null)
             .get("turnId")
             .and_then(Value::as_str)
             .is_some_and(|old| old != turn)
