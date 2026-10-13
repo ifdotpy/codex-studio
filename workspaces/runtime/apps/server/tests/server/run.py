@@ -991,6 +991,60 @@ def _runner_artifact_root(temp_root):
     return artifact_root
 
 
+def _cleanup_suite_scratch(scratch):
+    """Remove one suite scratch folder; describe a failure instead of raising it."""
+    try:
+        scratch.cleanup()
+    except OSError as error:
+        return f"scratch cleanup failed: {error}; {_scratch_holder_report(scratch.name)}"
+    return None
+
+
+def _scratch_holder_report(path):
+    """Name live processes whose working directory or open files are inside path."""
+    target = os.path.realpath(path)
+    holders = {}
+    proc = Path("/proc")
+    if proc.is_dir():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                links = [entry / "cwd", *(entry / "fd").iterdir()]
+            except OSError:
+                continue
+            for link in links:
+                try:
+                    resolved = os.readlink(link)
+                except OSError:
+                    continue
+                if resolved == target or resolved.startswith(target + os.sep):
+                    try:
+                        holders[int(entry.name)] = (entry / "comm").read_text().strip()
+                    except OSError:
+                        holders[int(entry.name)] = "?"
+                    break
+    else:
+        lsof = shutil.which("lsof", path="/usr/sbin:/usr/bin:/sbin:/bin")
+        if not lsof:
+            return "could not list processes using it: no /proc and no lsof"
+        try:
+            listing = subprocess.run([lsof, "-n", "-P", "-F", "pc", "+D", target],
+                                     capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"could not list processes using it: {error}"
+        process_id = None
+        for line in listing.stdout.splitlines():
+            if line.startswith("p"):
+                process_id = int(line[1:])
+            elif line.startswith("c") and process_id is not None:
+                holders[process_id] = line[1:]
+    if not holders:
+        return "no live process has its working directory or an open file there"
+    return "processes still using it: " + ", ".join(
+        f"{process_id} ({name})" for process_id, name in sorted(holders.items()))
+
+
 def _unix_socket_path_error(temp_root):
     """Return an early, actionable error if nested fixture sockets cannot fit."""
     if os.name == "nt":  # pragma: no cover - AF_UNIX path limits differ on Windows
@@ -1611,82 +1665,94 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     explicit_jobs = workers
 
     def run_one(index, relative, kind, selectors=None, shard_index=0, expected_ids=None):
-        deadline = expensive_timeout if kind == "expensive" else timeout
         suite_started = time.monotonic()
         try:
-            with tempfile.TemporaryDirectory(
-                    dir=suite_tmp_root, prefix=f"{index:03d}-{shard_index:02d}-") as temporary:
-                temp_root = Path(temporary)
-                socket_path_error = _unix_socket_path_error(temp_root)
-                if socket_path_error:
-                    return (relative, socket_path_error,
-                            time.monotonic() - suite_started, 0)
-                for name in ("cache", "state", "data", "config", "codex-home", "claude-home"):
-                    (temp_root / name).mkdir()
-                environment = _suite_environment(root, temp_root, audit_home=audit_home,
-                                                 relative=relative)
-                if not relative.endswith(".mjs") and (
-                        relative.startswith(f"{SOURCE_REL}/studio_api/")
-                        or is_unittest_suite(root / relative)):
-                    environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
-                        _runner_artifact_root(temp_root) / "unittest-outcomes.jsonl")
-                command = _suite_command(relative, root)
-                if selectors:
-                    command.extend(selectors)
-                result = execute(
-                    command, root, deadline, environment,
-                )
-                if audit_home:
-                    audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"])
-                    if audit_log.exists() and audit_log.stat().st_size:
-                        audit_events = audit_log.read_text(encoding="utf-8", errors="replace").splitlines()
-                        blocked = [line for line in audit_events
-                                   if not line.startswith("ALLOWED_")]
-                        with SUITE_OUTCOME_LOCK:
-                            HOME_AUDIT_BLOCKED_PATHS.extend(blocked)
-                            HOME_AUDIT_ISOLATED_ENV_EVENTS.extend(
-                                line.partition("\t")[2] for line in audit_events
-                                if line.startswith("ALLOWED_ISOLATED_ENV\t")
-                            )
-                        if blocked:
-                            return relative, "real-home audit blocked: " + "; ".join(blocked), time.monotonic() - suite_started, 0
-                returncode, error, expected, unexpected = result
-                if expected_ids is not None:
-                    outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
-                    records = ([json.loads(line) for line in outcome_file.read_text().splitlines()]
-                               if outcome_file.exists() else [])
-                    observed_ids = {record["id"] for record in records}
-                    if observed_ids != set(expected_ids):
-                        missing = sorted(set(expected_ids) - observed_ids)
-                        extra = sorted(observed_ids - set(expected_ids))
-                        error = (f"test ID mismatch in slice: missing={missing}; extra={extra}")
-                if returncode and "CODEX_SERVER_TEST_RESULT_FILE" in environment:
-                    outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
-                    if outcome_file.exists():
-                        records = [json.loads(line) for line in outcome_file.read_text().splitlines()]
-                        failed_ids = [record["id"] for record in records
-                                      if record.get("outcome") in {"failed", "error", "unexpected_success"}]
-                        if failed_ids:
-                            base_command = _suite_command(relative, root)
-                            id_prefix = (relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".") + "."
-                                         if relative.startswith(f"{SOURCE_REL}/studio_api/")
-                                         else "__main__.")
-                            reproduction = [" ".join((*base_command[:-1], "-v",
-                                                      test_id.removeprefix(id_prefix)))
-                                            for test_id in failed_ids]
-                            error = (f"{error or 'test failure'}; failing IDs: {failed_ids}; "
-                                     f"reproduce: {'; '.join(reproduction)}")
-                with SUITE_OUTCOME_LOCK:
-                    EXPECTED_FAILURES.extend(f"{relative}::{name}" for name in expected)
-                    UNEXPECTED_SUCCESSES.extend(f"{relative}::{name}" for name in unexpected)
+            scratch = tempfile.TemporaryDirectory(
+                dir=suite_tmp_root, prefix=f"{index:03d}-{shard_index:02d}-")
         except OSError as error:
             return relative, f"could not start: {error}", time.monotonic() - suite_started, 0
+        try:
+            error, peak_rss = run_in_scratch(
+                Path(scratch.name), relative, kind, selectors, expected_ids)
+        finally:
+            cleanup_error = _cleanup_suite_scratch(scratch)
+        if cleanup_error:
+            error = f"{error}; {cleanup_error}" if error else cleanup_error
+        return relative, error, time.monotonic() - suite_started, peak_rss
+
+    def run_in_scratch(temp_root, relative, kind, selectors, expected_ids):
+        """Run one suite in its scratch folder; return its error and peak RSS."""
+        deadline = expensive_timeout if kind == "expensive" else timeout
+        try:
+            socket_path_error = _unix_socket_path_error(temp_root)
+            if socket_path_error:
+                return socket_path_error, 0
+            for name in ("cache", "state", "data", "config", "codex-home", "claude-home"):
+                (temp_root / name).mkdir()
+            environment = _suite_environment(root, temp_root, audit_home=audit_home,
+                                             relative=relative)
+            if not relative.endswith(".mjs") and (
+                    relative.startswith(f"{SOURCE_REL}/studio_api/")
+                    or is_unittest_suite(root / relative)):
+                environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
+                    _runner_artifact_root(temp_root) / "unittest-outcomes.jsonl")
+            command = _suite_command(relative, root)
+            if selectors:
+                command.extend(selectors)
+            result = execute(
+                command, root, deadline, environment,
+            )
+            if audit_home:
+                audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"])
+                if audit_log.exists() and audit_log.stat().st_size:
+                    audit_events = audit_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                    blocked = [line for line in audit_events
+                               if not line.startswith("ALLOWED_")]
+                    with SUITE_OUTCOME_LOCK:
+                        HOME_AUDIT_BLOCKED_PATHS.extend(blocked)
+                        HOME_AUDIT_ISOLATED_ENV_EVENTS.extend(
+                            line.partition("\t")[2] for line in audit_events
+                            if line.startswith("ALLOWED_ISOLATED_ENV\t")
+                        )
+                    if blocked:
+                        return "real-home audit blocked: " + "; ".join(blocked), 0
+            returncode, error, expected, unexpected = result
+            if expected_ids is not None:
+                outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+                records = ([json.loads(line) for line in outcome_file.read_text().splitlines()]
+                           if outcome_file.exists() else [])
+                observed_ids = {record["id"] for record in records}
+                if observed_ids != set(expected_ids):
+                    missing = sorted(set(expected_ids) - observed_ids)
+                    extra = sorted(observed_ids - set(expected_ids))
+                    error = (f"test ID mismatch in slice: missing={missing}; extra={extra}")
+            if returncode and "CODEX_SERVER_TEST_RESULT_FILE" in environment:
+                outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+                if outcome_file.exists():
+                    records = [json.loads(line) for line in outcome_file.read_text().splitlines()]
+                    failed_ids = [record["id"] for record in records
+                                  if record.get("outcome") in {"failed", "error", "unexpected_success"}]
+                    if failed_ids:
+                        base_command = _suite_command(relative, root)
+                        id_prefix = (relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".") + "."
+                                     if relative.startswith(f"{SOURCE_REL}/studio_api/")
+                                     else "__main__.")
+                        reproduction = [" ".join((*base_command[:-1], "-v",
+                                                  test_id.removeprefix(id_prefix)))
+                                        for test_id in failed_ids]
+                        error = (f"{error or 'test failure'}; failing IDs: {failed_ids}; "
+                                 f"reproduce: {'; '.join(reproduction)}")
+            with SUITE_OUTCOME_LOCK:
+                EXPECTED_FAILURES.extend(f"{relative}::{name}" for name in expected)
+                UNEXPECTED_SUCCESSES.extend(f"{relative}::{name}" for name in unexpected)
+        except OSError as error:
+            return f"could not start: {error}", 0
         peak_rss = _measured_child_peak_rss_bytes()
         if error:
-            return relative, error, time.monotonic() - suite_started, peak_rss
+            return error, peak_rss
         if returncode:
-            return relative, f"exit {returncode}", time.monotonic() - suite_started, peak_rss
-        return relative, None, time.monotonic() - suite_started, peak_rss
+            return f"exit {returncode}", peak_rss
+        return None, peak_rss
 
     indexed = [(index, relative, kind)
                for index, (relative, kind) in enumerate(runnable, start=1)]
@@ -1737,14 +1803,18 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         for index, relative, kind in indexed:
             deadline = expensive_timeout if kind == "expensive" else timeout
             slices = None
+            listing_error = None
             if (focused
                     and relative not in NEVER_SLICE_SUITES
                     and not is_http_boundary_suite(relative)
                     and is_unittest_suite(root / relative)
                     and not has_module_level_mutable_state(root / relative)
                     and not has_custom_unittest_suite(root / relative)):
-                with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-list-") as temporary:
-                    ids = _suite_test_ids(relative, root, Path(temporary), deadline)
+                listing = tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-list-")
+                try:
+                    ids = _suite_test_ids(relative, root, Path(listing.name), deadline)
+                finally:
+                    listing_error = _cleanup_suite_scratch(listing)
                 if ids:
                     prefix = (relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".") + "."
                               if relative.startswith(f"{SOURCE_REL}/studio_api/") else "__main__.")
@@ -1760,7 +1830,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 slices = [None]
                 expected_prefix = None
             shard_totals[relative] = {"remaining": len(slices), "elapsed": 0.0,
-                                      "error": None, "peak": 0}
+                                      "error": listing_error, "peak": 0}
             print(f"[{index}/{len(runnable)}] {relative} ({len(slices)} slice(s); deadline {deadline:g}s)",
                   flush=True)
             for shard_index, selectors in enumerate(slices):

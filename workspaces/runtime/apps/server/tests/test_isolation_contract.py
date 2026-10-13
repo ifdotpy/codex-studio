@@ -138,7 +138,7 @@ class TestStartupIsolation(unittest.TestCase):
 
 class RuntimeEnvironmentSafety(unittest.TestCase):
     def test_guard_blocks_file_metadata_and_execution_with_an_injected_home(self):
-        code = r'''import json, os, socket, subprocess, sys, tempfile
+        code = r'''import json, os, shutil, socket, subprocess, sys, tempfile
 from pathlib import Path
 from runtime_home_guard import HomeAccessGuard
 if True:
@@ -153,6 +153,7 @@ if True:
     (home / ".claude" / "config.json").write_text("marker")
     alias = home / "alias"
     alias.symlink_to(protected, target_is_directory=True)
+    protected_fd = os.open(protected, os.O_RDONLY)
     guard = HomeAccessGuard(home_resolver=lambda: str(home)).install()
     operations = [
         lambda: open(protected / "auth.json"),
@@ -162,6 +163,9 @@ if True:
         lambda: os.stat(protected / "auth.json"),
         lambda: os.lstat(protected / "auth.json"),
         lambda: os.access(protected / "auth.json", os.R_OK),
+        lambda: os.stat("auth.json", dir_fd=protected_fd),
+        lambda: os.open("auth.json", os.O_RDONLY, dir_fd=protected_fd),
+        lambda: os.scandir(protected_fd),
         lambda: open(alias / "auth.json"),
         lambda: subprocess.run([str(program)], check=True),
         lambda: os.execv(str(program), [str(program)]),
@@ -180,6 +184,13 @@ if True:
     allowed = home / "allowed"
     allowed.write_text("safe")
     assert allowed.read_text() == "safe"
+    # rmtree works through fd-relative calls and skips entries that report
+    # ENOENT, so the guard must resolve descriptor paths on every platform.
+    nested = home / "scratch" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file").write_text("x")
+    shutil.rmtree(home / "scratch")
+    assert not (home / "scratch").exists()
     subprocess.run([sys.executable, "-c", "pass"], check=True)
     tools = home / ".cache" / "hostedtoolcache"
     tools.mkdir(parents=True)
