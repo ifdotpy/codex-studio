@@ -41,6 +41,7 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod recovery;
+pub mod recovery_absence;
 pub mod recovery_history;
 pub mod recovery_policy;
 pub mod recovery_store;
@@ -53,6 +54,7 @@ pub(crate) mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod task_recovery;
+pub mod task_recovery_store;
 pub mod terminal_driver;
 pub mod thread_prepare;
 pub mod transcript;
@@ -106,6 +108,3 @@ mod registration_tests {
         assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
     }
 }
-
-pub mod recovery_absence;
-pub mod task_recovery_store;

@@ -628,16 +628,46 @@ fn corpus(full: bool) {
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
         let seeded = started.elapsed().as_secs_f64();
-        let store = RuntimeStore::open(Some(&rust));
+        let store = match RuntimeStore::open(Some(&rust)) {
+            Ok(store) => store,
+            Err(error) => {
+                let location = case["expect_refusal"]
+                    .as_str()
+                    .and_then(|value| value.strip_prefix("invalid stored object "))
+                    .unwrap_or_else(|| panic!("{id}: open Python-written state: {error}"))
+                    .replacen(':', "/", 1)
+                    .replace(
+                        "$project",
+                        expected["pythonRoot"].as_str().expect("Python root"),
+                    );
+                let message = error.to_string();
+                assert!(
+                    message.contains(&location),
+                    "{id}: startup refusal must locate {location}: {message}"
+                );
+                assert!(
+                    !message.contains("SECRET_STORED_SENTINEL")
+                        && !message.contains("CORPUS_PRIVATE_PAYLOAD")
+                );
+                let applied = started.elapsed().as_secs_f64();
+                let actual = oracle.call(
+                    json!({"command":"snapshot","module":"notification_dispatch","root":rust}),
+                );
+                assert_eq!(
+                    actual, expected["before"],
+                    "{id}: startup refusal must not write"
+                );
+                report.push(json!({"id":id,"differences":[],"error":null,"firstResult":null,"seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
+                green += 1;
+                continue;
+            }
+        };
         let prepared = if case["submission"] == true {
             &expected["before"]["prepared"]
         } else {
             &expected["captures"]
         };
-        let first = match &store {
-            Ok(store) => apply(store, case, prepared),
-            Err(error) => Err(error.to_string()),
-        };
+        let first = apply(&store, case, prepared);
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             assert_eq!(value, &case["return"], "{id}: entry-point result");
