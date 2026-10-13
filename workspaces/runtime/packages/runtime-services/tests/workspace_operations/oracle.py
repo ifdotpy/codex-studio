@@ -65,6 +65,8 @@ def evaluate(case):
         if case["family"] == "history":
             selected = next(c for c in case["checkpoints"] if c["id"] == case["selected"])
             return {"ids": sorted(runtime._checkpoint_history_ids(db, selected))}
+        if case["family"] == "source":
+            return runtime._workspace_source(runtime.agent(actor["id"], db))
         if case["family"] == "provider":
             return runtime._workspace_provider_result(case["response"])
         if case["family"] == "recovery":

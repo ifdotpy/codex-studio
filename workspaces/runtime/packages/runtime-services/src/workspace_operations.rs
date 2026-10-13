@@ -241,6 +241,8 @@ impl CheckpointHistory {
 pub enum OperationKind {
     Capture,
     Checkpoint,
+    ClaudeRollback,
+    ClaudeSettings,
     Restore,
     Branch,
     Provision,
@@ -313,8 +315,7 @@ impl OperationSnapshot {
                 .map(RetryDecision::Completed)
                 .ok_or(WorkspaceOperationError::RecoveryRequired);
         }
-        let source = json!({"accountKey":self.agent.get("accountKey").cloned().unwrap_or(json!("default")),
-            "threadId":self.agent.get("threadId"), "cwd":self.agent.get("cwd")});
+        let source = studio_runtime_store::CheckpointsRepository::workspace_source(&self.agent);
         if self.operation.source.as_ref() != Some(&source) {
             return Err(WorkspaceOperationError::SourceChanged);
         }

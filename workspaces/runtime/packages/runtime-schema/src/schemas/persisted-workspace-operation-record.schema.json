@@ -15,7 +15,15 @@
       "type": "string"
     },
     "kind": {
-      "enum": ["capture", "checkpoint", "restore", "branch", "provision"],
+      "enum": [
+        "capture",
+        "checkpoint",
+        "restore",
+        "branch",
+        "provision",
+        "claude_settings",
+        "claude_rollback"
+      ],
       "title": "Kind",
       "type": "string"
     },
