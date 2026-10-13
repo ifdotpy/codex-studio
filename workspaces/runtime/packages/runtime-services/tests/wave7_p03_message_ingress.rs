@@ -357,3 +357,54 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() {
     ));
     assert_eq!(snapshot(&store), before);
 }
+
+#[test]
+fn voice_delivery_prepares_workspace_admission() {
+    use studio_runtime_services::voice;
+    let mut oracle = Oracle::new();
+    for operation in ["unrelated", "checkpoint", "capture"] {
+        let (root, _) = oracle.seed(operation, &json!({"steps":[]}));
+        let store = RuntimeStore::open(Some(&root)).expect("store");
+        let record = studio_runtime_store::VoiceRecord {
+            sequence: 0,
+            id: "spoken".into(),
+            agent: "agent".into(),
+            session: "session".into(),
+            kind: "user".into(),
+            text: "spoken input".into(),
+            item_id: String::new(),
+            previous_item_id: String::new(),
+            payload: "{}".into(),
+            created: 1.0,
+        };
+        store
+            .transaction(|tx| studio_runtime_store::VoiceRepository::insert_record(tx, &record))
+            .expect("transcript");
+        store
+            .transaction(|tx| {
+                let mut other = studio_runtime_store::AgentRepository::get(tx, &"agent".into())?
+                    .expect("agent");
+                other.id = "other".into();
+                other.extra.insert(
+                    "workspaceOperation".into(),
+                    json!(if operation == "unrelated" {
+                        "restore"
+                    } else {
+                        operation
+                    }),
+                );
+                if operation == "unrelated" {
+                    other.extra.insert("cwd".into(), json!(root));
+                }
+                studio_runtime_store::AgentRepository::put(tx, &other)
+            })
+            .expect("active operation");
+        let receipt = voice::submit(&store, "agent", "voice-message", &[record.id], None)
+            .expect("accepted voice delivery");
+        assert_eq!(receipt["status"], "queued", "{operation}");
+        assert_eq!(
+            receipt.get("waitingFor").is_some(),
+            operation != "unrelated"
+        );
+    }
+}

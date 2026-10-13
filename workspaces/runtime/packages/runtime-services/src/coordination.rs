@@ -142,18 +142,6 @@ pub struct PostMessageResult {
     pub event_inserted: bool,
 }
 
-/// Preserve federation and group routing before accepting a managed-agent event.
-pub fn post_message_with_delivery(
-    transaction: &Transaction<'_>,
-    input: PostManagedMessage<'_>,
-) -> Result<PostMessageResult, CoordinationError> {
-    post_message_with_admission(
-        transaction,
-        input,
-        &crate::message_admission::PreparedAdmission::default(),
-    )
-}
-
 /// The caller owns the transaction and publishes only after commit.
 pub fn post_message_with_admission(
     transaction: &Transaction<'_>,

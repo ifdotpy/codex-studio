@@ -255,6 +255,7 @@ pub fn submit(
         ));
     }
 
+    let admission = crate::message_admission::PreparedAdmission::load(&store.read()?, agent_id)?;
     store.transaction_with_error(|transaction| {
         checked_agent(transaction, agent_id)?;
         let input_records = serde_json::to_string(record_ids)?;
@@ -352,7 +353,7 @@ pub fn submit(
         if text.is_empty() || text.chars().count() > MAX_DELIVERY_TEXT {
             return Err(VoiceError::InvalidRequest("Invalid transcript delivery"));
         }
-        let result = crate::coordination::post_message_with_delivery(
+        let result = crate::coordination::post_message_with_admission(
             transaction,
             crate::coordination::PostManagedMessage {
                 room: agent_id,
@@ -361,6 +362,7 @@ pub fn submit(
                 delivery: "queue",
                 assets: &[],
             },
+            &admission,
         )?;
         Ok(result.receipt)
     })
