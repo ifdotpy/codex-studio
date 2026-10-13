@@ -16,6 +16,7 @@ pub use repositories::analytics::{
 pub use repositories::checkpoints::{
     CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
+pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
 use std::fs::{File, OpenOptions};
