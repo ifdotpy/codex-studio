@@ -30,12 +30,12 @@ use thiserror::Error;
 pub use path::resolve_state_dir;
 pub use records::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
-    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, GraphAgentRecord,
-    JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent, QueueEventId,
-    QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
-    RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord,
-    TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
-    UsageResumeRecord, WorkItemRecord, WorkStatus,
+    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, ExecutionRunRecord,
+    GraphAgentRecord, JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent,
+    QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
+    RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
+    TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
+    TranscriptItemRecord, UsageResumeRecord, WorkItemRecord, WorkStatus,
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};

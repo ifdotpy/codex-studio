@@ -10,7 +10,7 @@
       }
     ],
     "witnesses": [
-      "release_failed_work_updates_only_unfinished_items_and_keeps_blocked_status"
+      "service_releases_failed_worker_claim_and_emits_recovery_event"
     ]
   },
   {
@@ -24,7 +24,7 @@
       }
     ],
     "witnesses": [
-      "release_failed_work_updates_only_unfinished_items_and_keeps_blocked_status"
+      "service_releases_failed_worker_claim_and_emits_recovery_event"
     ]
   },
   {

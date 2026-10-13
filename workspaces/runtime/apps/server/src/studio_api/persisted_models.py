@@ -151,6 +151,23 @@ class PersistedWorkItemRecord(_OpenPersistedRecord):
     title: StrictStr | None = None
 
 
+class PersistedExecutionRunRecord(ContractModel):
+    """Execution metadata fields consumed by work submission."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    agent: StrictStr
+    accountKey: StrictStr
+    epoch: SafeInt
+    status: StrictStr
+    created: StrictFloat | StrictInt
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    latestAttemptId: StrictStr | None = None
+
+
 class PersistedRuleRecord(_OpenPersistedRecord):
     kind: StrictStr | None = None
     agent: StrictStr | None = None
@@ -283,6 +300,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-terminal-record.schema.json": PersistedTerminalRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
+    "persisted-execution-run-record.schema.json": PersistedExecutionRunRecord,
     "persisted-rule-record.schema.json": PersistedRuleRecord,
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,

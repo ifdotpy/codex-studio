@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::records::{
-    AgentId, AgentRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
-    TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
+    AgentId, AgentRecord, EventMetadataRecord, ExecutionRunRecord, JsonRecord, PlanRecord,
+    QueueEventId, Table, TaskId, TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
 };
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -132,17 +132,23 @@ impl WorkItemsRepository {
         let Some((id, record)) = row else {
             return Ok(None);
         };
-        let value: serde_json::Value =
-            serde_json::from_str(&record).map_err(|_| crate::StoreError::InvalidStoredObject {
+        let typed = serde_json::from_str::<ExecutionRunRecord>(&record).map_err(|_| {
+            crate::StoreError::InvalidStoredObject {
                 table: "runtime_execution_runs",
                 id: id.clone(),
-            })?;
-        if value.get("id").and_then(serde_json::Value::as_str) != Some(id.as_str()) {
+            }
+        })?;
+        if typed.id().as_ref() != id
+            || Table::<ExecutionRunRecord>::new(connection)
+                .validate(&typed)
+                .is_err()
+        {
             return Err(crate::StoreError::InvalidStoredObject {
                 table: "runtime_execution_runs",
                 id,
             });
         }
+        let value = typed.value();
         if turn.is_none()
             && matches!(
                 value.get("status").and_then(serde_json::Value::as_str),
@@ -162,6 +168,29 @@ impl WorkItemsRepository {
         Ok(Table::<WorkItemRecord>::new(connection)
             .get(&TaskId::from(id))?
             .map(|record| record.value().clone()))
+    }
+
+    /// Select only current-team items that depend on the accepted task.
+    pub fn dependent_work(
+        connection: &Connection,
+        root_id: &str,
+        task_id: &str,
+    ) -> StoreResult<Vec<StoredRecord>> {
+        let mut statement = connection.prepare(
+            "SELECT id, record FROM runtime_work \
+             WHERE json_extract(record,'$.rootId')=?1 \
+             AND EXISTS (SELECT 1 FROM json_each(record,'$.dependencies') AS dependency \
+                         WHERE dependency.value=?2) ORDER BY id",
+        )?;
+        statement
+            .query_map(params![root_id, task_id], |row| {
+                Ok(StoredRecord {
+                    id: row.get(0)?,
+                    record: Some(row.get(1)?),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
@@ -429,6 +458,7 @@ fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool)
 #[cfg(test)]
 mod tests {
     use super::{REQUIREMENTS, WorkItemsRepository};
+    use crate::{AgentRecord, StoreError};
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -465,6 +495,34 @@ mod tests {
                 .expect("empty queue")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn submission_identity_locates_invalid_execution_run_records() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection.execute_batch(
+            "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
+        ).expect("execution table creates");
+        let agent = AgentRecord::from_value(json!({
+            "id":"worker","rootId":"lead","epoch":4,"status":"paused"
+        }))
+        .expect("agent record parses");
+        for record in [
+            json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"created":1.0}),
+            json!({"id":"run-1","agent":"worker","accountKey":"default","epoch":4,"status":"running","created":1.0,"latestAttemptId":5}),
+        ] {
+            connection.execute(
+                "INSERT INTO runtime_execution_runs VALUES ('run-1','worker','default',4,NULL,NULL,1.0,?1)",
+                [record.to_string()],
+            ).expect("execution row inserts");
+            assert!(matches!(
+                WorkItemsRepository::submission_identity(&connection, &agent),
+                Err(StoreError::InvalidStoredObject { table: "runtime_execution_runs", id }) if id == "run-1"
+            ));
+            connection
+                .execute("DELETE FROM runtime_execution_runs", [])
+                .expect("invalid row deletes");
+        }
     }
 
     #[test]

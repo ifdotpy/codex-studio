@@ -38,6 +38,8 @@ const GRAPH_AGENT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-graph-agent-record.schema.json";
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
+const EXECUTION_RUN_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-execution-run-record.schema.json";
 
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
@@ -61,6 +63,8 @@ const RULE_RECORD: &[u8] = include_bytes!("schemas/persisted-rule-record.schema.
 const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
+const EXECUTION_RUN_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-execution-run-record.schema.json");
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
@@ -82,6 +86,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (RULE_RECORD_URI, RULE_RECORD),
     (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (PROFILE_RECORD_URI, PROFILE_RECORD),
+    (EXECUTION_RUN_RECORD_URI, EXECUTION_RUN_RECORD),
 ];
 
 type SchemaResult<T> = Result<T, String>;
@@ -144,6 +149,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_assets" => "PersistedTranscriptAsset",
         "runtime_items" => "PersistedTranscriptRecord",
         "runtime_event_meta" => "RuntimeEventMetadataRecord",
+        "runtime_execution_runs" => "PersistedExecutionRunRecord",
         _ => return None,
     })
 }
@@ -223,6 +229,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedRuleRecord", RULE_RECORD_URI),
         ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
         ("PersistedProfileRecord", PROFILE_RECORD_URI),
+        ("PersistedExecutionRunRecord", EXECUTION_RUN_RECORD_URI),
         (
             "account-registry/AccountRegistryRecord",
             ACCOUNT_REGISTRY_URI,
@@ -313,6 +320,7 @@ mod tests {
             ("runtime_assets", "PersistedTranscriptAsset"),
             ("runtime_items", "PersistedTranscriptRecord"),
             ("runtime_event_meta", "RuntimeEventMetadataRecord"),
+            ("runtime_execution_runs", "PersistedExecutionRunRecord"),
         ] {
             assert_eq!(table_schema(table), Some(schema), "{table}");
         }
@@ -469,6 +477,29 @@ mod tests {
                 &json!({"accountKey":"default"})
             )
             .expect("usage limits schema exists")
+        );
+    }
+
+    #[test]
+    fn execution_run_schema_requires_status_and_types_latest_attempt_id() {
+        initialize().expect("persisted schemas compile");
+        let valid = json!({
+            "id":"run-1","agent":"agent-1","accountKey":"default",
+            "epoch":2,"status":"running","created":1.0,"latestAttemptId":null
+        });
+        assert!(validate("PersistedExecutionRunRecord", &valid).expect("schema validates"));
+        let mut missing_status = valid.clone();
+        missing_status
+            .as_object_mut()
+            .expect("record is an object")
+            .remove("status");
+        assert!(
+            !validate("PersistedExecutionRunRecord", &missing_status).expect("schema validates")
+        );
+        let mut invalid_attempt = valid;
+        invalid_attempt["latestAttemptId"] = json!(7);
+        assert!(
+            !validate("PersistedExecutionRunRecord", &invalid_attempt).expect("schema validates")
         );
     }
 

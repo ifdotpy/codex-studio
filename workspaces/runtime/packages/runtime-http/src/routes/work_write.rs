@@ -84,6 +84,7 @@ pub(crate) async fn work_action(
                 .unwrap_or_else(|| agent.clone()),
         }),
         "submit" => WorkWrite::Submit(SubmitWork {
+            actor_id: None,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             result: required_text(&body, "result")?,
@@ -93,6 +94,7 @@ pub(crate) async fn work_action(
             state_dir: state.state_dir.clone().into(),
         }),
         "accept" => WorkWrite::Accept(AcceptWork {
+            actor_id: None,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             reason: required_text(&body, "result")?,
@@ -219,6 +221,10 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "work_write",
         routes: Some(routes),
-        dependencies: &["workspace-state/agent-archive", "workspace-state/submission-files"],
+        dependencies: &[
+            "cross-server/remote-events",
+            "workspace-state/agent-archive",
+            "workspace-state/submission-files",
+        ],
     }
 }

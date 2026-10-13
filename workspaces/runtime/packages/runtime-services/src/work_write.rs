@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,9 +30,144 @@ pub enum WorkActorWrite {
     Mutate(WorkMutation),
 }
 
+pub enum WorkMutation {
+    Update {
+        task_id: String,
+        version: Option<i64>,
+        title: Option<String>,
+        description: Option<String>,
+        owner: Option<Option<String>>,
+        status: Option<String>,
+        dependencies: Option<Vec<String>>,
+    },
+    Reject {
+        task_id: String,
+        version: Option<i64>,
+        reason: String,
+    },
+    ByAgent {
+        actor_id: String,
+        action: Box<WorkMutation>,
+    },
+    Cancel {
+        task_id: String,
+        version: Option<i64>,
+        reason: String,
+    },
+}
+
+pub struct SubmitWork {
+    pub actor_id: Option<String>,
+    pub task_id: String,
+    pub version: Option<i64>,
+    pub result: String,
+    pub checks: String,
+    pub revision: String,
+    pub files: Vec<String>,
+    pub state_dir: PathBuf,
+}
+
+pub struct ClaimWork {
+    pub task_id: String,
+    pub version: Option<i64>,
+    pub claimant_id: String,
+}
+
+pub struct AcceptWork {
+    pub actor_id: Option<String>,
+    pub task_id: String,
+    pub version: Option<i64>,
+    pub reason: String,
+}
+
+pub enum WorkWrite {
+    Create(CreateWork),
+    Mutate(WorkMutation),
+    Claim(ClaimWork),
+    Submit(SubmitWork),
+    Accept(AcceptWork),
+}
+
+pub struct WorkWriteResult {
+    pub record: Value,
+    pub event_inserted: bool,
+    pub artifact: Option<ResultArtifact>,
+}
+
 pub struct WorkActorResult {
     pub record: Value,
     pub event_inserted: bool,
+}
+
+pub struct ResultArtifact {
+    state_dir: PathBuf,
+    path: PathBuf,
+    body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseFailedWorkResult {
+    pub task_ids: Vec<String>,
+    pub event_inserted: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum WorkWriteError {
+    #[error(transparent)]
+    Event(#[from] Error),
+    #[error(transparent)]
+    Store(#[from] studio_runtime_store::StoreError),
+    #[error("Not implemented: requires {0}")]
+    NotImplemented(&'static str),
+}
+
+pub fn write(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+    command: WorkWrite,
+) -> Result<WorkWriteResult, WorkWriteError> {
+    let agent = event_write::checked_agent(tx, agent_id)?;
+    if let Some(record) = event_write::read_receipt(
+        tx,
+        request_id,
+        signature,
+        "runtime_work",
+        request_id.unwrap_or(agent_id),
+        |value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+        },
+    )? {
+        return Ok(WorkWriteResult {
+            artifact: if matches!(&command, WorkWrite::Submit(_)) {
+                let WorkWrite::Submit(input) = &command else {
+                    return Err(WorkWriteError::Event(Error::InvalidRequest(
+                        "Invalid request",
+                    )));
+                };
+                Some(result_artifact(&record, &input.state_dir)?)
+            } else {
+                None
+            },
+            record,
+            event_inserted: false,
+        });
+    }
+    match command {
+        WorkWrite::Create(input) => {
+            create(tx, &agent, input, request_id, signature).map_err(Into::into)
+        }
+        WorkWrite::Mutate(input) => {
+            mutate(tx, &agent, input, request_id, signature).map_err(Into::into)
+        }
+        WorkWrite::Claim(input) => claim(tx, &agent, input, request_id, signature),
+        WorkWrite::Submit(input) => submit(tx, &agent, input, request_id, signature),
+        WorkWrite::Accept(input) => accept(tx, &agent, input, request_id, signature),
+    }
 }
 
 /// Execute a work action with a persisted agent as the acting principal.
@@ -122,164 +257,132 @@ pub fn write_as_agent(
     })
 }
 
-pub enum WorkMutation {
-    Update {
-        task_id: String,
-        version: Option<i64>,
-        title: Option<String>,
-        description: Option<String>,
-        owner: Option<Option<String>>,
-        status: Option<String>,
-        dependencies: Option<Vec<String>>,
-    },
-    Reject {
-        task_id: String,
-        version: Option<i64>,
-        reason: String,
-    },
-    ByAgent {
-        actor_id: String,
-        action: Box<WorkMutation>,
-    },
-    Cancel {
-        task_id: String,
-        version: Option<i64>,
-        reason: String,
-    },
-}
-
-pub struct SubmitWork {
-    pub task_id: String,
-    pub version: Option<i64>,
-    pub result: String,
-    pub checks: String,
-    pub revision: String,
-    pub files: Vec<String>,
-    pub state_dir: PathBuf,
-}
-
-pub struct ClaimWork {
-    pub task_id: String,
-    pub version: Option<i64>,
-    pub claimant_id: String,
-}
-
-pub struct AcceptWork {
-    pub task_id: String,
-    pub version: Option<i64>,
-    pub reason: String,
-}
-
-pub enum WorkWrite {
-    Create(CreateWork),
-    Mutate(WorkMutation),
-    Claim(ClaimWork),
-    Submit(SubmitWork),
-    Accept(AcceptWork),
-}
-
-pub struct WorkWriteResult {
-    pub record: Value,
-    pub event_inserted: bool,
-    pub artifact: Option<ResultArtifact>,
-}
-
-pub struct ResultArtifact {
-    path: PathBuf,
-    body: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReleaseFailedWorkResult {
-    pub task_ids: Vec<String>,
-    pub event_inserted: bool,
-}
-
-#[derive(Debug, Error)]
-pub enum WorkWriteError {
-    #[error(transparent)]
-    Event(#[from] Error),
-    #[error(transparent)]
-    Store(#[from] studio_runtime_store::StoreError),
-    #[error("Not implemented: requires {0}")]
-    NotImplemented(&'static str),
-}
-
-pub fn write(
+/// Apply caller provenance to all work actions introduced by this slice.
+pub fn write_action_as_agent(
     tx: &Transaction<'_>,
     agent_id: &str,
+    actor_id: &str,
     request_id: Option<&str>,
     signature: &str,
     command: WorkWrite,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    let agent = event_write::checked_agent(tx, agent_id)?;
-    if let Some(record) = event_write::read_receipt(
-        tx,
-        request_id,
-        signature,
-        "runtime_work",
-        request_id.unwrap_or(agent_id),
-        |value| {
-            value
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
-        },
-    )? {
-        return Ok(WorkWriteResult {
-            artifact: if matches!(&command, WorkWrite::Submit(_)) {
-                let WorkWrite::Submit(input) = &command else {
-                    return Err(WorkWriteError::Event(Error::InvalidRequest(
-                        "Invalid request",
-                    )));
-                };
-                Some(result_artifact(&record, &input.state_dir)?)
-            } else {
-                None
-            },
-            record,
-            event_inserted: false,
-        });
+    let selected = event_write::checked_agent(tx, agent_id)?;
+    let actor = event_write::checked_agent(tx, actor_id)?;
+    if selected.root_id != actor.root_id {
+        return Err(Error::InvalidRequest("Actor belongs to another team").into());
+    }
+    if !event_write::truthy(actor.extra.get("autoWake")) {
+        return Err(Error::InvalidRequest("The caller is stopped").into());
     }
     match command {
-        WorkWrite::Create(input) => {
-            create(tx, &agent, input, request_id, signature).map_err(Into::into)
+        WorkWrite::Create(input) => write_as_agent(
+            tx,
+            agent_id,
+            actor_id,
+            request_id,
+            signature,
+            WorkActorWrite::Create(input),
+        )
+        .map(|result| WorkWriteResult {
+            record: result.record,
+            event_inserted: result.event_inserted,
+            artifact: None,
+        })
+        .map_err(Into::into),
+        WorkWrite::Mutate(input) => write_as_agent(
+            tx,
+            agent_id,
+            actor_id,
+            request_id,
+            signature,
+            WorkActorWrite::Mutate(input),
+        )
+        .map(|result| WorkWriteResult {
+            record: result.record,
+            event_inserted: result.event_inserted,
+            artifact: None,
+        })
+        .map_err(Into::into),
+        WorkWrite::Claim(input) => {
+            write(tx, agent_id, request_id, signature, WorkWrite::Claim(input))
         }
-        WorkWrite::Mutate(input) => {
-            mutate(tx, &agent, input, request_id, signature).map_err(Into::into)
+        WorkWrite::Submit(mut input) => {
+            input.actor_id = Some(actor_id.to_owned());
+            write(
+                tx,
+                agent_id,
+                request_id,
+                signature,
+                WorkWrite::Submit(input),
+            )
         }
-        WorkWrite::Claim(input) => claim(tx, &agent, input, request_id, signature),
-        WorkWrite::Submit(input) => submit(tx, &agent, input, request_id, signature),
-        WorkWrite::Accept(input) => accept(tx, &agent, input, request_id, signature),
+        WorkWrite::Accept(mut input) => {
+            input.actor_id = Some(actor_id.to_owned());
+            write(
+                tx,
+                agent_id,
+                request_id,
+                signature,
+                WorkWrite::Accept(input),
+            )
+        }
     }
 }
 
 /// Run the filesystem half after the transaction commits. A same-identity retry
 /// recreates a missing artifact and rejects a conflicting file.
 pub fn write_result_artifact(artifact: &ResultArtifact) -> Result<(), std::io::Error> {
-    let parent = artifact
+    let root = fs::canonicalize(&artifact.state_dir)?;
+    let relative = artifact
         .path
+        .strip_prefix(&artifact.state_dir)
+        .map_err(|_| std::io::Error::other("invalid result artifact path"))?;
+    let path = root.join(relative);
+    let mut parent = root.clone();
+    for component in relative
         .parent()
-        .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?;
-    if !parent.exists() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            let mut builder = fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700).create(parent)?;
+        .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?
+        .components()
+    {
+        parent.push(component);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            }
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "result artifact path is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    let mut builder = fs::DirBuilder::new();
+                    builder.mode(0o700).create(&parent)?;
+                }
+                #[cfg(not(unix))]
+                fs::create_dir(&parent)?;
+            }
+            Err(error) => return Err(error),
         }
-        #[cfg(not(unix))]
-        fs::create_dir_all(parent)?;
     }
     let mut temporary = tempfile::Builder::new()
         .prefix(".result-")
         .tempfile_in(parent)?;
     temporary.write_all(artifact.body.as_bytes())?;
     temporary.as_file().sync_all()?;
-    match temporary.persist_noclobber(&artifact.path) {
+    match temporary.persist_noclobber(&path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if fs::read_to_string(&artifact.path)? == artifact.body {
+            let metadata = fs::symlink_metadata(&path)?;
+            if !metadata.file_type().is_file() || metadata.len() > artifact.body.len() as u64 {
+                return Err(std::io::Error::other("saved task result file is invalid"));
+            }
+            let mut saved = Vec::with_capacity(artifact.body.len());
+            fs::File::open(&path)?
+                .take(artifact.body.len() as u64 + 1)
+                .read_to_end(&mut saved)?;
+            if saved == artifact.body.as_bytes() {
                 Ok(())
             } else {
                 Err(std::io::Error::other(
@@ -300,11 +403,20 @@ pub fn release_failed_work(
 ) -> Result<ReleaseFailedWorkResult, Error> {
     let mut released_ids = Vec::new();
     let mut event_inserted = false;
-    for worker in agents {
+    for snapshot in agents {
+        let Some(worker) = AgentRepository::get(tx, &snapshot.id)? else {
+            continue;
+        };
+        if worker.root_id != snapshot.root_id
+            || worker.epoch != snapshot.epoch
+            || worker.status != snapshot.status
+        {
+            continue;
+        }
         let deleted = worker.extra.get("deletedAt").is_some_and(truthy);
         if worker.id == worker.root_id
             || (!deleted && worker.status.as_str() != "failed")
-            || (!deleted && continuation_work_pending(worker))
+            || (!deleted && continuation_work_pending(&worker))
         {
             continue;
         }
@@ -365,20 +477,14 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
     {
         return false;
     }
-    let account = agent
-        .extra
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
+    let default_account = json!("default");
+    let account = agent.extra.get("accountKey").unwrap_or(&default_account);
     let thread = agent.extra.get("threadId").and_then(Value::as_str);
     let epoch = agent.epoch;
     let last_turn = agent.extra.get("lastCompletedTurn").and_then(Value::as_str);
 
     let matches = |record: &Value, statuses: &[&str], turn_field: &str| {
-        let record_account = record
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default");
+        let record_account = record.get("accountKey").unwrap_or(&default_account);
         record
             .get("status")
             .and_then(Value::as_str)
@@ -398,11 +504,7 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
         || matches(usage, &["scheduled", "started", "unknown"], "turnId")
         || (restart.get("stage").and_then(Value::as_str) == Some("pending")
             && restart.get("autoWake").is_some_and(truthy)
-            && restart
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                == account
+            && restart.get("accountKey").unwrap_or(&default_account) == account
             && restart.get("threadId").and_then(Value::as_str) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
             && restart.get("epoch").and_then(Value::as_i64) == Some(epoch))
@@ -476,12 +578,15 @@ fn decide_submit(
         .ok_or_else(|| invalid("runtime_work", id))?;
     let submitter_id = submitter.id.0.as_str();
     let path = result_path(&input.state_dir, id, &result_id)?;
+    let result_text = python_bounded_text(&input.result, 32000)?;
+    let checks_text = python_bounded_text(&input.checks, 32000)?;
+    let revision_text = python_bounded_text(&input.revision, 200)?;
     let mut result = json!({
         "id": result_id,
         "agent": submitter_id,
-        "text": bounded_text(&input.result, 32000)?,
-        "checks": bounded_text(&input.checks, 32000)?,
-        "revision": bounded_text(&input.revision, 200)?,
+        "text": result_text,
+        "checks": checks_text,
+        "revision": revision_text,
         "files": input.files,
         "created": now,
         "resultFile": path.to_string_lossy(),
@@ -498,7 +603,14 @@ fn decide_submit(
     updated["status"] = json!("review");
     advance(&mut updated, now)?;
     let body = result_artifact_body(title, &result)?;
-    Ok((updated, ResultArtifact { path, body }))
+    Ok((
+        updated,
+        ResultArtifact {
+            state_dir: input.state_dir.clone(),
+            path,
+            body,
+        },
+    ))
 }
 
 fn decide_accept(
@@ -508,9 +620,6 @@ fn decide_accept(
     now: f64,
 ) -> Result<Value, Error> {
     let record = snapshot.record;
-    let id = record["id"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
     if record["status"] == "accepted" {
         return Err(Error::InvalidRequest(
             "This work is already accepted. Create a follow-up task with this task ID and the new evidence",
@@ -526,10 +635,13 @@ fn decide_accept(
         return Err(Error::InvalidRequest("Submit a result before review"));
     }
     let mut updated = record.clone();
-    updated["decisions"]
-        .as_array_mut()
-        .ok_or_else(|| invalid("runtime_work", id))?
-        .push(json!({"resultId":result_id,"decision":"accept","reason":text(reason, false)?,"by":by,"created":now}));
+    if crate::event_write::python_strip(reason).is_empty() {
+        return Err(Error::InvalidRequest("Field must not be empty"));
+    }
+    push_decision(
+        &mut updated,
+        json!({"resultId":result_id,"decision":"accept","reason":text(reason, false)?,"by":by,"created":now}),
+    )?;
     updated["status"] = json!("accepted");
     updated["archive"] =
         json!({"status":"skipped","reason":"The task owner is the lead or is unassigned"});
@@ -599,6 +711,7 @@ fn result_artifact(record: &Value, state_dir: &Path) -> Result<ResultArtifact, E
         return Err(invalid("runtime_work", task_id));
     }
     Ok(ResultArtifact {
+        state_dir: state_dir.to_owned(),
         path: PathBuf::from(path),
         body: result_artifact_body(
             record["title"]
@@ -819,7 +932,7 @@ fn mutate(
                     &task_id,
                     "The task was cancelled before delivery",
                 )?;
-                if actor_id.as_deref() != Some(owner_id)
+                if (actor_id.is_none() || actor_id.as_deref() != Some(owner_id))
                     && let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
                     && live_recipient(&recipient)
                 {
@@ -930,24 +1043,14 @@ fn submit(
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    if input.files.len() > 50
-        || input
-            .files
-            .iter()
-            .any(|path| bounded_text(path, 4096).is_err())
-    {
+    if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
         return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
-    if !matches!(
-        work["status"].as_str(),
-        Some("running" | "ready" | "blocked" | "review")
-    ) {
-        return Err(Error::InvalidRequest("This result is already accepted").into());
-    }
-    if work["owner"]
-        .as_str()
-        .is_some_and(|owner| owner != agent.id.0)
+    if input
+        .actor_id
+        .as_deref()
+        .is_some_and(|actor| work["owner"].as_str() != Some(actor))
     {
         return Err(Error::InvalidRequest("Only the assigned worker can submit its result").into());
     }
@@ -983,7 +1086,7 @@ fn submit(
         .cloned()
         .ok_or_else(|| invalid("runtime_work", &input.task_id))?;
     let mut event_inserted = false;
-    if submitter.id != agent.root_id {
+    if input.actor_id.as_deref() != Some(agent.root_id.0.as_str()) {
         let lead = AgentRepository::get(tx, &agent.root_id)?
             .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
         let result_id = result["id"]
@@ -1015,7 +1118,11 @@ fn accept(
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    if agent.id != agent.root_id {
+    if input
+        .actor_id
+        .as_deref()
+        .is_some_and(|actor| actor != agent.root_id.0)
+    {
         return Err(Error::InvalidRequest("Only the lead can accept or reject a result").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
@@ -1029,13 +1136,18 @@ fn accept(
     }
     let statuses = dependency_statuses(tx, &work)?;
     let now = event_write::unix_time()?;
+    if crate::event_write::python_strip(&input.reason).is_empty() {
+        return Err(Error::InvalidRequest("Field must not be empty").into());
+    }
+    let root = AgentRepository::get(tx, &agent.root_id)?
+        .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
     let updated = decide_accept(
         WorkSnapshot {
             record: &work,
             dependency_statuses: &statuses,
         },
         &input.reason,
-        "user",
+        input.actor_id.as_deref().unwrap_or("user"),
         now,
     )?;
     let result_id = updated["decisions"]
@@ -1045,39 +1157,10 @@ fn accept(
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("runtime_work", &input.task_id))?
         .to_owned();
-    WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
-    let mut event_inserted = false;
-    if work["owner"].as_str() == Some(agent.root_id.0.as_str()) {
-        event_inserted |= event_write::enqueue_recovery_event(
-            tx,
-            agent,
-            format!(
-                "work-decision:{}:{}",
-                input.task_id,
-                work["version"].as_i64().unwrap_or_default()
-            ),
-            "work_decision",
-            json!({"task":input.task_id,"decision":"accept","reason":input.reason}).to_string(),
-            now,
-        )?;
-    }
-    for row in WorkItemsRepository::work(tx)? {
-        let dependent = row
-            .record
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    let mut ready_dependents = Vec::new();
+    for row in WorkItemsRepository::dependent_work(tx, &agent.root_id.0, &input.task_id)? {
+        let dependent = WorkItemsRepository::work_record(tx, &row.id)?
             .ok_or_else(|| invalid("runtime_work", &row.id))?;
-        if dependent["rootId"] != agent.root_id.0
-            || !dependent["dependencies"]
-                .as_array()
-                .is_some_and(|dependencies| {
-                    dependencies
-                        .iter()
-                        .any(|id| id.as_str() == Some(&input.task_id))
-                })
-        {
-            continue;
-        }
         let mut dep_statuses = dependency_statuses(tx, &dependent)?;
         dep_statuses.insert(input.task_id.clone(), "accepted".to_owned());
         if !blocked_by(&dependent, &dep_statuses).is_empty() {
@@ -1088,6 +1171,26 @@ fn accept(
         };
         let recipient = AgentRepository::get(tx, &AgentId::from(owner_id))?
             .ok_or_else(|| invalid("runtime_agents", owner_id))?;
+        event_write::refuse_remote(&recipient)?;
+        ready_dependents.push((recipient, dependent));
+    }
+    WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
+    let mut event_inserted = false;
+    if work["owner"].as_str() == Some(agent.root_id.0.as_str()) {
+        event_inserted |= event_write::enqueue_recovery_event(
+            tx,
+            &root,
+            format!(
+                "work-decision:{}:{}",
+                input.task_id,
+                work["version"].as_i64().unwrap_or_default()
+            ),
+            "work_decision",
+            json!({"task":input.task_id,"decision":"accept","reason":input.reason}).to_string(),
+            now,
+        )?;
+    }
+    for (recipient, dependent) in ready_dependents {
         event_inserted |= event_write::enqueue_recovery_event(
             tx,
             &recipient,
@@ -1189,25 +1292,7 @@ fn push_decision(work: &mut Value, decision: Value) -> Result<(), Error> {
 }
 
 fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
-    let mut statuses = BTreeMap::from([(
-        work["id"].as_str().unwrap_or_default().to_owned(),
-        work["status"].as_str().unwrap_or_default().to_owned(),
-    )]);
-    for dependency in work["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        if let Some(value) = WorkItemsRepository::work_record(tx, dependency)?
-            && value["rootId"] == work["rootId"]
-        {
-            statuses.insert(
-                dependency.to_owned(),
-                value["status"].as_str().unwrap_or_default().to_owned(),
-            );
-        }
-    }
+    let statuses = dependency_statuses(tx, work)?;
     Ok(crate::work_policy::work_item_view(work, &statuses))
 }
 
@@ -1333,12 +1418,12 @@ fn text(value: &str, empty: bool) -> Result<String, Error> {
     Ok(value.to_owned())
 }
 
-fn bounded_text(value: &str, maximum: usize) -> Result<String, Error> {
-    let value = text(value, false)?;
-    if value.chars().count() > maximum {
+fn python_bounded_text(value: &str, maximum: usize) -> Result<String, Error> {
+    let value = event_write::python_strip(value);
+    if value.is_empty() || value.chars().count() > maximum {
         return Err(Error::InvalidRequest("Invalid request"));
     }
-    Ok(value)
+    Ok(value.to_owned())
 }
 
 fn work_id(created: f64) -> String {
@@ -1378,6 +1463,15 @@ mod release_tests {
         unrelated["capacityRetry"]["turnId"] = json!("older-turn");
         let unrelated = AgentRecord::from_value(unrelated).expect("worker record parses");
         assert!(!continuation_work_pending(&unrelated));
+
+        let mut explicit_null = agent.value();
+        explicit_null["accountKey"] = Value::Null;
+        explicit_null["capacityRetry"]
+            .as_object_mut()
+            .expect("capacity retry is an object")
+            .remove("accountKey");
+        let explicit_null = AgentRecord::from_value(explicit_null).expect("worker record parses");
+        assert!(!continuation_work_pending(&explicit_null));
     }
 
     #[test]
