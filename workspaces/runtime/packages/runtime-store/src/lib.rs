@@ -31,7 +31,9 @@ pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepo
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
-pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::sync_documents::{
+    EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
+};
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,

@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Extensible browser-owned draft document; unknown values are JSON metadata.",
+  "properties": {
+    "alternatives": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Alternatives",
+      "type": "array"
+    },
+    "device": {
+      "title": "Device",
+      "type": "string"
+    },
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Id"
+    },
+    "session": {
+      "title": "Session",
+      "type": "string"
+    },
+    "text": {
+      "maxLength": 2000000,
+      "title": "Text",
+      "type": "string"
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated"
+    }
+  },
+  "required": ["device", "session", "text"],
+  "title": "DraftPayload",
+  "type": "object"
+}
