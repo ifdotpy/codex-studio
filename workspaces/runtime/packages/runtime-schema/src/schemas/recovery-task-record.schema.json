@@ -30,6 +30,22 @@
       "title": "Kind",
       "type": "string"
     },
+    "processId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Processid"
+    },
     "status": {
       "title": "Status",
       "type": "string"

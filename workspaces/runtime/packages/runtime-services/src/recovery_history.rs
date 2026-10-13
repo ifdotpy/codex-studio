@@ -53,6 +53,11 @@ pub struct HistoryReceipt {
     pub body: Value,
 }
 pub trait RecoveryReader {
+    /// Return cached worker state and the injected clock; must perform no I/O or waiting.
+    fn observation(
+        &mut self,
+        scope: &ConnectionScope,
+    ) -> Result<crate::recovery_absence::RecoveryObservation, HistoryError>;
     /// Must enforce the deadline and cancellation while waiting, and must not
     /// send the read on a different connection than `scope`.
     fn read(
@@ -83,6 +88,42 @@ impl<'a> HistoryRead<'a> {
             scope,
             deadline,
             calls: 0,
+        }
+    }
+    pub fn observation(
+        &mut self,
+    ) -> Result<crate::recovery_absence::RecoveryObservation, HistoryError> {
+        let observation = self.reader.observation(&self.scope)?;
+        if !observation.valid(&self.scope) {
+            return Err(HistoryError::Identity);
+        }
+        Ok(observation)
+    }
+    pub fn background_terminals(&mut self, thread: &str) -> Result<Vec<Value>, HistoryError> {
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        loop {
+            let mut params = json!({"threadId":thread,"limit":100});
+            if let Some(value) = &cursor {
+                params["cursor"] = json!(value);
+            }
+            let page = self.call(HistoryMethod::BackgroundTerminals, params)?;
+            for entry in data(&page)? {
+                nonempty(&entry["itemId"])?;
+                nonempty(&entry["processId"])?;
+                if entry.get("threadId").is_some_and(|v| v != thread) {
+                    return Err(HistoryError::Identity);
+                }
+                if result.len() >= MAX_ITEMS {
+                    return Err(HistoryError::Capacity);
+                }
+                result.push(entry.clone());
+            }
+            cursor = next_cursor(&page, &mut seen)?;
+            if cursor.is_none() {
+                return Ok(result);
+            }
         }
     }
     pub fn scope(&self) -> &ConnectionScope {
@@ -251,7 +292,8 @@ impl<'a> HistoryRead<'a> {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let page = self.turn_page(params, thread)?;
+            let page = self.call(HistoryMethod::Turns, params)?;
+            let mut page_match = false;
             for turn in data(&page)? {
                 if matches!(
                     turn["startOutcome"].as_str(),
@@ -271,6 +313,11 @@ impl<'a> HistoryRead<'a> {
                         })
                     });
                 if matches {
+                    nonempty(&turn["id"])?;
+                    if turn.get("threadId").is_some_and(|v| v != thread) || page_match {
+                        return Err(HistoryError::Identity);
+                    }
+                    page_match = true;
                     if found.as_ref().is_some_and(|previous| previous != turn) {
                         return Err(HistoryError::Identity);
                     }

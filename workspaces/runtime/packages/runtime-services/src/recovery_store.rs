@@ -15,6 +15,16 @@ use studio_runtime_store::{
 /// Terminal delivery remains the account worker's existing lifecycle writer.
 /// Implementations must use this transaction for every effect and replay receipt.
 pub trait CompletionWriter {
+    /// Publish the canonical child-stopped event with this exact identity, in
+    /// the supplied transaction; a failure rolls the entire hold back.
+    fn start_held(
+        &mut self,
+        tx: &Transaction<'_>,
+        agent: &Value,
+        reason: &str,
+        event_id: &str,
+    ) -> Result<(), RecoveryError>;
+
     fn complete(
         &mut self,
         tx: &Transaction<'_>,
@@ -28,6 +38,8 @@ pub struct RecoveryStore<'a> {
     pub connection_current: &'a dyn Fn(&ConnectionScope) -> bool,
     pub completion: &'a mut dyn CompletionWriter,
     pub at: f64,
+    pub observation_current:
+        &'a dyn Fn(&ConnectionScope) -> Option<crate::recovery_absence::RecoveryObservation>,
 }
 impl From<rusqlite::Error> for RecoveryError {
     fn from(error: rusqlite::Error) -> Self {
@@ -65,6 +77,101 @@ impl RecoveryEffects for RecoveryStore<'_> {
             }
             let mut updated = a.clone();
             let result = match &action {
+                RecoveryAction::StartAbsent {
+                    observation,
+                    complete_history,
+                    idle_twice,
+                } => {
+                    use crate::recovery_absence::{StartAbsenceDecision, start_absence};
+                    if !expected.eligibility().unconfirmed_start {
+                        return Ok(RecoveryOutcome::Superseded);
+                    }
+                    let Some(current) = (self.observation_current)(scope) else {
+                        return Ok(RecoveryOutcome::Superseded);
+                    };
+                    if !current.valid(scope)
+                        || !observation.valid(scope)
+                        || current.supervisor != observation.supervisor
+                    {
+                        return Ok(RecoveryOutcome::Superseded);
+                    }
+                    let decision =
+                        start_absence(expected, &current, *complete_history, *idle_twice);
+                    let attempt = &a["startAttempt"];
+                    match decision {
+                        StartAbsenceDecision::Restore => {
+                            let mut rows = Vec::new();
+                            for event in attempt["events"]
+                                .as_array()
+                                .ok_or(RecoveryError::CommitFailed)?
+                            {
+                                let Some(row) = QueueEventRepository::get(
+                                    tx,
+                                    &QueueEventId::from(
+                                        event.as_str().ok_or(RecoveryError::CommitFailed)?,
+                                    ),
+                                )?
+                                else {
+                                    return Ok(RecoveryOutcome::Unconfirmed);
+                                };
+                                if row.agent.0 != id
+                                    || Some(row.epoch) != a["epoch"].as_i64()
+                                    || row.status != "uncertain"
+                                    || row.turn_id.is_some()
+                                {
+                                    return Ok(RecoveryOutcome::Unconfirmed);
+                                }
+                                rows.push(row);
+                            }
+                            for mut row in rows {
+                                row.status = "pending".into();
+                                row.error = None;
+                                QueueEventRepository::put(tx, &row)?;
+                            }
+                            let object =
+                                updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+                            object.remove("startAttempt");
+                            object.remove("startOutcomeHold");
+                            updated["status"] = json!("queued");
+                            updated["inFlight"] = json!(false);
+                            updated["error"] = Value::Null;
+                            updated["activity"] = Value::Null;
+                            updated["activeTools"] = json!([]);
+                            updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
+                            json!({"status":"input_restored"})
+                        }
+                        StartAbsenceDecision::Hold => {
+                            let stamp = chrono::DateTime::from_timestamp(current.at as i64, 0)
+                                .ok_or(RecoveryError::CommitFailed)?
+                                .format("%Y-%m-%d %H:%M:%S UTC");
+                            let reason = format!(
+                                "Start outcome unknown. Studio checked native history at {stamp}. The original request can still finish. Recover this worker before new input."
+                            );
+                            updated["status"] = json!("interrupted");
+                            updated["inFlight"] = json!(false);
+                            updated["error"] = json!(reason);
+                            updated["activity"] = Value::Null;
+                            updated["activeTools"] = json!([]);
+                            updated["startAttempt"]["executionOutcome"] = json!("unknown");
+                            updated["startOutcomeHold"] = json!({"stage":"held","at":current.at,"attemptId":attempt["id"],"threadId":a["threadId"],"connectionId":scope.connection,"evidence":"complete_history_absent_idle_twice_journal_drained"});
+                            self.completion.start_held(
+                                tx,
+                                &updated,
+                                &reason,
+                                &format!(
+                                    "start-unknown:{}",
+                                    attempt["id"].as_str().ok_or(RecoveryError::CommitFailed)?
+                                ),
+                            )?;
+                            json!({"status":"held","at":current.at})
+                        }
+                        StartAbsenceDecision::Waiting => {
+                            updated["startRecoveryCheck"] = json!({"at":current.at,"attemptId":attempt["id"],"state":"waiting","reason":"start-outcome-unconfirmed","completeHistory":complete_history,"idleTwice":idle_twice,"quiet":current.quiet,"journalDrained":current.journal_drained});
+                            json!({"status":"unconfirmed"})
+                        }
+                    }
+                }
+
                 RecoveryAction::RestorePreparation { disconnected } => {
                     let eligibility = expected.eligibility();
                     if (*disconnected && !eligibility.disconnected_preparation)

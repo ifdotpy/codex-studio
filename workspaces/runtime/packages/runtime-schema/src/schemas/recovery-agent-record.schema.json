@@ -72,6 +72,18 @@
           ],
           "title": "Connectionid"
         },
+        "created": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Created"
+        },
         "epoch": {
           "anyOf": [
             {
@@ -218,16 +230,12 @@
         "supervisorIdentity": {
           "anyOf": [
             {
-              "additionalProperties": {
-                "$ref": "#/$defs/JsonValue"
-              },
-              "type": "object"
+              "$ref": "#/$defs/RecoverySupervisorIdentity"
             },
             {
               "type": "null"
             }
-          ],
-          "title": "Supervisoridentity"
+          ]
         },
         "threadId": {
           "anyOf": [
@@ -254,12 +262,73 @@
       },
       "title": "RecoveryFields",
       "type": "object"
+    },
+    "RecoverySupervisorIdentity": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "generation": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generation"
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Handle"
+        },
+        "stateDir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Statedir"
+        }
+      },
+      "title": "RecoverySupervisorIdentity",
+      "type": "object"
     }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "accountHistory": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accounthistory"
+    },
     "accountKey": {
       "anyOf": [
         {
@@ -281,6 +350,20 @@
         }
       ],
       "title": "Activeatreservation"
+    },
+    "activeTools": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Activetools"
     },
     "agent": {
       "anyOf": [
@@ -355,6 +438,18 @@
           "type": "null"
         }
       ]
+    },
+    "created": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Created"
     },
     "disconnectRecovery": {
       "anyOf": [
@@ -580,16 +675,12 @@
     "supervisorIdentity": {
       "anyOf": [
         {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
+          "$ref": "#/$defs/RecoverySupervisorIdentity"
         },
         {
           "type": "null"
         }
-      ],
-      "title": "Supervisoridentity"
+      ]
     },
     "threadId": {
       "anyOf": [

@@ -21,6 +21,25 @@ struct Reader {
     foreign: bool,
 }
 impl RecoveryReader for Reader {
+    fn observation(
+        &mut self,
+        scope: &ConnectionScope,
+    ) -> Result<studio_runtime_services::recovery_absence::RecoveryObservation, HistoryError> {
+        Ok(
+            studio_runtime_services::recovery_absence::RecoveryObservation {
+                scope: scope.clone(),
+                at: 100.0,
+                supervisor: None,
+                quiet: false,
+                journal_drained: false,
+                account_reserved: false,
+                tools_refreshing: false,
+                preparation_pending: false,
+                completed_turn: None,
+            },
+        )
+    }
+
     fn read(
         &mut self,
         s: &ConnectionScope,
@@ -312,4 +331,51 @@ fn exact_start_requires_unique_complete_client_receipt() {
             .exact_start("thread", "event"),
         Err(HistoryError::Identity)
     );
+}
+
+#[test]
+fn legacy_start_matches_python_complete_history() {
+    let output =
+        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/recovery/start_oracle.py"),
+            )
+            .output()
+            .expect("oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
+    for case in cases.iter().filter(|c| c["history_case"] == true) {
+        let mut reader = Reader {
+            replies: case["replies"]
+                .as_array()
+                .expect("replies")
+                .iter()
+                .cloned()
+                .map(Ok)
+                .collect(),
+            ..Default::default()
+        };
+        let actual = HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+            .exact_start("thread", "event");
+        assert_eq!(
+            actual.is_err(),
+            case["failed"].as_bool().expect("failed"),
+            "{}",
+            case["name"]
+        );
+        if let Ok(value) = actual {
+            assert_eq!(
+                value.unwrap_or(Value::Null),
+                case["accepted"],
+                "{}",
+                case["name"]
+            );
+        }
+        assert_eq!(json!(reader.calls), case["calls"], "{}", case["name"]);
+    }
 }
