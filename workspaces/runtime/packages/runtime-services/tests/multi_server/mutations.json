@@ -1,0 +1,112 @@
+[
+  {
+    "id": "signature",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_auth.rs",
+    "edits": [
+      {
+        "before": "        &request.signature,\n    )\n    .map_err",
+        "after": "        &request.signature,\n    )\n    .or(Ok::<(), remote_transport::RemoteTransportError>(()))\n    .map_err"
+      }
+    ]
+  },
+  {
+    "id": "target",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_auth.rs",
+    "edits": [
+      {
+        "before": "if request.server != local_server {",
+        "after": "if false && request.server != local_server {"
+      }
+    ]
+  },
+  {
+    "id": "owner",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_auth.rs",
+    "edits": [
+      {
+        "before": "if owner.trim().to_lowercase() != login",
+        "after": "if false && owner.trim().to_lowercase() != login"
+      }
+    ]
+  },
+  {
+    "id": "nonce",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_pairing.rs",
+    "edits": [
+      {
+        "before": "            match nonce {",
+        "after": "            match AccessNonceOutcome::Accepted {"
+      }
+    ]
+  },
+  {
+    "id": "invite-consumption",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_pairing.rs",
+    "edits": [
+      {
+        "before": "invite[\"status\"] = json!(\"used\");",
+        "after": "invite[\"status\"] = json!(\"open\");"
+      }
+    ]
+  },
+  {
+    "id": "request-conflict",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_orchestration.rs",
+    "edits": [
+      {
+        "before": "if snapshot.signature != signature || snapshot.server.as_deref() != server {",
+        "after": "if snapshot.signature == signature || snapshot.server.as_deref() != server {"
+      }
+    ]
+  },
+  {
+    "id": "unknown-resend",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_orchestration.rs",
+    "edits": [
+      {
+        "before": "Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))\n}",
+        "after": "Ok(DeliveryDecision::Execute)\n}"
+      }
+    ]
+  },
+  {
+    "id": "signature-before-owner",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_pairing.rs",
+    "edits": [
+      {
+        "before": "        auth::verify_before_observe(&snapshot, request, &self.local_server, now)?;",
+        "after": "        let _ = &snapshot;"
+      }
+    ]
+  },
+  {
+    "id": "fractional-expiry",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_auth.rs",
+    "edits": [
+      {
+        "before": "v >= now)",
+        "after": "v >= now.floor())"
+      }
+    ]
+  },
+  {
+    "id": "waiting-inbox",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_orchestration.rs",
+    "edits": [
+      {
+        "before": "!outgoing && snapshot.state == \"waiting\"",
+        "after": "false && !outgoing && snapshot.state == \"waiting\""
+      }
+    ]
+  },
+  {
+    "id": "status-query",
+    "file": "workspaces/runtime/packages/runtime-services/src/multi_server_auth.rs",
+    "edits": [
+      {
+        "before": "self.target.split('?').next() == Some(STATUS_PATH)",
+        "after": "self.target == STATUS_PATH"
+      }
+    ]
+  }
+]

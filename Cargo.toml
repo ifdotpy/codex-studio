@@ -6,6 +6,7 @@ members = [
     "workspaces/runtime/packages/operations",
     "workspaces/runtime/packages/operations-python",
     "workspaces/runtime/packages/runtime-providers",
+    "workspaces/runtime/packages/runtime-priority-sys",
     "workspaces/runtime/packages/runtime-process",
     "workspaces/runtime/packages/runtime-http",
     "workspaces/runtime/packages/runtime-services",
@@ -37,6 +38,7 @@ base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 data-encoding = "=2.11.1"
 http-range-header = "=0.4.2"
 inventory = "=0.3.25"
+libc = "=0.2.190"
 chrono = { version = "=0.4.42", default-features = false, features = ["clock"] }
 uuid = { version = "=1.28.0", default-features = false, features = ["std", "v5"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }

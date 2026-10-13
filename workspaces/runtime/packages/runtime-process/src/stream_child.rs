@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use crate::child_priority::ChildPriority;
+
 use command_fds::CommandFdExt;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
 use thiserror::Error;
@@ -237,6 +239,7 @@ fn spawn_process(spec: ChildSpec) -> io::Result<Box<dyn ChildWrapper>> {
     }
     let mut wrapped = CommandWrap::from(command);
     wrapped.wrap(ProcessGroup::leader());
+    ChildPriority::from_environment().apply_before_spawn(&mut wrapped);
     let child = wrapped.spawn()?;
     // Release the parent lease copy after successful inheritance.
     drop(wrapped);

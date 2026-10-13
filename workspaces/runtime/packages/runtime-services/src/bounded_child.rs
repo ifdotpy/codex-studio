@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
+use studio_runtime_process::child_priority::ChildPriority;
 
 // Each test thread can expire one child deadline after its readiness handshake.
 // This seam is absent from production builds and leaves termination unchanged.
@@ -99,6 +100,7 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     let mut command = CommandWrap::from(command);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
+    ChildPriority::from_environment().apply_before_spawn(&mut command);
     let mut child = command.spawn().map_err(|_| ChildError::Other)?;
     let stdout = child.stdout().take().ok_or(ChildError::Other)?;
     let stderr = child.stderr().take().ok_or(ChildError::Other)?;
@@ -245,6 +247,45 @@ mod tests {
         let output = read_bounded(Cursor::new(vec![b'x'; 32_000]), 1024).expect("pipe bytes read");
         assert_eq!(output.bytes, vec![b'x'; 1024]);
         assert!(output.truncated);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn agent_command_reports_configured_child_priority_after_stdin_handshake() {
+        use std::os::unix::fs::PermissionsExt;
+        use studio_runtime_process::child_priority::ChildPriority;
+
+        let root = tempfile::tempdir().expect("isolated executable fixture");
+        let program = root.path().join("priority-probe");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nread -r ready\nps -o ni= -p $$\nionice -p $$\n",
+        )
+        .expect("probe script");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
+            .expect("executable");
+        let output = run(Request {
+            program: program.as_os_str(),
+            cwd: OsStr::new("/"),
+            args: &[],
+            environment: &[],
+            input: Some(b"ready\n"),
+            stdout_limit: 256,
+            stderr_limit: 256,
+            timeout: Duration::from_secs(30),
+        })
+        .expect("bounded caller completes");
+        let text = String::from_utf8(output.stdout.bytes).expect("probe output");
+        let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+        match ChildPriority::from_environment() {
+            ChildPriority::Background => assert_eq!(lines, ["5", "best-effort: prio 7"]),
+            ChildPriority::Normal => assert_eq!(
+                lines[0],
+                rustix::process::getpriority_process(None)
+                    .expect("parent nice")
+                    .to_string()
+            ),
+        }
     }
 
     #[cfg(target_os = "linux")]

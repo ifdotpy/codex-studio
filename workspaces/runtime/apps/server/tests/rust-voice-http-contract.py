@@ -83,6 +83,8 @@ runtime.close()
         check=True,
         timeout=30,
     )
+    if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+        backend.hold_provider("thread/start")
     backend.start()
     backend.ready_samples.append(backend.ready_seconds or 0)
     with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
@@ -121,6 +123,12 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT json_extract(record,'$.id') FROM runtime_agents "
                 "WHERE json_extract(record,'$.isLead')=1 ORDER BY rowid LIMIT 1"
             ).fetchone()[0]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if not cls.rust_backend:
+            cls.backend.release_provider_gate()
+        cls.backend.stop()
 
     @classmethod
     def headers(cls):
@@ -193,6 +201,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(first.status, 200, first.body[:1000])
         self.assertEqual(first.json()["status"], "queued")
         self.assertEqual(first.json()["id"], "voice-message")
+        self.backend.wait_for_agent_preparation(self.lead_id)
         retry = self.request("/api/voice/submit", body)
         self.assertEqual(retry.status, 200, retry.body[:1000])
         self.assertEqual(retry.json()["id"], first.json()["id"])
@@ -301,6 +310,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(response.status, 200, response.body[:1000])
         self.assertEqual(response.json()["status"], "queued")
+        self.backend.wait_for_agent_preparation(self.lead_id)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
             agent = json.loads(connection.execute(
                 "SELECT record FROM runtime_agents WHERE id=?", (self.lead_id,),

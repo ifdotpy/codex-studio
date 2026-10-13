@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -16,6 +17,8 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from codex_session_names import identity as native_name_identity
 
 
 FIXTURE = "restart-mid-turn-supervisor-replay.json"
@@ -125,6 +128,23 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ),
                 "Python runtime writes the fixture output to transcript state",
             )
+            def replay_settled():
+                with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
+                    agent = json.loads(database.execute(
+                        "SELECT record FROM runtime_agents WHERE id=?", (cls.agent,),
+                    ).fetchone()[0])
+                    metadata = json.loads(database.execute(
+                        "SELECT record FROM runtime_event_meta WHERE id=?",
+                        ("f13f1a2b-6c8d-4e0f-9123-abcdef012345",),
+                    ).fetchone()[0])
+                # Text can arrive before turn completion, the start receipt, or
+                # native-name synchronization has made its final durable write.
+                return (
+                    agent.get("status") == "completed" and not agent.get("inFlight")
+                    and metadata.get("timing", {}).get("acceptedAt") is not None
+                    and agent.get("nativeNameSynced") == native_name_identity(agent)
+                )
+            cls.backend.wait_until(replay_settled, "transcript replay and native name settled")
             cls.rows = _read_rows(cls.backend.state / "canvas.sqlite3", cls.agent)
             cls.item_id = next(
                 identity for identity, record in cls.rows if "Recovered output." in record

@@ -7,6 +7,8 @@ from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat,
 from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
+from studio_api.analytics_capture_models import ANALYTICS_SCHEMA_MODELS
+from studio_api.persisted_continuations import ContinuationSnapshotRecord
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 from studio_api.workspace_operation_models import (
     PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
@@ -14,6 +16,13 @@ from studio_api.workspace_operation_models import (
 from studio_api.relocation_models import RelocationFormats
 from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord, PersistedTransferAgentRecord
+
+from studio_api.multi_server.persisted import (
+    PersistedAccessClient,
+    PersistedAccessInvite,
+    PersistedAccessReceipt,
+    PersistedServerDelivery,
+)
 
 
 def _unicode_scalar(value: str) -> str:
@@ -23,7 +32,6 @@ def _unicode_scalar(value: str) -> str:
 
 
 UnicodeScalar = Annotated[StrictStr, AfterValidator(_unicode_scalar)]
-
 
 class ClaudeCustomModelRecord(ContractModel):
     id: StrictStr
@@ -623,9 +631,15 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     **FEDERATION_SCHEMA_MODELS,
+    **ANALYTICS_SCHEMA_MODELS,
+    "persisted-continuation-snapshot.schema.json": ContinuationSnapshotRecord,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
     "persisted-account-transfer-record.schema.json": PersistedAccountTransferRecord,
+    "persisted-access-client.schema.json": PersistedAccessClient,
+    "persisted-access-invite.schema.json": PersistedAccessInvite,
+    "persisted-access-receipt.schema.json": PersistedAccessReceipt,
+    "persisted-server-delivery.schema.json": PersistedServerDelivery,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,

@@ -10,6 +10,7 @@ axum = { workspace = true }
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
 studio-runtime-http = { path = "../../packages/runtime-http" }
+studio-runtime-process = { path = "../../packages/runtime-process" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
 serde_json = { workspace = true }

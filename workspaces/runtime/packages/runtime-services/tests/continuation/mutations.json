@@ -1,0 +1,101 @@
+[
+  {
+    "id": "usage-expired-freshness",
+    "file": "workspaces/runtime/packages/runtime-services/src/usage_resume.rs",
+    "edits": [
+      {
+        "before": "now - FRESH_SECONDS",
+        "after": "now - 2.0 * FRESH_SECONDS"
+      }
+    ],
+    "witness": "usage-observation-at-994.9"
+  },
+  {
+    "id": "usage-full-window",
+    "file": "workspaces/runtime/packages/runtime-services/src/usage_resume.rs",
+    "edits": [
+      {
+        "before": "if used >= 100.0 ||",
+        "after": "if used > 100.0 ||"
+      }
+    ],
+    "witness": "usage-percent-100"
+  },
+  {
+    "id": "auth-unchanged-marker",
+    "file": "workspaces/runtime/packages/runtime-services/src/usage_resume.rs",
+    "edits": [
+      {
+        "before": "old != marker",
+        "after": "old == marker"
+      }
+    ],
+    "witness": "auth-marker-old"
+  },
+  {
+    "id": "capacity-submission-uncertainty",
+    "file": "workspaces/runtime/packages/runtime-services/src/capacity_retry.rs",
+    "edits": [
+      {
+        "before": "&& !flag(&attempt, \"submitted\")\n                    && !present(&r, \"acceptedTurnId\")",
+        "after": "&& flag(&attempt, \"submitted\")\n                    && !present(&r, \"acceptedTurnId\")"
+      }
+    ],
+    "witness": "capacity-restart-unknown-True"
+  },
+  {
+    "id": "progress-duplicate-versions",
+    "file": "workspaces/runtime/packages/runtime-services/src/wakeups.rs",
+    "edits": [
+      {
+        "before": "if versions.len() != group.len()",
+        "after": "if versions.len() > group.len()"
+      }
+    ],
+    "witness": "progress-(2, 2)"
+  },
+  {
+    "id": "claude-credential-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_auth_wait.rs",
+    "edits": [
+      {
+        "before": "[\"accountId\", \"_credentialIdentity\"].iter().any",
+        "after": "[\"accountId\", \"accountId\"].iter().any"
+      }
+    ],
+    "witness": "claude-wrong-credential"
+  },
+  {
+    "id": "continuation-commit-without-row",
+    "file": "workspaces/runtime/packages/runtime-services/src/continuation_driver.rs",
+    "edits": [
+      {
+        "before": "ContinuationRepository::put_record(tx, table, snapshot.agent_id(), record)?;",
+        "after": "if false { ContinuationRepository::put_record(tx, table, snapshot.agent_id(), record)?; }"
+      }
+    ],
+    "witness": "every_store_boundary_rolls_back_or_replays_the_one_committed_followup"
+  },
+  {
+    "id": "claude-due-order-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_auth_wait.rs",
+    "edits": [
+      {
+        "before": "let position = due.partition_point(|(existing, _)| *existing <= at);",
+        "after": "let position = due.len();"
+      }
+    ],
+    "witness": "probe_plan_selects_only_the_earliest_sixteen_due_rows"
+  },
+  {
+    "id": "capacity-admission-omitted",
+    "file": "workspaces/runtime/packages/runtime-services/src/continuation_driver.rs",
+    "edits": [
+      {
+        "before": "hooks.capacity_admission.check(tx, snapshot, attempt)?;",
+        "after": "let _ = (tx, snapshot, attempt);"
+      }
+    ],
+    "witness": "capacity_claim_commits_record_and_agent_together_and_recovery_never_resends"
+  }
+]

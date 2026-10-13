@@ -51,7 +51,7 @@ test-server-shard index count:
 
 [doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
 test-rust-runtime-corpora *args:
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/)' {{args}}
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/) | binary(/^continuation_recovery$/) | binary(/^analytics_history_checkpoint$/) | binary(/^portable_history_python_parity$/) | binary(/^payload_safety_oracle$/)' {{args}}
 
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
@@ -93,3 +93,7 @@ test-rust-relocation-mutations target:
 [doc("Run the rules mutation corpus in an isolated target outside the checkout.")]
 test-rust-rules-mutations target *args:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/rules_engine/mutations.json --filter 'binary(rules_engine_corpus) or binary(rules_tick_atomic)' {{args}}
+
+[doc("Run the full isolated continuation corpus and store fault matrix; no provider requests.")]
+test-rust-usage-resume-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/^continuation_(corpus|recovery)$/)'
