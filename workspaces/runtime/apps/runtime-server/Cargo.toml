@@ -9,11 +9,20 @@ publish.workspace = true
 axum = { workspace = true }
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
+futures-util = { workspace = true }
+studio-runtime-process = { path = "../../packages/runtime-process" }
 studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+rusqlite = { workspace = true }
+studio-runtime-providers = { path = "../../packages/runtime-providers" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true }
 
 [lints]
 workspace = true

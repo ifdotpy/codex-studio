@@ -126,6 +126,12 @@ impl HttpState {
         Arc::clone(&self.event_wake)
     }
 
+    pub fn model_catalog_handle(
+        &self,
+    ) -> studio_runtime_services::model_catalog::ModelCatalogService {
+        self.model_catalog.clone()
+    }
+
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
         Arc::clone(&self.sync_changes)
     }

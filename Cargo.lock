@@ -2025,12 +2025,18 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "data-encoding",
+ "futures-util",
  "getrandom 0.3.4",
+ "rusqlite",
  "serde_json",
  "studio-runtime-http",
+ "studio-runtime-process",
+ "studio-runtime-providers",
  "studio-runtime-services",
  "studio-runtime-store",
+ "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]
