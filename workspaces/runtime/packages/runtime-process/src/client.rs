@@ -216,6 +216,16 @@ impl SupervisorClient<std::os::unix::net::UnixStream> {
         Self::from_transport(stream, identity)
     }
 
+    /// Return a handle that can interrupt an in-flight request without taking
+    /// the client mutex that owns this stream.
+    pub fn cancellation_handle(&self) -> std::io::Result<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        use std::net::Shutdown;
+        let stream = self.stream.get_ref().try_clone()?;
+        Ok(std::sync::Arc::new(move || {
+            let _ignored = stream.shutdown(Shutdown::Both);
+        }))
+    }
+
     pub fn connect_operator(
         path: impl AsRef<Path>,
         state_dir: PathBuf,

@@ -138,6 +138,16 @@ impl PendingBook {
         }
     }
 
+    /// Mark one accepted request unknown without losing the connection or
+    /// other outstanding tickets.
+    pub fn mark_unknown(&mut self, id: &RequestId) -> Result<(), BookError> {
+        let entry = self.entries.get_mut(id).ok_or(BookError::UnknownId)?;
+        if entry.state == RequestState::Pending {
+            entry.state = RequestState::Unknown;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn state(&self, id: &RequestId) -> Option<RequestState> {
         self.entries.get(id).map(|entry| entry.state)
