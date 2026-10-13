@@ -120,7 +120,10 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                 raise HostExecError(response["error"]["code"], response["error"]["message"])
             return response["result"]
         self.guest.call = call
+        self.applied = []
         async def broker(method, params, phase):
+            if method == "host.slot.apply":
+                self.applied.append(params["action"])
             result = await self.slots.dispatch(key(params["operationId"] + phase), method, params)
             # The admin channel has the same frame limit.
             self.assertLessEqual(len(json.dumps({"id": "x" * 64, "result": result})) + 1, FRAME_LIMIT)
@@ -651,6 +654,52 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["exitCode"], 0)
         # Without the caches the guest and the Mac would read the 60 cache files three times.
         self.assertLess(digest.call_count, 10)
+
+    async def test_a_mode_change_alone_changes_the_mode_of_the_slot_file(self):
+        big = self.line / "pack.bin"
+        big.write_bytes(os.urandom(600 * 1024))
+        big.chmod(0o400)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        first = await self.execute("mode-1", 'import pathlib,stat;'
+            'print(oct(stat.S_IMODE(pathlib.Path("pack.bin").stat().st_mode)), pathlib.Path("pack.bin").stat().st_ino)')
+        self.assertEqual(first["exitCode"], 0)
+        self.assertIn("0o400", "".join(row.get("text", "") for row in self.events))
+        inode = "".join(row.get("text", "") for row in self.events).split()[-1]
+        await asyncio.sleep(0.01)
+        # The line has the same content with another mode, as after a seed upload.
+        big.chmod(0o600)
+        self.events.clear()
+        self.calls.clear()
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        second = await self.execute("mode-2", 'import pathlib,stat;'
+            'print(oct(stat.S_IMODE(pathlib.Path("pack.bin").stat().st_mode)), pathlib.Path("pack.bin").stat().st_ino)')
+        self.assertEqual(second["exitCode"], 0)
+        self.assertEqual(second["transferredBytes"], 0)
+        self.assertIn("sync.mode", self.calls)
+        self.assertNotIn("sync.chunk", self.calls)
+        output = "".join(row.get("text", "") for row in self.events).split()
+        # The same file with the new mode; the run check did not read it again.
+        self.assertEqual(output, ["0o600", inode])
+        self.assertLessEqual(digest.call_count, 3)
+
+    async def test_a_mode_change_on_the_mac_returns_without_the_content(self):
+        tool = self.line / "tool.sh"
+        tool.write_bytes(b"#!/bin/sh\n" + b"x" * (700 * 1024))
+        tool.chmod(0o644)
+        result = await self.execute("mac-chmod", 'import pathlib;pathlib.Path("tool.sh").chmod(0o755)')
+        self.assertTrue(result["collected"])
+        self.assertEqual(self.applied, ["mode"])
+        self.assertEqual(tool.stat().st_mode & 0o777, 0o755)
+
+    async def test_a_mode_change_refuses_a_slot_file_with_other_content(self):
+        await self.execute("mode-content", 'print("slot has main.swift")')
+        await self.acquire("mode-refused")
+        for name in ("main.swift", "missing.swift"):
+            with self.subTest(path=name), self.assertRaises(HostExecError) as caught:
+                await self.guest.call("sync.mode", {"operationId": "mode-refused", "agentId": "agent", "items": [
+                    {"path": name, "entry": {"kind": "file", "bytes": 15, "mode": 0o600, "sha256": "0" * 64}}]}, "mode:" + name)
+            self.assertEqual(caught.exception.code, "sync_conflict")
 
     async def test_small_files_travel_in_batches_below_the_frame_limit(self):
         for index in range(300):

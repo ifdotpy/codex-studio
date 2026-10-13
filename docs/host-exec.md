@@ -89,6 +89,12 @@ below the 2 MiB frame limit. Larger files use 512 KiB chunks. The Mac checks the
 SHA-256 of each file. It does not sync the files of a batch to disk: after a crash,
 the next command hashes the slot again and sends each damaged file again.
 
+A file with the same size and content but another mode gets only a mode change, on
+the Mac and on the way back into the line. A seeded layer can have other file modes
+than the project folder on the Mac, so a cloned file would otherwise travel again.
+The Mac checks the content against its hash cache, or reads the file when the cache
+has no current entry, and keeps the hash for the run check.
+
 ## Hash caches
 
 A hash cache keeps the SHA-256 of each file with its size, modification time,

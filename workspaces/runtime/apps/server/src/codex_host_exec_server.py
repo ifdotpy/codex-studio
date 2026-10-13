@@ -36,7 +36,7 @@ SETTINGS = "host-exec.json"
 # The folder names of layr-projects/ (codex_linux_vm_share._id).
 PROJECT_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 # What this service accepts beyond the first protocol; the guest reads it from the lease.
-FEATURES = ["prime", "batch"]
+FEATURES = ["prime", "batch", "mode"]
 CLONE_NOFOLLOW = 0x0001
 
 
@@ -315,6 +315,42 @@ class HostService:
         os.rename(temporary, target)
         return {"path": cache, "primed": True, "bytes": cloned}
 
+    @staticmethod
+    def set_modes(slot: Path, mac_only: list[str], items: list[Any]) -> None:
+        """Change only the mode of slot files whose content the guest's entry already has. The slot's
+        hash cache keeps each known hash with the new change time, so the run check does not read
+        the file again; a chmod changes no content, and a later write would change the mtime."""
+        cache = slot / "hash-cache.json"
+        hashes = load_hashes(cache)
+        for item in items:
+            require(isinstance(item, dict) and isinstance(item.get("entry"), dict), "Invalid mode change")
+            name, entry = item.get("path"), item["entry"]
+            mode = entry.get("mode")
+            require(entry.get("kind") == "file" and isinstance(mode, int) and 0 <= mode <= 0o777, "Invalid mode change")
+            require(not under(name, mac_only), "The path stays on the Mac (macOnly)")
+            path = inside(slot / "source", name, leaf=True)
+            try:
+                info = path.lstat()
+            except FileNotFoundError as exc:
+                raise HostExecError("sync_conflict", "The slot file differs: " + name) from exc
+            require(stat.S_ISREG(info.st_mode) and info.st_size == entry.get("bytes"), "The slot file differs", "sync_conflict")
+            stamp = [info.st_size, info.st_mtime_ns, info.st_ino, info.st_ctime_ns]
+            cached: Any = hashes.get(name)
+            known = isinstance(cached, list) and len(cached) == 5 and cached[:4] == stamp
+            if known:
+                checksum = cached[4]
+            else:
+                with path.open("rb") as stream:
+                    checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+            require(checksum == entry.get("sha256"), "The slot file differs", "sync_conflict")
+            path.chmod(mode)
+            after = path.lstat()
+            if known and [after.st_size, after.st_mtime_ns, after.st_ino] == stamp[:3]:
+                hashes[name] = [after.st_size, after.st_mtime_ns, after.st_ino, after.st_ctime_ns, checksum]
+            else:
+                hashes.pop(name, None)
+        atomic(cache, hashes)
+
     def place(self, op: dict[str, Any], slot: Path, name: Any, entry: Any, data: bytes | None = None) -> None:
         """Write one source entry: a folder, a link or a file. A file with `data` is complete; a
         file without it starts empty and receives its content in chunks."""
@@ -448,6 +484,12 @@ class HostService:
             caches = self.cache_list(params.get("caches", []))
             async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
                 return {"primed": [await self.prime(op, slot, cache) for cache in caches]}
+        if method == "sync.mode":
+            require(op["state"] == "leased", "The slot is no longer open for source transfer")
+            changes: Any = params.get("items")
+            require(isinstance(changes, list) and 0 < len(changes) <= 4096, "Invalid mode changes")
+            await asyncio.to_thread(self.set_modes, slot, mac_only, changes)
+            return {"entries": len(changes)}
         if method == "sync.batch":
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             items: Any = params.get("items")
