@@ -3,7 +3,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,6 +14,9 @@ use thiserror::Error;
 
 const FORWARD_SECONDS: u64 = 600;
 const MAX_RELAYS: usize = 5;
+const MAX_CONNECTIONS: usize = 8;
+const MAX_ACTIVE_EXCHANGES: usize = 16;
+const CONNECTION_SECONDS: u64 = 10;
 const HEAD_LIMIT: usize = 16 * 1024;
 const BODY_LIMIT: usize = 256 * 1024;
 const BODY_BASE64_LIMIT: usize = BODY_LIMIT.div_ceil(3) * 4;
@@ -32,6 +35,15 @@ const NODE_REPL_ENV_KEYS: [&str; 9] = [
     "BROWSER_USE_TINYSKY_ENABLED",
     "CODEX_CLI_PATH",
 ];
+static ACTIVE_EXCHANGES: AtomicUsize = AtomicUsize::new(0);
+
+struct ActiveExchangePermit;
+
+impl Drop for ActiveExchangePermit {
+    fn drop(&mut self) {
+        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub const BROWSER_GUIDANCE: &str = "For browser interaction, use the installed control-chrome skill and its browser-client through node_repl by default. Honor an explicitly requested different browser or tool. Read the native skill before use; it owns setup, permissions, tab lifecycle, and recovery. Report connection failures instead of silently changing the browser-control method. If native Chrome discovery reports no browser, finish the turn after reporting the error; Studio can refresh the connection at an idle boundary. Do not repeat any browser action with an unknown outcome. Dedicated connectors and web search remain appropriate for tasks that do not need browser interaction.";
 
@@ -45,8 +57,10 @@ pub enum BrowserError {
     PortInUse(u16),
     #[error("the sign-in forward cannot start")]
     Listener(#[from] std::io::Error),
-    #[error("the paired server refused the sign-in redirect: {0}")]
-    Refused(String),
+    #[error("the paired server refused the sign-in redirect")]
+    Refused,
+    #[error("a different sign-in request already uses this bridge identity")]
+    Conflict,
     #[error("the sign-in redirect outcome is unknown; inspect Studio before retrying")]
     Unknown,
     #[error("the paired exchange failed")]
@@ -57,7 +71,7 @@ pub enum BrowserError {
     WorkerPanicked,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub enum ExchangeOutcome {
     Applied(Value),
     NotApplied(String),
@@ -167,6 +181,9 @@ impl BrowserForwarder {
                 .as_ref()
                 .is_some_and(|thread| !thread.is_finished())
         {
+            if existing.input != input {
+                return Err(BrowserError::Conflict);
+            }
             return Ok(ForwardReceipt {
                 replayed: true,
                 port: existing.port,
@@ -188,10 +205,12 @@ impl BrowserForwarder {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let relays = Arc::new(AtomicUsize::new(0));
+        let connections = Arc::new(AtomicUsize::new(0));
         let thread_input = input.clone();
         let thread_exchange = Arc::clone(&self.exchange);
         let thread_stop = Arc::clone(&stop);
         let thread_relays = Arc::clone(&relays);
+        let thread_connections = Arc::clone(&connections);
         let thread = thread::Builder::new()
             .name("studio-browser-forward".into())
             .spawn(move || {
@@ -201,6 +220,7 @@ impl BrowserForwarder {
                     thread_exchange,
                     thread_stop,
                     thread_relays,
+                    thread_connections,
                     remaining,
                 )
             })?;
@@ -310,10 +330,15 @@ fn serve_forward(
     exchange: Arc<dyn PairedExchange>,
     stop: Arc<AtomicBool>,
     relays: Arc<AtomicUsize>,
+    connections: Arc<AtomicUsize>,
     remaining_seconds: f64,
 ) {
     let deadline = std::time::Instant::now() + Duration::from_secs_f64(remaining_seconds);
     while !stop.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        if relays.load(Ordering::Acquire) >= MAX_RELAYS {
+            stop.store(true, Ordering::Release);
+            break;
+        }
         let mut accepted = None;
         for listener in &listeners {
             match listener.accept() {
@@ -340,84 +365,141 @@ fn serve_forward(
                 }
                 continue;
             }
-            match handle_connection(&mut stream, &input, exchange.as_ref(), &relays) {
-                Ok(done) if done => break,
-                Err(BrowserError::InvalidForward) => break,
-                Err(_) => {
-                    if !respond_best_effort(
-                        &mut stream,
-                        502,
-                        page("The sign-in result is unknown. Check the chat in Studio."),
-                        "text/html; charset=utf-8",
-                    ) {
-                        break;
-                    }
-                    break;
-                }
-                _ => {}
+            let active = connections.fetch_add(1, Ordering::AcqRel);
+            if active >= MAX_CONNECTIONS {
+                connections.fetch_sub(1, Ordering::AcqRel);
+                drop(stream);
+                continue;
             }
-            if relays.load(Ordering::Acquire) >= MAX_RELAYS {
-                break;
+            let worker_input = input.clone();
+            let worker_exchange = Arc::clone(&exchange);
+            let worker_stop = Arc::clone(&stop);
+            let worker_relays = Arc::clone(&relays);
+            let worker_connections = Arc::clone(&connections);
+            let worker_deadline =
+                deadline.min(std::time::Instant::now() + Duration::from_secs(CONNECTION_SECONDS));
+            let spawned = thread::Builder::new()
+                .name("studio-browser-callback".into())
+                .spawn(move || {
+                    let result = handle_connection(
+                        &mut stream,
+                        &worker_input,
+                        Arc::clone(&worker_exchange),
+                        &worker_relays,
+                        worker_deadline,
+                        &worker_stop,
+                    );
+                    if matches!(result, Ok(true)) {
+                        worker_stop.store(true, Ordering::Release);
+                    }
+                    worker_connections.fetch_sub(1, Ordering::AcqRel);
+                });
+            if spawned.is_err() {
+                connections.fetch_sub(1, Ordering::AcqRel);
             }
         } else {
             thread::park_timeout(Duration::from_millis(20));
         }
     }
+    stop.store(true, Ordering::Release);
 }
 
 fn handle_connection(
     stream: &mut TcpStream,
     input: &ForwardInput,
-    exchange: &dyn PairedExchange,
+    exchange: Arc<dyn PairedExchange>,
     relays: &AtomicUsize,
+    deadline: std::time::Instant,
+    stop: &AtomicBool,
 ) -> Result<bool, BrowserError> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let head = read_head(stream)?;
-    let text = String::from_utf8_lossy(&head);
-    let mut lines = text.split("\r\n");
-    let first = lines.next().unwrap_or_default();
-    let parts = first.split(' ').collect::<Vec<_>>();
-    if parts.len() != 3 || !parts[2].starts_with("HTTP/1.") {
-        respond(
+    let head = match read_head(stream, deadline) {
+        Ok(head) => head,
+        Err(_) => return Ok(false),
+    };
+    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+        return Ok(false);
+    }
+    stream.set_write_timeout(Some(
+        deadline.saturating_duration_since(std::time::Instant::now()),
+    ))?;
+    let mut headers_buf = vec![httparse::EMPTY_HEADER; HEAD_LIMIT / 4];
+    let mut request = httparse::Request::new(&mut headers_buf);
+    if !matches!(request.parse(&head), Ok(httparse::Status::Complete(_))) {
+        drop(respond(
             stream,
             400,
             page("Studio did not understand this request."),
             "text/html; charset=utf-8",
-        )?;
+        ));
         return Ok(false);
     }
-    if parts[0] != "GET" {
-        respond(
+    let method = request.method.unwrap_or_default();
+    let target = request.path.unwrap_or_default();
+    let version_ok = request.version.is_some();
+    if !version_ok {
+        drop(respond(
+            stream,
+            400,
+            page("Studio did not understand this request."),
+            "text/html; charset=utf-8",
+        ));
+        return Ok(false);
+    }
+    if method != "GET" {
+        drop(respond(
             stream,
             405,
             page("Studio forwards only the sign-in redirect."),
             "text/html; charset=utf-8",
-        )?;
+        ));
         return Ok(false);
     }
-    let target = parts[1];
     let path = target.split('?').next().unwrap_or_default();
     if !target.starts_with('/') || path != input.path {
-        respond(
+        drop(respond(
             stream,
             404,
             page("Studio forwards only the sign-in redirect."),
             "text/html; charset=utf-8",
-        )?;
+        ));
         return Ok(false);
     }
     let mut headers = Map::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim();
-            if SENT_HEADERS.contains(&name.as_str()) && value.len() <= HEADER_LIMIT {
-                headers.entry(name).or_insert_with(|| json!(value));
+    let mut seen = HashSet::new();
+    for header in request.headers {
+        let name = header.name.to_ascii_lowercase();
+        if SENT_HEADERS.contains(&name.as_str()) && seen.insert(name.clone()) {
+            let value = header
+                .value
+                .iter()
+                .copied()
+                .map(char::from)
+                .collect::<String>()
+                .trim()
+                .to_owned();
+            if value.chars().count() <= HEADER_LIMIT {
+                headers.insert(name, json!(value));
             }
         }
     }
-    let attempt = relays.fetch_add(1, Ordering::AcqRel) + 1;
+    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+        return Ok(false);
+    }
+    let attempt = match relays.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        (value < MAX_RELAYS).then_some(value + 1)
+    }) {
+        Ok(value) => value + 1,
+        Err(_) => {
+            drop(respond(
+                stream,
+                410,
+                page("This sign-in forward is closed. Return to Studio."),
+                "text/html; charset=utf-8",
+            ));
+            stop.store(true, Ordering::Release);
+            return Ok(false);
+        }
+    };
     let request_id = fresh_request_id()?;
     let payload =
         json!({"bridgeId":input.bridge_id,"token":input.token,"target":target,"headers":headers});
@@ -425,37 +507,115 @@ fn handle_connection(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| BrowserError::Exchange)?
         .as_secs() as i64;
-    let result =
-        match exchange.exchange(&input.server, REMOTE_ACTION, &payload, &request_id, now)? {
-            ExchangeOutcome::Applied(result) => result,
-            ExchangeOutcome::NotApplied(reason) => return Err(BrowserError::Refused(reason)),
-            ExchangeOutcome::Unknown => return Err(BrowserError::Unknown),
-        };
-    let (status, content_type, body, done) = cleaned_result(&result)?;
+    let result = match exchange_until(
+        exchange,
+        &input.server,
+        REMOTE_ACTION,
+        payload,
+        request_id,
+        now,
+        deadline,
+    ) {
+        Ok(ExchangeOutcome::Applied(result)) => result,
+        Ok(ExchangeOutcome::NotApplied(_)) => {
+            respond_best_effort(
+                stream,
+                502,
+                page("The sign-in result is unknown. Check the chat in Studio."),
+                "text/html; charset=utf-8",
+            );
+            return Ok(true);
+        }
+        Ok(ExchangeOutcome::Unknown) | Err(_) => {
+            respond_best_effort(
+                stream,
+                502,
+                page("The sign-in result is unknown. Check the chat in Studio."),
+                "text/html; charset=utf-8",
+            );
+            return Ok(true);
+        }
+    };
+    let (status, content_type, body, done) = match cleaned_result(&result) {
+        Ok(cleaned) => cleaned,
+        Err(_) => {
+            respond_best_effort(
+                stream,
+                502,
+                page("The sign-in result is unknown. Check the chat in Studio."),
+                "text/html; charset=utf-8",
+            );
+            return Ok(true);
+        }
+    };
+    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+        return Ok(false);
+    }
+    stream.set_write_timeout(Some(
+        deadline.saturating_duration_since(std::time::Instant::now()),
+    ))?;
     respond(stream, status, body, &content_type)?;
     Ok(done || attempt >= MAX_RELAYS)
+}
+
+fn exchange_until(
+    exchange: Arc<dyn PairedExchange>,
+    server: &str,
+    action: &str,
+    payload: Value,
+    request_id: String,
+    now: i64,
+    deadline: std::time::Instant,
+) -> Result<ExchangeOutcome, BrowserError> {
+    if std::time::Instant::now() >= deadline {
+        return Err(BrowserError::Unknown);
+    }
+    let active = ACTIVE_EXCHANGES.fetch_add(1, Ordering::AcqRel);
+    if active >= MAX_ACTIVE_EXCHANGES {
+        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
+        return Err(BrowserError::Exchange);
+    }
+    let server = server.to_owned();
+    let action = action.to_owned();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("studio-browser-exchange".into())
+        .spawn(move || {
+            let _permit = ActiveExchangePermit;
+            let result = exchange.exchange(&server, &action, &payload, &request_id, now);
+            drop(sender.send(result));
+        });
+    if worker.is_err() {
+        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
+        return Err(BrowserError::Exchange);
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    receiver
+        .recv_timeout(remaining)
+        .map_err(|_| BrowserError::Unknown)?
 }
 
 fn fresh_request_id() -> Result<String, BrowserError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| BrowserError::Exchange)?;
-    Ok(format!("browser-callback:{}", hex(&bytes)))
+    Ok(format!(
+        "browser-callback:{}",
+        uuid::Uuid::from_bytes(bytes).simple()
+    ))
 }
 
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        result.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        result.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    result
-}
-
-fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, BrowserError> {
+fn read_head(
+    stream: &mut TcpStream,
+    deadline: std::time::Instant,
+) -> Result<Vec<u8>, BrowserError> {
     let mut data = Vec::new();
     let mut chunk = [0_u8; 4096];
     while !data.windows(4).any(|window| window == b"\r\n\r\n") {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(BrowserError::Expired);
+        }
+        stream.set_read_timeout(Some(remaining))?;
         let count = stream.read(&mut chunk)?;
         if count == 0 || data.len() + count > HEAD_LIMIT {
             return Err(BrowserError::InvalidForward);
@@ -466,7 +626,7 @@ fn read_head(stream: &mut TcpStream) -> Result<Vec<u8>, BrowserError> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .unwrap_or(data.len());
-    data.truncate(end);
+    data.truncate(end + 4);
     Ok(data)
 }
 
@@ -483,13 +643,14 @@ fn cleaned_result(result: &Value) -> Result<(u16, String, Vec<u8>, bool), Browse
             page(
                 "The sign-in command answered with a redirect. Studio does not follow it. Return to Studio.",
             ),
-            false,
+            result.get("done").and_then(Value::as_bool) == Some(true),
         ));
     }
-    let encoded = result
-        .get("body")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let encoded = match result.get("body") {
+        None => "",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(BrowserError::Exchange),
+    };
     if encoded.len() > BODY_BASE64_LIMIT {
         return Err(BrowserError::EncodedBodyLimit);
     }
@@ -519,17 +680,15 @@ fn cleaned_result(result: &Value) -> Result<(u16, String, Vec<u8>, bool), Browse
     } else {
         "text/plain"
     };
-    let charset = text
-        .split(';')
-        .skip(1)
-        .filter_map(|part| part.trim().strip_prefix("charset="))
-        .find(|value| {
-            !value.is_empty()
-                && value.len() <= 40
-                && value
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
-        });
+    let charset = text.match_indices("charset=").find_map(|(index, _)| {
+        let value = &text[index + "charset=".len()..];
+        let bounded = value
+            .bytes()
+            .take(40)
+            .take_while(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(byte))
+            .count();
+        (bounded > 0).then_some(&value[..bounded])
+    });
     let content_type = format!(
         "{base}; {}",
         charset
@@ -587,16 +746,110 @@ fn respond_best_effort(
     respond(stream, status, body, content_type).is_ok()
 }
 
-/// Browser-related inputs discovered by the thread preparation adapter.
-pub struct BrowserConfigSnapshot<'a> {
-    pub target: &'a Value,
-    pub shared: &'a Value,
-    pub home: &'a str,
-    pub shared_home: &'a str,
-    pub skill_available: bool,
-    pub node_runtime_available: bool,
-    pub trusted_services_valid: bool,
-    pub browser_service_available: bool,
+/// Filesystem facts discovered alongside the Python-written config records.
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserConfigAssets {
+    pub control_chrome_skill: Option<String>,
+    pub node_runtime: Option<String>,
+    pub browser_service: Option<String>,
+}
+
+/// A validated snapshot assembled from the stored account and shared config records.
+pub struct BrowserConfigSnapshot {
+    target: Value,
+    shared: Value,
+    home: String,
+    shared_home: String,
+    skill_available: bool,
+    node_runtime_available: bool,
+    browser_service_available: bool,
+    trusted_services_valid: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BrowserConfigSnapshotError {
+    #[error("stored browser configuration is invalid")]
+    InvalidRecord,
+}
+
+impl BrowserConfigSnapshot {
+    pub fn from_stored_records(
+        target: &Value,
+        shared: &Value,
+        home: &str,
+        shared_home: &str,
+        assets: BrowserConfigAssets,
+    ) -> Result<Self, BrowserConfigSnapshotError> {
+        if !target.is_object() || !shared.is_object() {
+            return Err(BrowserConfigSnapshotError::InvalidRecord);
+        }
+        for record in [target, shared] {
+            if record
+                .get("mcp_servers")
+                .is_some_and(|servers| !servers.is_object())
+                || record
+                    .pointer("/mcp_servers/node_repl")
+                    .is_some_and(|node| !node.is_object() && !node.is_null())
+            {
+                return Err(BrowserConfigSnapshotError::InvalidRecord);
+            }
+        }
+        let shared_node = shared.pointer("/mcp_servers/node_repl");
+        let source_command = shared_node
+            .and_then(|node| node.get("command"))
+            .and_then(Value::as_str);
+        if assets
+            .node_runtime
+            .as_deref()
+            .is_some_and(|path| Some(path) != source_command)
+        {
+            return Err(BrowserConfigSnapshotError::InvalidRecord);
+        }
+        let service_value =
+            shared_node.and_then(|node| node.pointer("/env/NODE_REPL_TRUSTED_SERVICES"));
+        let parsed = match service_value {
+            None => Some(json!({})),
+            Some(Value::String(source)) => serde_json::from_str::<Value>(source).ok(),
+            Some(_) => None,
+        };
+        let trusted_services_valid = parsed.is_some();
+        let configured_browser = parsed.and_then(|value| {
+            value
+                .get("browser")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        if assets
+            .browser_service
+            .as_deref()
+            .is_some_and(|path| Some(path) != configured_browser.as_deref())
+        {
+            return Err(BrowserConfigSnapshotError::InvalidRecord);
+        }
+        let skill_available = assets
+            .control_chrome_skill
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_file());
+        let node_runtime_available = assets
+            .node_runtime
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_file());
+        let browser_service_available = assets
+            .browser_service
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_file());
+        Ok(Self {
+            target: target.clone(),
+            shared: shared.clone(),
+            home: home.to_owned(),
+            shared_home: shared_home.to_owned(),
+            skill_available,
+            node_runtime_available,
+            browser_service_available,
+            trusted_services_valid,
+        })
+    }
 }
 
 /// Browser overrides or a visible reason they could not be prepared.
@@ -607,7 +860,7 @@ pub struct BrowserConfigDecision {
 }
 
 /// Pure browser-session configuration. Filesystem discovery and host calls stay in the caller.
-pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserConfigDecision {
+pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigDecision {
     let BrowserConfigSnapshot {
         target,
         shared,
@@ -615,8 +868,8 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserCon
         shared_home,
         skill_available,
         node_runtime_available,
-        trusted_services_valid,
         browser_service_available,
+        trusted_services_valid,
     } = snapshot;
     let target_node = target
         .pointer("/mcp_servers/node_repl")
@@ -640,9 +893,9 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserCon
         Some("The control-chrome skill for the installed Chrome plugin version was not found")
     } else if !node_runtime_available {
         Some("The node_repl runtime from the Codex configuration is missing")
-    } else if target_node.and_then(|node| node.get("command"))
-        != shared_node.and_then(|node| node.get("command"))
-        && target_node.is_some()
+    } else if target_node.is_some_and(|node| !node.as_object().is_some_and(Map::is_empty))
+        && target_node.and_then(|node| node.get("command"))
+            != shared_node.and_then(|node| node.get("command"))
     {
         Some("This account uses its own node_repl runtime")
     } else if !trusted_services_valid {
@@ -691,11 +944,16 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserCon
             .get("NODE_REPL_TRUSTED_CODE_PATHS")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let mut roots = std::env::split_paths(std::ffi::OsStr::new(trusted))
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let mut roots = Vec::new();
+        let mut seen = HashSet::new();
+        for path in std::env::split_paths(std::ffi::OsStr::new(trusted)) {
+            let path = path.to_string_lossy().into_owned();
+            if !path.is_empty() && seen.insert(path.clone()) {
+                roots.push(path);
+            }
+        }
         for path in [shared_home, home] {
-            if !roots.iter().any(|existing| existing == path) {
+            if !path.is_empty() && seen.insert(path.clone()) {
                 roots.push(path.to_owned());
             }
         }
@@ -717,7 +975,7 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot<'_>) -> BrowserCon
         }
         env.entry("NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME")
             .or_insert_with(|| json!(BROWSER_GUIDANCE));
-        let config = json!({"mcp_servers":{"node_repl":node}});
+        let config = json!({"mcp_servers.node_repl":node});
         return BrowserConfigDecision {
             overrides: config,
             unavailable_reason: None,
@@ -830,6 +1088,11 @@ mod tests {
             forwarder.open(other, 1000.0, Some(0)),
             Err(BrowserError::PortInUse(43210))
         ));
+        let mut abandoned = TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port))
+            .expect("listener remains available beside an incomplete request");
+        abandoned
+            .write_all(b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: slow")
+            .expect("partial request writes");
         let response = request(receipt.port);
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("Content-Security-Policy: sandbox; default-src 'none'"));
@@ -852,6 +1115,62 @@ mod tests {
         assert!(calls[0].request_id.starts_with("browser-callback:"));
         assert_ne!(calls[0].request_id, calls[1].request_id);
         assert!(calls[0].now > 0);
+        drop(abandoned);
+    }
+
+    #[test]
+    fn oversized_first_user_agent_duplicate_is_not_replaced_by_a_later_short_value() {
+        let exchange = Arc::new(FakeExchange {
+            outcomes: Mutex::new(vec![outcome(true)]),
+            ..FakeExchange::default()
+        });
+        let forwarder = BrowserForwarder::new(exchange.clone());
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .expect("forward opens");
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port)).expect("loopback");
+        write!(
+            stream,
+            "GET /oauth/callback HTTP/1.1\r\nUser-Agent: {}\r\nUser-Agent: short\r\n\r\n",
+            "x".repeat(HEADER_LIMIT + 1)
+        )
+        .expect("request writes");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response reads");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        let calls = exchange.calls.lock().expect("exchange calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].payload["headers"], json!({}));
+    }
+
+    #[test]
+    fn active_bridge_identity_replay_refuses_changed_request_fields() {
+        let forwarder = BrowserForwarder::new(Arc::new(FakeExchange {
+            outcomes: Mutex::new(vec![outcome(true)]),
+            ..FakeExchange::default()
+        }));
+        let original = input();
+        let receipt = forwarder
+            .open(original.clone(), 1000.0, Some(0))
+            .expect("open");
+        for mutate in [0, 1, 2, 3, 4] {
+            let mut changed = original.clone();
+            match mutate {
+                0 => changed.server = "other-server".into(),
+                1 => changed.token = "different-token-with-entropy".into(),
+                2 => changed.path = "/different/callback".into(),
+                3 => changed.port += 1,
+                _ => changed.expires_at += 1.0,
+            }
+            assert!(matches!(
+                forwarder.open(changed, 1000.0, Some(0)),
+                Err(BrowserError::Conflict)
+            ));
+        }
+        assert!(forwarder.close(&original.bridge_id).expect("close"));
+        assert_ne!(receipt.port, 0);
     }
 
     #[test]
@@ -867,6 +1186,85 @@ mod tests {
         let response = request(receipt.port);
         assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
         assert_eq!(exchange.calls.lock().expect("test mutex").len(), 1);
+    }
+
+    #[test]
+    fn paired_refusal_reason_is_not_exposed_to_the_callback_client() {
+        let exchange = Arc::new(FakeExchange {
+            outcomes: Mutex::new(vec![ExchangeOutcome::NotApplied(
+                "code=callback-secret token=private".into(),
+            )]),
+            ..FakeExchange::default()
+        });
+        let forwarder = BrowserForwarder::new(exchange);
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .expect("forward opens");
+        let response = request(receipt.port);
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(!response.contains("callback-secret"));
+        assert!(!response.contains("private"));
+    }
+
+    #[test]
+    fn exchange_wait_uses_the_connection_deadline_and_does_not_repeat_the_call() {
+        struct DelayedExchange(Arc<AtomicUsize>);
+        impl PairedExchange for DelayedExchange {
+            fn exchange(
+                &self,
+                _server: &str,
+                _action: &str,
+                _payload: &Value,
+                _request_id: &str,
+                _now: i64,
+            ) -> Result<ExchangeOutcome, BrowserError> {
+                self.0.fetch_add(1, Ordering::AcqRel);
+                thread::sleep(Duration::from_millis(100));
+                Ok(ExchangeOutcome::Applied(json!({"status":200,"body":""})))
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let exchange: Arc<dyn PairedExchange> = Arc::new(DelayedExchange(Arc::clone(&calls)));
+        let started = std::time::Instant::now();
+        let result = exchange_until(
+            exchange,
+            "peer",
+            REMOTE_ACTION,
+            json!({}),
+            "request-id".into(),
+            0,
+            started + Duration::from_millis(10),
+        );
+        assert!(matches!(result, Err(BrowserError::Unknown)));
+        assert!(started.elapsed() < Duration::from_millis(80));
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+        let not_started = Arc::new(AtomicUsize::new(0));
+        let result = exchange_until(
+            Arc::new(DelayedExchange(Arc::clone(&not_started))),
+            "peer",
+            REMOTE_ACTION,
+            json!({}),
+            "expired-request".into(),
+            0,
+            std::time::Instant::now() - Duration::from_millis(1),
+        );
+        assert!(matches!(result, Err(BrowserError::Unknown)));
+        assert_eq!(not_started.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn connection_read_timeout_is_absolute_and_incomplete_requests_do_not_relay() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("loopback listener");
+        let client = TcpStream::connect(listener.local_addr().expect("local address"))
+            .expect("loopback client");
+        let (mut accepted, _) = listener.accept().expect("accept loopback client");
+        let deadline = std::time::Instant::now() + Duration::from_millis(25);
+        assert!(matches!(
+            read_head(&mut accepted, deadline),
+            Err(BrowserError::Listener(_))
+        ));
+        drop(client);
     }
 
     #[test]
@@ -898,6 +1296,9 @@ mod tests {
                 .contains("Studio does not follow it")
         );
         assert!(!done);
+        let (_, _, _, done) =
+            cleaned_result(&json!({"status":302,"done":true})).expect("safe redirect replacement");
+        assert!(done, "redirect replacement retains completion semantics");
         let oversized = json!({"status":200,"body":"A".repeat(BODY_BASE64_LIMIT + 1)});
         assert!(matches!(
             cleaned_result(&oversized),
@@ -915,77 +1316,146 @@ mod tests {
     }
 
     #[test]
+    fn non_string_response_body_is_refused_and_error_formatting_is_redacted() {
+        assert!(matches!(
+            cleaned_result(&json!({"status":200,"body":{}})),
+            Err(BrowserError::Exchange)
+        ));
+        let error = BrowserError::Refused;
+        assert_eq!(
+            error.to_string(),
+            "the paired server refused the sign-in redirect"
+        );
+        assert!(!format!("{error:?}").contains("callback-secret"));
+    }
+
+    #[test]
+    fn charset_search_matches_python_pattern_inside_a_content_type_parameter() {
+        let (_, content_type, _, _) = cleaned_result(&json!({
+            "status":200,
+            "contentType":"text/plain; charset=iso-8859-1 extra",
+            "body":""
+        }))
+        .expect("valid minimal response");
+        assert_eq!(content_type, "text/plain; charset=iso-8859-1");
+    }
+
+    #[test]
     fn browser_config_is_pure_and_preserves_account_runtime() {
+        let root = tempfile::tempdir().expect("asset fixtures");
+        let skill_path = root.path().join("SKILL.md");
+        let node_path = root.path().join("node");
+        let service_path = root.path().join("browser.mjs");
+        std::fs::write(&skill_path, "skill").expect("skill fixture");
+        std::fs::write(&node_path, "node").expect("node fixture");
+        std::fs::write(&service_path, "service").expect("service fixture");
+        let skill = skill_path.to_string_lossy().into_owned();
+        let node = node_path.to_string_lossy().into_owned();
+        let service = service_path.to_string_lossy().into_owned();
         let shared = json!({"mcp_servers":{"node_repl":{
-            "command":"/usr/bin/node", "args":["server.mjs"], "env":{
-                "NODE_REPL_TRUSTED_SERVICES":"{\"browser\":\"/opt/browser.mjs\"}",
+            "command":node, "args":["server.mjs"], "env":{
+                "NODE_REPL_TRUSTED_SERVICES":format!("{{\"browser\":{}}}", json!(service)),
                 "NODE_REPL_NODE_PATH":"/opt/modules", "SECRET":"not copied"
             }
         }}});
-        let config = prepare_browser_config(BrowserConfigSnapshot {
-            target: &Value::Null,
-            shared: &shared,
-            home: "/acct",
-            shared_home: "/shared",
-            skill_available: true,
-            node_runtime_available: true,
-            trusted_services_valid: true,
-            browser_service_available: true,
-        });
+        let assets = BrowserConfigAssets {
+            control_chrome_skill: Some(skill.clone()),
+            node_runtime: Some(node.clone()),
+            browser_service: Some(service.clone()),
+        };
+        let config = prepare_browser_config(
+            BrowserConfigSnapshot::from_stored_records(
+                &json!({}),
+                &shared,
+                "/acct",
+                "/shared",
+                assets.clone(),
+            )
+            .expect("valid stored records"),
+        );
         assert_eq!(config.unavailable_reason, None);
         assert_eq!(config.developer_instructions, Some(BROWSER_GUIDANCE));
         assert_eq!(
-            config.overrides.pointer("/mcp_servers/node_repl/command"),
-            Some(&json!("/usr/bin/node"))
+            config
+                .overrides
+                .get("mcp_servers.node_repl")
+                .and_then(|node| node.get("command")),
+            Some(&json!(node))
         );
         assert_eq!(
             config
                 .overrides
-                .pointer("/mcp_servers/node_repl/env/CODEX_HOME"),
+                .get("mcp_servers.node_repl")
+                .and_then(|node| node.pointer("/env/CODEX_HOME")),
             Some(&json!("/acct"))
         );
         assert_eq!(
             config
                 .overrides
-                .pointer("/mcp_servers/node_repl/env/NODE_REPL_TRUSTED_SERVICES"),
-            Some(&json!("{\"browser\": \"/opt/browser.mjs\"}"))
+                .get("mcp_servers.node_repl")
+                .and_then(|node| node.pointer("/env/NODE_REPL_TRUSTED_SERVICES")),
+            Some(&json!(format!("{{\"browser\": {}}}", json!(service))))
         );
         assert_eq!(
             config
                 .overrides
-                .pointer("/mcp_servers/node_repl/env/SECRET"),
+                .get("mcp_servers.node_repl")
+                .and_then(|node| node.pointer("/env/SECRET")),
             None
         );
-        let disabled = prepare_browser_config(BrowserConfigSnapshot {
-            target: &json!({"features":{"plugins":false}}),
-            shared: &shared,
-            home: "/acct",
-            shared_home: "/shared",
-            skill_available: true,
-            node_runtime_available: true,
-            trusted_services_valid: true,
-            browser_service_available: true,
-        });
+        let disabled = prepare_browser_config(
+            BrowserConfigSnapshot::from_stored_records(
+                &json!({"features":{"plugins":false}}),
+                &shared,
+                "/acct",
+                "/shared",
+                assets.clone(),
+            )
+            .expect("valid stored records"),
+        );
         assert_eq!(disabled.overrides, json!({}));
         assert_eq!(
             disabled.unavailable_reason,
             Some("Plugins are disabled in this account's Codex configuration")
         );
         assert_eq!(disabled.developer_instructions, None);
-        let invalid_service = prepare_browser_config(BrowserConfigSnapshot {
-            target: &Value::Null,
-            shared: &shared,
-            home: "/acct",
-            shared_home: "/shared",
-            skill_available: true,
-            node_runtime_available: true,
-            trusted_services_valid: false,
-            browser_service_available: true,
-        });
+        let invalid_service_config = json!({"mcp_servers":{"node_repl":{"command":node,"env":{"NODE_REPL_TRUSTED_SERVICES":"not-json"}}}});
+        let invalid_service = prepare_browser_config(
+            BrowserConfigSnapshot::from_stored_records(
+                &json!({}),
+                &invalid_service_config,
+                "/acct",
+                "/shared",
+                BrowserConfigAssets {
+                    browser_service: None,
+                    ..assets.clone()
+                },
+            )
+            .expect("valid stored records"),
+        );
         assert_eq!(invalid_service.overrides, json!({}));
         assert_eq!(
             invalid_service.unavailable_reason,
             Some("NODE_REPL_TRUSTED_SERVICES is not valid JSON")
+        );
+        let empty_node = json!({"mcp_servers":{"node_repl":{}}});
+        let empty_target = prepare_browser_config(
+            BrowserConfigSnapshot::from_stored_records(
+                &empty_node,
+                &shared,
+                "/acct",
+                "/shared",
+                assets,
+            )
+            .expect("valid stored records"),
+        );
+        assert_eq!(empty_target.unavailable_reason, None);
+        assert_eq!(
+            empty_target
+                .overrides
+                .get("mcp_servers.node_repl")
+                .and_then(|node| node.get("enabled")),
+            None
         );
     }
 }

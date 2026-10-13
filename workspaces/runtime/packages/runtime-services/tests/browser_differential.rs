@@ -18,7 +18,7 @@ type ExchangeCall = (String, String, Value, String, i64);
 #[derive(Default)]
 struct Exchange {
     calls: Mutex<Vec<ExchangeCall>>,
-    outcome: Mutex<Option<ExchangeOutcome>>,
+    outcomes: Mutex<Vec<ExchangeOutcome>>,
 }
 
 impl PairedExchange for Exchange {
@@ -40,11 +40,15 @@ impl PairedExchange for Exchange {
                 request_id.into(),
                 now,
             ));
-        self.outcome
+        let mut outcomes = self
+            .outcomes
             .lock()
-            .expect("valid browser differential fixture")
-            .take()
-            .ok_or(BrowserError::Exchange)
+            .expect("valid browser differential fixture");
+        if outcomes.is_empty() {
+            Err(BrowserError::Exchange)
+        } else {
+            Ok(outcomes.remove(0))
+        }
     }
 }
 
@@ -86,6 +90,61 @@ fn local_request(port: u16, method: &str, target: &str, headers: &str) -> String
     response
 }
 
+fn local_raw_request(port: u16, raw: &[u8]) -> String {
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
+    stream.write_all(raw).expect("write raw callback request");
+    if !raw.windows(4).any(|window| window == b"\r\n\r\n") {
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("finish partial request");
+    }
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read callback response");
+    response
+}
+
+fn response_value(response: &str) -> Value {
+    if response.is_empty() {
+        return Value::Null;
+    }
+    let (head, body) = response.split_once("\r\n\r\n").expect("HTTP response head");
+    let status = head
+        .lines()
+        .next()
+        .expect("HTTP status line")
+        .split_whitespace()
+        .nth(1)
+        .expect("HTTP status")
+        .parse::<u16>()
+        .expect("numeric status");
+    let mut headers = serde_json::Map::new();
+    for line in head.lines().skip(1) {
+        if let Some((key, value)) = line.split_once(':') {
+            headers.insert(key.to_ascii_lowercase(), json!(value.trim()));
+        }
+    }
+    json!({"status":status,"headers":headers,"body":body})
+}
+
+fn loopback_listener_closed(port: u16) -> bool {
+    for _ in 0..20 {
+        match TcpStream::connect_timeout(
+            &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            std::time::Duration::from_millis(20),
+        ) {
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return true,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Ok(stream) => {
+                drop(stream);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    false
+}
+
 fn differing_paths(left: &Value, right: &Value, prefix: &str, out: &mut Vec<String>) {
     if left == right {
         return;
@@ -115,89 +174,103 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let exchange = Arc::new(Exchange::default());
     let result = match name {
         "redirect-response" => json!({"status":302,"location":"https://private.invalid/"}),
+        "redirect-done" => json!({"status":302,"done":true}),
+        "body-type-refusal" => json!({"status":200,"body":{}}),
+        "charset-contenttype" => json!({
+            "status":200,
+            "contentType":"text/plain; charset=iso-8859-1 extra",
+            "body":"YWNjZXB0ZWQ=",
+            "done":true
+        }),
         "body-bound" => json!({"status":200,"body":BASE64.encode(vec![b'x'; 256*1024+1])}),
         "encoded-body-bound" => {
-            json!({"status":200,"body":"A".repeat((256_usize*1024).div_ceil(3)*4+1)})
+            json!({"status":200,"body":"A".repeat(256_usize * 1024 * 4 / 3 + 1)})
         }
         _ => json!({"status":200,"contentType":"text/plain; charset=iso-8859-1",
                     "body":"YWNjZXB0ZWQ=","done":true}),
     };
-    if name == "unknown" {
-        *exchange
-            .outcome
-            .lock()
-            .expect("valid browser differential fixture") = Some(ExchangeOutcome::Unknown);
+    let outcomes = if name == "unknown" {
+        vec![ExchangeOutcome::Unknown]
+    } else if name == "two-valid-relays" {
+        vec![
+            ExchangeOutcome::Applied(json!({"status":200,"body":"Zmlyc3Q=","done":false})),
+            ExchangeOutcome::Applied(json!({"status":200,"body":"c2Vjb25k","done":true})),
+        ]
     } else {
-        *exchange
-            .outcome
-            .lock()
-            .expect("valid browser differential fixture") = Some(ExchangeOutcome::Applied(result));
-    }
+        vec![ExchangeOutcome::Applied(result)]
+    };
+    *exchange.outcomes.lock().expect("browser outcomes") = outcomes;
     let forwarder = BrowserForwarder::new(exchange.clone());
     let receipt = forwarder
         .open(input(), 1000.0, Some(0))
         .expect("open test loopback forward");
-    let response = match name {
-        "path-refusal" => local_request(
+    let responses = if name == "incomplete-then-valid" {
+        vec![
+            local_raw_request(
+                receipt.port,
+                b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
+            ),
+            local_request(receipt.port, "GET", "/oauth/callback?code=example-code", ""),
+        ]
+    } else if name == "two-valid-relays" {
+        vec![
+            local_request(receipt.port, "GET", "/oauth/callback?code=first", ""),
+            local_request(receipt.port, "GET", "/oauth/callback?code=second", ""),
+        ]
+    } else {
+        let response = match name {
+            "duplicate-user-agent" => local_raw_request(
             receipt.port,
-            "GET",
-            "/wrong?code=do-not-forward",
-            "User-Agent: test\r\n",
+            &format!("GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: {}\r\nUser-Agent: short\r\n\r\n", "x".repeat(1025)).into_bytes(),
         ),
-        "method-refusal" => local_request(
-            receipt.port,
-            "POST",
-            "/oauth/callback",
-            "User-Agent: test\r\n",
-        ),
-        "header-bound" => local_request(
-            receipt.port,
-            "GET",
-            "/oauth/callback",
-            &format!("User-Agent: {}\r\nAccept: text/html\r\n", "x".repeat(1025)),
-        ),
-        "head-bound" => local_request(
-            receipt.port,
-            "GET",
-            "/oauth/callback",
-            &format!("X-Test: {}\r\n", "x".repeat(16 * 1024)),
-        ),
-        _ => local_request(
-            receipt.port,
-            "GET",
-            "/oauth/callback?code=example-code",
-            "User-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\nCookie: secret-cookie\r\nAuthorization: secret-auth\r\n",
-        ),
+            "user-agent-latin1-bound" => {
+                let mut raw = b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: ".to_vec();
+                raw.extend_from_slice(&[0xe9; 1024]);
+                raw.extend_from_slice(b"\r\n\r\n");
+                local_raw_request(receipt.port, &raw)
+            }
+            "path-refusal" => local_request(
+                receipt.port,
+                "GET",
+                "/wrong?code=do-not-forward",
+                "User-Agent: test\r\n",
+            ),
+            "method-refusal" => local_request(
+                receipt.port,
+                "POST",
+                "/oauth/callback",
+                "User-Agent: test\r\n",
+            ),
+            "header-bound" => local_request(
+                receipt.port,
+                "GET",
+                "/oauth/callback",
+                &format!("User-Agent: {}\r\nAccept: text/html\r\n", "x".repeat(1025)),
+            ),
+            "head-bound" => local_request(
+                receipt.port,
+                "GET",
+                "/oauth/callback",
+                &format!("X-Test: {}\r\n", "x".repeat(16 * 1024)),
+            ),
+            _ => local_request(
+                receipt.port,
+                "GET",
+                "/oauth/callback?code=example-code",
+                "User-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\nCookie: secret-cookie\r\nAuthorization: secret-auth\r\n",
+            ),
+        };
+        vec![response]
     };
     let calls = exchange.calls.lock().expect("valid browser differential fixture").iter().map(|(server, action, payload, request_id, now)| {
         json!({"server":server,"action":action,"payload":payload,"requestId":request_id,"now":now})
     }).collect::<Vec<_>>();
+    let closed = loopback_listener_closed(receipt.port);
     forwarder
         .close(&input().bridge_id)
         .expect("close browser differential listener");
-    if response.is_empty() {
-        return (Value::Null, calls);
-    }
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .expect("valid browser differential fixture");
-    let status = head
-        .lines()
-        .next()
-        .expect("valid browser differential fixture")
-        .split_whitespace()
-        .nth(1)
-        .expect("valid browser differential fixture")
-        .parse::<u16>()
-        .expect("valid browser differential fixture");
-    let mut headers = serde_json::Map::new();
-    for line in head.lines().skip(1) {
-        if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.to_ascii_lowercase(), json!(value.trim()));
-        }
-    }
     (
-        json!({"status":status,"headers":headers,"body":body}),
+        json!({"responses":responses.iter().map(|response| response_value(response)).collect::<Vec<_>>(),"closed":closed}),
         calls,
     )
 }
@@ -222,6 +295,13 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                         | "body-bound"
                         | "encoded-body-bound"
                         | "unknown"
+                        | "incomplete-then-valid"
+                        | "two-valid-relays"
+                        | "redirect-done"
+                        | "duplicate-user-agent"
+                        | "body-type-refusal"
+                        | "charset-contenttype"
+                        | "user-agent-latin1-bound"
                 )
             )
         })
@@ -233,17 +313,21 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         .filter(|case| {
             full || matches!(
                 case["name"].as_str(),
-                Some("enabled-default" | "plugins-disabled" | "invalid-services")
+                Some("enabled-default" | "plugins-disabled" | "invalid-services" | "account-node")
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(forward_cases.len(), if full { 9 } else { 8 });
-    assert_eq!(config_cases.len(), if full { 9 } else { 3 });
+    assert_eq!(forward_cases.len(), if full { 16 } else { 15 });
+    assert_eq!(config_cases.len(), if full { 10 } else { 4 });
     for case in forward_cases {
         let (actual, rust_calls) = rust_response(case);
         assert!(
-            actual == case["python"]["response"],
-            "browser forward response differs"
+            actual["responses"] == case["python"]["responses"],
+            "browser forward responses differ"
+        );
+        assert!(
+            actual["closed"] == case["python"]["closed"],
+            "browser listener lifecycle differs"
         );
         let calls = case["python"]["calls"]
             .as_array()
@@ -282,35 +366,21 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
     for case in config_cases {
         let target = &case["target"];
         let shared = &case["shared"];
-        let decision = prepare_browser_config(BrowserConfigSnapshot {
+        let assets: studio_runtime_services::browser::BrowserConfigAssets =
+            serde_json::from_value(case["assets"].clone()).expect("asset facts are typed");
+        let snapshot = BrowserConfigSnapshot::from_stored_records(
             target,
             shared,
-            home: case["home"]
-                .as_str()
-                .expect("valid browser differential fixture"),
-            shared_home: case["sharedHome"]
-                .as_str()
-                .expect("valid browser differential fixture"),
-            skill_available: case["skillAvailable"]
-                .as_bool()
-                .expect("valid browser differential fixture"),
-            node_runtime_available: case["nodeRuntimeAvailable"]
-                .as_bool()
-                .expect("valid browser differential fixture"),
-            trusted_services_valid: case["trustedServicesValid"]
-                .as_bool()
-                .expect("valid browser differential fixture"),
-            browser_service_available: case["browserServiceAvailable"]
-                .as_bool()
-                .expect("valid browser differential fixture"),
-        });
-        let mut python_overrides = json!({});
-        if let Some(node) = case["python"]["overrides"].get("mcp_servers.node_repl") {
-            python_overrides = json!({"mcp_servers":{"node_repl":node}});
-        }
-        if decision.overrides != python_overrides {
+            case["home"].as_str().expect("account home path"),
+            case["sharedHome"].as_str().expect("shared home path"),
+            assets,
+        )
+        .expect("stored records form a checked config snapshot");
+        let decision = prepare_browser_config(snapshot);
+        let python_overrides = &case["python"]["overrides"];
+        if &decision.overrides != python_overrides {
             let mut paths = Vec::new();
-            differing_paths(&decision.overrides, &python_overrides, "", &mut paths);
+            differing_paths(&decision.overrides, python_overrides, "", &mut paths);
             paths.sort();
             paths.dedup();
             panic!(
@@ -329,6 +399,8 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             "browser guidance differs"
         );
     }
+    let fixture_root = oracle["fixtureRoot"].as_str().expect("oracle fixture root");
+    std::fs::remove_dir_all(fixture_root).expect("remove tmpfs Python config fixtures");
     let exchange = &oracle["pairedExchange"];
     assert_eq!(
         exchange["calls"]

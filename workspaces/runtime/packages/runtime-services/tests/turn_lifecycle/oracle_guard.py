@@ -5,6 +5,7 @@ recursive stat/lstat performed while resolving symlinks. Self-tests touch only a
 synthetic forbidden directory beneath the caller's disposable temporary root.
 """
 import os
+import ipaddress
 from pathlib import Path
 import pwd
 import sys
@@ -17,10 +18,11 @@ class IsolationViolation(BaseException):
 
 
 class OracleGuard:
-    def __init__(self, *, block_processes=False):
+    def __init__(self, *, block_processes=False, allow_loopback=False):
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         self.forbidden = {real_home / name for name in (".codex", ".claude")}
         self.block_processes = block_processes
+        self.allow_loopback = allow_loopback
         self.local = threading.local()
         self.stat, self.lstat = os.stat, os.lstat
 
@@ -32,6 +34,14 @@ class OracleGuard:
 
     def audit(self, event, args):
         if event in {"socket.connect", "socket.bind"}:
+            if self.allow_loopback and len(args) > 1:
+                address = args[1]
+                host = address[0] if isinstance(address, tuple) and address else None
+                try:
+                    if host == "localhost" or ipaddress.ip_address(host).is_loopback:
+                        return
+                except (ValueError, TypeError):
+                    pass
             raise IsolationViolation("network is forbidden in oracle")
         if self.block_processes and event in {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn"}:
             raise IsolationViolation("process launch is forbidden in oracle")
@@ -74,8 +84,8 @@ class OracleGuard:
         print("guard refused synthetic provider-home content and metadata access")
 
 
-def install_guard(*, block_processes=False):
-    guard = OracleGuard(block_processes=block_processes)
+def install_guard(*, block_processes=False, allow_loopback=False):
+    guard = OracleGuard(block_processes=block_processes, allow_loopback=allow_loopback)
     sys.addaudithook(guard.audit)
     # CPython emits no audit event for these metadata calls.
     os.stat = lambda path, *a, **kw: guard.metadata(guard.stat, path, *a, **kw)

@@ -19,7 +19,7 @@ SHARED = HERE.parents[1] / "turn_lifecycle"
 sys.path.insert(0, str(SHARED))
 from oracle_guard import install_guard  # noqa: E402
 
-guard = install_guard(block_processes=True)
+guard = install_guard(block_processes=True, allow_loopback=True)
 with contextlib.redirect_stdout(sys.stderr):
     guard.self_test()
 
@@ -47,48 +47,47 @@ def run_forward(case):
                 host="127.0.0.1", port=43210, path="/oauth/callback", expiresAt=2000.0)
     data.update(case.get("input", {}))
     calls = []
-    reply = case.get("reply", {"status": 200, "contentType": "text/plain; charset=iso-8859-1",
-                                "body": base64.b64encode(b"accepted").decode("ascii"), "done": True})
+    default_reply = {"status": 200, "contentType": "text/plain; charset=iso-8859-1",
+                     "body": base64.b64encode(b"accepted").decode("ascii"), "done": True}
+    replies = iter(case.get("replies", [case.get("reply", default_reply)]))
     def exchange(server, action, payload):
         calls.append({"server": server, "action": action, "payload": payload})
         if case.get("unknown"):
             raise RuntimeError("unknown")
-        return reply
+        return next(replies)
     runtime = SimpleNamespace(lock=threading.RLock())
-    opened = []
-    def fake_bind(forward):
-        forward.bound_port = forward.listen_port
-        opened.append(forward)
-    raw = case.get("request", b"GET /oauth/callback?code=example-code HTTP/1.1\r\n"
+    requests = case.get("requests", [case.get("request", b"GET /oauth/callback?code=example-code HTTP/1.1\r\n"
                     b"User-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\n"
-                    b"Cookie: secret-cookie\r\nAuthorization: secret-auth\r\n\r\n")
-    with patch.object(bridge.Forward, "bind", fake_bind), patch.object(bridge.Forward, "start", lambda self: None), \
-         patch.object(bridge.time, "time", return_value=case.get("now", 1000.0)):
+                    b"Cookie: secret-cookie\r\nAuthorization: secret-auth\r\n\r\n")])
+    with patch.object(bridge.time, "time", return_value=case.get("now", 1000.0)):
         try:
-            result = bridge.open_remote_forward(runtime, data, exchange, listen_port=43210)
+            result = bridge.open_remote_forward(runtime, data, exchange, listen_port=0)
             if case.get("replay"):
-                result = bridge.open_remote_forward(runtime, data, exchange, listen_port=43210)
-            forward = opened[0]
-            server_socket, client_socket = socket.socketpair()
-            forward.active = 1
-            client_socket.sendall(raw)
-            worker = threading.Thread(target=forward.connection, args=(server_socket,))
-            worker.start()
-            chunks = []
-            while True:
-                chunk = client_socket.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            worker.join(timeout=5)
-            client_socket.close()
-            if worker.is_alive():
-                raise RuntimeError("local oracle socketpair did not finish")
-            return {"open": result, "response": response_record(b"".join(chunks)), "calls": calls}
+                result = bridge.open_remote_forward(runtime, data, exchange, listen_port=0)
+            forward = runtime.__dict__["_browser_remote_forwards"][data["bridgeId"]]
+            responses = []
+            for raw in requests:
+                client = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+                client.settimeout(2)
+                client.sendall(raw)
+                if b"\r\n\r\n" not in raw:
+                    client.shutdown(socket.SHUT_WR)
+                chunks = []
+                while True:
+                    try:
+                        chunk = client.recv(65536)
+                    except ConnectionResetError:
+                        break
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                client.close()
+                responses.append(response_record(b"".join(chunks)))
+            return {"open": result, "responses": responses, "closed": forward.closed, "calls": calls}
         except Exception as error:
             return {"error": {"type": type(error).__name__, "message": str(error)}, "calls": calls}
         finally:
-            for forward in opened:
+            for forward in list(runtime.__dict__.get("_browser_remote_forwards", {}).values()):
                 forward.close("oracle-cleanup")
 
 
@@ -112,6 +111,7 @@ def config_corpus(root):
          "NODE_REPL_TRUSTED_SERVICES is not valid JSON"),
         ("service-missing", {}, {}, True, True, True, False,
          "The browser service file is missing"),
+        ("account-node", {}, {}, True, True, True, True, None),
     ]:
         base = root / name
         home, shared_home = base / "account", base / "shared"
@@ -135,6 +135,10 @@ def config_corpus(root):
                     "NODE_REPL_TRUSTED_CODE_PATHS": str(base / "trusted"),
                     "NODE_REPL_NODE_PATH": str(base / "modules"), "SECRET": "omit-me"}}}}
         target_config = target_bits
+        if name == "account-node":
+            target_config = {"mcp_servers": {"node_repl": {
+                "command": str(node_path), "env": {"ACCOUNT_SETTING": "keep"}}}}
+            target_bits = target_config
         if "node_repl" in target_bits.get("mcp_servers", {}) and target_bits["mcp_servers"]["node_repl"].get("command") == "/different/node":
             shared_config["mcp_servers"]["node_repl"]["command"] = str(node_path)
         target_toml = ""
@@ -146,6 +150,11 @@ def config_corpus(root):
         if target_node is not None:
             target_toml += "[mcp_servers.node_repl]\n"
             for key, value in target_node.items():
+                if key == "env" and isinstance(value, dict):
+                    target_toml += "\n[mcp_servers.node_repl.env]\n"
+                    for env_key, env_value in value.items():
+                        target_toml += env_key + " = " + json.dumps(env_value) + "\n"
+                    continue
                 target_toml += key + " = " + json.dumps(value) + "\n"
         (home / "config.toml").write_text(target_toml)
         (shared_home / "config.toml").write_text(
@@ -158,8 +167,9 @@ def config_corpus(root):
         cases.append({"name": name, "target": codex_browser.read_config(home),
                       "shared": codex_browser.read_config(shared_home),
                       "home": str(home.resolve()), "sharedHome": str(shared_home.resolve()),
-                      "skillAvailable": skill, "nodeRuntimeAvailable": runtime,
-                      "trustedServicesValid": valid_services, "browserServiceAvailable": service,
+                      "assets": {"controlChromeSkill": str((plugin / "SKILL.md").resolve()) if skill else None,
+                                 "nodeRuntime": str(node_path.resolve()) if runtime else None,
+                                 "browserService": str(service_path.resolve()) if service and valid_services else None},
                       "python": {"overrides": overrides, "reason": reason,
                                  "developerInstructions": codex_browser.GUIDANCE if overrides else None},
                       "expectedReason": expected_reason})
@@ -213,6 +223,21 @@ def main():
         {"name": "body-bound", "reply": {"status": 200, "body": base64.b64encode(b"x" * (256 * 1024 + 1)).decode("ascii")}},
         {"name": "encoded-body-bound", "reply": {"status": 200, "body": "A" * (256 * 1024 * 4 // 3 + 1)}},
         {"name": "unknown", "unknown": True},
+        {"name": "duplicate-user-agent", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: " + b"x" * 1025 + b"\r\nUser-Agent: short\r\n\r\n"},
+        {"name": "user-agent-latin1-bound", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: " + b"\xe9" * 1024 + b"\r\n\r\n"},
+        {"name": "body-type-refusal", "reply": {"status": 200, "body": {}}},
+        {"name": "charset-contenttype", "reply": {"status": 200,
+            "contentType": "text/plain; charset=iso-8859-1 extra",
+            "body": base64.b64encode(b"accepted").decode("ascii"), "done": True}},
+        {"name": "incomplete-then-valid", "requests": [
+            b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
+            b"GET /oauth/callback?code=example-code HTTP/1.1\r\n\r\n"]},
+        {"name": "two-valid-relays", "requests": [
+            b"GET /oauth/callback?code=first HTTP/1.1\r\n\r\n",
+            b"GET /oauth/callback?code=second HTTP/1.1\r\n\r\n"],
+         "replies": [{"status": 200, "body": base64.b64encode(b"first").decode(), "done": False},
+                     {"status": 200, "body": base64.b64encode(b"second").decode(), "done": True}]},
+        {"name": "redirect-done", "reply": {"status": 302, "done": True}},
     ]
     forward = [{"name": case["name"], "python": run_forward(case)} for case in cases]
     # Expiry is a pre-bind refusal and must not create an active forward.
@@ -225,29 +250,26 @@ def main():
             expiry = {"type": type(error).__name__, "message": str(error)}
         else:
             raise AssertionError("expired forward unexpectedly opened")
-    # Replay and port conflict use the production policy with only bind/start suppressed.
+    # Replay and port conflict use the production listener on loopback ephemeral ports.
     replay_case = {"name": "replay", "replay": True}
     conflict_runtime = SimpleNamespace(lock=threading.RLock())
     conflict_data = {"server": "peer", "bridgeId": "0123456789abcdef0123456789abcdef", "token": "0123456789abcdef",
                      "host": "127.0.0.1", "port": 43210, "path": "/oauth/callback", "expiresAt": 2000.0}
     conflicts = []
-    def fake_bind(forward): forward.bound_port = forward.listen_port
-    with patch.object(bridge.Forward, "bind", fake_bind), patch.object(bridge.Forward, "start", lambda self: None), \
-         patch.object(bridge.time, "time", return_value=1000.0):
+    with patch.object(bridge.time, "time", return_value=1000.0):
         replay = run_forward(replay_case)
-        first = bridge.open_remote_forward(conflict_runtime, conflict_data, lambda *args: {}, listen_port=43210)
+        first = bridge.open_remote_forward(conflict_runtime, conflict_data, lambda *args: {}, listen_port=0)
         second_data = dict(conflict_data, bridgeId="1123456789abcdef0123456789abcdef")
         try:
-            bridge.open_remote_forward(conflict_runtime, second_data, lambda *args: {}, listen_port=43210)
+            bridge.open_remote_forward(conflict_runtime, second_data, lambda *args: {}, listen_port=0)
         except Exception as error:
             conflicts.append({"type": type(error).__name__, "message": str(error)})
         for value in list(conflict_runtime.__dict__.get("_browser_remote_forwards", {}).values()):
             value.close("oracle-cleanup")
-    with tempfile.TemporaryDirectory(prefix="browser-oracle-") as temporary:
-        root = Path(temporary)
-        output = {"forward": forward, "expired": expiry, "replay": replay,
-                  "conflict": conflicts, "pairedExchange": paired_exchange_cases(),
-                  "config": config_corpus(root)}
+    root = Path(tempfile.mkdtemp(prefix="browser-oracle-"))
+    output = {"forward": forward, "expired": expiry, "replay": replay,
+              "conflict": conflicts, "pairedExchange": paired_exchange_cases(),
+              "config": config_corpus(root), "fixtureRoot": str(root)}
     print(json.dumps(output, sort_keys=True, separators=(",", ":")))
 
 
