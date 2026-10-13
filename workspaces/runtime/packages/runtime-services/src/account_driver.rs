@@ -5,6 +5,7 @@
 //! the driver's mutex. Credential material is never retained in this module.
 
 #[cfg(test)]
+#[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
 mod prepared_python_test_support;
 

@@ -1,6 +1,7 @@
 //! Durable terminal state and the narrow AppServer session boundary.
 
 #[cfg(test)]
+#[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
 mod prepared_python_test_support;
 

@@ -1,3 +1,4 @@
+#[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
 use std::fs;

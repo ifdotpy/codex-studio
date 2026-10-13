@@ -1,5 +1,6 @@
 //! Python-produced snapshots exercised through the transaction consumer interfaces.
 
+#[allow(clippy::duplicate_mod)]
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
 use rusqlite::params;
