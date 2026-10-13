@@ -371,6 +371,8 @@ class LayrReadinessTests(unittest.TestCase):
     def test_project_entity_follows_the_host_records(self) -> None:
         from codex_vm_agents import project_layr_id, refresh_readiness
         key = project_layr_id(self.record(self.home, self.project['id']))
+        # The ready state is shown only while this server has a layr chat of the project.
+        self.chat(self.home, self.project['path'], project_id=self.project['id'], project_server_id='home')
         refresh_readiness(self.home)
         first, value = self.entity(self.home, self.project['id'])
         self.assertEqual(value['layrReadiness'], {'state': 'not_imported'})
@@ -395,6 +397,8 @@ class LayrReadinessTests(unittest.TestCase):
     def test_project_entity_carries_the_mac_sync_report(self) -> None:
         from codex_vm_agents import project_layr_id, refresh_readiness
         key = project_layr_id(self.record(self.home, self.project['id']))
+        # The sync report rides on the ready state, which needs a layr chat of the project here.
+        self.chat(self.home, self.project['path'], project_id=self.project['id'], project_server_id='home')
         directory = self.vm / 'layr-projects' / key
         (directory / 'sync').mkdir(parents=True)
         (directory / 'project.json').write_text(json.dumps({'projectId': key, 'source': self.project['path']}))
