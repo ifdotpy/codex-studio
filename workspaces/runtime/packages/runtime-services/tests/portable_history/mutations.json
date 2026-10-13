@@ -1,0 +1,32 @@
+[
+  {
+    "id": "descriptor-version-check",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if descriptor.version != ARCHIVE_VERSION",
+        "after": "if descriptor.version == ARCHIVE_VERSION"
+      }
+    ]
+  },
+  {
+    "id": "stored-agent-epoch-binding",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "|| agent.epoch != input.epoch",
+        "after": "|| agent.epoch == input.epoch"
+      }
+    ]
+  },
+  {
+    "id": "exclude-restored-items-from-context",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if !truthy(item.get(\"afterRestore\")) {",
+        "after": "if truthy(item.get(\"afterRestore\")) {"
+      }
+    ]
+  }
+]
