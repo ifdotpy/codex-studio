@@ -1,6 +1,6 @@
 //! Pure sync document, cursor and preference decisions.
 
-use crate::sync_views::value_truthy;
+use crate::event_write::truthy;
 pub use crate::sync_views::{
     AgentViewContext, ComplaintViewContext, RoomViewContext, agent_entity_view,
     complaint_entity_view, openapi_document, project_entity_view, project_persisted_record,
@@ -11,9 +11,7 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use studio_runtime_store::{
-    CoordinationRepository, RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository,
-};
+use studio_runtime_store::{RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository};
 use thiserror::Error;
 
 pub const ENTITY_PAGE_LIMIT: i64 = 500;
@@ -30,6 +28,7 @@ const TASK_RETIRE_BATCH: usize = 100;
 pub fn maintain_entity_projections(
     transaction: &Transaction<'_>,
     state_dir: &str,
+    validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     for table in [
         "runtime_agents",
@@ -49,7 +48,8 @@ pub fn maintain_entity_projections(
         .into_iter()
         .map(|(_, raw)| serde_json::from_str::<Value>(&raw).map_err(StoreError::from))
         .collect::<StoreResult<Vec<_>>>()?;
-    maintain_peer_team_entities(transaction)?;
+    let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
+    maintain_peer_team_entities(transaction, &validate_projection)?;
     let mut current_rooms = BTreeSet::new();
     for (table, collection) in [
         ("runtime_agents", "agent"),
@@ -62,20 +62,24 @@ pub fn maintain_entity_projections(
     ] {
         for (id, raw) in stored_records(transaction, table)? {
             let record = serde_json::from_str::<Value>(&raw)?;
-            if collection == "agent" && record.get("deletedAt").is_some_and(value_truthy) {
-                retire_if_live(transaction, collection, &id)?;
+            if collection == "agent" && truthy(record.get("deletedAt")) {
+                retire_if_live(transaction, collection, &id, &validate_projection)?;
                 continue;
             }
             if collection == "request"
                 && record.get("status").and_then(Value::as_str) != Some("pending")
             {
-                retire_if_live(transaction, collection, &id)?;
+                retire_if_live(transaction, collection, &id, &validate_projection)?;
                 continue;
             }
             let projected = match collection {
                 "agent" => agent_entity_view(
                     &record,
-                    &crate::sync_entity_context::agent_view_context(transaction, &record)?,
+                    &crate::sync_entity_context::agent_view_context(
+                        transaction,
+                        &record,
+                        project_server_id.as_deref(),
+                    )?,
                 ),
                 "room" => {
                     let context = crate::sync_entity_context::room_view_context(
@@ -113,24 +117,31 @@ pub fn maintain_entity_projections(
                 if collection == "room" {
                     current_rooms.insert(id.clone());
                 }
-                SyncDocumentsRepository::put_entity(
+                put_projection(
                     transaction,
                     collection,
                     &id,
                     projected,
                     false,
+                    &validate_projection,
                 )?;
             }
         }
     }
     if table_exists(transaction, "runtime_rooms")? {
-        retire_unkept(transaction, "room", &current_rooms, None)?;
+        retire_unkept(
+            transaction,
+            "room",
+            &current_rooms,
+            None,
+            &validate_projection,
+        )?;
     }
 
-    maintain_task_window(transaction)?;
-    maintain_monitor_window(transaction)?;
-    maintain_event_window(transaction)?;
-    maintain_canvas_chat_entities(transaction)?;
+    maintain_task_window(transaction, &validate_projection)?;
+    maintain_monitor_window(transaction, &validate_projection)?;
+    maintain_event_window(transaction, &validate_projection)?;
+    maintain_canvas_chat_entities(transaction, &validate_projection)?;
 
     // Python creates a workspace projection on first seed even though its
     // value is mostly defaults. Preserve an existing workspace view and add
@@ -154,13 +165,32 @@ pub fn maintain_entity_projections(
         .or_insert(json!(1));
     workspace.entry("peerTeamsVersion").or_insert(json!(1));
     workspace.entry("tasksHistoryLimit").or_insert(json!(100));
-    SyncDocumentsRepository::put_entity(
+    put_projection(
         transaction,
         "workspace",
         "current",
         Value::Object(workspace),
         false,
+        &validate_projection,
     )?;
+    Ok(())
+}
+
+fn put_projection(
+    transaction: &Transaction<'_>,
+    collection: &str,
+    id: &str,
+    value: Value,
+    deleted: bool,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    if !validate(collection, id, &value, deleted) {
+        return Err(StoreError::InvalidSyncObject {
+            scope: collection.to_owned(),
+            id: id.to_owned(),
+        });
+    }
+    SyncDocumentsRepository::put_entity(transaction, collection, id, value, deleted)?;
     Ok(())
 }
 
@@ -231,19 +261,27 @@ fn normalized_project_path(value: &str) -> Option<String> {
     Some(normalized.to_string_lossy().into_owned())
 }
 
-fn retire_if_live(transaction: &Transaction<'_>, collection: &str, id: &str) -> StoreResult<()> {
+fn retire_if_live(
+    transaction: &Transaction<'_>,
+    collection: &str,
+    id: &str,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     let live: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection=?1 AND id=?2 AND deleted=0)",
         [collection, id],
         |row| row.get(0),
     )?;
     if live {
-        SyncDocumentsRepository::put_entity(transaction, collection, id, json!({}), true)?;
+        put_projection(transaction, collection, id, json!({}), true, validate)?;
     }
     Ok(())
 }
 
-fn maintain_task_window(transaction: &Transaction<'_>) -> StoreResult<()> {
+fn maintain_task_window(
+    transaction: &Transaction<'_>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_tasks")? || !table_exists(transaction, "runtime_agents")?
     {
         return Ok(());
@@ -272,7 +310,7 @@ fn maintain_task_window(transaction: &Transaction<'_>) -> StoreResult<()> {
         };
         if let Some(projected) = project_persisted_record("task", &record) {
             kept.insert(id.clone());
-            SyncDocumentsRepository::put_entity(transaction, "task", &id, projected, false)?;
+            put_projection(transaction, "task", &id, projected, false, validate)?;
         }
     }
     let mut statement = transaction
@@ -286,7 +324,7 @@ fn maintain_task_window(transaction: &Transaction<'_>) -> StoreResult<()> {
         .filter(|id| !kept.contains(id))
         .collect::<Vec<_>>();
     for id in stale.iter().take(TASK_RETIRE_BATCH) {
-        SyncDocumentsRepository::put_entity(transaction, "task", id, json!({}), true)?;
+        put_projection(transaction, "task", id, json!({}), true, validate)?;
     }
     if stale.is_empty() {
         transaction.execute(
@@ -298,7 +336,10 @@ fn maintain_task_window(transaction: &Transaction<'_>) -> StoreResult<()> {
     Ok(())
 }
 
-fn maintain_monitor_window(transaction: &Transaction<'_>) -> StoreResult<()> {
+fn maintain_monitor_window(
+    transaction: &Transaction<'_>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_monitors")? {
         return Ok(());
     }
@@ -353,13 +394,16 @@ fn maintain_monitor_window(transaction: &Transaction<'_>) -> StoreResult<()> {
         }
         if let Some(projected) = project_persisted_record("monitor", &record) {
             kept_ids.insert(id.clone());
-            SyncDocumentsRepository::put_entity(transaction, "monitor", &id, projected, false)?;
+            put_projection(transaction, "monitor", &id, projected, false, validate)?;
         }
     }
-    retire_unkept(transaction, "monitor", &kept_ids, None)
+    retire_unkept(transaction, "monitor", &kept_ids, None, validate)
 }
 
-fn maintain_event_window(transaction: &Transaction<'_>) -> StoreResult<()> {
+fn maintain_event_window(
+    transaction: &Transaction<'_>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_events")? {
         return Ok(());
     }
@@ -381,10 +425,16 @@ fn maintain_event_window(transaction: &Transaction<'_>) -> StoreResult<()> {
     for (id, record) in events {
         if let Some(projected) = project_persisted_record("event", &record) {
             kept.insert(id.clone());
-            SyncDocumentsRepository::put_entity(transaction, "event", &id, projected, false)?;
+            put_projection(transaction, "event", &id, projected, false, validate)?;
         }
     }
-    retire_unkept(transaction, "event", &kept, Some("event_window_seq"))
+    retire_unkept(
+        transaction,
+        "event",
+        &kept,
+        Some("event_window_seq"),
+        validate,
+    )
 }
 
 fn compare_created_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
@@ -399,7 +449,10 @@ fn compare_created_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
     right.total_cmp(&left)
 }
 
-fn maintain_peer_team_entities(transaction: &Transaction<'_>) -> StoreResult<()> {
+fn maintain_peer_team_entities(
+    transaction: &Transaction<'_>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_projects")?
         || !table_exists(transaction, "runtime_agents")?
     {
@@ -476,10 +529,10 @@ fn maintain_peer_team_entities(transaction: &Transaction<'_>) -> StoreResult<()>
     for (id, record) in current {
         if let Some(projected) = project_persisted_record("peerTeam", &record) {
             kept.insert(id.clone());
-            SyncDocumentsRepository::put_entity(transaction, "peerTeam", &id, projected, false)?;
+            put_projection(transaction, "peerTeam", &id, projected, false, validate)?;
         }
     }
-    retire_unkept(transaction, "peerTeam", &kept, None)
+    retire_unkept(transaction, "peerTeam", &kept, None, validate)
 }
 
 fn retire_unkept(
@@ -487,6 +540,7 @@ fn retire_unkept(
     collection: &str,
     kept: &BTreeSet<String>,
     marker: Option<&str>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let mut statement =
         transaction.prepare("SELECT id FROM sync_entities WHERE collection=?1 AND deleted=0")?;
@@ -496,7 +550,7 @@ fn retire_unkept(
     drop(statement);
     for id in stale {
         if !kept.contains(&id) {
-            SyncDocumentsRepository::put_entity(transaction, collection, &id, json!({}), true)?;
+            put_projection(transaction, collection, &id, json!({}), true, validate)?;
         }
     }
     if let Some(marker) = marker {
@@ -514,7 +568,10 @@ fn retire_unkept(
     Ok(())
 }
 
-fn maintain_canvas_chat_entities(transaction: &Transaction<'_>) -> StoreResult<()> {
+fn maintain_canvas_chat_entities(
+    transaction: &Transaction<'_>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
     if !table_exists(transaction, "groups")? {
         return Ok(());
     }
@@ -525,10 +582,44 @@ fn maintain_canvas_chat_entities(transaction: &Transaction<'_>) -> StoreResult<(
     drop(statement);
     let mut kept = BTreeSet::new();
     for id in ids {
-        CoordinationRepository::chat_projection(transaction, &id, false)?;
+        let name = transaction.query_row("SELECT name FROM groups WHERE id=?1", [&id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let members = transaction
+            .prepare(
+                "SELECT source FROM graph_edges WHERE target=?1 AND kind='chat' ORDER BY source",
+            )?
+            .query_map([&id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let last = transaction
+            .query_row(
+                "SELECT text,at FROM messages WHERE room=?1 ORDER BY at DESC LIMIT 1",
+                [&id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
+            )
+            .optional()?;
+        let count: i64 = transaction.query_row(
+            "SELECT count(*) FROM messages WHERE room=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let tail = last
+            .as_ref()
+            .map(|message| message.0.chars().take(2_000).collect::<String>())
+            .unwrap_or_default();
+        let value = json!({
+            "id":id,
+            "name":name,
+            "members":members,
+            "kind":"chat",
+            "messageCount":count,
+            "tail":tail,
+            "lastMessageAt":last.map(|message| message.1),
+        });
+        put_projection(transaction, "chat", &id, value, false, validate)?;
         kept.insert(id);
     }
-    retire_unkept(transaction, "chat", &kept, None)?;
+    retire_unkept(transaction, "chat", &kept, None, validate)?;
 
     if !table_exists(transaction, "graph_edges")? {
         return Ok(());
@@ -547,12 +638,13 @@ fn maintain_canvas_chat_entities(transaction: &Transaction<'_>) -> StoreResult<(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     for (id, source, target, kind) in edges {
-        SyncDocumentsRepository::put_entity(
+        put_projection(
             transaction,
             "edge",
             &id,
             json!({"id":id,"source":source,"target":target,"kind":kind}),
             false,
+            validate,
         )?;
     }
     Ok(())

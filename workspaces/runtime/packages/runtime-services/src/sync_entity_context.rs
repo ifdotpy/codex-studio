@@ -1,25 +1,88 @@
 //! Persisted context needed to build canonical renderer entity views.
 
 use rusqlite::{OptionalExtension, Transaction};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::fs::{self, File};
+use std::io::BufReader;
+use std::path::Path;
 use studio_runtime_store::StoreResult;
 
+use crate::event_write::truthy;
 use crate::sync_policy::{stored_records, table_exists};
-use crate::sync_views::{AgentViewContext, RoomViewContext, value_truthy};
+use crate::sync_views::{AgentViewContext, RoomViewContext};
+
+#[derive(Deserialize)]
+struct LocalIdentity {
+    #[serde(rename = "serverId")]
+    server_id: String,
+}
+
+pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
+    let directory = Path::new(state_dir).join("multi-server");
+    let directory_metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
+        return Err(invalid_identity());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if directory_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_identity());
+        }
+    }
+
+    let path = directory.join("identity.json");
+    let path_metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !path_metadata.is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.len() > 16_384
+    {
+        return Err(invalid_identity());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_identity());
+        }
+    }
+    let file = File::open(&path)?;
+    if !file.metadata()?.is_file() {
+        return Err(invalid_identity());
+    }
+    let identity: LocalIdentity =
+        serde_json::from_reader(BufReader::new(file)).map_err(|_| invalid_identity())?;
+    Ok((!identity.server_id.is_empty()).then_some(identity.server_id))
+}
+
+fn invalid_identity() -> studio_runtime_store::StoreError {
+    studio_runtime_store::StoreError::InvalidSyncObject {
+        scope: "multi-server".to_owned(),
+        id: "identity.json".to_owned(),
+    }
+}
 
 pub(crate) fn agent_view_context(
     transaction: &Transaction<'_>,
     record: &Value,
+    project_server_id: Option<&str>,
 ) -> StoreResult<AgentViewContext> {
     let id = record.get("id").and_then(Value::as_str).unwrap_or_default();
-    let empty_lead = record.get("isLead").is_some_and(value_truthy)
-        && !record.get("deletedAt").is_some_and(value_truthy)
-        && !record
-            .get("accountTransferId")
-            .is_some_and(value_truthy)
+    let empty_lead = truthy(record.get("isLead"))
+        && !truthy(record.get("deletedAt"))
+        && !truthy(record.get("accountTransferId"))
         && record.get("status").and_then(Value::as_str) == Some("idle")
-        && !record.get("threadId").is_some_and(value_truthy)
-        && !record.get("prompt").is_some_and(value_truthy)
+        && !truthy(record.get("threadId"))
+        && !truthy(record.get("prompt"))
         && !exists_for_agent(transaction, "runtime_events", "agent", id)?
         && !exists_for_agent(transaction, "runtime_items", "agent", id)?
         && !transaction.query_row(
@@ -29,7 +92,12 @@ pub(crate) fn agent_view_context(
         )?
         && !exists_for_agent(transaction, "runtime_monitors", "json_extract(record,'$.agent')", id)?;
     let mut latest: Option<(f64, String)> = None;
-    for (_, raw) in stored_records(transaction, "runtime_work")? {
+    let mut statement = transaction
+        .prepare("SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1")?;
+    let rows = statement
+        .query_map([id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for raw in rows {
         let work: Value = serde_json::from_str(&raw)?;
         for result in work
             .get("results")
@@ -43,6 +111,9 @@ pub(crate) fn agent_view_context(
             let Some(path) = result.get("resultFile").and_then(Value::as_str) else {
                 continue;
             };
+            if path.is_empty() {
+                continue;
+            }
             let created = result
                 .get("created")
                 .and_then(Value::as_f64)
@@ -53,7 +124,7 @@ pub(crate) fn agent_view_context(
         }
     }
     Ok(AgentViewContext {
-        project_server_id: None,
+        project_server_id: project_server_id.map(str::to_owned),
         launcher_alive: true,
         empty_lead,
         latest_work_result_file: latest.map(|(_, path)| path),
