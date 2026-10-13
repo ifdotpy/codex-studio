@@ -104,10 +104,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_account_driver(account_driver.clone());
     #[cfg(unix)]
-    let io_runtime = io_runtime::IoRuntime::start(store.clone())?;
+    let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
     #[cfg(unix)]
     {
-        state = state.with_terminal_driver(io_runtime.terminal_driver());
+        let runtime = Arc::clone(&io_runtime);
+        state = state
+            .with_terminal_driver(io_runtime.terminal_driver())
+            .with_terminal_write_gate(Arc::new(move || runtime.reconcile_before_write()));
     }
     #[cfg(unix)]
     claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;

@@ -42,6 +42,8 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     #[cfg(unix)]
     terminal_driver: Option<Arc<TerminalDriver<PtyTerminalSession>>>,
+    #[cfg(unix)]
+    terminal_write_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -92,6 +94,8 @@ impl HttpState {
             store,
             #[cfg(unix)]
             terminal_driver: None,
+            #[cfg(unix)]
+            terminal_write_gate: None,
             account_policy,
             tool_catalog: None,
             model_catalog,
@@ -161,6 +165,12 @@ impl HttpState {
         self
     }
 
+    #[cfg(unix)]
+    pub fn with_terminal_write_gate(mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.terminal_write_gate = Some(gate);
+        self
+    }
+
     /// Shared publisher used by the provider account worker to publish token rates.
     pub fn token_rate_handle(&self) -> Arc<TokenRateHub> {
         Arc::clone(&self.token_rates)
@@ -169,6 +179,11 @@ impl HttpState {
     #[cfg(unix)]
     pub(crate) fn terminal_driver_handle(&self) -> Option<Arc<TerminalDriver<PtyTerminalSession>>> {
         self.terminal_driver.clone()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_write_gate_handle(&self) -> Option<Arc<dyn Fn() -> bool + Send + Sync>> {
+        self.terminal_write_gate.clone()
     }
 }
 
