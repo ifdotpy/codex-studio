@@ -311,14 +311,19 @@ async fn run_forward(
     let relays = Arc::new(AtomicUsize::new(0));
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
+    let mut accepting = true;
     loop {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { break; },
             result = tasks.join_next(), if !tasks.is_empty() => {
                 if matches!(result, Some(Ok(true))) { break; }
+                if relays.load(Ordering::Acquire) >= MAX_RELAYS {
+                    accepting = false;
+                }
+                if !accepting && tasks.is_empty() { break; }
             }
-            accepted = accept_any(&listeners) => {
+            accepted = accept_any(&listeners), if accepting => {
                 let Ok((stream, _)) = accepted else { break; };
                 if relays.load(Ordering::Acquire) >= MAX_RELAYS { drop(stream); continue; }
                 let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else { drop(stream); continue; };
@@ -556,10 +561,10 @@ async fn handle_request(
     if Instant::now() >= exchange_deadline {
         return (failure_response(), true);
     }
-    let attempt = match relays.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+    match relays.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
         (count < MAX_RELAYS).then_some(count + 1)
     }) {
-        Ok(previous) => previous + 1,
+        Ok(_) => {}
         Err(_) => {
             return (
                 response(
@@ -567,7 +572,7 @@ async fn handle_request(
                     page("This sign-in forward is closed. Return to Studio."),
                     "text/html; charset=utf-8",
                 ),
-                true,
+                false,
             );
         }
     };
@@ -612,7 +617,7 @@ async fn handle_request(
             return (failure_response(), true);
         }
     };
-    let should_close = done || attempt == MAX_RELAYS;
+    let should_close = done;
     if done {
         close_requested.store(true, Ordering::Release);
     }
@@ -1178,6 +1183,99 @@ mod tests {
             }
         }
         assert_eq!(responses, MAX_RELAYS);
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("close joins")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn relay_limit_drains_admitted_exchanges_before_closing() {
+        struct GatedExchange {
+            earlier_gate: Arc<Semaphore>,
+            fifth_gate: Arc<Semaphore>,
+            entered: Arc<Notify>,
+            count: AtomicUsize,
+        }
+        impl PairedExchange for GatedExchange {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let call = self.count.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.entered.notify_one();
+                    let gate = if call == MAX_RELAYS {
+                        &self.fifth_gate
+                    } else {
+                        &self.earlier_gate
+                    };
+                    gate.acquire().await.expect("gate").forget();
+                    Ok(ExchangeOutcome::Applied(json!({
+                        "status": 200,
+                        "body": BASE64.encode(b"<html>ok</html>"),
+                        "done": false
+                    })))
+                })
+            }
+        }
+
+        let earlier_gate = Arc::new(Semaphore::new(0));
+        let fifth_gate = Arc::new(Semaphore::new(0));
+        let entered = Arc::new(Notify::new());
+        let exchange = Arc::new(GatedExchange {
+            earlier_gate: earlier_gate.clone(),
+            fifth_gate: fifth_gate.clone(),
+            entered: entered.clone(),
+            count: AtomicUsize::new(0),
+        });
+        let forwarder = Arc::new(BrowserForwarder::new(exchange.clone()));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let requests = (0..MAX_RELAYS - 1)
+            .map(|_| {
+                let port = receipt.port;
+                tokio::task::spawn_blocking(move || normal_request(port))
+            })
+            .collect::<Vec<_>>();
+        while exchange.count.load(Ordering::Acquire) < MAX_RELAYS - 1 {
+            entered.notified().await;
+        }
+
+        let fifth = tokio::task::spawn_blocking({
+            let port = receipt.port;
+            move || normal_request(port)
+        });
+        while exchange.count.load(Ordering::Acquire) < MAX_RELAYS {
+            entered.notified().await;
+        }
+
+        fifth_gate.add_permits(1);
+        assert!(
+            fifth
+                .await
+                .expect("fifth admitted client")
+                .starts_with("HTTP/1.1 200 OK\r\n")
+        );
+        earlier_gate.add_permits(MAX_RELAYS - 1);
+        for request in requests {
+            assert!(
+                request
+                    .await
+                    .expect("admitted client")
+                    .starts_with("HTTP/1.1 200 OK\r\n")
+            );
+        }
         assert!(
             forwarder
                 .close(&input().bridge_id)
