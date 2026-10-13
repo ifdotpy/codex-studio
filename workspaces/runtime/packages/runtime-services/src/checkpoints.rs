@@ -157,7 +157,7 @@ pub(crate) fn finish_reserved(
             let settlement = store.transaction_with(|transaction| {
                 CheckpointsRepository::settle_capture(
                     transaction,
-                    &operation_id,
+                    operation_id,
                     Some(&message),
                     now_seconds(),
                 )?;
