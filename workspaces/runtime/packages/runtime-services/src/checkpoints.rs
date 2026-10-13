@@ -8,7 +8,8 @@ use crate::bounded_child::{self, ChildError};
 use crate::event_write::truthy;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    CheckpointsRepository, RuntimeStore, StoreError, StoredCheckpointObject, WorkspaceSnapshot,
+    CaptureKind, CheckpointsRepository, RuntimeStore, StoreError, StoredCheckpointObject,
+    WorkspaceSnapshot,
 };
 use thiserror::Error;
 
@@ -130,7 +131,25 @@ pub fn capture(
         Ok::<_, CheckpointsError>(())
     })?;
 
-    let result = capture_reserved(store, &snapshot, label, &checkpoint_id, &operation_id);
+    finish_reserved(
+        store,
+        &snapshot,
+        label,
+        &checkpoint_id,
+        &operation_id,
+        CaptureKind::Manual,
+    )
+}
+
+pub(crate) fn finish_reserved(
+    store: &RuntimeStore,
+    snapshot: &WorkspaceSnapshot,
+    label: &str,
+    checkpoint_id: &str,
+    operation_id: &str,
+    kind: CaptureKind,
+) -> Result<Value, CheckpointsError> {
+    let result = capture_reserved(store, snapshot, label, checkpoint_id, operation_id, kind);
     match result {
         Ok(checkpoint) => Ok(checkpoint_summary(checkpoint)),
         Err(error) => {
@@ -161,6 +180,7 @@ fn capture_reserved(
     label: &str,
     checkpoint_id: &str,
     operation_id: &str,
+    kind: CaptureKind,
 ) -> Result<Value, CheckpointsError> {
     let snapshot = capture_context(store, &snapshot.agent.id)?;
     if snapshot
@@ -174,7 +194,7 @@ fn capture_reserved(
             .record
             .get("workspaceOperation")
             .and_then(Value::as_str)
-            != Some("capture")
+            != Some(kind.as_str())
     {
         return Err(CheckpointsError::ActivityChanged);
     }
@@ -310,7 +330,9 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
     }))
 }
 
-fn ensure_agent_available(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
+pub(crate) fn ensure_agent_available(
+    agent: &StoredCheckpointObject,
+) -> Result<(), CheckpointsError> {
     if agent.record.get("id").and_then(Value::as_str) != Some(agent.id.as_str()) {
         return Err(invalid_agent(&agent.id));
     }
@@ -329,7 +351,7 @@ fn ensure_agent_available(agent: &StoredCheckpointObject) -> Result<(), Checkpoi
     Ok(())
 }
 
-fn ensure_workspace_idle(
+pub(crate) fn ensure_workspace_idle(
     snapshot: &WorkspaceSnapshot,
     reservation_id: Option<&str>,
 ) -> Result<(), CheckpointsError> {
@@ -382,7 +404,10 @@ fn ensure_workspace_idle(
         let own_reservation = reservation_id.is_some_and(|reservation| {
             *id == snapshot.agent.id
                 && record.get("workspaceReservationId").and_then(Value::as_str) == Some(reservation)
-                && record.get("workspaceOperation").and_then(Value::as_str) == Some("capture")
+                && matches!(
+                    record.get("workspaceOperation").and_then(Value::as_str),
+                    Some("capture" | "checkpoint")
+                )
         });
         if active
             && canonical_cwd(record).is_ok_and(|path| path == target)
@@ -476,7 +501,7 @@ fn canonical_cwd(record: &serde_json::Map<String, Value>) -> Result<PathBuf, Che
         .map_err(|_| CheckpointsError::WorkspaceUnavailable)
 }
 
-fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsError> {
+pub(crate) fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsError> {
     snapshot_tree_at(cwd, store.root())
 }
 
@@ -544,7 +569,7 @@ fn snapshot_tree_at(cwd: &str, root: &Path) -> Result<String, CheckpointsError> 
     Ok(String::from_utf8_lossy(&tree).trim().to_owned())
 }
 
-fn git(
+pub(crate) fn git(
     cwd: &str,
     args: &[&str],
     environment: &[(&str, &str)],
@@ -645,7 +670,7 @@ fn new_uuid() -> Result<String, CheckpointsError> {
         .to_string())
 }
 
-fn now_seconds() -> f64 {
+pub(crate) fn now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
