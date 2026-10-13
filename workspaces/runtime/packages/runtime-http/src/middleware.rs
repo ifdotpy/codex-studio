@@ -33,6 +33,7 @@ pub(crate) async fn boundary(
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
     let headers = request.headers();
     let mut parsed_body = None;
+    let mut raw_body = None;
 
     let peer_loopback = request
         .extensions()
@@ -194,6 +195,7 @@ pub(crate) async fn boundary(
                 }
                 Ok(value) => {
                     parsed_body = Some(value);
+                    raw_body = Some(bytes.to_vec());
                 }
             }
         }
@@ -218,6 +220,7 @@ pub(crate) async fn boundary(
             let (header_values, invalid_headers) = validated_header_values(request.headers());
             let raw = RawRequest {
                 body: parsed_body,
+                raw_body,
                 query,
                 headers: header_values,
                 invalid_headers,
