@@ -16,6 +16,7 @@ pub use repositories::analytics::{
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
+pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 pub use repositories::system_reads;
 
