@@ -87,7 +87,11 @@ every ignored folder, so the attribute changes only what becomes a cache in the 
 
 1. The file is part of main; on the Mac it comes with Mac folder sync.
 2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
-   folders; `layr save --caches` in main gives them to the head of main.
+   folders; `layr save --caches` in main gives them to the head of main. A later save on the
+   same head keeps the caches that earlier saves gave it and adds its own: the record of each
+   save names all cache folders of main, with their subvolume IDs. A head that lost caches
+   to an older layr (the second seed below replaced the list) gets them back from the next
+   `layr save --caches` in main.
 3. Each new line from main starts with a copy-on-write copy of the nearest saved folders.
    Lines made before the save build their own.
 
@@ -110,7 +114,8 @@ first import send that folder from the Mac once, as a layer of main:
 3. `project.seed` expands the upload once in the private upload folder, without the rsync
    copy of `upload.commit`; the root broker makes `main/<path>` a btrfs subvolume of reflinks
    of it, owned by the owner of main, and runs `layr save --caches` in main. A subvolume is
-   already a layr cache, so the save makes no copy. The guest needs about twice the size of the
+   already a layr cache, so the save makes no copy. Each seeded folder runs its own save, and
+   each save keeps the caches of the earlier ones. The guest needs about twice the size of the
    folder on the data disk while the upload folder exists. An existing `main/<path>` is kept.
 4. The sidebar shows the project as importing until the seed ends. A failed seed repeats
    alone on the next VM chat start. Each line from main then starts with a copy-on-write copy.
@@ -205,10 +210,12 @@ The Project folder dialog uses it to reveal the read-only view in Finder.
 
 ## Source update
 
-The repository contains the clean layr source at `workspaces/runtime/apps/layr`.
-Its manifest records the commit, Git tree, and SHA-256 hashes.
+The repository contains the layr source at `workspaces/runtime/apps/layr`.
+Its manifest records the base commit, its Git tree, and the SHA-256 hashes of the files.
 The guest installer verifies those hashes before a build.
 It uses Rust 1.90.0 and the committed Cargo lock file.
+The folder has fixes on top of the base commit (`git log -- workspaces/runtime/apps/layr`).
+The command below replaces the folder with a layr commit, so take these fixes into layr first.
 
 Run this command to select another committed layr revision:
 
@@ -232,6 +239,10 @@ python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/run
 python3 -B workspaces/runtime/apps/server/tests/linux-vm-layr-host-contract.py -q
 npm run typecheck:runtime
 ```
+
+The layr tests run on Linux as root, with btrfs-progs and git (for example in an OrbStack
+machine): `cargo test --locked` in `workspaces/runtime/apps/layr`. The tests that use
+`src/testenv.rs` make a btrfs file system on a loop file; without root they return without a check.
 
 Live checks require the existing Studio VM on this Mac.
 Back up its disks before guest changes.

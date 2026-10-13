@@ -67,6 +67,8 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
 
 /// Snapshot the caches at `paths` of a working folder (`w`) as the caches of `state` and record
 /// them (`save.caches`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
+/// A cache that an earlier save already gave the state keeps its snapshot and is recorded again,
+/// so the record names every cache of `paths` that the state has.
 pub fn record_caches(
     ctx: &Ctx,
     repo: &Repo,
@@ -75,31 +77,42 @@ pub fn record_caches(
     paths: &[String],
     shared: bool,
 ) -> Result<BTreeMap<String, String>> {
-    let mut caches = BTreeMap::new();
+    let (mut caches, mut made) = (BTreeMap::new(), Vec::new());
     for p in paths {
         let cp = fsutil::safe_join(w, p)?;
         let name = format!("{state}@{}", p.replace('/', "%2F"));
-        if crate::model::is_cache_name(&name, state) && btrfs::is_subvolume(&cp) && !repo.p.cache_path(state, &name).exists() {
-            btrfs::snapshot(&cp, &repo.p.cache_path(state, &name), true)?;
+        if !crate::model::is_cache_name(&name, state) {
+            continue;
+        }
+        let snap = repo.p.cache_path(state, &name);
+        if snap.exists() {
+            caches.insert(p.clone(), name);
+        } else if btrfs::is_subvolume(&cp) {
+            btrfs::snapshot(&cp, &snap, true)?;
+            made.push(snap);
             caches.insert(p.clone(), name);
         }
     }
-    if caches.is_empty() {
+    let undo = |e: anyhow::Error| {
+        for snap in &made {
+            let _ = btrfs::delete_tree(snap);
+        }
+        e
+    };
+    // Nothing to record when the state already names each of them (a repeated save). A state
+    // whose record lost some (an older layr replaced its caches) gets them back.
+    let known = repo.state(state).map_err(undo)?.caches;
+    if made.is_empty() && caches.iter().all(|(p, n)| known.get(p) == Some(n)) {
         return Ok(caches);
     }
     let mut uuids = serde_json::Map::new();
     for snap in caches.values() {
-        let info = btrfs::subvol_info(&repo.p.cache_path(state, snap))?;
+        let info = btrfs::subvol_info(&repo.p.cache_path(state, snap)).map_err(undo)?;
         uuids.insert(snap.clone(), serde_json::Value::String(info.uuid));
     }
     let mut rec = Record::new("save.caches");
     rec.data = serde_json::json!({"state": state, "caches": caches, "uuids": uuids, "shared": shared});
-    if let Err(e) = repo.commit_record(ctx, rec) {
-        for snap in caches.values() {
-            let _ = btrfs::delete_tree(&repo.p.cache_path(state, snap));
-        }
-        return Err(e);
-    }
+    repo.commit_record(ctx, rec).map_err(undo)?;
     Ok(caches)
 }
 
@@ -1621,5 +1634,85 @@ pub fn debug(ctx: &Ctx, args: &[String]) -> Result<i32> {
             Ok(0)
         }
         _ => Err(exit(128, "usage: layr debug changes <a> <b> | layr debug receive <name> <uuid> < stream")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::repo::Repo;
+    use crate::testenv::{sh, TestFs};
+
+    /// A project whose protected main has the regenerable, ignored folders `names`, and a writer
+    /// `layr-u1`. Returns the uids of the owner of main and of the writer.
+    fn project(t: &TestFs, files: &[(&str, &str)], names: &[&str]) -> (u32, u32) {
+        let (admin, u1) = (t.user("layr-admin"), t.user("layr-u1"));
+        let src = t.dir.join("src");
+        t.write(&src, "a.txt", "a\n");
+        t.write(&src, ".gitignore", &names.iter().map(|n| format!("{n}/\n")).collect::<String>());
+        t.write(&src, ".layrattributes", &names.iter().map(|n| format!("{n} regenerable\n")).collect::<String>());
+        for (rel, data) in files {
+            t.write(&src, rel, data);
+        }
+        // As a Studio import: the ignored files that came stay in the state.
+        let from = src.to_str().unwrap();
+        t.ok(0, &[], &["init", "p", "--from", from, "--owner", "layr-admin", "--include-ignored", "-q"]);
+        t.ok(0, &[("LAYR_PROJECT", "p")], &["access", "grant", "layr-u1", "writer"]);
+        (admin, u1)
+    }
+
+    fn read(p: &std::path::Path) -> String {
+        std::fs::read_to_string(p).unwrap_or_else(|e| format!("{}: {e}", p.display()))
+    }
+
+    /// Studio's project.seed: each seeded folder becomes a subvolume of main, then the owner of
+    /// main runs `save --caches`. A later save keeps the caches that earlier ones gave the state.
+    #[test]
+    fn every_save_of_caches_keeps_the_caches_of_the_state() {
+        let Some(t) = TestFs::new("cache-map") else { return };
+        let (admin, u1) = project(&t, &[], &["seed1", "seed2"]);
+        let main = t.line("p", "main");
+        let in_main = [("LAYR_PROJECT", "p"), ("LAYR_LINE", "main")];
+        let mut first = None;
+        for (i, name) in ["seed1", "seed2"].iter().enumerate() {
+            let dir = main.join(name);
+            assert!(sh(&["btrfs", "-q", "subvolume", "create", dir.to_str().unwrap()]));
+            t.write(&dir, "data", &format!("{i}\n"));
+            assert!(sh(&["chown", "-R", "layr-admin:layr-admin", dir.to_str().unwrap()]));
+            t.ok(admin, &in_main, &["save", "-q", "--caches"]);
+            let ctx = t.ctx(0, &in_main, Box::new(std::io::sink()));
+            let repo = Repo::open(&ctx, "p").unwrap();
+            let head = repo.line("main").unwrap().head;
+            let uuid = repo.p.db.cache_uuid(&head, &format!("{head}@seed1")).unwrap();
+            first = first.or(uuid.clone());
+            // The first snapshot stays: no second snapshot of the same name.
+            assert_eq!(uuid, first, "the subvolume id of seed1 after save {i}");
+        }
+        let ctx = t.ctx(0, &in_main, Box::new(std::io::sink()));
+        let repo = Repo::open(&ctx, "p").unwrap();
+        let head = repo.line("main").unwrap().head;
+        let check = || {
+            let st = repo.state(&head).unwrap();
+            assert_eq!(st.caches.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["seed1", "seed2"]);
+            for snap in st.caches.values() {
+                let real = crate::btrfs::subvol_info(&repo.p.cache_path(&head, snap)).unwrap().uuid;
+                assert_eq!(repo.p.db.cache_uuid(&head, snap).unwrap(), Some(real), "{snap}");
+            }
+        };
+        check();
+        // A state whose caches an older layr replaced (its second save named only seed2) gets
+        // them back from the next save.
+        let raw: String = repo.p.db.conn.query_row("SELECT rec FROM states WHERE id=?1", [&head], |r| r.get(0)).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        v["caches"].as_object_mut().unwrap().remove("seed1");
+        v["cache_uuids"].as_object_mut().unwrap().remove(&format!("{head}@seed1"));
+        repo.p.db.conn.execute("UPDATE states SET rec=?2 WHERE id=?1", rusqlite::params![head, v.to_string()]).unwrap();
+        t.ok(admin, &in_main, &["save", "-q", "--caches"]);
+        check();
+        drop(repo);
+        // A new line of another user starts warm with both.
+        t.ok(u1, &[("LAYR_PROJECT", "p")], &["branch", "-q", "a1", "main"]);
+        let a1 = t.line("p", "a1");
+        assert_eq!(read(&a1.join("seed1/data")), "0\n");
+        assert_eq!(read(&a1.join("seed2/data")), "1\n");
     }
 }
