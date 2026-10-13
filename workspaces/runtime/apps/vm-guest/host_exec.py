@@ -19,6 +19,12 @@ BATCH_ENTRIES = 1024
 LONG_CALL = 1800
 
 
+def same_content(entry: Any, other: Any) -> bool:
+    """Two file entries that differ at most in their mode."""
+    return (isinstance(entry, dict) and isinstance(other, dict) and entry.get("kind") == other.get("kind") == "file"
+            and entry["bytes"] == other["bytes"] and entry["sha256"] == other["sha256"])
+
+
 def request_key(operation: str, phase: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, operation + ":" + phase).hex
 
@@ -163,6 +169,17 @@ class HostExec:
         sent = 0
         batch: list[tuple[str, dict[str, Any]]] = []
         size = 0
+        modes: list[dict[str, Any]] = []
+        mode_size = 0
+
+        async def flush_modes() -> None:
+            # Files that the slot has with the same content: only their modes change.
+            nonlocal mode_size
+            if modes:
+                await self.call("sync.mode", {**common, "items": list(modes)},
+                                "mode:" + key("\0".join(item["path"] for item in modes)), LONG_CALL)
+                modes.clear()
+                mode_size = 0
 
         async def flush() -> None:
             # Folders, links and small files: one read in the guest and one request to the Mac.
@@ -185,6 +202,13 @@ class HostExec:
             entry = target[path]
             if entry == held.get(path):
                 continue
+            if "mode" in features and same_content(entry, held.get(path)):
+                cost = 2 * len(path.encode()) + 300
+                if modes and (mode_size + cost > BATCH_FRAME or len(modes) >= 4096):
+                    await flush_modes()
+                modes.append({"path": path, "entry": entry})
+                mode_size += cost
+                continue
             if "batch" in features and (entry["kind"] != "file" or entry["bytes"] <= SMALL_FILE):
                 cost = 2 * len(path.encode()) + 4 * (entry.get("bytes", 0) // 3 + 1) + 400
                 if batch and (size + cost > BATCH_FRAME or len(batch) >= BATCH_ENTRIES):
@@ -203,6 +227,7 @@ class HostExec:
                     sent += data["bytes"]
                 await self.call("sync.commit", {**common, "path": path}, "commit:" + key(path))
         await flush()
+        await flush_modes()
         relative_cwd = cwd.relative_to(line).as_posix()
         steps["run"] = True
         await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
@@ -231,6 +256,10 @@ class HostExec:
         for path in sorted(changes, key=lambda value: (value.count("/"), value)):
             entry = changes[path]
             if entry is None:
+                continue
+            if same_content(entry, target.get(path)):
+                # The guest slot folder holds the content the Mac started from: only the mode changed.
+                await self.broker("host.slot.apply", {**slot, "action": "mode", "path": path, "entry": entry}, "back-mode:" + key(path))
                 continue
             await self.broker("host.slot.apply", {**slot, "action": "entry", "path": path, "entry": entry}, "back-entry:" + key(path))
             if entry["kind"] == "file":

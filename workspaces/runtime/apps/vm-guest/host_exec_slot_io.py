@@ -150,7 +150,7 @@ def run(params):
             else:
                 shutil.rmtree(child)
         return {"path": str(root)}
-    path = inside(root, params["path"], leaf=action == "read")
+    path = inside(root, params["path"], leaf=action in {"read", "mode"})
     if action == "read":
         offset = params.get("offset", 0)
         require(isinstance(offset, int) and offset >= 0, "Invalid source offset")
@@ -184,6 +184,13 @@ def run(params):
             stream.flush()
             import os
             os.fsync(stream.fileno())
+    elif action == "mode":
+        # A mode change from the Mac: the file must still hold the content it started from.
+        entry = params["entry"]
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size == entry["bytes"], "The source file differs")
+        with path.open("rb") as stream:
+            require(hashlib.file_digest(stream, "sha256").hexdigest() == entry["sha256"], "The source file differs")
+        path.chmod(entry["mode"] & 0o777)
     elif action == "commit":
         entry = params["entry"]
         require(not path.is_symlink(), "The source file is a symbolic link")
