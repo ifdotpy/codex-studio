@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import socket
 from pathlib import Path
 import tempfile
 import threading
@@ -29,6 +30,7 @@ class FakeHelper:
         self.stops = 0
         self.launches = 0
         self.healthy = True
+        self.full = False
         # A dead kernel ignores the ACPI stop: the helper stops it this many polls later.
         self.stop_polls = 0
         self.while_stopping: Any = None
@@ -64,14 +66,77 @@ class FakeHelper:
         return process
 
     def call(self, method: str, params: dict[str, Any] | None = None, **options: Any) -> dict[str, Any]:
-        if method not in {'health', 'ping'}:
+        if method != 'health':
             raise AssertionError(method)
         if not self.healthy:
             raise vm.LinuxVMError('The Linux VM connection closed before its response.', uncertain=True)
-        if method == 'ping':
-            # The guest service answers an unknown method with an error from its event loop.
-            raise vm.LinuxVMError('Linux guest ping: unsupported', code='invalid_params')
         return {'protocol': 1}
+
+    def ping(self, timeout: float = 15) -> str | None:
+        if self.full:
+            return vm.BUSY  # The guest service has 32 clients and closes a new one at once.
+        return None if self.healthy else 'The guest gave no answer in 15 seconds.'
+
+
+class GuestSocket:
+    """One connection to guest.sock, handled the way the guest service or the helper does."""
+
+    def __init__(self, directory: Path, mode: str) -> None:
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(directory / 'guest.sock'))
+        self.listener.listen(1)
+        self.listener.settimeout(5)
+        self.mode = mode
+        self.thread = threading.Thread(target=self.run)
+        self.thread.start()
+
+    def run(self) -> None:
+        try:
+            channel, _ = self.listener.accept()
+        except OSError:
+            return
+        with channel:
+            if self.mode == 'full':
+                return  # service.py client(): 32 clients, close at once without a byte
+            line = channel.makefile('rb').readline()
+            if self.mode == 'answer':
+                request = json.loads(line)
+                channel.sendall(json.dumps({'id': request['id'], 'error': {
+                    'code': 'invalid_request', 'message': 'The method is not supported'}}).encode() + b'\n')
+            elif self.mode == 'late-close':
+                time.sleep(0.3)  # the helper's connect timer for a kernel that never accepts
+            else:
+                time.sleep(0.5)
+
+    def finish(self) -> None:
+        self.thread.join(5)
+        self.listener.close()
+
+
+class PingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='vm-ping-')
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.client = vm.Client(self.directory)
+
+    def ping(self, mode: str, timeout: float = 2) -> str | None:
+        guest = GuestSocket(self.directory, mode)
+        try:
+            return self.client.ping(timeout)
+        finally:
+            guest.finish()
+            (self.directory / 'guest.sock').unlink()
+
+    def test_any_byte_proves_the_guest_and_a_fast_empty_close_is_busy(self) -> None:
+        self.assertIsNone(self.ping('answer'))
+        self.assertEqual(self.ping('full'), vm.BUSY)
+
+    def test_silence_or_a_late_empty_close_is_no_answer(self) -> None:
+        self.assertIn('no answer in 0.2 seconds', str(self.ping('silent', timeout=0.2)))
+        with patch('codex_linux_vm.BUSY_CLOSE_SECONDS', 0.1):
+            self.assertIn('closed without an answer', str(self.ping('late-close')))
+        self.assertIn('connection failed', str(self.client.ping(0.2)))
 
 
 class Clock:
@@ -96,6 +161,7 @@ class WatchdogTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch.object(self.client, '_host', side_effect=self.helper.host).start()
         patch.object(self.client, 'call', side_effect=self.helper.call).start()
+        patch.object(self.client, 'ping', side_effect=self.helper.ping).start()
         patch.object(self.client, '_wait_guest_clock').start()
         patch('codex_linux_vm.subprocess.Popen', side_effect=self.helper.launch).start()
         patch('codex_linux_vm.platform.system', return_value='Darwin').start()
@@ -138,7 +204,7 @@ class WatchdogTests(unittest.TestCase):
         self.helper.state = 'stopped'
         self.assertEqual(self.client.status()['state'], 'stopped')
 
-    def test_no_health_answer_after_a_healthy_answer_fails_after_the_window(self) -> None:
+    def test_no_answer_after_an_answer_is_unresponsive_after_the_window(self) -> None:
         start = self.clock.now
         self.client.record_health(self.helper.pid, None, now=start)
         for step in range(1, 6):
@@ -147,11 +213,11 @@ class WatchdogTests(unittest.TestCase):
         for step in range(6, 8):
             self.client.record_health(self.helper.pid, 'no answer', now=start + 30 * step)
         status = self.client.status()
-        self.assertEqual(status['state'], 'failed')
+        self.assertEqual(status['state'], 'unresponsive')
         self.assertEqual(status['guestFailure']['kind'], 'unanswered')
-        self.assertIn('has not answered health for 180 seconds', status['error'])
+        self.assertIn('has not answered for 180 seconds', status['error'])
 
-    def test_no_answer_before_the_first_answer_or_across_a_gap_is_not_a_failure(self) -> None:
+    def test_no_answer_before_the_first_answer_or_across_a_gap_is_not_unresponsive(self) -> None:
         start = self.clock.now
         # A booting or provisioning guest has not answered in this boot yet.
         for step in range(20):
@@ -166,24 +232,17 @@ class WatchdogTests(unittest.TestCase):
         # The record of another boot does not apply.
         for at in (1680, 1710):
             self.client.record_health(self.helper.pid, 'no answer', now=start + at)
-        self.assertEqual(self.client.status()['state'], 'failed')
+        self.assertEqual(self.client.status()['state'], 'unresponsive')
         self.helper.pid += 1
         self.assertEqual(self.client.status()['state'], 'running')
 
-    def test_any_guest_answer_proves_life_and_clears_an_unanswered_verdict(self) -> None:
-        self.assertIsNone(self.client.ping())
-        self.helper.healthy = False
-        self.assertIn('closed before its response', str(self.client.ping()))
+    def test_a_busy_close_is_neither_an_answer_nor_a_failure(self) -> None:
         start = self.clock.now
         self.client.record_health(self.helper.pid, None, now=start)
-        for step in range(1, 8):
-            self.client.record_health(self.helper.pid, 'no answer', now=start + 30 * step)
-        self.assertEqual(self.client.status()['guestFailure']['kind'], 'unanswered')
-        # The guest answers again, for example after a slow minute: no restart.
-        self.helper.healthy = True
-        self.clock.now = start + 240
-        self.assertEqual(self.watchdog.check(), 'running')
-        self.assertEqual(self.helper.stops, 0)
+        self.client.record_health(self.helper.pid, 'no answer', now=start + 30)
+        for step in range(2, 20):
+            self.client.record_health(self.helper.pid, vm.BUSY, now=start + 30 * step)
+        self.assertEqual(self.client.status()['state'], 'running')
 
     # Recovery
 
@@ -215,16 +274,43 @@ class WatchdogTests(unittest.TestCase):
         # A new helper can get an old PID: its probe record starts empty.
         self.assertFalse(self.helper.health_record_at_launch)
 
-    def test_an_unanswered_guest_is_restarted_by_the_checks(self) -> None:
+    def test_an_unanswered_guest_is_shown_and_recorded_but_never_restarted(self) -> None:
         self.assertEqual(self.watchdog.check(), 'running')
         self.helper.healthy = False
         results = []
-        for _ in range(8):
+        for _ in range(30):
             self.clock.now += watchdog.PROBE_INTERVAL
             results.append(self.watchdog.check())
         self.assertEqual(results[:6], ['running'] * 6)
-        self.assertEqual(results[6], 'restarted')
-        self.assertEqual(self.records()[0]['kind'], 'unanswered')
+        self.assertEqual(set(results[6:]), {'unresponsive'})
+        self.assertEqual((self.helper.stops, self.records()), (0, []))
+        status = self.client.status()
+        self.assertEqual(status['state'], 'unresponsive')
+        episode = status['watchdog']['lastUnresponsive']
+        self.assertIn('has not answered for 180 seconds', episode['reason'])
+        self.assertIsNone(episode.get('endedAt'))
+        self.assertEqual(len(watchdog.load(self.directory)['unresponsive']), 1)
+        # One answer clears the state and ends the episode.
+        self.helper.healthy = True
+        self.clock.now += watchdog.PROBE_INTERVAL
+        self.assertEqual(self.watchdog.check(), 'running')
+        self.assertIsNotNone(self.client.status()['watchdog']['lastUnresponsive']['endedAt'])
+        self.assertEqual(self.helper.stops, 0)
+
+    def test_a_full_guest_is_not_a_restart(self) -> None:
+        self.assertEqual(self.watchdog.check(), 'running')
+        # Agents hold 32 connections: every probe is closed at once, without a byte.
+        self.helper.full = True
+        results = []
+        for _ in range(40):
+            self.clock.now += watchdog.PROBE_INTERVAL
+            results.append(self.watchdog.check())
+        self.assertEqual(set(results), {'running'})
+        self.assertEqual((self.helper.stops, self.helper.launches, self.records()), (0, 0, []))
+        # A panic in the same boot is a proven death: it still restarts.
+        self.panic()
+        self.assertEqual(self.watchdog.check(), 'restarted')
+        self.assertEqual(self.helper.stops, 1)
 
     def test_restarts_wait_ten_minutes_and_stop_at_the_daily_limit(self) -> None:
         start = self.clock.now

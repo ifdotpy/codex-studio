@@ -1,9 +1,11 @@
 """Restart the Linux VM after its guest dies (docs/linux-vm-workspaces.md, "Guest crash watchdog").
 
-`codex_linux_vm.Client.status` reports a dead guest behind a live helper: a kernel panic in
-the console of the current boot, or no health answer for UNANSWERED_SECONDS after the guest
-answered in this boot. This module probes health, and restarts a failed VM through the
-normal start path with limits. It never starts a VM that a person or a command stopped.
+`codex_linux_vm.Client.status` reports `failed` for a proven death behind a live helper (a
+kernel panic in the console of the current boot, or the helper's own failure), and
+`unresponsive` for no answer during UNANSWERED_SECONDS after the guest answered in this boot.
+This module probes the guest, records both, and restarts only a failed VM, through the normal
+start path with limits. No answer does not prove death: a busy guest can refuse connections.
+It never starts a VM that a person or a command stopped.
 """
 from __future__ import annotations
 
@@ -53,6 +55,8 @@ def load(state_dir: Path) -> dict[str, Any]:
 
 def _save(state_dir: Path, value: dict[str, Any]) -> None:
     value['restarts'] = value['restarts'][-RECORDS_KEPT:]
+    if isinstance(value.get('unresponsive'), list):
+        value['unresponsive'] = value['unresponsive'][-RECORDS_KEPT:]
     _atomic_json(state_dir / RECORD_FILE, value)
 
 
@@ -71,7 +75,8 @@ def summary(state_dir: Path, *, now: float | None = None) -> dict[str, Any] | No
     """The part of the records that `status()` shows."""
     saved = load(state_dir)
     restarts = saved['restarts']
-    if not restarts and not saved.get('held'):
+    episodes = saved.get('unresponsive') if isinstance(saved.get('unresponsive'), list) else []
+    if not restarts and not saved.get('held') and not episodes:
         return None
     now = time.time() if now is None else now
     result: dict[str, Any] = {'restartsInLastDay': sum(1 for row in restarts if now - row['at'] < _DAY)}
@@ -80,6 +85,8 @@ def summary(state_dir: Path, *, now: float | None = None) -> dict[str, Any] | No
             'id', 'time', 'kind', 'reason', 'stage', 'outcome', 'error', 'consoleLog')}
     if saved.get('held'):
         result['held'] = saved['held']
+    if episodes:
+        result['lastUnresponsive'] = episodes[-1]
     return result
 
 
@@ -118,8 +125,8 @@ class Watchdog:
         try:
             status = client.status()
             answered = False
-            # Probe an unanswered guest too: one answer clears that verdict.
-            if status['state'] == 'running' or (status.get('guestFailure') or {}).get('kind') == 'unanswered':
+            # Probe an unresponsive guest too: one answer clears that state.
+            if status['state'] in {'running', 'unresponsive'}:
                 answered = self.probe(status)
                 status = client.status()
         except LinuxVMError:
@@ -128,11 +135,35 @@ class Watchdog:
             return self.resume()
         if status['state'] == 'running':
             self._hold(None)
+            self._unresponsive(None)
             if answered:
                 self._settle()
+        if status['state'] == 'unresponsive':
+            # Shown and recorded, never restarted: a full or slow guest gives no answer too.
+            self._unresponsive(status)
         if status['state'] != 'failed':
             return str(status['state'])
         return self.restart(status)
+
+    def _unresponsive(self, status: dict[str, Any] | None) -> None:
+        """Open an episode for an unresponsive guest, or end the open one."""
+        saved = load(self.client.state_dir)
+        stored = saved.get('unresponsive')
+        episodes: list[Record] = [row for row in stored if isinstance(row, dict)] if isinstance(stored, list) else []
+        current = episodes[-1] if episodes and not episodes[-1].get('endedAt') else None
+        if status is None:
+            if current is None:
+                return
+            current['endedAt'] = self.clock()
+        else:
+            failure = status.get('guestFailure') or {}
+            if current is not None and current.get('helperPid') == status.get('pid'):
+                return
+            episodes.append({'since': failure.get('since'), 'detectedAt': self.clock(),
+                             'time': _utc(self.clock()), 'helperPid': status.get('pid'),
+                             'reason': status.get('error')})
+        saved['unresponsive'] = episodes
+        _save(self.client.state_dir, saved)
 
     def probe(self, status: dict[str, Any]) -> bool:
         error = self.client.ping(PROBE_TIMEOUT)

@@ -111,29 +111,44 @@ Virtualization process stay alive, so the VM looked `running` while every guest 
 ### Detection
 
 `Client.status()` (`codex_linux_vm.py status`, `/api/desktop` `linuxVm`, the Linux VM settings)
-reports `state: failed` when the helper says `running` and one of these is true:
+reports two states when the helper says `running`:
 
-- `console.log` has a `Kernel panic - not syncing:` line. The helper clears `console.log` at
-  each boot, so the line is from the current boot.
-- The guest answered in this boot (same helper PID) and then gave no answer for 180 seconds,
-  over at least 3 probes. The backend probes every 30 seconds and `ensure_running` records
-  the first answer, in `guest-health.json`. A booting or provisioning guest is not a failure.
-  A gap of more than 90 seconds between two probes (Mac sleep, backend stop) starts a new span.
+- `failed`: `console.log` has a `Kernel panic - not syncing:` line. The helper clears
+  `console.log` at each boot, so the line is from the current boot. This is a proven death.
+- `unresponsive`: the guest answered in this boot (same helper PID) and then gave no answer
+  for 180 seconds, over at least 3 probes. The backend probes every 30 seconds and
+  `ensure_running` records the first answer, in `guest-health.json`. A booting or provisioning
+  guest is not unresponsive. A gap of more than 90 seconds between two probes (Mac sleep,
+  backend stop) starts a new span. No answer does not prove death, so this state is never
+  restarted.
 
-The probe (`Client.ping`) sends a method that the guest service does not have. The service
-answers it with an error from its event loop. Any answer proves that the kernel, vsock and the
-service run. Only a transport failure counts as no answer. The probe does not use `health`,
-because `health` waits for the root broker and layr, which can be slow for minutes during a
-large import. One answer clears an `unanswered` verdict, also while a restart waits.
+The probe (`Client.ping`) sends a method that the guest service does not have, and waits for
+one byte. Any byte proves that the kernel, vsock and the service run: the service answers with
+an error from its event loop. The probe does not use `health`, because `health` waits for the
+root broker and layr, which can be slow for minutes during a large import. The probe has
+three results:
 
-The failed status has `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
+- An answer: one byte. It clears `unresponsive`.
+- Busy: a close without any byte in less than 10 seconds. The guest service closes a new
+  connection at once when it has 32 clients (provider streams and `browser.wait` long polls
+  hold them), and the helper does so when its 64 channels are in use. A busy probe is neither
+  an answer nor a failure.
+- No answer: no byte before the probe timeout (15 seconds), or a close without a byte after
+  10 seconds. The helper closes a vsock connection that a dead kernel never accepts after
+  15 seconds.
+
+Both states have `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
 `helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
 also when the console of its last boot has a panic.
 
 ### Recovery
 
 `codex_linux_vm_watchdog.py` runs in the macOS backend whose state directory holds the VM
-state (`<state>/linux-vm`). For a failed VM, including a helper that reports `failed`, it:
+state (`<state>/linux-vm`). It restarts only a proven death: a `failed` guest (kernel panic),
+or a helper that reports `failed` itself (Virtualization stopped the VM with an error). For an
+`unresponsive` guest it adds an episode to `watchdog.json` (start, reason, end) and shows the
+last one in the status as `watchdog.lastUnresponsive`. It does not restart it: an operator
+decides. For a failed VM it:
 
 1. Copies `console.log` to `console-crash-<UTC time>.log` (the newest 5 stay) and adds a
    record to `watchdog.json`: time, reason, console tail (4 KiB), stage, outcome, and chats.
@@ -177,11 +192,11 @@ Each of these chats also gets one notice that tells the reason and the restart t
 With the kernel option `panic=N`, the kernel resets after a panic. Virtualization then ends the
 VM, calls `guestDidStop`, and the helper exits with code 0. The VM then looks like a VM that a
 person stopped, so the backend still needs a loop that starts it and that knows a crash from a
-stop. That option also covers panics only, not a guest that hangs without a panic. It needs a
-new signed helper and a VM restart on each Mac. The host-side check covers both cases. It
-keeps the limits, the console copy, the records, the locks and the chat notices in one backend
-path, and a backend update delivers it. A panic shows at the next check (at most 30 seconds);
-a hang shows after 3 to 4 minutes.
+stop. It needs a new signed helper and a VM restart on each Mac. The host-side check reads the
+same panic line from the console. It keeps the limits, the console copy, the records, the
+locks and the chat notices in one backend path, and a backend update delivers it. It also
+shows a guest that gives no answer, without a restart. A panic is restarted at the next check
+(at most 30 seconds); an unresponsive guest shows after 3 to 4 minutes.
 
 ## Checks
 
