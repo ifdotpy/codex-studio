@@ -699,34 +699,22 @@ mod tests {
     use super::{ProgressPanelError, atomic_replace, read_progress, record_layout};
     use serde_json::{Value, json};
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::path::Path;
 
-    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
-
-    struct TempRoot(PathBuf);
+    struct TempRoot(tempfile::TempDir);
 
     impl TempRoot {
-        fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            match fs::remove_dir_all(&self.0) {
-                Ok(()) | Err(_) => {}
-            }
+        fn path(&self) -> &Path {
+            self.0.path()
         }
     }
 
     fn fixture() -> TempRoot {
-        let root = std::env::temp_dir().join(format!(
-            "rust-progress-panel-{}-{}",
-            std::process::id(),
-            NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(root.join("progress/agent-a")).expect("agent dir creates");
+        let root = tempfile::Builder::new()
+            .prefix("rust-progress-panel-")
+            .tempdir()
+            .expect("progress fixture creates");
+        fs::create_dir_all(root.path().join("progress/agent-a")).expect("agent dir creates");
         TempRoot(root)
     }
 

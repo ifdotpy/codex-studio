@@ -717,7 +717,6 @@ fn receipt_signature(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
@@ -785,23 +784,22 @@ mod tests {
 
     struct TestState {
         root: PathBuf,
+        _directory: tempfile::TempDir,
         store: Option<Arc<RuntimeStore>>,
     }
 
     impl Drop for TestState {
         fn drop(&mut self) {
             self.store.take();
-            drop(fs::remove_dir_all(&self.root));
         }
     }
 
     fn test_state() -> TestState {
-        let root = std::env::temp_dir().join(format!(
-            "terminal-driver-test-{}-{}",
-            std::process::id(),
-            now_seconds().to_bits()
-        ));
-        fs::create_dir_all(&root).expect("test state root");
+        let directory = tempfile::Builder::new()
+            .prefix("terminal-driver-test-")
+            .tempdir()
+            .expect("test state root");
+        let root = directory.path().to_path_buf();
         let snapshot: Value = serde_json::from_str(include_str!(
             "../../../apps/server/tests/fixtures/runtime-state-schema.json"
         ))
@@ -846,6 +844,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(&root)).expect("test runtime store"));
         TestState {
             root,
+            _directory: directory,
             store: Some(store),
         }
     }
@@ -901,6 +900,10 @@ mod tests {
             .expect("generated UUID parses");
         assert_eq!(uuid.get_version(), Some(uuid::Version::Random));
         assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+        let id = uuid.to_string();
+        assert_eq!(id.len(), 36);
+        assert!(id.bytes().all(|byte| !byte.is_ascii_uppercase()));
+        assert_eq!(id, format!("{uuid}"));
     }
 
     #[test]
