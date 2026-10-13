@@ -11,7 +11,7 @@ use studio_runtime_store::RuntimeStore;
 
 #[test]
 fn python_archive_writer_and_context_are_read_without_loss() {
-    let root = tempfile::tempdir().expect("isolated corpus root");
+    let root = isolated_test_root();
     let output = Command::new(python_executable())
         .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/portable_history/producer.py"))
         .arg(server_source())
@@ -108,7 +108,7 @@ fn python_archive_writer_and_context_are_read_without_loss() {
 
 #[test]
 fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
-    let root = tempfile::tempdir().expect("isolated state root");
+    let root = isolated_test_root();
     let output = Command::new(python_executable())
         .arg(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -237,6 +237,19 @@ fn python_executable() -> PathBuf {
     std::env::var_os("CODEX_AGENTS_PYTHON")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("python3"))
+}
+
+fn isolated_test_root() -> tempfile::TempDir {
+    if let Some(parent) = std::env::var_os("STUDIO_PORTABLE_HISTORY_TEST_ROOT") {
+        let parent = PathBuf::from(parent);
+        std::fs::create_dir_all(&parent).expect("isolated test root exists");
+        tempfile::Builder::new()
+            .prefix("portable-history-")
+            .tempdir_in(parent)
+            .expect("isolated tmpfs test directory")
+    } else {
+        tempfile::tempdir().expect("isolated corpus root")
+    }
 }
 
 fn server_source() -> PathBuf {
