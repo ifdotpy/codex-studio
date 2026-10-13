@@ -41,11 +41,7 @@ impl QueueEventRepository {
         Ok(connection.query_row(
             "SELECT id, agent, kind, text, status, created, epoch, turn_id, error FROM runtime_events WHERE id = ?1",
             [&id.0],
-            |row| Ok(QueueEvent {
-                id: QueueEventId(row.get(0)?), agent: AgentId(row.get(1)?), kind: row.get(2)?,
-                text: row.get(3)?, status: row.get(4)?, created: row.get(5)?, epoch: row.get(6)?,
-                turn_id: row.get(7)?, error: row.get(8)?,
-            }),
+            map_queue_event,
         ).optional()?)
     }
 
@@ -56,4 +52,18 @@ impl QueueEventRepository {
         )?;
         Ok(())
     }
+}
+
+pub(crate) fn map_queue_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueueEvent> {
+    Ok(QueueEvent {
+        id: QueueEventId(row.get(0)?),
+        agent: AgentId(row.get(1)?),
+        kind: row.get(2)?,
+        text: row.get(3)?,
+        status: row.get(4)?,
+        created: row.get(5)?,
+        epoch: row.get(6)?,
+        turn_id: row.get(7)?,
+        error: row.get(8)?,
+    })
 }

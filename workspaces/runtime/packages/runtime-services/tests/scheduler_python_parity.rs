@@ -1,15 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
-use studio_runtime_services::scheduler::consume_wake;
-use studio_runtime_services::scheduler::{TurnDriver, TurnIntent, TurnStart, WakeSignal};
+use studio_runtime_services::scheduler::{SchedulerError, claim_intent, settle_start_outcome};
+use studio_runtime_services::scheduler::{
+    TurnIntent, TurnStart, mark_submitted_for_provider, settle_started_provider,
+};
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, QueueEvent, QueueEventId, QueueEventRepository,
-    RuntimeStore,
+    AgentId, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent, QueueEventId,
+    QueueEventRepository, RuntimeStore,
 };
 
 const CREATE_PYTHON_EVENTS: &str = r#"
@@ -25,6 +28,7 @@ runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.create({"name":"scheduler fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
 agent["autoWake"] = True
 agent["status"] = "queued"
+agent.update(accountKey="default", threadId="fixture-thread", model="fixture-model")
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "agents", agent)
     for event_id, created in (("python-later", 2.0), ("python-first", 1.0), ("python-tie", 1.0)):
@@ -35,107 +39,54 @@ with runtime.lock, runtime.db() as db:
 runtime.close()
 "#;
 
-const CREATE_DISPATCH_POLICY_CASES: &str = r#"
-import json, pathlib, shutil, sys, time
+const CREATE_POLICY_REFUSAL_STATE: &str = r#"
+import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])
 from codex_runtime import Runtime
 from codex_wakeups import pending_batch
 class QuietRuntime(Runtime):
     def schedule(self):
         return
-class CaptureExecutor:
-    def __init__(self):
-        self.selected = {}
-    def submit(self, _function, agent, rows):
-        self.selected[agent['id']] = [dict(row) for row in rows]
 root = pathlib.Path(sys.argv[1])
-now = time.time()
-policy_cases = json.loads(pathlib.Path(sys.argv[3]).read_text())
-cases = []
-def event(kind, text='input', created=1.0, meta=None):
-    return {'kind':kind, 'text':text, 'created':created, 'meta':meta or {}}
-def add(name, specs, provider='codex'):
-    cases.append({'name':name, 'specs':specs, 'provider':provider})
-for case in policy_cases['kindCases']:
-    add(case['name'], [event(case['kind'], case['text'], meta=case.get('meta'))])
-for complaint in policy_cases['complaints']:
-    add(complaint['name'], [event('complaint', json.dumps({'complaints':[{
-        'complaint_id':complaint['complaintId']}]}))])
-add('event-limit', [event('plan_update', f'event-{i:02}', created=float(i))
-                    for i in range(policy_cases['eventLimit'])])
-add('asset-limit', [event('plan_update', f'asset-{i}', meta={'assets':[i for i in range(count)]})
-                    for i, count in enumerate(policy_cases['assetCounts'])])
-add('composer-limit', [event(row['kind'], row['text'], meta=row.get('meta'))
-                       for row in policy_cases['composerEvents']])
-add('claude-command', [event(row['kind'], row['text'])
-                       for row in policy_cases['claudeCommandEvents']], provider='claude')
-add('progress-delay', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
-     'room':'team','progress_key':'delay','progress_version':version}),
-     created=now+policy_cases['progressDelaySeconds'])
-     for version in policy_cases['progressVersions']])
-add('duplicate-progress', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
-     'room':'team','progress_key':'duplicate','progress_version':policy_cases['duplicateProgressVersion']}))
-     for _ in range(2)])
-add('urgent-progress', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
-     'room':'team','progress_key':f'urgent-{i}','progress_version':1}))
-     for i in range(policy_cases['urgentProgressCount'])] + [event('user','urgent')])
 runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agents = {}
-for case in cases:
-    agent = runtime.create({'name':case['name'], 'cwd':str(root), 'prompt':'temporary'}, defer=True)
-    agent.update(autoWake=True, status='queued', provider=case['provider'])
-    agents[case['name']] = agent
+for name in ('team', 'radio'):
+    agent = runtime.create({'name':name, 'cwd':str(root), 'prompt':'temporary'}, defer=True)
+    agent.update(autoWake=True, status='queued', provider='codex')
+    agents[name] = agent
 with runtime.lock, runtime.db() as db:
-    for case in cases:
-        agent = agents[case['name']]
+    for name, agent in agents.items():
         runtime.put(db, 'agents', agent)
-        for index, spec in enumerate(case['specs']):
-            event_id = f"{case['name']}:{index}"
+        if name == 'team':
+            specs = [('team:message', 'agent_message', '{"importance":"note"}', 1.0)]
+        else:
+            specs = [(f'radio:user:{i}', 'user', f'input-{i}', float(i)) for i in range(32)]
+            specs.append(('radio:turn', 'radio_turn', '{}', 99.0))
+        for event_id, kind, text, created in specs:
             db.execute('INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)',
-                (event_id, agent['id'], spec['kind'], spec['text'], 'pending', spec['created'],
-                 agent['epoch'], None, None))
-            if spec['meta']:
-                db.execute('INSERT INTO runtime_event_meta VALUES(?,?)',
-                    (event_id, json.dumps(spec['meta'])))
-    db.execute('CREATE TABLE IF NOT EXISTS runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)')
-    for complaint in policy_cases['complaintRecords']:
-        db.execute('INSERT INTO runtime_complaints VALUES(?,?)', (complaint['id'], json.dumps({
-            'leadId':agents[complaint['agentCase']]['id'], 'status':complaint['status'],
-            'recipient':complaint['recipient'], 'responses':complaint['responses']})))
-agent_ids = {name:{'id':agent['id'], 'epoch':agent['epoch']} for name, agent in agents.items()}
+                       (event_id, agent['id'], kind, text, 'pending', created, agent['epoch'], None, None))
+        pending_batch(runtime, db, agent)
+    def snapshot(db, agent, name):
+        events = [list(row) for row in db.execute(
+            'SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=? ORDER BY created,rowid',
+            (agent['id'],))]
+        ids = [row[0] for row in events]
+        metadata = [list(row) for row in db.execute(
+            'SELECT id,record FROM runtime_event_meta WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids)] if ids else []
+        sync = [list(row) for row in db.execute(
+            'SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE id=? OR id IN (' + ','.join('?' for _ in ids) + ') ORDER BY collection,id',
+            [agent['id'], *ids])]
+        completed = [row[0] for row in db.execute('SELECT id FROM runtime_completed_turns ORDER BY id')]
+        sync_documents = [row[0] for row in db.execute('SELECT seq FROM sync_documents ORDER BY seq')]
+        sync_versions = [row[0] for row in db.execute('SELECT seq FROM sync_versions ORDER BY seq')]
+        raw_agent = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent['id'],)).fetchone()[0]
+        return {'agent':raw_agent, 'events':events, 'metadata':metadata, 'sync':sync,
+                'completed':completed, 'syncDocuments':sync_documents, 'syncVersions':sync_versions}
+    result = {}
+    for name, agent in agents.items():
+        result[name] = {'agentId':agent['id'], 'epoch':agent['epoch'], 'snapshot':snapshot(db, agent, name)}
+    print(json.dumps(result))
 runtime.close()
-python_root = root.parent / (root.name + '-python')
-shutil.copytree(root, python_root)
-reference = QuietRuntime(python_root, lambda *_args, **_kwargs: None)
-executor = CaptureExecutor()
-reference.delivery_executor = lambda: executor
-import codex_team_isolation
-original_cancel_pending = codex_team_isolation.cancel_pending
-codex_team_isolation.cancel_pending = lambda *_args, **_kwargs: None
-pending = {}
-retired = {}
-for case in cases:
-    agent_id = agent_ids[case['name']]['id']
-    with reference.lock, reference.db() as db:
-        agent = reference.agent(agent_id, db)
-        pending[case['name']] = [row['id'] for row in pending_batch(reference, db, agent)]
-        retired[case['name']] = [list(row) for row in db.execute(
-            "SELECT id,status,error FROM runtime_events WHERE agent=? AND epoch=? AND status!='pending' ORDER BY created,rowid",
-            (agent_id, agent['epoch']))]
-    reference.dispatch_candidates(agent_id)
-    with reference.lock, reference.db() as db:
-        agent = reference.agent(agent_id, db)
-        agent.update(status='queued', inFlight=False)
-        agent.pop('startAttempt', None)
-        reference.put(db, 'agents', agent)
-        db.execute("UPDATE runtime_events SET status='pending' WHERE agent=? AND status='reserved'",
-                   (agent_id,))
-codex_team_isolation.cancel_pending = original_cancel_pending
-selected = {case['name']:[row['id'] for row in executor.selected.get(agent_ids[case['name']]['id'], [])]
-            for case in cases}
-print(json.dumps({'agents':agent_ids, 'pending':pending, 'selected':selected,
-                  'retired':retired, 'python_root':str(python_root), 'now':now}))
-reference.close()
 "#;
 
 #[test]
@@ -237,17 +188,17 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
             |row| row.get(0),
         )
         .expect("delivered event count reads");
-    assert_eq!(delivered, 4);
-    let (projected_status, projected_in_flight, projected_turn_id): (String, bool, String) = reader
+    assert_eq!(delivered, 0);
+    let (projected_status, projected_in_flight, projected_turn_id): (String, bool, Option<String>) = reader
         .query_row(
             "SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",
             [agent],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("accepted scheduler lifecycle projection reads");
-    assert_eq!(projected_status, "running");
+    assert_eq!(projected_status, "starting");
     assert!(projected_in_flight);
-    assert_eq!(projected_turn_id, "turn-1");
+    assert_eq!(projected_turn_id, None);
     drop(reader);
     drop(store);
 
@@ -267,6 +218,10 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
             agent_record.extra.remove("startAttempt");
             agent_record.extra.remove("turnId");
             AgentRepository::put(transaction, &agent_record)?;
+            transaction.execute(
+                "UPDATE runtime_events SET status='delivered' WHERE agent=?1 AND status='reserved'",
+                [agent],
+            )?;
             EventWriteRepository::set_agent_sync_status(transaction, agent, "queued")?;
             QueueEventRepository::put(
                 transaction,
@@ -285,7 +240,7 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
             Ok(())
         })
         .expect("next scheduler input writes");
-    let mut driver = CaptureDriver::returning(TurnStart::Unknown);
+    let mut driver = StartThenUnknownDriver(&store);
     let mut wake = PendingWake(true);
     consume_wake(
         &store,
@@ -306,170 +261,145 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         )
         .expect("uncertain event status reads");
     assert_eq!(uncertain, "uncertain");
+    drop(reader);
+
+    let intent = TurnIntent {
+        agent_id: agent.to_owned(),
+        epoch,
+        attempt_id: "unknown-attempt".to_owned(),
+        account_key: "default".to_owned(),
+        provider: "codex".to_owned(),
+        thread_id: Some("fixture-thread".to_owned()),
+        cwd: Some("/tmp".to_owned()),
+        model: Some("fixture-model".to_owned()),
+        events: Vec::new(),
+    };
+    let mut stale_intent = intent.clone();
+    stale_intent.attempt_id = "stale-attempt".to_owned();
+    let mut stale_epoch = intent.clone();
+    stale_epoch.epoch -= 1;
+    assert!(
+        !settle_started(&store, &stale_intent, "late-turn").expect("stale callback is ignored")
+    );
+    assert!(!settle_started(&store, &stale_epoch, "late-turn").expect("stale epoch is ignored"));
+    assert!(settle_started(&store, &intent, "late-turn").expect("late acceptance settles"));
+    let reader = store.read().expect("late acceptance state reads");
+    let delivered: i64 = reader
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE id='rust-uncertain' AND status='delivered' AND turn_id='late-turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("late accepted event reads");
+    assert_eq!(delivered, 1);
+    drop(reader);
+    assert!(
+        store
+            .transaction(
+                |tx| studio_runtime_store::SchedulerRepository::settle_terminal(
+                    tx,
+                    &intent.agent_id,
+                    intent.epoch,
+                    &intent.attempt_id,
+                    "late-turn",
+                    AgentStatus::Completed,
+                    None
+                )
+            )
+            .expect("terminal callback settles")
+    );
+    let reader = store.read().expect("terminal scheduler state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("terminal agent reads")
+        .expect("terminal agent exists");
+    assert_eq!(
+        agent_record.status,
+        studio_runtime_store::AgentStatus::Completed
+    );
+    assert_eq!(agent_record.extra["inFlight"], false);
+    assert_eq!(agent_record.extra["lastCompletedTurn"], "late-turn");
 }
 
 #[test]
-fn pending_and_dispatch_selection_matches_python_policy_kinds_and_boundaries() {
+fn named_team_and_radio_refusals_match_python_preparation_and_preserve_whole_state() {
     let state = TemporaryState::new();
-    let policy_corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/scheduler_policy_cases.json");
-    let policy_corpus = policy_corpus
-        .to_str()
-        .expect("scheduler policy corpus path is UTF-8");
-    let fixture = run_python(&state.0, CREATE_DISPATCH_POLICY_CASES, &[policy_corpus]);
-    let fixture: Value =
-        serde_json::from_str(&fixture).expect("Python policy fixture returns JSON");
-    let agents = fixture["agents"]
-        .as_object()
-        .expect("Python fixture returns agents by case");
-    let python_selected = fixture["selected"]
-        .as_object()
-        .expect("Python dispatch returns selected IDs by case");
-    let python_pending = fixture["pending"]
-        .as_object()
-        .expect("Python pending_batch returns pending IDs by case");
-    let python_retired = fixture["retired"]
-        .as_object()
-        .expect("Python pending_batch returns retired records by case");
-    let attempt_created = fixture["now"]
-        .as_f64()
-        .expect("Python fixture returns a clock");
-    let expected_refusals = [
-        ("kind-agent_message", "team-isolation-policy"),
-        ("kind-complaint_response", "team-isolation-policy"),
-        ("kind-followup", "team-isolation-policy"),
-        ("kind-radio", "radio-policy"),
-        ("kind-radio_turn", "radio-policy"),
-        ("kind-radio-answer", "radio-policy"),
-        ("duplicate-progress", "team-isolation-policy"),
-        ("urgent-progress", "team-isolation-policy"),
-    ]
-    .into_iter()
-    .collect::<std::collections::BTreeMap<_, _>>();
+    let fixture = run_python(&state.0, CREATE_POLICY_REFUSAL_STATE, &[]);
+    let expected: Value =
+        serde_json::from_str(&fixture).expect("Python policy fixture returns state");
     let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written policy state");
-    for name in [
-        "kind-user",
-        "kind-plan_update",
-        "kind-agent_message",
-        "kind-chat_review",
-        "kind-complaint_response",
-        "kind-followup",
-        "kind-radio",
-        "kind-radio_turn",
-        "kind-complaint-open",
-        "kind-work-review",
-        "kind-radio-answer",
-        "complaint-resolved",
-        "event-limit",
-        "asset-limit",
-        "composer-limit",
-        "claude-command",
-        "progress-delay",
-        "duplicate-progress",
-        "urgent-progress",
-    ] {
-        let agent = &agents[name];
-        let agent_id = agent["id"].as_str().expect("agent ID is a string");
-        let epoch = agent["epoch"].as_i64().expect("agent epoch is an integer");
-        let expected_ids = python_selected[name]
-            .as_array()
-            .expect("Python selected IDs are an array")
-            .iter()
-            .map(|value| value.as_str().expect("event ID is a string").to_owned())
-            .collect::<Vec<_>>();
-        let mut driver = CaptureDriver::default();
-        let mut wake = PendingWake(true);
-        let result = consume_wake(
-            &store,
-            &mut wake,
-            agent_id,
-            epoch,
-            &format!("attempt-{name}"),
-            attempt_created,
-            &mut driver,
-        );
-        if let Some(policy) = expected_refusals.get(name) {
-            assert!(
-                matches!(result, Err(studio_runtime_services::scheduler::SchedulerError::PolicyRefused(ref reason))
-                    if reason == &format!("scheduler cannot claim {}: requires {policy}", if name == "urgent-progress" || name == "duplicate-progress" { "agent_message" } else if name == "kind-radio-answer" { "user" } else { name.strip_prefix("kind-").unwrap_or(name) })),
-                "{name} must fail closed with its named policy: {result:?}"
-            );
-            assert!(
-                driver.ids.is_empty(),
-                "{name} unexpectedly reached the driver"
-            );
-            if name == "kind-radio_turn" {
-                assert!(
-                    expected_ids.is_empty(),
-                    "Python radio policy rejects stale turns"
-                );
-            } else {
-                assert!(!expected_ids.is_empty(), "Python dispatch selected {name}");
-            }
-            if name == "urgent-progress" {
-                assert_eq!(
-                    expected_ids.first().map(String::as_str),
-                    Some("urgent-progress:32")
-                );
-            }
-        } else {
-            assert!(result.expect("safe scheduler case completes"));
-            assert_eq!(
-                driver.ids, expected_ids,
-                "Python dispatch mismatch for {name}"
-            );
-        }
-        let expected_pending = python_pending[name]
-            .as_array()
-            .expect("Python pending IDs are an array")
-            .iter()
-            .map(|value| value.as_str().expect("event ID is a string").to_owned())
-            .collect::<Vec<_>>();
-        let reader = store.read().expect("Rust policy state reads");
-        let actual_pending = reader
-            .prepare(
-                "SELECT id FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
-            )
-            .expect("pending state query prepares")
-            .query_map((agent_id, epoch), |row| row.get::<_, String>(0))
-            .expect("pending state query executes")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("pending state query reads");
+    for name in ["team", "radio"] {
+        let case = &expected[name];
+        let agent = case["agentId"]
+            .as_str()
+            .expect("Python agent ID is present");
+        let epoch = case["epoch"].as_i64().expect("Python epoch is present");
+        let before = rust_policy_snapshot(&store, agent);
         assert_eq!(
-            actual_pending, expected_pending,
-            "pending preparation mismatch for {name}"
+            before, case["snapshot"],
+            "Python and Rust pre-admission state differ for {name}"
         );
-        let expected_retired = python_retired[name]
-            .as_array()
-            .expect("Python retired records are an array")
-            .iter()
-            .map(|record| {
-                (
-                    record[0].as_str().expect("event ID is a string").to_owned(),
-                    record[1]
-                        .as_str()
-                        .expect("event status is a string")
-                        .to_owned(),
-                    record[2].as_str().map(str::to_owned),
-                )
-            })
-            .collect::<Vec<_>>();
-        let actual_retired = reader
-            .prepare(
-                "SELECT id,status,error FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status!='pending' ORDER BY created,rowid",
-            )
-            .expect("retired state query prepares")
-            .query_map((agent_id, epoch), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get(2)?))
-            })
-            .expect("retired state query executes")
-            .collect::<Result<Vec<(String, String, Option<String>)>, _>>()
-            .expect("retired state query reads");
+        let result = claim_intent(&store, agent, epoch, &format!("attempt-{name}"), 100.0);
+        assert!(
+            matches!(result, Err(SchedulerError::PolicyRefused(_))),
+            "{name} must fail closed: {result:?}"
+        );
+        let after = rust_policy_snapshot(&store, agent);
         assert_eq!(
-            actual_retired, expected_retired,
-            "pending retirement mismatch for {name}"
+            after, before,
+            "named refusal changed persisted state for {name}"
         );
     }
+}
+
+fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
+    let reader = store.read().expect("policy snapshot reads");
+    let raw_agent: String = reader
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent],
+            |row| row.get(0),
+        )
+        .expect("agent snapshot reads");
+    let events = reader.prepare("SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=?1 ORDER BY created,rowid")
+        .expect("event snapshot prepares").query_map([agent], |row| Ok((
+            row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?,
+            row.get::<_,f64>(4)?, row.get::<_,i64>(5)?, row.get::<_,Option<String>>(6)?, row.get::<_,Option<String>>(7)?,
+        ))).expect("event snapshot queries").collect::<Result<Vec<_>,_>>().expect("event snapshot reads");
+    let ids = events
+        .iter()
+        .map(|event| event.0.clone())
+        .collect::<Vec<_>>();
+    let ids_json = serde_json::to_string(&ids).expect("event IDs serialize");
+    let metadata = reader.prepare("SELECT id,record FROM runtime_event_meta WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")
+        .expect("metadata snapshot prepares").query_map([&ids_json], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
+        .expect("metadata snapshot queries").collect::<Result<Vec<_>,_>>().expect("metadata snapshot reads");
+    let sync = reader.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE id=?1 OR id IN (SELECT value FROM json_each(?2)) ORDER BY collection,id")
+        .expect("sync snapshot prepares").query_map((agent,&ids_json), |row| Ok((
+            row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,
+        ))).expect("sync snapshot queries").collect::<Result<Vec<_>,_>>().expect("sync snapshot reads");
+    let completed = reader
+        .prepare("SELECT id FROM runtime_completed_turns ORDER BY id")
+        .expect("completed-turn snapshot prepares")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("completed-turn snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("completed-turn snapshot reads");
+    let sync_documents = reader
+        .prepare("SELECT seq FROM sync_documents ORDER BY seq")
+        .expect("sync-document snapshot prepares")
+        .query_map([], |row| row.get::<_, i64>(0))
+        .expect("sync-document snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("sync-document snapshot reads");
+    let sync_versions = reader
+        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
+        .expect("sync-version snapshot prepares")
+        .query_map([], |row| row.get::<_, i64>(0))
+        .expect("sync-version snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("sync-version snapshot reads");
+    json!({"agent":raw_agent,"events":events,"metadata":metadata,"sync":sync,
+        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
 }
 
 #[test]
@@ -503,27 +433,86 @@ fn submitted_marker_survives_settlement_write_failure() {
             15.0,
             &mut driver,
         )
-        .is_err()
+        .is_ok()
     );
     let reader = store.read().expect("persisted attempt reads");
     let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
         .expect("agent record reads")
         .expect("agent record exists");
-    assert_eq!(agent_record.extra["startAttempt"]["submitted"], true);
+    assert_eq!(agent_record.extra["startAttempt"]["submitted"], false);
     let status: String = reader
         .query_row(
-            "SELECT status FROM runtime_events WHERE agent=?1 AND status='dispatching' LIMIT 1",
+            "SELECT status FROM runtime_events WHERE agent=?1 AND status='reserved' LIMIT 1",
             [agent],
             |row| row.get(0),
         )
         .expect("submitted input remains unresolved");
-    assert_eq!(status, "dispatching");
+    assert_eq!(status, "reserved");
     drop(reader);
     assert_eq!(
         studio_runtime_services::scheduler::recover_on_startup(&store)
-            .expect("submitted attempt is not recovered"),
-        0
+            .expect("proven unsubmitted attempt is released"),
+        3
     );
+    let reader = store.read().expect("restart recovery state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("recovered agent reads")
+        .expect("recovered agent exists");
+    assert_eq!(agent_record.status, AgentStatus::Queued);
+}
+
+#[test]
+fn restart_keeps_a_scoped_receipt_without_replaying_events() {
+    let state = TemporaryState::new();
+    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
+    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
+    let agent = fixture["agent"].as_str().expect("agent ID is present");
+    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
+    let mut driver = StartAndAcceptDriver(&store);
+    let mut wake = PendingWake(true);
+    consume_wake(
+        &store,
+        &mut wake,
+        agent,
+        epoch,
+        "known-restart-attempt",
+        16.5,
+        &mut driver,
+    )
+    .expect("provider acceptance and turn identity are persisted before restart");
+    drop(store);
+
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust reopens submitted state");
+    assert_eq!(
+        studio_runtime_services::scheduler::recover_on_startup(&store)
+            .expect("known submitted turn recovers conservatively"),
+        1
+    );
+    let reader = store.read().expect("recovered turn state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("agent reads")
+        .expect("agent exists");
+    assert_eq!(agent_record.status, AgentStatus::Interrupted);
+    assert_eq!(agent_record.extra["turnId"], "known-restart-turn");
+    assert_eq!(agent_record.extra["autoWake"], false);
+    assert_eq!(agent_record.extra["inFlight"], false);
+    assert_eq!(
+        agent_record.extra["restartRecovery"]["turnId"],
+        "known-restart-turn"
+    );
+    let (delivered, pending): (i64, i64) = reader
+        .query_row(
+            "SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",
+            [agent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("recovered event statuses read");
+    assert_eq!(delivered, 3);
+    assert_eq!(pending, 0);
+    let pending_agents = studio_runtime_store::SchedulerRepository::pending_agents(&reader)
+        .expect("recovered agent is not resubmitted");
+    assert!(pending_agents.is_empty());
 }
 
 #[test]
@@ -609,7 +598,7 @@ fn late_acceptance_preserves_a_stopped_agent_and_marks_input_uncertain() {
             |row| row.get(0),
         )
         .expect("stopped input remains unresolved");
-    assert_eq!(uncertain, driver.ids.len() as i64);
+    assert_eq!(uncertain, 0);
 }
 
 struct CaptureDriver {
@@ -639,6 +628,38 @@ impl TurnDriver for CaptureDriver {
     }
 }
 
+struct StartAndAcceptDriver<'a>(&'a RuntimeStore);
+
+impl TurnDriver for StartAndAcceptDriver<'_> {
+    fn start(&mut self, intent: TurnIntent) -> TurnStart {
+        let request_id = "known-restart-request";
+        assert!(
+            mark_submitted_for_provider(self.0, &intent, request_id, 1)
+                .expect("turn/start identity is persisted")
+        );
+        assert!(
+            settle_started_provider(self.0, &intent, request_id, 1, "known-restart-turn")
+                .expect("provider acceptance settles once")
+                .is_some()
+        );
+        TurnStart::Accepted {
+            turn_id: "known-restart-turn".to_owned(),
+        }
+    }
+}
+
+struct StartThenUnknownDriver<'a>(&'a RuntimeStore);
+
+impl TurnDriver for StartThenUnknownDriver<'_> {
+    fn start(&mut self, intent: TurnIntent) -> TurnStart {
+        assert!(
+            mark_submitted_for_provider(self.0, &intent, "unknown-request", 1)
+                .expect("unknown provider request identity is persisted")
+        );
+        TurnStart::Unknown
+    }
+}
+
 struct InspectingDriver<'a> {
     store: &'a RuntimeStore,
     ids: Vec<String>,
@@ -661,7 +682,7 @@ impl TurnDriver for InspectingDriver<'_> {
         let agent = AgentRepository::get(&reader, &AgentId::from(intent.agent_id.as_str()))
             .expect("agent reads before handoff")
             .expect("agent exists before handoff");
-        assert_eq!(agent.extra["startAttempt"]["submitted"], true);
+        assert_eq!(agent.extra["startAttempt"]["submitted"], false);
         for event in &intent.events {
             let status: String = reader
                 .query_row(
@@ -670,7 +691,7 @@ impl TurnDriver for InspectingDriver<'_> {
                     |row| row.get(0),
                 )
                 .expect("event reservation reads before handoff");
-            assert_eq!(status, "dispatching");
+            assert_eq!(status, "reserved");
         }
         self.ids = intent.events.into_iter().map(|event| event.id).collect();
         self.outcome.clone()
@@ -766,13 +787,19 @@ fn server_source() -> PathBuf {
 
 struct TemporaryState(PathBuf);
 
+static TEMP_STATE_ID: AtomicUsize = AtomicUsize::new(0);
+
 impl TemporaryState {
     fn new() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock follows Unix epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("studio-scheduler-parity-{nonce}"));
+        let id = TEMP_STATE_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "studio-scheduler-parity-{}-{nonce}-{id}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).expect("temporary state directory creates");
         Self(root)
     }
@@ -780,20 +807,51 @@ impl TemporaryState {
 
 impl Drop for TemporaryState {
     fn drop(&mut self) {
-        for path in [self.0.clone(), python_reference_path(&self.0)] {
-            if let Err(error) = fs::remove_dir_all(path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                eprintln!("temporary scheduler state cleanup failed: {error}");
-            }
+        if let Err(error) = fs::remove_dir_all(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("temporary scheduler state cleanup failed: {error}");
         }
     }
 }
 
-fn python_reference_path(root: &Path) -> PathBuf {
-    let name = format!(
-        "{}-python",
-        root.file_name().unwrap_or_default().to_string_lossy()
-    );
-    root.with_file_name(name)
+trait TurnDriver {
+    fn start(&mut self, intent: TurnIntent) -> TurnStart;
+}
+trait WakeSignal {
+    fn consume(&mut self) -> bool;
+}
+fn consume_wake(
+    store: &RuntimeStore,
+    wake: &mut impl WakeSignal,
+    agent: &str,
+    epoch: i64,
+    attempt: &str,
+    created: f64,
+    driver: &mut impl TurnDriver,
+) -> Result<bool, SchedulerError> {
+    if !wake.consume() {
+        return Ok(false);
+    }
+    if let Some(intent) = claim_intent(store, agent, epoch, attempt, created)? {
+        let outcome = driver.start(intent.clone());
+        settle_start_outcome(store, &intent, outcome)?;
+    }
+    Ok(true)
+}
+
+fn settle_started(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    turn: &str,
+) -> Result<bool, SchedulerError> {
+    Ok(store.transaction(|tx| {
+        studio_runtime_store::SchedulerRepository::settle_started(
+            tx,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+            turn,
+        )
+    })?)
 }

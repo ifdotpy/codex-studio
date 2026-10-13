@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::sync_documents::{hash_payload, next_sequence};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{QueueEvent, StoreError, StoreResult};
+use crate::{AgentId, AgentRepository, QueueEvent, StoreError, StoreResult};
 
 const PLAN_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_plans",
@@ -228,45 +228,78 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        let value = payload
-            .get_mut("value")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection is invalid".into()))?;
-        if value.get("id").and_then(Value::as_str) != Some(agent_id) {
-            return Err(StoreError::SchemaMismatch(
-                "agent sync projection identity is invalid".to_owned(),
-            ));
-        }
-        let status_changed = status
-            .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
-        let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
-            value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
-                || value.get("turnId").and_then(Value::as_str) != turn_id
-        });
-        let name_changed = name.is_some_and(|name| {
-            value.get("name").and_then(Value::as_str) != Some(name)
-                || value.get("manualName").and_then(Value::as_bool) != Some(true)
-        });
-        if !status_changed && !lifecycle_changed && !name_changed {
-            return Ok(());
-        }
-        if let Some(status) = status {
-            value.insert("status".to_owned(), Value::String(status.to_owned()));
-        }
-        if let Some((in_flight, turn_id)) = lifecycle {
-            value.insert("inFlight".to_owned(), Value::Bool(in_flight));
-            if let Some(turn_id) = turn_id {
-                value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-            } else {
-                value.insert("turnId".to_owned(), Value::Null);
+        let before = payload.clone();
+        {
+            let value = payload
+                .get_mut("value")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch("agent sync projection is invalid".into())
+                })?;
+            if value.get("id").and_then(Value::as_str) != Some(agent_id) {
+                return Err(StoreError::SchemaMismatch(
+                    "agent sync projection identity is invalid".to_owned(),
+                ));
+            }
+            if let Some(status) = status {
+                value.insert("status".to_owned(), Value::String(status.to_owned()));
+            }
+            if let Some((in_flight, turn_id)) = lifecycle {
+                value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+                value.insert(
+                    "turnId".to_owned(),
+                    turn_id.map_or(Value::Null, |id| Value::String(id.to_owned())),
+                );
+            }
+            if let Some(name) = name {
+                value.insert("name".to_owned(), Value::String(name.to_owned()));
+                value.insert("manualName".to_owned(), Value::Bool(true));
             }
         }
-        if let Some(name) = name {
-            value.insert("name".to_owned(), Value::String(name.to_owned()));
-            value.insert("manualName".to_owned(), Value::Bool(true));
+        let has_runtime_agents = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if has_runtime_agents
+            && let Some(agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+            && let Some(value) = payload.get_mut("value").and_then(Value::as_object_mut)
+        {
+            value.insert("epoch".to_owned(), Value::from(agent.epoch));
+            for key in [
+                "turnEpoch",
+                "error",
+                "nativeFailureHold",
+                "activity",
+                "activeTools",
+                "startAttempt",
+                "turnId",
+                "inFlight",
+                "autoWake",
+                "lastCompletedTurn",
+                "lastCompletedTurnStatus",
+                "lastCompletedTurnError",
+                "startOutcomeHold",
+                "lastAnswer",
+                "disconnectRecovery",
+                "restartRecovery",
+            ] {
+                if let Some(field) = agent.extra.get(key) {
+                    value.insert(key.to_owned(), field.clone());
+                } else {
+                    value.remove(key);
+                }
+            }
+        }
+        if payload == before {
+            return Ok(());
         }
         if status == Some("queued")
-            && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+            && let Some(overview) = payload
+                .get_mut("value")
+                .and_then(Value::as_object_mut)
+                .and_then(|value| value.get_mut("overview"))
+                .and_then(Value::as_object_mut)
         {
             overview.insert("result".into(), Value::String(String::new()));
             overview.insert("resultTruncated".into(), Value::Bool(false));
@@ -342,6 +375,21 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"starting\",\"inFlight\":false,\"turnId\":null}}',0);",
             )
             .expect("projection fixture creates");
+        connection
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("runtime agent fixture creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES('a',?1)",
+                [
+                    json!({"id":"a","rootId":"a","name":"Agent","status":"running","epoch":2,
+                "inFlight":true,"turnId":"turn-1","lastAnswer":"",
+                "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
+                "restartRecovery":{"stage":"held"}})
+                    .to_string(),
+                ],
+            )
+            .expect("runtime lifecycle receipt persists");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_lifecycle(
             &transaction,
@@ -365,6 +413,18 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+        assert_eq!(
+            (
+                &value["lastAnswer"],
+                &value["disconnectRecovery"],
+                &value["restartRecovery"]
+            ),
+            (
+                &json!(""),
+                &json!({"epoch":2,"turnId":"turn-1"}),
+                &json!({"stage":"held"})
+            )
+        );
     }
 
     #[test]
