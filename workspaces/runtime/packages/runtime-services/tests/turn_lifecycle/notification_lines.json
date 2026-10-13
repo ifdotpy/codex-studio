@@ -1,0 +1,37 @@
+[
+  {
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "before": 949,
+    "after": 1074
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "before": 110,
+    "after": 118
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "before": 386,
+    "after": 392
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-services/src/sync_policy.rs",
+    "before": 1063,
+    "after": 1063
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/notification_dispatch.rs",
+    "before": 337,
+    "after": 341
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/transcript.rs",
+    "before": 513,
+    "after": 513
+  },
+  {
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/event_write.rs",
+    "before": 338,
+    "after": 338
+  }
+]

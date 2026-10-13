@@ -282,6 +282,13 @@ impl EventWriteRepository {
                     "lastAnswer",
                     "disconnectRecovery",
                     "restartRecovery",
+                    "nativeSafetyBuffering",
+                    "nativeStatus",
+                    "nativeTurnError",
+                    "unhandledNotifications",
+                    "lastEvent",
+                    "tail",
+                    "contextUsage",
                 ] {
                     if let Some(field) = agent.extra.get(key) {
                         value.insert(key.to_owned(), field.clone());
@@ -291,19 +298,27 @@ impl EventWriteRepository {
                 }
             }
         }
-        if payload == before {
-            return Ok(());
-        }
-        if status == Some("queued")
-            && let Some(overview) = payload
+        {
+            let value = payload
                 .get_mut("value")
                 .and_then(Value::as_object_mut)
-                .and_then(|value| value.get_mut("overview"))
-                .and_then(Value::as_object_mut)
-        {
-            overview.insert("result".into(), Value::String(String::new()));
-            overview.insert("resultTruncated".into(), Value::Bool(false));
-            overview.insert("resultTurnId".into(), Value::Null);
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch("agent sync projection is invalid".into())
+                })?;
+            if let Some(name) = name {
+                value.insert("name".to_owned(), Value::String(name.to_owned()));
+                value.insert("manualName".to_owned(), Value::Bool(true));
+            }
+            if status == Some("queued")
+                && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+            {
+                overview.insert("result".into(), Value::String(String::new()));
+                overview.insert("resultTruncated".into(), Value::Bool(false));
+                overview.insert("resultTurnId".into(), Value::Null);
+            }
+        }
+        if payload == before {
+            return Ok(());
         }
         let payload = serde_json::to_string(&payload)?;
         let hash = hash_payload(&payload);
