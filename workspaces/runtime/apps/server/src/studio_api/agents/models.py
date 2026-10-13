@@ -500,6 +500,11 @@ class UsageResumeResponse(UsageResumeDto, ResponseModel):
 
 
 class RenameRequest(ContractModel):
+    model_config = ConfigDict(json_schema_extra={
+        "if": {"required": ["name"], "properties": {"name": {"type": "string"}}},
+        "else": {"required": ["request_id"], "properties": {"request_id": {"type": "string", "minLength": 1}}},
+    })
+
     id: str = Field(min_length=1, max_length=200)
     name: str | None = Field(default=None, min_length=1, max_length=80)
     request_id: str | None = Field(default=None, min_length=1, max_length=200)

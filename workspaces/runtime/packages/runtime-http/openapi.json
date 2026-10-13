@@ -39041,6 +39041,28 @@
       },
       "QueueCancelBody": {
         "additionalProperties": false,
+        "else": {
+          "properties": {
+            "message_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "message_id"
+          ]
+        },
+        "if": {
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
         "properties": {
           "action": {
             "const": "cancel",
@@ -40665,6 +40687,27 @@
       },
       "RenameRequest": {
         "additionalProperties": false,
+        "else": {
+          "properties": {
+            "request_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "request_id"
+          ]
+        },
+        "if": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        },
         "properties": {
           "id": {
             "maxLength": 200,
@@ -43869,6 +43912,60 @@
       },
       "RuleBody": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "low_workers"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "properties": {
+              "kind": {
+                "type": "string"
+              }
+            },
+            "then": {
+              "properties": {
+                "command": {
+                  "const": ""
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "file"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "properties": {
+              "kind": {
+                "type": "string"
+              }
+            },
+            "then": {
+              "properties": {
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          }
+        ],
         "properties": {
           "action": {
             "default": "save",

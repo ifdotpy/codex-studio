@@ -19671,7 +19671,11 @@ export interface components {
        * @default null
        */
       wakes?: number | null;
-    };
+    } & ({
+      kind?: string;
+    } & {
+      kind?: string;
+    });
     /** RuleEntityDto */
     RuleEntityDto: {
       /** Agent */
