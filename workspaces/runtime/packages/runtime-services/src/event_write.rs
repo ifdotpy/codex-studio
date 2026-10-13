@@ -3,189 +3,22 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{Number, Value, json};
+use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, RulesRepository, Transaction,
 };
 use thiserror::Error;
 
+pub use studio_runtime_store::{python_json, python_json_compact};
+
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
-
-/// Match the previous Python-default sorted JSON format used by durable signatures.
-pub fn python_json(value: &Value) -> String {
-    python_json_with_options(value, JsonOptions::DEFAULT)
-}
-
-/// Match the compact UTF-8 JSON written by Python's signed federation protocol.
-pub fn python_json_compact(value: &Value) -> String {
-    python_json_with_options(value, JsonOptions::COMPACT_UNICODE)
-}
-
-#[derive(Clone, Copy)]
-struct JsonOptions {
-    compact: bool,
-    ensure_ascii: bool,
-}
-
-impl JsonOptions {
-    const COMPACT_UNICODE: Self = Self {
-        compact: true,
-        ensure_ascii: false,
-    };
-
-    const DEFAULT: Self = Self {
-        compact: false,
-        ensure_ascii: true,
-    };
-}
-
-fn python_json_with_options(value: &Value, options: JsonOptions) -> String {
-    match value {
-        Value::Null | Value::Bool(_) => value.to_string(),
-        Value::Number(number) => python_number(number),
-        Value::String(value) => python_quote(value, options.ensure_ascii),
-        Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|value| python_json_with_options(value, options))
-                .collect::<Vec<_>>()
-                .join(if options.compact { "," } else { ", " })
-        ),
-        Value::Object(values) => {
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort();
-            format!(
-                "{{{}}}",
-                keys.into_iter()
-                    .map(|key| {
-                        format!(
-                            "{}:{}{}",
-                            python_quote(key, options.ensure_ascii),
-                            if options.compact { "" } else { " " },
-                            python_json_with_options(&values[key], options)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(if options.compact { "," } else { ", " })
-            )
-        }
-    }
-}
-
-fn python_number(number: &Number) -> String {
-    if !number.is_f64() {
-        return number.to_string();
-    }
-
-    let rendered = number.to_string();
-    let (sign, rendered) = rendered
-        .strip_prefix('-')
-        .map_or(("", rendered.as_str()), |value| ("-", value));
-    let (mantissa, exponent) = rendered
-        .split_once(['e', 'E'])
-        .map_or((rendered, 0_i32), |(mantissa, exponent)| {
-            (mantissa, exponent.parse::<i32>().unwrap_or(0))
-        });
-    let decimal_position = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
-    let digits = mantissa
-        .bytes()
-        .filter(u8::is_ascii_digit)
-        .map(char::from)
-        .collect::<String>();
-    let Some(first_nonzero) = digits.find(|digit| digit != '0') else {
-        return format!("{sign}0.0");
-    };
-    let significant = digits[first_nonzero..].trim_end_matches('0');
-    let significant = if significant.is_empty() {
-        "0"
-    } else {
-        significant
-    };
-    let power = decimal_position - first_nonzero as i32 - 1 + exponent;
-
-    if (-4..16).contains(&power) {
-        let point = power + 1;
-        let fixed = if point <= 0 {
-            format!("0.{}{significant}", "0".repeat((-point) as usize))
-        } else if point as usize >= significant.len() {
-            format!(
-                "{}{zeros}.0",
-                significant,
-                zeros = "0".repeat(point as usize - significant.len())
-            )
-        } else {
-            format!(
-                "{}.{}",
-                &significant[..point as usize],
-                &significant[point as usize..]
-            )
-        };
-        return format!("{sign}{fixed}");
-    }
-
-    let tail = &significant[1..];
-    let exponent_sign = if power < 0 { '-' } else { '+' };
-    let exponent_digits = power.unsigned_abs().to_string();
-    let exponent_digits = if exponent_digits.len() == 1 {
-        format!("0{exponent_digits}")
-    } else {
-        exponent_digits
-    };
-    if tail.is_empty() {
-        format!(
-            "{sign}{}e{exponent_sign}{exponent_digits}",
-            &significant[..1]
-        )
-    } else {
-        format!(
-            "{sign}{}.{}e{exponent_sign}{exponent_digits}",
-            &significant[..1],
-            tail
-        )
-    }
-}
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
 pub fn python_strip(value: &str) -> &str {
     value.trim_matches(|character: char| {
         character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
     })
-}
-
-fn python_quote(value: &str, ensure_ascii: bool) -> String {
-    let mut output = String::from("\"");
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\u{8}' => output.push_str("\\b"),
-            '\u{c}' => output.push_str("\\f"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            c if c < ' ' || (ensure_ascii && c as u32 == 0x7f) => {
-                output.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c if ensure_ascii && c as u32 > 0x7f => {
-                let n = c as u32;
-                if n <= 0xffff {
-                    output.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    let n = n - 0x10000;
-                    output.push_str(&format!(
-                        "\\u{:04x}\\u{:04x}",
-                        0xd800 + (n >> 10),
-                        0xdc00 + (n & 0x3ff)
-                    ));
-                }
-            }
-            c => output.push(c),
-        }
-    }
-    output.push('"');
-    output
 }
 
 #[derive(Debug, Error)]
@@ -697,56 +530,8 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, python_json_compact,
-        save_plan,
-    };
+    use super::{AnnotationWrite, EventWriteError, PlanWrite, annotate, save_plan};
     use serde_json::json;
-
-    #[test]
-    fn python_json_matches_python_default_float_vector() {
-        assert_eq!(
-            python_json(&serde_json::from_str("1e-6").expect("float JSON parses")),
-            "1e-06"
-        );
-        assert_eq!(
-            python_json(&json!({"duration": 1e-6})),
-            // Captured from Python json.dumps({"duration": 1e-6}, sort_keys=True).
-            "{\"duration\": 1e-06}"
-        );
-        assert_eq!(
-            python_json(&json!({"z":1,"a":"Café🙂"})),
-            "{\"a\": \"Caf\\u00e9\\ud83d\\ude42\", \"z\": 1}"
-        );
-    }
-
-    #[test]
-    fn python_json_compact_matches_federation_wire_format() {
-        assert_eq!(
-            python_json_compact(&serde_json::from_str("1e-6").expect("float JSON parses")),
-            "1e-06"
-        );
-        assert_eq!(
-            python_json_compact(&serde_json::from_str("1e16").expect("float JSON parses")),
-            "1e+16"
-        );
-        assert_eq!(
-            python_json_compact(&serde_json::from_str("1e-4").expect("float JSON parses")),
-            "0.0001"
-        );
-        assert_eq!(
-            python_json_compact(&serde_json::from_str("1e15").expect("float JSON parses")),
-            "1000000000000000.0"
-        );
-        assert_eq!(
-            python_json_compact(&serde_json::from_str("-0.0").expect("float JSON parses")),
-            "-0.0"
-        );
-        assert_eq!(
-            python_json_compact(&json!({"z":1,"a":"é"})),
-            "{\"a\":\"é\",\"z\":1}"
-        );
-    }
     use std::collections::BTreeMap;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, Transaction,

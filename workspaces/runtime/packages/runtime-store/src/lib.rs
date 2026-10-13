@@ -4,9 +4,13 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
-pub use schema::sha256_hex;
+pub use schema::{python_json, python_json_compact, sha256_hex};
 
 pub use repositories::account_state;
+pub use repositories::analytics::{
+    self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
+    SessionCostError,
+};
 pub use repositories::checkpoints::{
     CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };

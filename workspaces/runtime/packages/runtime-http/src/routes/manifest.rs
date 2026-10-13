@@ -70,6 +70,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript/search-index",
     "transcript/workspace-state",
     "usage-policy/token-rates",
+    "usage-policy/session-cost-refresh",
     "work-policy/views",
     "workspace-state/git-changes",
     "workspace-state/image-execution",
