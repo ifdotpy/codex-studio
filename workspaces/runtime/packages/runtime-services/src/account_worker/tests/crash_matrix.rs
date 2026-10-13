@@ -11,7 +11,7 @@ pub(super) struct Context {
     pub acknowledged: std::sync::Mutex<BTreeMap<u64, u64>>,
     pub generation: std::sync::atomic::AtomicU64,
     pub inputs: std::sync::Mutex<Vec<String>>,
-    committed: std::sync::Mutex<Vec<(String, usize)>>,
+    committed: std::sync::Mutex<Vec<(String, usize, Option<String>)>>,
     pub agent_seed: std::sync::Mutex<Option<studio_runtime_store::AgentRecord>>,
 }
 tokio::task_local! { pub(super) static MATRIX: Arc<Context>; }
@@ -52,7 +52,10 @@ async fn scenario(index: usize) {
     }
 }
 
-async fn execute(index: usize, target: Option<(String, usize, bool)>) -> Arc<Context> {
+async fn execute(
+    index: usize,
+    target: Option<(String, usize, Option<String>, bool)>,
+) -> Arc<Context> {
     let context = Arc::new(Context::default());
     context.faults.arm(None);
     *context.faults.named_target.lock().unwrap() = target.clone();
@@ -86,10 +89,13 @@ async fn restart(context: &Context, label: &str) {
     // The failed worker must release ownership before the replacement starts.
     tokio::time::timeout(std::time::Duration::from_secs(120), async {
         loop {
+            let released = bridge.account_released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
             if !bridge.accounts.lock().unwrap().contains("default") {
                 break;
             }
-            tokio::task::yield_now().await;
+            released.await;
         }
     })
     .await
@@ -166,7 +172,7 @@ async fn restart(context: &Context, label: &str) {
         .lock()
         .unwrap()
         .iter()
-        .any(|(name, _)| name == "stop");
+        .any(|(name, _, _)| name == "stop");
     let accepted_turn = context
         .frames
         .lock()
@@ -191,8 +197,27 @@ async fn restart(context: &Context, label: &str) {
         let attempt = &record["startAttempt"];
         let tracked_turn = attempt["turnId"].as_str() == Some("turn")
             || attempt["observedTurnId"].as_str() == Some("turn");
-        let held_unknown =
-            attempt["interrupt"]["outcome"].as_str() == Some("unknown") && tracked_turn;
+        let interrupt = &attempt["interrupt"];
+        let ticket = interrupt["requestTicket"]
+            .as_str()
+            .expect("unknown interrupt has a ticket")
+            .to_owned();
+        let interrupt_generation = interrupt["generation"]
+            .as_u64()
+            .expect("unknown interrupt has a generation");
+        let receipt_count = bridge.run(move |store| {
+            Ok(store.read()?.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%:submitted' AND json_extract(result,'$.request.id')=?1 AND json_extract(result,'$.request.generation')=?2 AND json_extract(result,'$.request.method')='turn/interrupt'",
+                rusqlite::params![ticket, i64::try_from(interrupt_generation).unwrap()],
+                |row| row.get::<_, i64>(0),
+            )?)
+        }).await.unwrap();
+        let held_unknown = interrupt["outcome"].as_str() == Some("unknown")
+            && tracked_turn
+            && interrupt["threadId"] == "fake-thread-0"
+            && interrupt["turnId"] == "turn"
+            && interrupt_generation == generation
+            && receipt_count == 1;
         assert!(
             replacement_interrupted || held_unknown,
             "{label}: committed stop was neither sent once nor held Unknown with its turn tracked"
@@ -201,15 +226,114 @@ async fn restart(context: &Context, label: &str) {
     if !joined {
         let _result = worker.shutdown().await;
     }
-    // A second initialized recovery must retain unknown operations without resend.
-    let mut verification_peer = Peer::identity("default", generation, None);
-    verification_peer.cursor = marker;
-    let mut verification = verification_peer.worker(bridge.clone()).await;
-    worker_barrier(&verification).await;
-    assert!(
-        verification_peer.writes.try_recv().is_err(),
-        "{label}: second recovery resent an unresolved operation"
-    );
+    // A second initialized recovery must replay unresolved callbacks and retain
+    // their Unknown intent without writing a second response or acknowledging it.
+    let frames = context.frames.lock().unwrap().clone();
+    let acknowledged = context.acknowledged.lock().unwrap().clone();
+    let mut unresolved_callback = None;
+    for ((frame_generation, cursor), frame) in frames {
+        if frame_generation != generation
+            || !frame["id"].is_string()
+            || frame["method"].as_str().is_none()
+            || acknowledged.get(&generation).copied().unwrap_or(0) >= cursor
+        {
+            continue;
+        }
+        let operation = format!("callback:default:{generation}:{cursor}");
+        let submitted_id = format!("account-worker:{operation}:submitted");
+        let written_id = format!("account-worker:{operation}:written");
+        let submitted = submitted_id.clone();
+        let written = written_id.clone();
+        let receipt_state = bridge
+            .run(move |store| {
+                let db = store.read()?;
+                let submitted: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                    [submitted],
+                    |row| row.get(0),
+                )?;
+                let written: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                    [written],
+                    |row| row.get(0),
+                )?;
+                Ok((submitted, written))
+            })
+            .await
+            .unwrap();
+        if receipt_state == (1, 0) {
+            unresolved_callback = Some((cursor, frame, submitted_id, written_id));
+            break;
+        }
+    }
+    let (mut verification_peer, mut verification) =
+        if let Some((callback_cursor, callback_frame, submitted_id, written_id)) =
+            unresolved_callback
+        {
+            let mut peer = Peer::identity("default", generation, None);
+            let mut worker = peer.worker(bridge.clone()).await;
+            peer.cursor = callback_cursor - 1;
+            let redelivered_cursor = peer.frame(callback_frame).await;
+            assert_eq!(
+                redelivered_cursor, callback_cursor,
+                "replay uses the exact callback cursor"
+            );
+            let result =
+                tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+                    .await
+                    .expect("second recovery callback decision deadline");
+            assert!(
+                matches!(result, Err(WorkerError::CallbackUnknown)),
+                "{label}: unresolved callback replay must stay CallbackUnknown, got {result:?}"
+            );
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "{label}: unresolved callback was redelivered"
+            );
+            assert!(
+                peer.acks.try_recv().is_err(),
+                "{label}: unresolved callback was acknowledged"
+            );
+            let submitted = submitted_id.clone();
+            let written = written_id.clone();
+            let receipts = bridge
+                .run(move |store| {
+                    let db = store.read()?;
+                    let submitted: i64 = db.query_row(
+                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                        [submitted],
+                        |row| row.get(0),
+                    )?;
+                    let written: i64 = db.query_row(
+                        "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                        [written],
+                        |row| row.get(0),
+                    )?;
+                    Ok((submitted, written))
+                })
+                .await
+                .unwrap();
+            assert_eq!(receipts, (1, 0), "callback intent remains held as Unknown");
+            let mut health_peer = Peer::identity("default", generation, None);
+            health_peer.cursor = marker;
+            let health_worker = health_peer.worker(bridge.clone()).await;
+            worker_barrier(&health_worker).await;
+            assert!(
+                health_peer.writes.try_recv().is_err(),
+                "{label}: health recovery resent unresolved callback"
+            );
+            (health_peer, health_worker)
+        } else {
+            let mut peer = Peer::identity("default", generation, None);
+            peer.cursor = marker;
+            let worker = peer.worker(bridge.clone()).await;
+            worker_barrier(&worker).await;
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "{label}: second recovery resent an unresolved operation"
+            );
+            (peer, worker)
+        };
     let expected_inputs = context.inputs.lock().unwrap().clone();
     let expected_items = expected_text(context);
     let assert_label = label.to_owned();
@@ -381,9 +505,8 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
     {
         let baseline = execute(index, None).await;
         let operations = baseline.faults.operations.lock().unwrap().clone();
-        let calls = operations.len();
         assert!(
-            calls > 0,
+            !operations.is_empty(),
             "scenario {index} has no instrumented bridge calls"
         );
         if let Some((_, _, _, root)) = baseline.state.lock().unwrap().take() {
@@ -391,40 +514,41 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
         }
         let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
         let mut covered = std::collections::BTreeSet::new();
-        for (call, (name, occurrence)) in operations.iter().enumerate() {
+        for (name, occurrence, identity) in &operations {
             for after in [false, true] {
-                if !full
-                    && (!after
-                        || (call != calls.saturating_sub(3) && !(index == 0 && name == "claim")))
-                {
+                if !full && !(after && (name == "finish" || (index == 0 && name == "claim"))) {
                     continue;
                 }
                 eprintln!(
-                    "matrix scenario={index} operation={name} occurrence={occurrence} after={after}"
+                    "matrix scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"
                 );
                 let started = std::time::Instant::now();
-                let context = execute(index, Some((name.clone(), *occurrence, after))).await;
+                let context = execute(
+                    index,
+                    Some((name.clone(), *occurrence, identity.clone(), after)),
+                )
+                .await;
                 scenario_seconds += started.elapsed().as_secs_f64();
                 let started = std::time::Instant::now();
                 tokio::time::timeout(
                     std::time::Duration::from_secs(300),
                     restart(
                         &context,
-                        &format!("scenario={index} operation={name} occurrence={occurrence} after={after}"),
+                        &format!("scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"),
                     ),
                 )
                 .await
                 .expect("restart watchdog");
                 restart_seconds += started.elapsed().as_secs_f64();
-                covered.insert((name.clone(), *occurrence, after));
+                covered.insert((name.clone(), *occurrence, identity.clone(), after));
                 cases += 1;
             }
         }
         if full {
-            for (name, occurrence) in operations {
+            for (name, occurrence, identity) in operations {
                 for after in [false, true] {
                     assert!(
-                        covered.contains(&(name.clone(), occurrence, after)),
+                        covered.contains(&(name.clone(), occurrence, identity.clone(), after)),
                         "missing named boundary"
                     );
                 }

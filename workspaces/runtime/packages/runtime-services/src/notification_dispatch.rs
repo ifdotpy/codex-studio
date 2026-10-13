@@ -1169,8 +1169,8 @@ fn stream_owner(
     } else {
         transaction
             .query_row(
-                "SELECT id,record FROM runtime_agents WHERE id=?1",
-                [&key.agent_id],
+                "SELECT id,record FROM runtime_agents WHERE id=?1 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2",
+                rusqlite::params![key.agent_id, key.account],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()

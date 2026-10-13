@@ -88,6 +88,8 @@ pub struct StoreBridge {
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
+    #[cfg(test)]
+    account_released: Arc<tokio::sync::Notify>,
 }
 impl StoreBridge {
     pub async fn new(store: Arc<RuntimeStore>) -> Result<Self, WorkerError> {
@@ -98,6 +100,8 @@ impl StoreBridge {
             accounts: Arc::default(),
             #[cfg(test)]
             faults: Arc::default(),
+            #[cfg(test)]
+            account_released: Arc::default(),
         };
         bridge
             .run(|store| Ok(scheduler::recover_on_startup(store)?))
@@ -128,7 +132,7 @@ impl StoreBridge {
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
         #[cfg(test)]
-        let index = self.faults.before(name)?;
+        let index = self.faults.before(name, None)?;
         #[cfg(test)]
         self.faults.pause(index).await;
         #[cfg(not(test))]
@@ -156,8 +160,18 @@ impl StoreBridge {
         _name: &'static str,
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
+        self.worker_run_identified(_name, None, operation).await
+    }
+    async fn worker_run_identified<T: Send + 'static>(
+        &self,
+        _name: &'static str,
+        identity: Option<String>,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
         #[cfg(test)]
-        let index = self.faults.before(_name)?;
+        let index = self.faults.before(_name, identity)?;
+        #[cfg(not(test))]
+        let _ = identity;
         #[cfg(test)]
         self.faults.pause(index).await;
         let result = self.run(operation).await;
@@ -192,6 +206,8 @@ impl Drop for AccountLease {
         if let Ok(mut accounts) = self.bridge.accounts.lock() {
             accounts.remove(&self.account);
         }
+        #[cfg(test)]
+        self.bridge.account_released.notify_one();
     }
 }
 
@@ -516,6 +532,20 @@ impl Worker {
     ) -> Result<T, WorkerError> {
         let bridge = self.bridge.clone();
         let job = bridge.worker_run(name, operation);
+        tokio::pin!(job);
+        tokio::select! { biased;
+            _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
+            result = &mut job => result,
+        }
+    }
+    async fn db_identified<T: Send + 'static>(
+        &mut self,
+        name: &'static str,
+        identity: String,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
+        let bridge = self.bridge.clone();
+        let job = bridge.worker_run_identified(name, Some(identity), operation);
         tokio::pin!(job);
         tokio::select! { biased;
             _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
@@ -893,10 +923,31 @@ impl Worker {
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
             let id = ticket.map(|t| t.id.clone());
+            // Pending bookkeeping and transport request IDs can change when a
+            // journal lane retires a ticket. Keep the crash witness stable.
+            let identity = match &outcome {
+                SessionOutcome::Write {
+                    ticket: Some(ticket),
+                    ..
+                }
+                | SessionOutcome::Resolved { ticket, .. } => {
+                    format!(
+                        "generation={};request-method={}",
+                        ticket.generation,
+                        ticket.method.as_str(),
+                    )
+                }
+                SessionOutcome::Write { ticket: None, .. } => {
+                    format!("generation={};request-method=unknown", self.generation.0)
+                }
+                SessionOutcome::GenerationClosed { generation } => {
+                    format!("generation-closed={generation}")
+                }
+            };
             let account = self.account.clone();
             let resources = self.resources.clone();
             let (retire, effect) = self
-                .db("outcome", move |store| {
+                .db_identified("outcome", identity, move |store| {
                     store::outcome(store, &account, &resources, pending.as_ref(), outcome)
                 })
                 .await?;
@@ -1018,9 +1069,13 @@ impl Worker {
     }
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
+        let identity = format!(
+            "account={account};streams={}",
+            self.streams.boundary_identity()
+        );
         let streams = std::mem::take(&mut self.streams);
         self.streams = self
-            .db("flush_streams", move |store| {
+            .db_identified("flush_streams", identity, move |store| {
                 store::flush_streams(store, &account, streams)
             })
             .await?;
@@ -1045,8 +1100,9 @@ impl Worker {
         let account = self.account.clone();
         let generation = self.generation.0;
         let cleanup_error = exit.adapter.as_ref().and_then(|a| a.cleanup_error.clone());
+        let identity = format!("account={account};generation={generation}");
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
-        self.db("finish", move |store| {
+        self.db_identified("finish", identity, move |store| {
             if let Some(recovery) = recovery {
                 store::save_recovery(store, &account, &recovery)?;
             }

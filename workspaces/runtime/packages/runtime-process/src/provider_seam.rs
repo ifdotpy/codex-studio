@@ -282,6 +282,8 @@ pub struct ProviderAttachment {
     pub(crate) task: Option<JoinHandle<TaskExit>>,
 }
 
+const PROVIDER_CLEANUP_UNCONFIRMED: &str = "provider task exited without a cleanup receipt";
+
 impl ProviderAttachment {
     /// Construct another bounded implementation or a deterministic test factory.
     /// The task must own its socket and drop the status sender on completion;
@@ -314,7 +316,7 @@ impl ProviderAttachment {
         let result = match self.task.as_mut() {
             Some(task) => task.await.unwrap_or_else(|_| TaskExit {
                 result: Err(AdapterError::TaskFailed),
-                cleanup_error: None,
+                cleanup_error: Some(PROVIDER_CLEANUP_UNCONFIRMED.into()),
                 recovery_needed: self.status.borrow().initialization_recovery(),
             }),
             None => TaskExit {

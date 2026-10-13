@@ -74,6 +74,26 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
+    pub(crate) fn boundary_identity(&self) -> String {
+        let mut keys = self
+            .entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    entry.key.account,
+                    entry.key.generation,
+                    entry.key.thread,
+                    entry.key.turn.as_deref().unwrap_or(""),
+                    entry.key.item,
+                    entry.key.method,
+                )
+            })
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.join("|")
+    }
+
     /// Take staged timer-flush effects from the returned buffer copy. Journal
     /// them with that buffer in the same transaction; publish only after commit.
     /// Discard both the returned buffer and these values on rollback.
