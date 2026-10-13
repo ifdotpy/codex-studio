@@ -147,7 +147,7 @@ try:
         runtime._analytics_history_record(db,'population-history',population['id'],
             {{'status':'error','agent':population['id'],'error':'fixture error'}})
         monitor = {{'id':'population-monitor','agent':population['id'],'status':'completed',
-                    'created':1101,'finished':1102,'bytes':12,'exitCode':0,'error':None,'timeout_ms':None}}
+                    'created':1101,'finished':1102,'bytes':12,'exitCode':0,'error':None,'timeout_ms':3600000}}
         runtime.put(db, 'monitors', monitor)
         runtime._monitor_exit_event(db, population, monitor, wake=False)
         runtime.put(db, 'requests', {{'id':'population-request','agent':population['id'],'status':'approved'}})
