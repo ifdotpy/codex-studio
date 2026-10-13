@@ -1,0 +1,57 @@
+[
+  {
+    "id": "restart-resends-unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "python_transfer_actions_restart_and_projection",
+    "edits": [
+      {
+        "before": "member[\"phase\"] = json!(\"unknown\");",
+        "after": "member[\"phase\"] = json!(\"waiting\");"
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-lazy-native",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "python_transfer_actions_restart_and_projection",
+    "edits": [
+      {
+        "before": "if flag(m, \"lazy\")\n                        && !phase.terminal()",
+        "after": "if false\n                        && !phase.terminal()"
+      }
+    ]
+  },
+  {
+    "id": "receipt-ignores-transport",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "exact_native_receipt_survives_restart_without_resubmission",
+    "edits": [
+      {
+        "before": "if m.get(\"transportTicket\") != Some(&expected) {",
+        "after": "if m.get(\"transportTicket\").is_none() && expected.is_null() {"
+      }
+    ]
+  },
+  {
+    "id": "receipt-ignores-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "exact_native_receipt_survives_restart_without_resubmission",
+    "edits": [
+      {
+        "before": "|| a[\"epoch\"].as_i64() != Some(ticket.epoch)",
+        "after": "|| a[\"epoch\"].as_i64().is_none()"
+      }
+    ]
+  },
+  {
+    "id": "request-ignores-scope",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "request_replay_is_bound_to_lead_destination_and_scope",
+    "edits": [
+      {
+        "before": "                != scope\n",
+        "after": "                != scope && false\n"
+      }
+    ]
+  }
+]

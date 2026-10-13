@@ -1,0 +1,183 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "LazyTransferRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sourceAccountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sourceaccountkey",
+          "type": "string"
+        },
+        "sourceState": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Sourcestate",
+          "type": "object"
+        },
+        "sourceThreadId": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sourcethreadid"
+        }
+      },
+      "required": ["id", "sourceAccountKey"],
+      "title": "LazyTransferRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "accountKey": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Accountkey",
+      "type": "string"
+    },
+    "accountTransfer": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accounttransfer"
+    },
+    "accountTransferId": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accounttransferid"
+    },
+    "autoWake": {
+      "title": "Autowake",
+      "type": "boolean"
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "maxLength": 65536,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cwd"
+    },
+    "deletedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deletedat"
+    },
+    "emptyTransferRecovery": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Emptytransferrecovery"
+    },
+    "epoch": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "inFlight": {
+      "title": "Inflight",
+      "type": "boolean"
+    },
+    "isLead": {
+      "title": "Islead",
+      "type": "boolean"
+    },
+    "lazyAccountTransfer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LazyTransferRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rootId": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Rootid",
+      "type": "string"
+    },
+    "status": {
+      "maxLength": 65536,
+      "title": "Status",
+      "type": "string"
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    }
+  },
+  "required": ["id", "rootId", "epoch", "status"],
+  "title": "PersistedTransferAgentRecord",
+  "type": "object"
+}
