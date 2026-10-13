@@ -6,8 +6,8 @@ mod repositories;
 mod schema;
 pub mod supervisor_journal;
 pub use schema::{
-    python_float_json, python_json, python_json_compact, python_json_with_separators, sha256_hex,
-    truthy,
+    python_float_json, python_json, python_json_compact, python_json_utf8,
+    python_json_with_separators, sha256_hex, truthy,
 };
 mod state_check;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
