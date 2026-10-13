@@ -15,7 +15,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 FIXTURE = "restart-mid-turn-supervisor-replay.json"
@@ -31,12 +31,6 @@ def _read_rows(path, agent: str) -> list[tuple[str, str]]:
         ).fetchall()
 
 
-def _snapshot(path) -> tuple[int, int]:
-    uri = f"file:{path}?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True)) as database:
-        items = database.execute("SELECT count(*) FROM runtime_items").fetchone()[0]
-        events = database.execute("SELECT count(*) FROM runtime_events").fetchone()[0]
-        return items, events
 
 
 def _write_item(path, agent: str, identity: str, record: dict, created: float) -> None:
@@ -252,13 +246,13 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(rust.json(), python_body)
 
     def test_unknown_transcript_item_does_not_write_state(self) -> None:
-        before = _snapshot(self.backend.state / "canvas.sqlite3")
+        before = no_write_snapshot(self.backend.state)
         path = "/api/transcript/item?" + urlencode(
             {"id": self.agent, "message_id": "missing-transcript-item"}
         )
         response = self.backend.request("GET", path, headers=self.headers)
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(_snapshot(self.backend.state / "canvas.sqlite3"), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_truncated_container_resolves_from_durable_input_event(self) -> None:
         identity = "transcript-event-container-case"

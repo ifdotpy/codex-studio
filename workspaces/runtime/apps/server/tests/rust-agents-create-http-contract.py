@@ -24,7 +24,7 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 REVIEW_CORPUS = json.loads((HERE / "fixtures/rust-agents-create/review-corpus.json").read_text())
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "agents_create_runtime_fixture", HERE / "runtime-contract.py"
@@ -577,11 +577,6 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust strict persisted validation or unavailable service boundary")
 
-    def write_snapshot(self):
-        with database_connection(self.backend.state / "canvas.sqlite3") as db:
-            data = "\n".join(db.iterdump()).encode()
-        registry = (self.backend.state / "accounts/registry.json").read_bytes()
-        return hashlib.sha256(data).hexdigest(), hashlib.sha256(registry).hexdigest()
 
     def test_probe_correction_all_creation_values_and_immutable_replay(self):
         self.rust_only()
@@ -590,9 +585,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         variations = {**REVIEW_CORPUS["replayChanges"], "cwd": str(self.backend.root), "parent": self.agent_id}
         for field, value in variations.items():
             with self.subTest(field=field):
-                before = self.write_snapshot()
+                before = no_write_snapshot(self.backend.state)
                 self.post("/api/agents", {**body, field: value}, 400)
-                self.assertEqual(self.write_snapshot(), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
         self.post("/api/rename", {"id": body["id"], "name": "Changed"})
         self.assertEqual(self.post("/api/agents", body)["name"], "Changed")
         draft = self.draft()
@@ -604,10 +599,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "worktree"}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_lead_requests VALUES(?,?,?)", (body["id"], str(uuid.uuid4()), "{}"))
-        before = self.write_snapshot()
+        before = no_write_snapshot(self.backend.state)
         result = self.post("/api/leads", body, 500)
         self.assertIn("runtime_lead_requests/" + body["id"], result["error"])
-        self.assertEqual(self.write_snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_admission_invalid_stored_agent_is_refused_by_rename(self):
         self.rust_only()
@@ -615,10 +610,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         record = self.stored(body["id"])
         try:
             self.save({**record, "cwd": 42})
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             self.save(record)
 
@@ -629,10 +624,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             original = db.execute("SELECT record FROM runtime_projects WHERE id=?", (str(self.backend.cwd),)).fetchone()[0]
             db.execute("UPDATE runtime_projects SET record='{' WHERE id=?", (str(self.backend.cwd),))
         try:
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 500)
             self.assertIn("runtime_projects/" + str(self.backend.cwd), result["error"])
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_projects SET record=? WHERE id=?", (original, str(self.backend.cwd)))
@@ -662,10 +657,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         for field in REVIEW_CORPUS["catalogNulls"]:
             with self.subTest(field=field):
-                before = self.write_snapshot()
+                before = no_write_snapshot(self.backend.state)
                 result = self.post("/api/conversation", {"id": self.agent_id, field: None}, 501)
                 self.assertIn("agent-management/conversation-settings", result["error"])
-                self.assertEqual(self.write_snapshot(), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
         corpus = [("/api/leads", {"cwd": str(self.backend.cwd)}, ("reuse_empty", "yolo_mode", "cwd", "account_key", "workspaceMode")),
@@ -726,17 +721,17 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         for route, body in (("/api/leads", {"cwd": str(self.backend.cwd)}), ("/api/agents", {"cwd": str(self.backend.cwd), "prompt": "Task"})):
             for field in REVIEW_CORPUS["creationCatalogNulls"]:
-                before = self.write_snapshot()
+                before = no_write_snapshot(self.backend.state)
                 self.post(route, {**body, "id": str(uuid.uuid4()), field: None}, 501)
-                self.assertEqual(self.write_snapshot(), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
         body = self.draft()
         original = self.stored(body["id"])
         try:
             self.save({**original, "name": 42})
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             self.save(original)
 
@@ -751,9 +746,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         path.write_text(json.dumps(registry))
         try:
             self.backend.start()
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             self.post("/api/leads", body)
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             self.backend.stop()
             path.write_bytes(original)
@@ -762,21 +757,21 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_profiles_are_loaded_validated_and_only_catalog_profiles_are_partial(self):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
-        before = self.write_snapshot()
+        before = no_write_snapshot(self.backend.state)
         self.post("/api/agents", body, 400)
-        self.assertEqual(self.write_snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         profile = {"id": "plain-profile", "name": "Plain", "role": "reviewer", "model": "gpt-6-astra", "effort": None, "instructions": "Follow the fixture instructions."}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_profiles VALUES(?,?)", (profile["id"], json.dumps(profile)))
-        before = self.write_snapshot()
+        before = no_write_snapshot(self.backend.state)
         self.post("/api/agents", {**body, "profile_id": profile["id"]}, 501)
-        self.assertEqual(self.write_snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         for model, status in (("gpt-6-astra", 501), (42, 500)):
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_profiles SET record=? WHERE id=?", (json.dumps({**profile, "model": model}), profile["id"]))
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             self.post("/api/agents", {**body, "id": str(uuid.uuid4()), "profile_id": profile["id"]}, status)
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -795,9 +790,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body = {"id": self.agent_id} if path in ("/api/configure", "/api/conversation") else {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd)}
                 if path == "/api/agents":
                     body["prompt"] = "Task"
-                before = self.write_snapshot()
+                before = no_write_snapshot(self.backend.state)
                 self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                self.assertEqual(self.write_snapshot(), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()
@@ -807,10 +802,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         incomplete.pop("maxAgents")
         try:
             self.save(incomplete)
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             self.save(original)
 
@@ -821,9 +816,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for change in ({"deletedAt": 1}, {"isLead": False}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
-                    before = self.write_snapshot()
+                    before = no_write_snapshot(self.backend.state)
                     self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
-                    self.assertEqual(self.write_snapshot(), before)
+                    self.assertEqual(no_write_snapshot(self.backend.state), before)
             self.save({**original, "prompt": "This conversation has content"})
             result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True})
             self.assertNotEqual(result["id"], previous["id"])
@@ -838,10 +833,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         previous = self.draft()
         original = self.stored(previous["id"])
         try:
-            before = self.write_snapshot()
+            before = no_write_snapshot(self.backend.state)
             result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}, 501)
             self.assertIn("agent-management/empty-chat-reuse", result["error"])
-            self.assertEqual(self.write_snapshot(), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
             for change in ({"layrReady": True}, {"workspaceMode": "image"}, {"provider": "claude"}, {"threadId": "existing-thread"}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
@@ -856,10 +851,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save({**original, "status": "running", "inFlight": True})
             for field in ("next_turn", "request_id"):
-                before = self.write_snapshot()
+                before = no_write_snapshot(self.backend.state)
                 result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": [], field: None}, 400)
                 self.assertIn("Wait for this turn", result["error"])
-                self.assertEqual(self.write_snapshot(), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
             self.save(original)
 
@@ -867,11 +862,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         original = self.stored(self.agent_id)
         self.assertNotIn("creationIntent", original)
-        before = self.write_snapshot()
+        before = no_write_snapshot(self.backend.state)
         result = self.post("/api/agents", {"id": self.agent_id, "name": original["name"], "prompt": original["prompt"], "cwd": original["cwd"]}, 400)
         self.assertIn("No saved creation intent", result["error"])
         self.assertIn("inspect the existing agent", result["error"])
-        self.assertEqual(self.write_snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_trim_creation_intent_and_rename_use_python_whitespace(self):
         self.rust_only()
@@ -890,12 +885,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         rename = {"id": request["id"], "request_id": "python-trim-rename", "name": "\u001cRenamed\u001f"}
         result = self.post("/api/rename", rename)
         self.assertEqual(result["name"], "Renamed")
-        before = self.write_snapshot()
+        before = no_write_snapshot(self.backend.state)
         self.assertEqual(self.post("/api/rename", {**rename, "name": "Renamed"})["name"], "Renamed")
-        self.assertEqual(self.write_snapshot(), before)
-        before = self.write_snapshot()
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        before = no_write_snapshot(self.backend.state)
         self.post("/api/rename", {"id": request["id"], "name": "\u001c\u001f"}, 400)
-        self.assertEqual(self.write_snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_shared_projection_local_server_identity(self):
         body = self.draft()

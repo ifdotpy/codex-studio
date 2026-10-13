@@ -15,35 +15,10 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from sync_http_contract_support import prepare_sync_store_for_rust_contract
 
 
-def sync_state_snapshot(state):
-    import sqlite3
-
-    database_path = state / "canvas.sqlite3"
-    uri = f"file:{database_path}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as database:
-        objects = database.execute(
-            "SELECT type,name,sql FROM sqlite_master "
-            "WHERE name LIKE 'sync_%' OR name IN "
-            "('runtime_transcript_revisions','runtime_event_created_id','sqlite_sequence') "
-            "ORDER BY type,name"
-        ).fetchall()
-        tables = [
-            name for kind, name, _ in objects
-            if kind == "table" and (name.startswith("sync_") or name == "runtime_transcript_revisions")
-        ]
-        rows = {
-            name: sorted(database.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
-            for name in tables
-        }
-        if any(name == "sqlite_sequence" for _, name, _ in objects):
-            rows["sqlite_sequence"] = sorted(
-                database.execute("SELECT name,seq FROM sqlite_sequence").fetchall(), key=repr
-            )
-        return objects, rows
 
 
 class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -300,13 +275,13 @@ with canvas.connect() as db:
                     if actual_by_key.get((collection, key)) != expected_by_key.get((collection, key))
                 }
                 self.fail("Python/Rust persisted-state seed mismatch: " + json.dumps(differences, sort_keys=True))
-            before_repeat = sync_state_snapshot(backend.state)
+            before_repeat = no_write_snapshot(backend.state)
             repeated = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                 headers=headers,
             )
             self.assertEqual(repeated.status, 200, repeated.body[:1000])
-            self.assertEqual(sync_state_snapshot(backend.state), before_repeat)
+            self.assertEqual(no_write_snapshot(backend.state), before_repeat)
         finally:
             backend.stop()
             cleanup_fixtures = f"""
@@ -418,11 +393,11 @@ with canvas.connect() as db:
         )
         created = write(first)
         self.assertEqual(created.status, 200, created.body[:1000])
-        before_replay = sync_state_snapshot(backend.state)
+        before_replay = no_write_snapshot(backend.state)
         replay = write(first)
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json(), [])
-        self.assertEqual(sync_state_snapshot(backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(backend.state), before_replay)
 
         updated = {**first, "text": "updated"}
         optimistic = backend.request(
@@ -467,7 +442,7 @@ with canvas.connect() as db:
                 (invalid_master_id, "not-json"),
             )
         try:
-            before_refusal = sync_state_snapshot(backend.state)
+            before_refusal = no_write_snapshot(backend.state)
             refusal = backend.request(
                 "POST", "/api/sync/drafts",
                 body={"rows": [
@@ -490,7 +465,7 @@ with canvas.connect() as db:
             )
             self.assertEqual(refusal.status, 500, refusal.body[:1000])
             self.assertIn(f"drafts/{invalid_master_id}", refusal.json()["error"])
-            self.assertEqual(sync_state_snapshot(backend.state), before_refusal)
+            self.assertEqual(no_write_snapshot(backend.state), before_refusal)
         finally:
             with sqlite3.connect(database_path) as database:
                 database.execute(
@@ -517,7 +492,7 @@ with canvas.connect() as db:
                 ('{"collection":"uiPreferences","id":"user",'
                  '"value":{"fields":{},"unexpectedSecret":true}}',),
             )
-        before = sync_state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         try:
             response = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
@@ -528,7 +503,7 @@ with canvas.connect() as db:
                 response.json()["error"],
                 "Invalid stored sync object uiPreferences/user",
             )
-            self.assertEqual(sync_state_snapshot(backend.state), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
             with sqlite3.connect(database_path) as database:
                 self.assertIsNone(database.execute(
                     "SELECT 1 FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
@@ -552,7 +527,7 @@ with canvas.connect() as db:
         broken_id = "sync-pull-broken-record"
         with sqlite3.connect(database_path) as database:
             database.execute("INSERT INTO runtime_rules(id,record) VALUES(?, '[]')", (broken_id,))
-        before_broken = sync_state_snapshot(backend.state)
+        before_broken = no_write_snapshot(backend.state)
         try:
             broken = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
@@ -560,7 +535,7 @@ with canvas.connect() as db:
             )
             self.assertEqual(broken.status, 500, broken.body[:1000])
             self.assertIn(f"runtime_rules/{broken_id}", broken.json()["error"])
-            self.assertEqual(sync_state_snapshot(backend.state), before_broken)
+            self.assertEqual(no_write_snapshot(backend.state), before_broken)
         finally:
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM runtime_rules WHERE id=?", (broken_id,))
@@ -575,7 +550,7 @@ with canvas.connect() as db:
                     "nativeRelease": {"phase": [], "resetPending": False},
                 })),
             )
-        before_invalid_projection = sync_state_snapshot(backend.state)
+        before_invalid_projection = no_write_snapshot(backend.state)
         try:
             invalid_projection = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
@@ -586,7 +561,7 @@ with canvas.connect() as db:
                 f"agent/{invalid_projection_id}",
                 invalid_projection.json()["error"],
             )
-            self.assertEqual(sync_state_snapshot(backend.state), before_invalid_projection)
+            self.assertEqual(no_write_snapshot(backend.state), before_invalid_projection)
             with sqlite3.connect(database_path) as database:
                 self.assertIsNone(database.execute(
                     "SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?",
@@ -643,7 +618,7 @@ with canvas.connect() as db:
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_nested_draft_payload_rejects_entire_batch_without_writes(self) -> None:
         backend = self.backend
-        before = sync_state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST",
             "/api/sync/drafts",
@@ -672,7 +647,7 @@ with canvas.connect() as db:
         )
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json()["error"], "Invalid request")
-        self.assertEqual(sync_state_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def _common_headers(self):
         backend = self.backend
@@ -711,7 +686,7 @@ with canvas.connect() as db:
                 "WHERE collection='uiPreferences' AND id='user'",
                 (payload,),
             )
-        before = sync_state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "user", "fields": {}},
@@ -722,7 +697,7 @@ with canvas.connect() as db:
             response.json()["error"],
             "invalid stored sync object uiPreferences/user",
         )
-        self.assertEqual(sync_state_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute(
                 "UPDATE sync_entities SET payload=? "
@@ -755,7 +730,7 @@ with canvas.connect() as db:
                         "VALUES (?, 'drafts', ?, ?, 0)",
                         (index, draft_id, payload),
                     )
-                before = sync_state_snapshot(backend.state)
+                before = no_write_snapshot(backend.state)
                 response = backend.request(
                     "GET", "/api/sync/pull?scope=drafts&after=0", headers=headers,
                 )
@@ -764,7 +739,7 @@ with canvas.connect() as db:
                     response.json()["error"],
                     f"Invalid stored sync object drafts/{draft_id}",
                 )
-                self.assertEqual(sync_state_snapshot(backend.state), before)
+                self.assertEqual(no_write_snapshot(backend.state), before)
             with sqlite3.connect(database_path) as database:
                 database.execute("DELETE FROM sync_documents WHERE scope='drafts'")
                 database.executemany(
@@ -899,30 +874,30 @@ with canvas.connect() as db:
         if rust_backend_configured:
             import sqlite3
 
-            before_overflowing_cursor = sync_state_snapshot(backend.state)
+            before_overflowing_cursor = no_write_snapshot(backend.state)
             overflowing_cursor = backend.request(
                 "GET", "/api/sync/pull?scope=drafts&after=9223372036854775808",
                 headers=common,
             )
             self.assertEqual(overflowing_cursor.status, 400, overflowing_cursor.body[:1000])
             self.assertEqual(overflowing_cursor.json()["error"], "Invalid request")
-            self.assertEqual(sync_state_snapshot(backend.state), before_overflowing_cursor)
+            self.assertEqual(no_write_snapshot(backend.state), before_overflowing_cursor)
 
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute("UPDATE sync_generation SET value=5 WHERE id=1")
-            before_protocol = sync_state_snapshot(backend.state)
+            before_protocol = no_write_snapshot(backend.state)
             protocol = backend.request("GET", "/api/sync/protocol", headers=common)
             self.assertEqual(protocol.status, 200, protocol.body[:1000])
-            self.assertEqual(sync_state_snapshot(backend.state), before_protocol)
+            self.assertEqual(no_write_snapshot(backend.state), before_protocol)
 
         def entity_preferences_document():
-            before = sync_state_snapshot(backend.state) if rust_backend_configured else None
+            before = no_write_snapshot(backend.state) if rust_backend_configured else None
             response = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1"
             )
             if rust_backend_configured:
                 self.assertEqual(response.status, 200, response.body[:1000])
-                self.assertEqual(sync_state_snapshot(backend.state), before)
+                self.assertEqual(no_write_snapshot(backend.state), before)
             self.assertEqual(response.status, 200, response.body[:1000])
             return next(
                 document for document in response.json()["documents"]
@@ -983,7 +958,7 @@ with canvas.connect() as db:
 
         current_doc = entity_preferences_document()
         before_stable_replay = (
-            sync_state_snapshot(backend.state) if rust_backend_configured else None
+            no_write_snapshot(backend.state) if rust_backend_configured else None
         )
         stable_replay = backend.request(
             "POST",
@@ -995,7 +970,7 @@ with canvas.connect() as db:
         )
         self.assertEqual(stable_replay.status, 200, stable_replay.body[:1000])
         if rust_backend_configured:
-            self.assertEqual(sync_state_snapshot(backend.state), before_stable_replay)
+            self.assertEqual(no_write_snapshot(backend.state), before_stable_replay)
         stable_doc = entity_preferences_document()
         if not rust_backend_configured:
             self.assertEqual(stable_doc["seq"], current_doc["seq"])
@@ -1012,14 +987,14 @@ with canvas.connect() as db:
                     "WHERE collection='uiPreferences' AND id='user'",
                     ('{"collection":"agent","id":"wrong","value":{"fields":{}}}',),
                 )
-            before_invalid_preference = sync_state_snapshot(backend.state)
+            before_invalid_preference = no_write_snapshot(backend.state)
             invalid_stored_preference = backend.request(
                 "POST", "/api/sync/preferences", body={"scope": "user", "fields": {}},
                 headers=common,
             )
             self.assertEqual(invalid_stored_preference.status, 500)
             self.assertIn("uiPreferences/user", invalid_stored_preference.json()["error"])
-            self.assertEqual(sync_state_snapshot(backend.state), before_invalid_preference)
+            self.assertEqual(no_write_snapshot(backend.state), before_invalid_preference)
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute(
                     "UPDATE sync_entities SET payload=? "
@@ -1035,7 +1010,7 @@ with canvas.connect() as db:
             headers=common,
         )
         self.assertEqual(invalid_value.status, 400)
-        before_invalid_scope_payload = sync_state_snapshot(backend.state)
+        before_invalid_scope_payload = no_write_snapshot(backend.state)
         invalid_scope_payload = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "user", "fields": {
@@ -1044,8 +1019,8 @@ with canvas.connect() as db:
             headers=common,
         )
         self.assertEqual(invalid_scope_payload.status, 400)
-        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_scope_payload)
-        before_wrong_scope = sync_state_snapshot(backend.state)
+        self.assertEqual(no_write_snapshot(backend.state), before_invalid_scope_payload)
+        before_wrong_scope = no_write_snapshot(backend.state)
         wrong_scope = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "server", "fields": {
@@ -1054,7 +1029,7 @@ with canvas.connect() as db:
             headers=common,
         )
         self.assertEqual(wrong_scope.status, 400)
-        self.assertEqual(sync_state_snapshot(backend.state), before_wrong_scope)
+        self.assertEqual(no_write_snapshot(backend.state), before_wrong_scope)
         malformed_key = backend.request(
             "POST", "/api/sync/preferences",
             body={"scope": "user", "fields": {
@@ -1067,7 +1042,7 @@ with canvas.connect() as db:
         self.assertEqual(malformed_key.status, 400)
 
         before_transcript = (
-            sync_state_snapshot(backend.state) if rust_backend_configured else None
+            no_write_snapshot(backend.state) if rust_backend_configured else None
         )
         transcript = backend.request("GET", "/api/sync/pull?scope=transcript:agent-a")
         if not rust_backend_configured:
@@ -1078,7 +1053,7 @@ with canvas.connect() as db:
                 transcript.json()["error"],
                 "Not implemented: requires transcript-service/pull",
             )
-            self.assertEqual(sync_state_snapshot(backend.state), before_transcript)
+            self.assertEqual(no_write_snapshot(backend.state), before_transcript)
 
         draft = {
             "rows": [{"newDocumentState": {
@@ -1096,7 +1071,7 @@ with canvas.connect() as db:
         self.assertEqual(pushed.status, 200, pushed.body[:1000])
         self.assertEqual(pushed.json(), [])
         after_first_draft_write = (
-            sync_state_snapshot(backend.state) if rust_backend_configured else None
+            no_write_snapshot(backend.state) if rust_backend_configured else None
         )
         if rust_backend_configured:
             replay = backend.request(
@@ -1105,25 +1080,25 @@ with canvas.connect() as db:
             )
             self.assertEqual(replay.status, 200, replay.body[:1000])
             self.assertEqual(replay.json(), [])
-            self.assertEqual(sync_state_snapshot(backend.state), after_first_draft_write)
+            self.assertEqual(no_write_snapshot(backend.state), after_first_draft_write)
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute(
                     "INSERT OR REPLACE INTO sync_documents(scope,id,payload,deleted) "
                     "VALUES ('drafts','bad-json','not-json',0)"
                 )
-            before_invalid_draft = sync_state_snapshot(backend.state)
+            before_invalid_draft = no_write_snapshot(backend.state)
             invalid_stored_draft = backend.request(
                 "GET", "/api/sync/pull?scope=drafts&after=0", headers=common,
             )
             self.assertEqual(invalid_stored_draft.status, 500)
             self.assertIn("drafts/bad-json", invalid_stored_draft.json()["error"])
             self.assertNotIn("not-json", invalid_stored_draft.json()["error"])
-            self.assertEqual(sync_state_snapshot(backend.state), before_invalid_draft)
+            self.assertEqual(no_write_snapshot(backend.state), before_invalid_draft)
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute(
                     "DELETE FROM sync_documents WHERE scope='drafts' AND id='bad-json'"
                 )
-            after_first_draft_write = sync_state_snapshot(backend.state)
+            after_first_draft_write = no_write_snapshot(backend.state)
         else:
             replay = backend.request(
                 "POST", "/api/sync/drafts", body=draft,
@@ -1167,23 +1142,23 @@ with canvas.connect() as db:
                 }),
             }}],
         }
-        before_invalid_identity = sync_state_snapshot(backend.state)
+        before_invalid_identity = no_write_snapshot(backend.state)
         invalid_draft = backend.request(
             "POST", "/api/sync/drafts", body=invalid_identity,
             headers={**common, "X-Canvas-Workspace": backend.identity["workspaceId"]},
         )
         self.assertEqual(invalid_draft.status, 400)
-        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_identity)
+        self.assertEqual(no_write_snapshot(backend.state), before_invalid_identity)
         invalid_payload = {
             "rows": [{"newDocumentState": {"id": "x", "payload": "x"}} for _ in range(99)],
         }
-        before_invalid_payload = sync_state_snapshot(backend.state)
+        before_invalid_payload = no_write_snapshot(backend.state)
         invalid_serialized_payload = backend.request(
             "POST", "/api/sync/drafts", body=invalid_payload,
             headers={**common, "X-Canvas-Workspace": backend.identity["workspaceId"]},
         )
         self.assertEqual(invalid_serialized_payload.status, 400)
-        self.assertEqual(sync_state_snapshot(backend.state), before_invalid_payload)
+        self.assertEqual(no_write_snapshot(backend.state), before_invalid_payload)
 
         configured = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
         if configured is None:

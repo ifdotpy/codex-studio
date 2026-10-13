@@ -20,7 +20,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
-from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing, no_write_snapshot
 from codex_sync_entities import register_functions
 
 _fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixture", HERE / "runtime-contract.py")
@@ -104,7 +104,7 @@ def _normal(value, work_ids=None):
 
 
 def snapshot(state: Path):
-    """Parse every table this write path can mutate, including durable events."""
+    """Normalize work-write state for the Python/Rust parity assertion."""
     with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
         works = database.execute("SELECT id,record FROM runtime_work ORDER BY rowid").fetchall()
         work_ids = {identity: f"work-{index}" for index, (identity, _) in enumerate(works)}
@@ -115,7 +115,7 @@ def snapshot(state: Path):
         agents = []
         for identity, raw_record in database.execute("SELECT id,record FROM runtime_agents ORDER BY id"):
             record = json.loads(raw_record)
-            # The dispatcher owns status, attempt, turn, error, recovery and preparation projections.
+            # Parity ignores fields that the Python dispatcher can advance between reads.
             for field in ("status", "inFlight", "startAttempt", "turnId", "threadId", "error",
                           "restartRecovery", "connectionRecovery", "worktreePreparation"):
                 record.pop(field, None)
@@ -128,9 +128,10 @@ def snapshot(state: Path):
                 body = _normal(json.loads(body), work_ids)
             except (TypeError, ValueError):
                 pass
-            # The background dispatcher owns event status; compare durable event content and identity.
+            # Durable event parity ignores the dispatch-owned status column.
             events.append((_normal(identity, work_ids), agent, kind, body, epoch, turn_id, error))
-        return {"runtime_work": normalized_work, "runtime_agents": agents, "runtime_operation_receipts": receipts, "runtime_events": events}
+        return {"runtime_work": normalized_work, "runtime_agents": agents,
+                "runtime_operation_receipts": receipts, "runtime_events": events}
 
 
 def reference_action(backend, agent_id: str, body: dict):
@@ -192,23 +193,23 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         result = self.assert_matches_python(body)
         self.assertEqual(result["dependencies"], [dependency_id])
         self.assertEqual(result["status"], "blocked")
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         replay = self.post(body)
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(normal_result(replay.json()), normal_result(result))
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         conflict = self.post({**body, "title": "Changed"})
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})
         self.assertEqual(created.status, 200, created.body[:1000])
         body = {"action": "update", "task_id": created.json()["id"], "version": 0.0, "title": "Stale"}
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         stale = self.post(body)
         self.assertEqual(stale.status, 400, stale.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         cases = ()
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             cases = (
@@ -219,23 +220,23 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ({"action": "accept", "task_id": created.json()["id"], "result": "verified"}, "workspace-state/agent-archive"),
             )
         for body, dependency in cases:
-            before = snapshot(self.backend.state)
+            before = no_write_snapshot(self.backend.state)
             response = self.post(body)
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertEqual(response.json().get("error"), f"Not implemented: requires {dependency}")
-            self.assertEqual(snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         cancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " "}
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         refused = self.post(cancel)
         self.assertEqual(refused.status, 400, refused.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         cancelled = self.assert_matches_python({"action": "cancel", "task_id": created.json()["id"], "reason": "Retire before replay"})
         self.assertEqual(cancelled["status"], "cancelled")
         recancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " ", "id": "invalid-recancel-reason"}
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         refused = self.post(recancel)
         self.assertEqual(refused.status, 400, refused.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_work WHERE id=?", (created.json()["id"],)).fetchone()
             work = json.loads(row[0]); work["owner"] = self.worker_id
@@ -243,10 +244,10 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-ready-before-failure", self.worker_id, "work_ready", json.dumps({"task":created.json()["id"]}), "pending", 1.0, 0, None, None))
             database.execute("CREATE TRIGGER fail_work_receipt BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END")
         failure_body = {"action": "cancel", "task_id": created.json()["id"], "reason": "Roll back", "id": "work-injected-failure"}
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         failed = self.post(failure_body)
         self.assertNotEqual(failed.status, 200, failed.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             database.execute("DROP TRIGGER fail_work_receipt")
         deleted_body = {"action": "update", "task_id": created.json()["id"], "title": "No", "id": "deleted-selected-agent"}
@@ -255,18 +256,18 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
             agent = json.loads(row[0]); agent["deletedAt"] = True
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         deleted = self.post(deleted_body)
         self.assertEqual(deleted.status, 400, deleted.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
             agent = json.loads(row[0]); agent.pop("deletedAt", None); agent.update(concurrency=0, agentMode="single", subagentConcurrencyVersion=2)
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         single = self.post({"action": "create", "title": "Blocked worker", "owner": self.worker_id, "status": "blocked", "id": "single-agent-delegation"})
         self.assertEqual(single.status, 400, single.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with fixture_connection(self.backend.state / "canvas.sqlite3") as database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
             agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
@@ -280,9 +281,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual((updated["title"], updated["status"], updated["dependencies"]), ("After update", "blocked", [dependency["id"]]))
         replay_body = {"action": "update", "task_id": created["id"], "id": "work-update-replay", "title": "Replay edit"}
         self.assert_matches_python(replay_body)
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         changed = self.post({**replay_body, "title": "Different edit"})
-        self.assertEqual(changed.status, 400, changed.body[:1000]); self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(changed.status, 400, changed.body[:1000]); self.assertEqual(no_write_snapshot(self.backend.state), before)
         task_response = self.post({"action": "create", "title": "Cancel task"})
         review_response = self.post({"action": "create", "title": "Reject task"})
         self.assertEqual(task_response.status, 200, task_response.body[:1000])
@@ -302,9 +303,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assert_matches_python(cancel_body)
         changed_key = {**cancel_body,"reason":"Different reason"}
-        before = snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         conflict = self.post(changed_key)
-        self.assertEqual(conflict.status, 400, conflict.body[:1000]); self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(conflict.status, 400, conflict.body[:1000]); self.assertEqual(no_write_snapshot(self.backend.state), before)
         reject_body = {"action":"reject","task_id":review["id"],"result":"Add more checks","id":"work-reject-replay"}
         rejected = self.assert_matches_python(reject_body)
         self.assertEqual(rejected["status"], "ready")

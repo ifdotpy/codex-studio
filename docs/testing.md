@@ -52,23 +52,14 @@ without maintaining a second suite inventory.
 ### Background-owned contract state
 
 The Python dispatcher and periodic ticks can update these fields between an HTTP
-response and a test's database read. Post-request snapshots should compare the
-parsed record with these projections removed, or seed an agent or rule in a
-state the background loop will not advance. Keep the assertion explicit about
-the business fields it still compares. Agent-change generation tables are
-scheduler bookkeeping; compare them only when the test specifically covers the
-scheduler journal.
-
-| Table                                  | Background-owned fields                                                                                                                                                                                                                                                                                                                                              |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime_agents`                       | `status`, `inFlight`, `startAttempt`, `turnId`, `threadId`, `error`, `autoWake`, `restartRecovery`, `disconnectRecovery`, `connectionRecovery`, `worktreePreparation`, `capacityRetry`, `capacityRetryCount`                                                                                                                                                         |
-| `runtime_agent_record_generation`      | `value`                                                                                                                                                                                                                                                                                                                                                              |
-| `runtime_scheduler_agent_changes`      | `generation`                                                                                                                                                                                                                                                                                                                                                         |
-| `runtime_scheduler_agent_change_state` | `floor`, `generation`, `entries`, `total`                                                                                                                                                                                                                                                                                                                            |
-| `runtime_events`                       | `status`, `turn_id`, `error`                                                                                                                                                                                                                                                                                                                                         |
-| `runtime_event_meta`                   | `timing`, `modelEventProjection`, `contextManifest`, `transcriptItemId`                                                                                                                                                                                                                                                                                              |
-| `runtime_rules`                        | `status`, `inFlight`, `activeWorkers`, `nextAt`, `lastAt`, `checks`, `wakes`, `lowSince`, `alerted`, `error`, `previousOutcome`, `lastExitCode`, `lastStallExitCode`, `lastStallError`, `lastOutput`, `lastFinished`, `lastEvent`, `eventText`, `fingerprint`, `fileActivityAt`, `fileGeneration`, `stallWakeGeneration`, `stallProbe`, `stallEventKey`, `stallText` |
-| `runtime_monitors`                     | `status`, `tail`, `bytes`, `activityAt`, `activityGeneration`, `stallWakeGeneration`, `stallProbeGeneration`, `stallProbeStarted`, `lastStallAt`, `lastLivenessResult`, `exitCode`, `error`, `finished`, `configurationPending`, `operation`, `reattachRecovery`                                                                                                     |
+response and a test's database read. Contract suites use the shared
+[`no_write_snapshot`](../workspaces/runtime/apps/server/tests/http_backend_harness.py)
+helper, which snapshots every table and removes dispatcher- and scheduler-owned
+fields by table and field name. Its `BACKGROUND_OWNED_FIELDS` map is the sole
+field-list authority, including individual `timing.fast*` projections. Tests
+that intentionally exercise a background-owned value should hold dispatch and
+assert that value directly. Scheduler journal tests may also assert those
+fields explicitly.
 
 The heavy server suites and the reason for each classification are owned by
 `HEAVY_SUITES` in the [server runner](../workspaces/runtime/apps/server/tests/server/run.py):

@@ -24,7 +24,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import BackendProcess, TimedHTTPContractTest
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write_snapshot
 
 
 def seed_python_workspace(backend, workspace: Path) -> None:
@@ -73,12 +73,6 @@ finally:
     )
 
 
-def state_snapshot(state: Path):
-    with sqlite3.connect(state / "canvas.sqlite3") as database:
-        return {
-            table: database.execute(f"SELECT id,record FROM {table} ORDER BY id").fetchall()
-            for table in ("runtime_agents", "runtime_assets")
-        }
 
 
 class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -165,7 +159,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_missing_and_deleted_agent_refusals_do_not_write_state(self) -> None:
         backend = self.backend
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "GET",
             "/api/file-info?" + urlencode({"agent": "files-contract-deleted", "path": "missing"}),
@@ -173,7 +167,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertIn("deleted", response.json()["error"].lower())
-        self.assertEqual(state_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
         missing = backend.request(
             "GET",
@@ -181,7 +175,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(missing.status, 400, missing.body[:1000])
-        self.assertEqual(state_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_upload_replays_by_id_and_reads_through_asset_endpoint(self) -> None:
         backend = self.backend
@@ -193,7 +187,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "name": "asset.txt",
             "base64": base64.b64encode(content).decode("ascii"),
         }
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
         self.assertEqual(response.status, 200, response.body[:1000])
         asset = response.json()
@@ -218,11 +212,11 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(base64.b64decode(readback.json()["base64"]), content)
         self.assertEqual(readback.json()["mime"], "text/plain")
 
-        after_upload = state_snapshot(backend.state)
+        after_upload = no_write_snapshot(backend.state)
         replay = backend.request("POST", "/api/assets", body=body, headers=self._headers())
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json(), asset)
-        self.assertEqual(state_snapshot(backend.state), after_upload)
+        self.assertEqual(no_write_snapshot(backend.state), after_upload)
         conflict = backend.request(
             "POST",
             "/api/assets",
@@ -231,12 +225,12 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertIn("different content", conflict.json()["error"])
-        self.assertEqual(state_snapshot(backend.state), after_upload)
+        self.assertEqual(no_write_snapshot(backend.state), after_upload)
         renamed = backend.request(
             "POST", "/api/assets", body={**body, "name": "renamed.txt"}, headers=self._headers()
         )
         self.assertEqual(renamed.status, 400, renamed.body[:1000])
-        self.assertEqual(state_snapshot(backend.state), after_upload)
+        self.assertEqual(no_write_snapshot(backend.state), after_upload)
 
         data_alias = backend.request(
             "POST",
@@ -275,7 +269,9 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_upload_strips_python_whitespace_and_refuses_blank_names(self) -> None:
         backend = self.backend
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            before_asset_count = database.execute("SELECT COUNT(*) FROM runtime_assets").fetchone()[0]
         accepted = backend.request(
             "POST",
             "/api/assets",
@@ -288,7 +284,9 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(accepted.status, 200, accepted.body[:1000])
         self.assertEqual(accepted.json()["name"], "normalized.txt")
-        after_accepted = state_snapshot(backend.state)
+        after_accepted = no_write_snapshot(backend.state)
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            after_asset_count = database.execute("SELECT COUNT(*) FROM runtime_assets").fetchone()[0]
 
         refused = backend.request(
             "POST",
@@ -301,8 +299,8 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(refused.status, 400, refused.body[:1000])
-        self.assertEqual(state_snapshot(backend.state), after_accepted)
-        self.assertEqual(len(after_accepted["runtime_assets"]), len(before["runtime_assets"]) + 1)
+        self.assertEqual(no_write_snapshot(backend.state), after_accepted)
+        self.assertEqual(after_asset_count, before_asset_count + 1)
 
         too_long = backend.request(
             "POST",
@@ -315,7 +313,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(too_long.status, 400, too_long.body[:1000])
-        self.assertEqual(state_snapshot(backend.state), after_accepted)
+        self.assertEqual(no_write_snapshot(backend.state), after_accepted)
 
     def test_compressed_upload_mime_matches_python_guess_type(self) -> None:
         response = self.backend.request(
@@ -353,14 +351,14 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "UPDATE runtime_assets SET record=? WHERE id=?",
                 (json.dumps(corrupt), asset_id),
             )
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         try:
             response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
             self.assertEqual(response.status, 500, response.body[:1000])
             self.assertEqual(
                 response.json()["error"], f"Invalid stored object runtime_assets/{asset_id}"
             )
-            self.assertEqual(state_snapshot(backend.state), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute(
@@ -369,7 +367,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_oversized_decoded_upload_is_rejected_without_writes(self) -> None:
         backend = self.backend
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         encoded = base64.b64encode(b"x" * (20 * 1024 * 1024 + 1)).decode("ascii")
         response = backend.request(
             "POST",
@@ -379,11 +377,11 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertIn("20 MiB", response.json()["error"])
-        self.assertEqual(state_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_upload_refusals_do_not_write_state(self) -> None:
         backend = self.backend
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         before_uploads = sorted(path.name for path in (backend.state / "uploads").iterdir())
         cases = (
             {"agent": "files-contract-live", "name": "bad.txt", "base64": "!!!"},
@@ -404,7 +402,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(response.status, 400, response.body[:1000])
                 if body["agent"] == "files-contract-deleted":
                     self.assertIn("deleted", response.json()["error"].lower())
-                self.assertEqual(state_snapshot(backend.state), before)
+                self.assertEqual(no_write_snapshot(backend.state), before)
                 self.assertEqual(
                     sorted(path.name for path in (backend.state / "uploads").iterdir()),
                     before_uploads,
@@ -432,7 +430,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_execution_backed_workspaces_have_named_501_without_writes(self) -> None:
         backend = self.backend
-        before = state_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         for agent_id in ("files-contract-image", "files-contract-vm"):
             response = backend.request(
                 "GET",
@@ -444,7 +442,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 response.json()["error"],
                 "Not implemented: requires workspace-state/image-execution",
             )
-            self.assertEqual(state_snapshot(backend.state), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_file_content_preview_limit_is_enforced(self) -> None:
         response = self.backend.request(

@@ -24,7 +24,7 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 _fixture_spec = importlib.util.spec_from_file_location("messages_runtime_fixture", HERE / "runtime-contract.py")
 _fixture = importlib.util.module_from_spec(_fixture_spec)
@@ -75,20 +75,6 @@ def update_agent(backend, agent_id: str, changes: dict[str, object], remove=()) 
         database.commit()
 
 
-def coordination_snapshot(path: Path):
-    with sqlite3.connect(path) as database:
-        result = {}
-        for table in (
-            "groups", "graph_edges", "messages", "sync_entities", "sync_documents",
-            "sync_versions", "sync_entity_meta",
-        ):
-            exists = database.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-            ).fetchone()
-            if not exists:
-                continue
-            result[table] = sorted(database.execute(f'SELECT * FROM "{table}"').fetchall(), key=repr)
-        return result
 
 
 def without_timestamps(value):
@@ -243,13 +229,29 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = start_contract_backend(cls)
         cls.agent_id = seed_agent(cls.backend)
         cls.other_agent_id = seed_agent(cls.backend)
-        cls.denial_agent_id = seed_agent(cls.backend)
-        cls.denial_peer_agent_id = seed_agent(cls.backend)
-        cls.busy_agent_id = seed_agent(cls.backend, {"status": "running", "inFlight": True})
-        cls.stopped_agent_id = seed_agent(cls.backend, {"autoWake": False, "status": "idle"})
-        cls.paused_agent_id = seed_agent(cls.backend, {"autoWake": True, "status": "paused"})
-        cls.resume_busy_agent_id = seed_agent(cls.backend, {"status": "running", "inFlight": True})
-        cls.deleted_agent_id = seed_agent(cls.backend, {"deletedAt": 123.0})
+        # An in-flight native review excludes this recipient from dispatch while
+        # the contract compares every stored field, including dispatcher-owned
+        # agent status and attempt projections.
+        cls.busy_agent_id = seed_agent(cls.backend, {
+            "status": "running",
+            "inFlight": True,
+            "startAttempt": {
+                "id": "messages-contract-held-review",
+                "epoch": 0,
+                "events": [],
+                "action": "review",
+                "submitted": True,
+            },
+        })
+        cls.stopped_agent_id = seed_agent(cls.backend, {
+            "status": "idle",
+        })
+        cls.paused_agent_id = seed_agent(cls.backend, {
+            "status": "paused",
+        })
+        cls.resume_busy_agent_id = seed_agent(cls.backend, {
+            "status": "running",
+        })
         cls.capacity_agent_id = seed_agent(cls.backend)
         retry = {
             "id": "capacity-retry-message-send",
@@ -258,11 +260,8 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "dueAt": 9_999_999_999.0,
         }
         update_agent(cls.backend, cls.capacity_agent_id, {
-            "status": "running",
-            "inFlight": True,
             "capacityRetry": retry,
             "capacityRetryCount": 1,
-            "startAttempt": {"capacityRetryId": retry["id"], "submitted": False},
         })
         with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
             database.execute(
@@ -299,14 +298,14 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_chat_create_replay_conflict_and_refusal_have_no_extra_rows(self):
         body = self.create_chat()
-        first = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        first = no_write_snapshot(self.backend.state)
         replay = self.backend.request("POST", "/api/chats", body=body, headers=self.headers())
         self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), first)
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
 
         conflict = self.backend.request("POST", "/api/chats", body={**body, "name": "Different"}, headers=self.headers())
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), first)
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
 
         refusal = self.backend.request("POST", "/api/chats", body={**body, "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "members": ["missing-agent"]}, headers=self.headers())
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
@@ -314,7 +313,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertIn("agent-discovery/launcher-status", refusal.json()["error"])
         else:
             self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), first)
+        self.assertEqual(no_write_snapshot(self.backend.state), first)
 
     def test_request_ids_use_the_python_schema_pattern(self):
         room = "a" * 36
@@ -326,13 +325,13 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": "b" * 36, "room": room, "text": "Pattern message",
         }, headers=self.headers())
         self.assertEqual(message.status, 200, message.body[:1000])
-        before = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        before = no_write_snapshot(self.backend.state)
         for invalid in ("A" * 36, "a" * 35, "g" * 36):
             response = self.backend.request("POST", "/api/chats", body={
                 "id": invalid, "name": "Invalid identity", "members": [],
             }, headers=self.headers())
             self.assertEqual(response.status, 400, response.body[:1000])
-            self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_connections_keep_stable_identity_and_refusal_has_no_write(self):
         chat = self.create_chat()
@@ -344,10 +343,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         replay = self.backend.request("POST", "/api/connections", body=body, headers=self.headers())
         self.assertEqual(replay.json(), response.json())
 
-        before = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        before = no_write_snapshot(self.backend.state)
         refusal = self.backend.request("POST", "/api/connections", body={**body, "target": "missing-chat"}, headers=self.headers())
         self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
         removed = self.backend.request("POST", "/api/connections", body={**body, "connected": False}, headers=self.headers())
         self.assertEqual(removed.status, 200, removed.body[:1000])
@@ -371,10 +370,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(len(history.json()), 1)
         self.assertEqual(history.json()[0]["id"], body["id"])
 
-        before = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        before = no_write_snapshot(self.backend.state)
         conflict = self.backend.request("POST", "/api/messages", body={**body, "text": "Changed"}, headers=self.headers())
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_parsed_write_set_matches_python_canvas(self):
         from codex_canvas import Canvas
@@ -423,13 +422,13 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "INSERT INTO messages(id,room,author,text,at,deliveries) VALUES(?,?,?,?,?,?)",
                 ("13131313-1313-1313-1313-131313131313", room, "other-team", "old", 1.0, "{}"),
             )
-        before = coordination_snapshot(path)
+        before = no_write_snapshot(path.parent)
         response = self.backend.request("POST", "/api/chats", body={
             "id": room, "name": "Takeover", "members": [self.agent_id],
         }, headers=self.headers())
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertIn("another team", response.json()["error"])
-        self.assertEqual(coordination_snapshot(path), before)
+        self.assertEqual(no_write_snapshot(path.parent), before)
 
     def test_registered_child_inherits_parent_team_and_managed_alias_is_hidden(self):
         path = self.backend.state / "canvas.sqlite3"
@@ -450,36 +449,13 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "name": "Inherited team", "members": [self.agent_id, "registered-child"],
         }, headers=self.headers())
         self.assertEqual(inherited.status, 200, inherited.body[:1000])
-        before = coordination_snapshot(path)
+        before = no_write_snapshot(path.parent)
         alias = self.backend.request("POST", "/api/chats", body={
             "id": "15151515-1515-1515-1515-151515151515",
             "name": "Hidden alias", "members": ["managed-alias"],
         }, headers=self.headers())
         self.assertEqual(alias.status, 400, alias.body[:1000])
-        self.assertEqual(coordination_snapshot(path), before)
-
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_federation_and_managed_send_routes_refuse_before_canvas_writes(self):
-        path = self.backend.state / "canvas.sqlite3"
-        with sqlite3.connect(path) as database:
-            database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
-            database.execute("INSERT OR REPLACE INTO runtime_federation_rooms(id,record) VALUES(?,?)", (
-                "federated:peer:room", json.dumps({"id": "federated:peer:room", "status": "approved"}),
-            ))
-        before = coordination_snapshot(path)
-        federation = self.backend.request("POST", "/api/messages", body={
-            "id": "16161616-1616-1616-1616-161616161616",
-            "room": "federated:peer:room", "text": "",
-        }, headers=self.headers())
-        self.assertEqual(federation.status, 501, federation.body[:1000])
-        self.assertIn("federation-driver/rooms", federation.json()["error"])
-        direct = self.backend.request("POST", "/api/messages", body={
-            "id": "17171717-1717-1717-1717-171717171717",
-            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
-        }, headers=self.headers())
-        self.assertEqual(direct.status, 501, direct.body[:1000])
-        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
-        self.assertEqual(coordination_snapshot(path), before)
+        self.assertEqual(no_write_snapshot(path.parent), before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_long_and_empty_python_written_messages_are_read_and_bad_deliveries_name_row(self):
@@ -603,20 +579,20 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             {**body, "id": "acacacac-acac-acac-acac-acacacacacac", "text": "x" * 32_001},
         ):
             refused_id = invalid["id"]
-            unchanged = message_write_snapshot(self.backend.state / "canvas.sqlite3", refused_id, agent_id)
+            unchanged = no_write_snapshot(self.backend.state)
             refused = self.backend.request("POST", "/api/messages", body=invalid, headers=self.headers())
             self.assertEqual(refused.status, 400, refused.body[:1000])
-            self.assertEqual(message_write_snapshot(self.backend.state / "canvas.sqlite3", refused_id, agent_id), unchanged)
+            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
 
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             attachment_id = "adadadad-adad-adad-adad-adadadadadad"
-            unchanged = message_write_snapshot(self.backend.state / "canvas.sqlite3", attachment_id, agent_id)
+            unchanged = no_write_snapshot(self.backend.state)
             attachment = self.backend.request("POST", "/api/messages", body={
                 **body, "id": attachment_id, "assets": [{"name": "pending"}], "text": "",
             }, headers=self.headers())
             self.assertEqual(attachment.status, 501, attachment.body[:1000])
             self.assertEqual(attachment.json().get("error"), "Not implemented: requires payload-store/uploads")
-            self.assertEqual(message_write_snapshot(self.backend.state / "canvas.sqlite3", attachment_id, agent_id), unchanged)
+            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
 
     def test_managed_send_matches_python_for_stopped_paused_and_busy_agents(self):
         cases = (
@@ -645,80 +621,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
         )
 
-        agent_id = self.deleted_agent_id
-        deleted_id = "34343434-3434-3434-3434-343434343434"
-        before = message_write_snapshot(self.backend.state / "canvas.sqlite3", deleted_id, agent_id)
-        refused = self.backend.request("POST", "/api/messages", body={
-            "id": deleted_id, "room": agent_id, "text": "Deleted agent",
-        }, headers=self.headers())
-        self.assertEqual(refused.status, 400, refused.body[:1000])
-        self.assertEqual(
-            message_write_snapshot(self.backend.state / "canvas.sqlite3", deleted_id, agent_id), before,
-        )
-
-    def test_managed_send_denial_gates_refuse_without_writes(self):
-        agent_id = self.denial_agent_id
-        cases = (
-            ({"nativeSafetyRetry": {"stage": "turns", "epoch": 0, "accountKey": "default"}}, ()),
-            ({"excludedAccountKeys": ["default"]}, ()),
-            ({"threadId": "thread-native-block", "nativeThreadBlock": {"threadId": "thread-native-block"}}, ()),
-            ({"workspaceOperation": "restore"}, ()),
-            ({"tokenBudget": 0}, ()),
-        )
-        for index, (fields, remove) in enumerate(cases):
-            update_agent(self.backend, agent_id, fields, remove=remove)
-            if index == 3 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                # The Python server requires a persisted workspace operation record;
-                # the Rust fixture exercises the named unavailable admission service.
-                update_agent(self.backend, agent_id, {}, remove=("workspaceOperation",))
-                continue
-            if index == 0 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                # Python startup recovery turns an active retry into a durable hold.
-                # The Rust HTTP process preserves this state and exercises the send gate.
-                update_agent(
-                    self.backend,
-                    agent_id,
-                    {"status": "idle", "autoWake": True},
-                    remove=("nativeSafetyRetry", "nativeFailureHold", "error"),
-                )
-                continue
-            message_id = f"44444444-4444-4444-4444-{index:012d}"
-            if index == 0 and os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                from codex_safety_buffering import active as safety_retry_active
-
-                with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
-                    stored = json.loads(database.execute(
-                        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
-                    ).fetchone()[0])
-                self.assertTrue(safety_retry_active(stored), stored.get("nativeSafetyRetry"))
-            before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id)
-            response = self.backend.request("POST", "/api/messages", body={
-                "id": message_id, "room": agent_id, "text": "Must be refused",
-            }, headers=self.headers())
-            self.assertNotEqual(response.status, 200, response.body[:1000])
-            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index in {3, 4}:
-                self.assertEqual(response.status, 501, response.body[:1000])
-                expected = "workspace-policy/message-admission" if index == 3 else "budget-policy/message-admission"
-                self.assertIn(expected, response.json()["error"])
-            self.assertEqual(
-                message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id), before,
-            )
-            update_agent(self.backend, agent_id, {}, remove=tuple(fields))
-
-        peer_agent_id = self.denial_peer_agent_id
-        update_agent(self.backend, agent_id, {"rootId": peer_agent_id})
-        update_agent(self.backend, peer_agent_id, {"agentMode": "single", "concurrency": 0})
-        message_id = "45454545-4545-4545-4545-454545454545"
-        before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id)
-        response = self.backend.request("POST", "/api/messages", body={
-            "id": message_id, "room": agent_id, "text": "Delegation is disabled",
-        }, headers=self.headers())
-        self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(
-            message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id), before,
-        )
-        update_agent(self.backend, agent_id, {"rootId": agent_id})
-        update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
 
     def test_managed_send_atomically_finishes_capacity_retry(self):
         retry_id = "capacity-retry-message-send"
@@ -743,15 +645,12 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIsNone(saved_retry["dueAt"])
         self.assertNotIn("capacityRetry", saved_agent)
         self.assertNotIn("capacityRetryCount", saved_agent)
-        # The Python dispatcher may already have claimed the new message and
-        # written its own attempt; only the retry's unsubmitted attempt must be gone.
         self.assertNotEqual((saved_agent.get("startAttempt") or {}).get("capacityRetryId"), retry_id)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
         update_agent(self.backend, self.agent_id, {"autoWake": False, "error": "old error"})
         message_id = "46464646-4646-4646-4646-464646464646"
-        before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, self.agent_id)
         path = self.backend.state / "canvas.sqlite3"
         with closing(sqlite3.connect(path)) as database:
             database.execute(
@@ -763,11 +662,12 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "WHEN NEW.collection='event' BEGIN SELECT RAISE(ABORT,'fixture failure'); END",
             )
             database.commit()
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request("POST", "/api/messages", body={
             "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
         }, headers=self.headers())
         self.assertEqual(response.status, 500, response.body[:1000])
-        self.assertEqual(message_write_snapshot(path, message_id, self.agent_id), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(path)) as database:
             database.execute("DROP TRIGGER fail_agent_projection_update")
             database.execute("DROP TRIGGER fail_event_projection_insert")
@@ -845,6 +745,122 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response = self.backend.request(method, path, body=body, headers=self.headers())
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn(dependency, response.json()["error"])
+
+
+class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    """Refusal contracts use a backend that never accepts a managed send."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
+        cls.denial_agent_id = seed_agent(cls.backend)
+        cls.agent_id = cls.denial_agent_id
+        cls.denial_peer_agent_id = seed_agent(cls.backend)
+        cls.deleted_agent_id = seed_agent(cls.backend, {"deletedAt": 123.0})
+        cls.backend.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.backend.stop()
+
+    def headers(self):
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
+    def test_managed_send_deleted_agent_refuses_without_writes(self):
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request("POST", "/api/messages", body={
+            "id": "34343434-3434-3434-3434-343434343434",
+            "room": self.deleted_agent_id,
+            "text": "Deleted agent",
+        }, headers=self.headers())
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_managed_send_denial_gates_refuse_without_writes(self):
+        agent_id = self.denial_agent_id
+        cases = (
+            ({"nativeSafetyRetry": {"stage": "turns", "epoch": 0, "accountKey": "default"}}, ()),
+            ({"excludedAccountKeys": ["default"]}, ()),
+            ({"threadId": "thread-native-block", "nativeThreadBlock": {"threadId": "thread-native-block"}}, ()),
+            ({"workspaceOperation": "restore"}, ()),
+            ({"tokenBudget": 0}, ()),
+        )
+        for index, (fields, remove) in enumerate(cases):
+            update_agent(self.backend, agent_id, fields, remove=remove)
+            if index == 3 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                # The Python server requires a persisted workspace operation record;
+                # the Rust fixture exercises the named unavailable admission service.
+                update_agent(self.backend, agent_id, {}, remove=("workspaceOperation",))
+                continue
+            if index == 0 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                # Python startup recovery turns an active retry into a durable hold.
+                # Rust preserves this state to exercise its gate; Python recovers
+                # it before the request, so only the Python case is skipped.
+                update_agent(self.backend, agent_id, {}, remove=("nativeSafetyRetry", "nativeFailureHold", "error"))
+                continue
+            message_id = f"44444444-4444-4444-4444-{index:012d}"
+            if index == 0 and os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                from codex_safety_buffering import active as safety_retry_active
+
+                with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+                    stored = json.loads(database.execute(
+                        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+                    ).fetchone()[0])
+                self.assertTrue(safety_retry_active(stored), stored.get("nativeSafetyRetry"))
+            before = no_write_snapshot(self.backend.state)
+            response = self.backend.request("POST", "/api/messages", body={
+                "id": message_id, "room": agent_id, "text": "Must be refused",
+            }, headers=self.headers())
+            self.assertNotEqual(response.status, 200, response.body[:1000])
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index in {3, 4}:
+                self.assertEqual(response.status, 501, response.body[:1000])
+                expected = "workspace-policy/message-admission" if index == 3 else "budget-policy/message-admission"
+                self.assertIn(expected, response.json()["error"])
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            update_agent(self.backend, agent_id, {}, remove=tuple(fields))
+
+        peer_agent_id = self.denial_peer_agent_id
+        update_agent(self.backend, agent_id, {"rootId": peer_agent_id})
+        update_agent(self.backend, peer_agent_id, {"agentMode": "single", "concurrency": 0})
+        message_id = "45454545-4545-4545-4545-454545454545"
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request("POST", "/api/messages", body={
+            "id": message_id, "room": agent_id, "text": "Delegation is disabled",
+        }, headers=self.headers())
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            no_write_snapshot(self.backend.state), before,
+        )
+        update_agent(self.backend, agent_id, {"rootId": agent_id})
+        update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_federation_and_managed_send_routes_refuse_before_canvas_writes(self):
+        path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as database:
+            database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            database.execute("INSERT OR REPLACE INTO runtime_federation_rooms(id,record) VALUES(?,?)", (
+                "federated:peer:room", json.dumps({"id": "federated:peer:room", "status": "approved"}),
+            ))
+        before = no_write_snapshot(path.parent)
+        federation = self.backend.request("POST", "/api/messages", body={
+            "id": "16161616-1616-1616-1616-161616161616",
+            "room": "federated:peer:room", "text": "",
+        }, headers=self.headers())
+        self.assertEqual(federation.status, 501, federation.body[:1000])
+        self.assertIn("federation-driver/rooms", federation.json()["error"])
+        direct = self.backend.request("POST", "/api/messages", body={
+            "id": "17171717-1717-1717-1717-171717171717",
+            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
+        }, headers=self.headers())
+        self.assertEqual(direct.status, 501, direct.body[:1000])
+        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
+        self.assertEqual(no_write_snapshot(path.parent), before)
+
 
 
 if __name__ == "__main__":
