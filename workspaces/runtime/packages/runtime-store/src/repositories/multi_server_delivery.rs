@@ -57,7 +57,7 @@ const TABLES: &[TableRequirement] = &[
         columns: &["id", "direction", "signature", "server"],
     },
 ];
-const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[],
     triggers: &[],
