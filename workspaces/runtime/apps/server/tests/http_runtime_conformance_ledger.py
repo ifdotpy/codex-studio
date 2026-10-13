@@ -226,7 +226,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "fixture_mutations": {"stale_session_cost_cache": True},
             "restore": ["session_cost_cache"],
             "expected": "501",
-            "expected_error": "Not implemented: requires usage-policy/session-cost-refresh",
+            "expected_error": "Not implemented: requires costs/pricing-refresh",
             "assert_no_write": True,
         }],
     },
