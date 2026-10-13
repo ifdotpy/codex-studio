@@ -646,7 +646,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
@@ -660,7 +660,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
 
     /// Inspect auth state without persisting metadata when the caller may refuse the write.
     pub fn inspect(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        let mut state = self
+        let state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;

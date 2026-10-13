@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::Engine as _;
 use crate::event_write::request_signature as receipt_signature;
+use base64::Engine as _;
 use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError, TerminalsRepository};
 use thiserror::Error;
@@ -834,8 +834,8 @@ mod tests {
 
     #[test]
     fn input_uses_the_appserver_base64_wire_representation() {
+        use crate::event_write::request_signature as receipt_signature;
         use base64::Engine as _;
-use crate::event_write::request_signature as receipt_signature;
 
         let encode = base64::engine::general_purpose::STANDARD;
         assert_eq!(encode.encode(b"hello"), "aGVsbG8=");
