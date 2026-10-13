@@ -833,16 +833,18 @@ def probe_fixture_state(
             path.unlink()
         yield
     finally:
-        if agent_record is not None:
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
-                connection.execute(
-                    "UPDATE runtime_agents SET record=? WHERE id=?",
-                    (json.dumps(agent_record), identifiers["agent"]),
-                )
-        if identity_file is not None:
-            path, content, mode = identity_file
-            path.write_bytes(content)
-            path.chmod(mode)
+        try:
+            if agent_record is not None:
+                with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                    connection.execute(
+                        "UPDATE runtime_agents SET record=? WHERE id=?",
+                        (json.dumps(agent_record), identifiers["agent"]),
+                    )
+        finally:
+            if identity_file is not None:
+                path, content, mode = identity_file
+                path.write_bytes(content)
+                path.chmod(mode)
 
 
 def probe_operations(
