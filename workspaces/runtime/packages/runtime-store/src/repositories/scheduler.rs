@@ -4,8 +4,10 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::records::{
+    AgentId, AgentRecord, AgentRepository, AgentStatus, EventMetadataRecord, Table,
+};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{EventWriteRepository, QueueEvent, QueueEventId, StoreError, StoreResult};
 
 const MAX_EVENTS_PER_TURN: usize = 32;
@@ -20,18 +22,15 @@ const TABLES: &[TableRequirement] = &[
             "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
         ],
     },
+    TableRequirement {
+        name: "runtime_event_meta",
+        columns: &["id", "record"],
+    },
 ];
-const EVENT_META: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_event_meta",
-    columns: &["id", "record"],
-}];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: TABLES,
-    conditional_tables: &[ConditionalTableRequirement {
-        table_exists: "runtime_event_meta",
-        tables: EVENT_META,
-    }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -115,40 +114,10 @@ impl SchedulerRepository {
         }
 
         let mut metadata = BTreeMap::new();
-        if transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )? {
-            for event in &events {
-                let raw = transaction
-                    .query_row(
-                        "SELECT record FROM runtime_event_meta WHERE id=?1",
-                        [&event.id.0],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if let Some(raw) = raw {
-                    let value: Value = serde_json::from_str(&raw).map_err(|_| {
-                        StoreError::InvalidSyncObject {
-                            scope: "runtime_event_meta".to_owned(),
-                            id: event.id.0.clone(),
-                        }
-                    })?;
-                    if !value.is_object() {
-                        return Err(StoreError::InvalidSyncObject {
-                            scope: "runtime_event_meta".to_owned(),
-                            id: event.id.0.clone(),
-                        });
-                    }
-                    if value.get("assets").is_some_and(|assets| !assets.is_array()) {
-                        return Err(StoreError::InvalidSyncObject {
-                            scope: "runtime_event_meta".to_owned(),
-                            id: event.id.0.clone(),
-                        });
-                    }
-                    metadata.insert(event.id.0.clone(), value);
-                }
+        for event in &events {
+            if let Some(record) = Table::<EventMetadataRecord>::new(transaction).get(&event.id)? {
+                let value = record.value().clone();
+                metadata.insert(event.id.0.clone(), value);
             }
         }
 
@@ -327,7 +296,7 @@ impl SchedulerRepository {
     /// Return only event reservations whose persisted attempt proves no turn was submitted.
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
         let mut statement = transaction.prepare(
-            "SELECT e.id,e.agent,e.epoch,a.record FROM runtime_events e \
+            "SELECT e.id,e.agent,e.epoch FROM runtime_events e \
              JOIN runtime_agents a ON a.id=e.agent WHERE e.status='reserved' ORDER BY e.rowid",
         )?;
         let rows = statement
@@ -336,32 +305,20 @@ impl SchedulerRepository {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
-        let mut candidates = BTreeMap::<(String, i64), (String, Vec<String>)>::new();
-        for (event_id, agent_id, epoch, record) in rows {
-            let candidate = candidates
-                .entry((agent_id, epoch))
-                .or_insert_with(|| (record, Vec::new()));
-            candidate.1.push(event_id);
+        let mut candidates = BTreeMap::<(String, i64), Vec<String>>::new();
+        for (event_id, agent_id, epoch) in rows {
+            let candidate = candidates.entry((agent_id, epoch)).or_default();
+            candidate.push(event_id);
         }
 
         let mut recovered = 0;
-        for ((agent_id, epoch), (record, reserved_ids)) in candidates {
-            let mut agent: AgentRecord =
-                serde_json::from_str(&record).map_err(|_| StoreError::InvalidSyncObject {
-                    scope: "runtime_agents".to_owned(),
-                    id: agent_id.clone(),
-                })?;
-            if agent.id.0 != agent_id {
-                return Err(StoreError::InvalidSyncObject {
-                    scope: "runtime_agents".to_owned(),
-                    id: agent_id,
-                });
-            }
+        for ((agent_id, epoch), reserved_ids) in candidates {
+            let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
+                .ok_or_else(|| invalid_agent(&agent_id))?;
             let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
                 return Err(invalid_agent(&agent_id));
             };
@@ -451,15 +408,19 @@ impl SchedulerRepository {
         agent: &str,
         attempt_id: &str,
     ) -> StoreResult<bool> {
-        Ok(transaction
-            .query_row(
-                "SELECT 1 FROM runtime_agents WHERE id=?1 AND json_extract(record,'$.startAttempt.id')=?2 \
-                 AND json_extract(record,'$.startAttempt.submitted')=0",
-                params![agent, attempt_id],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
+        let Some(record) = AgentRepository::get(transaction, &AgentId::from(agent))? else {
+            return Ok(false);
+        };
+        Ok(record
+            .extra
+            .get("startAttempt")
+            .and_then(Value::as_object)
+            .is_some_and(|attempt| {
+                attempt.get("id").and_then(Value::as_str) == Some(attempt_id)
+                    && attempt.get("submitted").is_some_and(|value| {
+                        value.as_bool() == Some(false) || value.as_i64() == Some(0)
+                    })
+            }))
     }
 }
 
