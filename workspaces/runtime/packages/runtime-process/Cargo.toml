@@ -13,11 +13,12 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 strum.workspace = true
-tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 command-fds = "=0.3.2"
 rustix.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 studio-runtime-priority-sys = { path = "../runtime-priority-sys" }
 
 [dev-dependencies]

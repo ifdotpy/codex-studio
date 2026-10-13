@@ -56,7 +56,6 @@ rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 sha2 = "0.11.0"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 thiserror = "=2.0.17"
-tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }
 
 axum = "=0.8.9"
