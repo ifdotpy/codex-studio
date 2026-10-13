@@ -48,7 +48,7 @@ db.close()
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    assert_eq!(tables.len(), 39);
+    assert_eq!(tables.len(), 40);
     assert!(
         tables
             .iter()

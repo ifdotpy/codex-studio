@@ -90,6 +90,10 @@ const MESSAGE_EVENT_URI: &str = "https://codex-studio.invalid/persisted-message-
 const MESSAGE_EVENT: &[u8] = include_bytes!("schemas/persisted-message-event.schema.json");
 const TOOL_ALIAS_URI: &str = "https://codex-studio.invalid/persisted-tool-alias.schema.json";
 const TOOL_ALIAS: &[u8] = include_bytes!("schemas/persisted-tool-alias.schema.json");
+const CONTINUATION_URI: &str =
+    "https://codex-studio.invalid/persisted-continuation-snapshot.schema.json";
+const CONTINUATION: &[u8] = include_bytes!("schemas/persisted-continuation-snapshot.schema.json");
+
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
 const USAGE_LIMITS: &[u8] = include_bytes!("schemas/workspace-usage-limits.schema.json");
@@ -165,6 +169,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (FEDERATION_INBOX_URI, FEDERATION_INBOX),
     (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
     (FEDERATION_ROOM_PAYLOAD_URI, FEDERATION_ROOM_PAYLOAD),
+    (CONTINUATION_URI, CONTINUATION),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (
         ACCOUNT_TRANSFER_URI,
@@ -324,6 +329,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_tool_request_aliases" => "PersistedToolAlias",
         "runtime_tool_requests" => "PersistedToolRequestRecord",
         "runtime_tool_results" => "PersistedToolResult",
+        "runtime_capacity_retries" => "continuation/CapacityContinuation",
         "runtime_usage_resumes" => "PersistedUsageResumeRecord",
         "runtime_work" => "PersistedWorkItemRecord",
         "sync_entities" => "PersistedSyncEntity",
@@ -518,6 +524,15 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         RELOCATION_URI,
         "relocation",
         &relocation,
+        &mut validators,
+    )?;
+    let continuation: Value =
+        serde_json::from_slice(CONTINUATION).map_err(|error| error.to_string())?;
+    compile_definitions(
+        &registry,
+        CONTINUATION_URI,
+        "continuation",
+        &continuation,
         &mut validators,
     )?;
     Ok(CompiledSchemas { validators })

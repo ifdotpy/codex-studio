@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod analytics_capture;
 pub(crate) mod checkpoints;
 pub(crate) mod context_repair;
+pub(crate) mod continuation;
 pub(crate) mod coordination;
 pub(crate) mod cost_usage;
 pub(crate) mod event_write;

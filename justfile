@@ -93,3 +93,7 @@ test-rust-relocation-mutations target:
 [doc("Run the rules mutation corpus in an isolated target outside the checkout.")]
 test-rust-rules-mutations target *args:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/rules_engine/mutations.json --filter 'binary(rules_engine_corpus) or binary(rules_tick_atomic)' {{args}}
+
+[doc("Run the full isolated continuation corpus and store fault matrix; no provider requests.")]
+test-rust-usage-resume-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/^continuation_(corpus|recovery)$/)'
