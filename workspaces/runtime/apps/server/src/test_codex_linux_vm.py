@@ -499,6 +499,13 @@ class ProvisionTests(unittest.TestCase):
                          'defaults,nofail,user_subvol_rm_allowed,compress=zstd:3 0 0\n')
         self.assertIn('mount -o remount,compress=zstd:3 /var/lib/codex-studio', self.script)
 
+    def test_reviewer_acl_dependency_is_checked_and_installed(self):
+        # Read-only reviewer lines use setfacl (vm-guest layr_agents.py).
+        section = self.script[self.script.index('stage system-packages\n'):self.script.index('stage data-disk\n')]
+        self.assertIn('setfacl', section.split('for tool in ', 1)[1].split('; do', 1)[0].split())
+        install = next(line for line in section.splitlines() if 'apt-get install ' in line)
+        self.assertIn('acl', install.split())
+
     def test_needrestart_leaves_studio_units_and_kernel_packages_are_held(self):
         start = self.script.index("mkdir -p /etc/needrestart/conf.d")
         line = self.script[start:self.script.index("\n", self.script.index("printf", start))]
