@@ -263,6 +263,57 @@ class SystemApiTests(unittest.TestCase):
         provider_monitor.worker.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(provider_monitor.worker.is_alive())
 
+    def test_provider_status_ticks_without_waiting_and_filters_preference_immediately(self) -> None:
+        from codex_provider_versions import ProviderVersionMonitor, status
+
+        class ProbeLock:
+            def __init__(self) -> None:
+                self.busy = False
+                self.calls: list[bool] = []
+                self.held = False
+
+            def acquire(self, *, blocking: bool = True) -> bool:
+                self.calls.append(blocking)
+                if self.busy or self.held:
+                    return False
+                self.held = True
+                return True
+
+            def release(self) -> None:
+                if not self.held:
+                    raise AssertionError("Runtime lock was released without acquisition")
+                self.held = False
+
+        provider_monitor = ProviderVersionMonitor()
+        ticked: list[object] = []
+        setattr(provider_monitor, "tick", lambda runtime: ticked.append(runtime))
+        provider_monitor.providers = [{
+            "id": "provider-version:default", "accountKey": "default",
+            "provider": "codex", "status": "current", "runningVersion": "1.0.0",
+            "installedVersion": "1.0.0", "configuredVersion": None,
+            "baseline": "0.153.4", "error": None, "message": None, "at": 1.0,
+            "updateNotices": [
+                {"availableVersion": "1.1.0", "source": "installed"},
+                {"availableVersion": "1.2.0", "source": "upstream"},
+            ],
+        }]
+        lock = ProbeLock()
+        runtime = SimpleNamespace(lock=lock, provider_version_monitor=provider_monitor)
+
+        with patch("codex_provider_upstream_releases.updates_enabled", return_value=False) as enabled:
+            result = status(runtime)
+            self.assertEqual(result["providers"][0]["updateNotices"], [
+                {"availableVersion": "1.1.0", "source": "installed"},
+            ])
+            self.assertFalse(any(item["id"].endswith(":upstream") for item in result["warnings"]))
+            self.assertEqual(ticked, [runtime])
+            enabled.assert_called_once_with(runtime)
+
+            lock.busy = True
+            status(runtime)
+            self.assertEqual(ticked, [runtime])
+            self.assertEqual(lock.calls, [False, False])
+
     def test_provider_versions_contract_matches_real_producer(self) -> None:
         from codex_provider_versions import ProviderVersionMonitor as UntypedProviderVersionMonitor
         from codex_provider_versions import status as untyped_status
@@ -311,7 +362,7 @@ class SystemApiTests(unittest.TestCase):
         setattr(monitor, "tick", lambda _runtime: None)
         producer = cast(Callable[[object], dict[str, JsonValue]], untyped_status)
         with patch("codex_provider_versions.monitor", return_value=monitor):
-            result = producer(object())
+            result = producer(SimpleNamespace(lock=threading.RLock()))
 
         response = ProviderVersions.model_validate_json(json.dumps(result))
         self.assertEqual([row.status.value for row in response.providers], [
