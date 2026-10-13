@@ -65,7 +65,7 @@ struct RegistryDocument {
     logins: BTreeMap<String, Value>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct RegistryOrder {
     pub(crate) accounts: Vec<String>,
     pub(crate) logins: Vec<String>,
@@ -439,7 +439,7 @@ pub(crate) fn project_registry(
     })
 }
 
-fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
+pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
     let Some(row) = stored else { return false };
     let email = row.get("email").and_then(Value::as_str).unwrap_or_default();
     row.get("provider").and_then(Value::as_str) == Some("claude")

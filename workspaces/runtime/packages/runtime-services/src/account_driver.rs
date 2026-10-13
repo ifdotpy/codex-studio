@@ -5,6 +5,7 @@
 //! the driver's mutex. Credential material is never retained in this module.
 
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
+use crate::event_write::python_strip;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
@@ -494,8 +495,14 @@ pub enum AccountDriverError {
     NoDeleteReplacement,
     #[error("This directory has no readable Codex auth.json")]
     InvalidCodexProfile,
-    #[error("Supply a UUID request_id")]
-    InvalidRequestId,
+    #[error("The sign-in response is still unknown. Check its status first.")]
+    LoginResponseUnknown,
+    #[error("Unknown sign-in request")]
+    UnknownLogin,
+    #[error("Not implemented: requires provider-session/account-discovery-claude")]
+    ClaudeDiscoveryUnavailable,
+    #[error("Not implemented: requires provider-session/codex-login-cancel")]
+    LoginCancellationUnavailable,
 }
 
 pub struct AccountDriver<R = SystemProviderAuthReader> {
@@ -534,100 +541,15 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        self.refresh_account(account, false)
-    }
-
-    fn refresh_account(
-        &self,
-        account: &str,
-        include_disconnected: bool,
-    ) -> Result<AccountStatus, AccountDriverError> {
-        let profile = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| AccountDriverError::Poisoned)?;
-            let row = state
-                .value
-                .get("accounts")
-                .and_then(Value::as_object)
-                .and_then(|accounts| accounts.get(account))
-                .and_then(Value::as_object)
-                .ok_or(AccountDriverError::UnknownAccount)?;
-            if row.get("deleted") == Some(&Value::Bool(true))
-                || (!include_disconnected && row.get("disconnected") == Some(&Value::Bool(true)))
-            {
-                return Ok(AccountStatus::Unavailable);
-            }
-            if row.get("duplicateOf").is_some_and(python_truthy) {
-                return Ok(status_from_value(row.get("status")));
-            }
-            AuthProfile {
-                provider: row
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or("codex")
-                    .to_owned(),
-                home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
-                claude_options: row.get("claudeOptions").cloned(),
-            }
-        };
-        let metadata = self.reader.read(&profile);
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let previous = state
-            .value
-            .get("accounts")
-            .and_then(Value::as_object)
-            .and_then(|accounts| accounts.get(account))
-            .and_then(Value::as_object)
-            .ok_or(AccountDriverError::UnknownAccount)?;
-        if metadata.status == AuthStatus::Unchanged {
-            return Ok(status_from_value(previous.get("status")));
-        }
         let mut updated = state.value.clone();
-        let accounts = updated
-            .get_mut("accounts")
-            .and_then(Value::as_object_mut)
-            .ok_or(AccountDriverError::InvalidRegistry)?;
-        let row = accounts
-            .get_mut(account)
-            .and_then(Value::as_object_mut)
-            .ok_or(AccountDriverError::UnknownAccount)?;
-        apply_metadata(row, &metadata);
-        if updated == state.value {
-            let status = updated
-                .get("accounts")
-                .and_then(Value::as_object)
-                .and_then(|accounts| accounts.get(account))
-                .and_then(Value::as_object)
-                .and_then(|row| row.get("status"));
-            return Ok(status_from_value(status));
+        let status = self.refresh_value(&mut updated, account, false)?;
+        if updated != state.value {
+            self.persist(&mut state, updated)?;
         }
-        let status = updated
-            .get("accounts")
-            .and_then(Value::as_object)
-            .and_then(|accounts| accounts.get(account))
-            .and_then(Value::as_object)
-            .and_then(|row| row.get("status"));
-        let status = status_from_value(status);
-        let encoded = encode_registry(&updated, &state.order)
-            .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        let (checked, order) =
-            decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
-        match atomic_replace(&self.path, &encoded) {
-            Ok(()) => {}
-            Err(ReplaceError::NotReplaced) => return Err(AccountDriverError::WriteRegistry),
-            Err(ReplaceError::ReplacedNotDurable) => {
-                state.value = checked;
-                state.order = order;
-                return Err(AccountDriverError::DurabilityUnconfirmed);
-            }
-        }
-        state.value = checked;
-        state.order = order;
         Ok(status)
     }
 
@@ -638,42 +560,28 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let encoded = encode_registry(&state.value, &state.order)
-            .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        crate::account_policy::project_registry(Some(&encoded))
-            .map_err(|_| AccountDriverError::InvalidRegistry)
+        project_snapshot(&state.value, &state.order)
     }
 
     pub fn set_default(
         &self,
         account: Option<&str>,
     ) -> Result<AccountsSnapshot, AccountDriverError> {
-        if let Some(account) = account {
-            self.get(account)?;
-        }
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let Some(account) = account else {
-            return crate::account_policy::project_registry(Some(
-                &encode_registry(&state.value, &state.order)
-                    .map_err(|_| AccountDriverError::InvalidRegistry)?,
-            ))
-            .map_err(|_| AccountDriverError::InvalidRegistry);
+            return project_snapshot(&state.value, &state.order);
         };
-        let row = registry_account(&state.value, account)?;
-        if row.get("status").and_then(Value::as_str) != Some("ready")
-            || row.get("disconnected") == Some(&Value::Bool(true))
-            || row.get("deleted") == Some(&Value::Bool(true))
-        {
+        let mut updated = state.value.clone();
+        self.refresh_value(&mut updated, account, true)?;
+        if !eligible_default(&updated, account) {
             return Err(AccountDriverError::SignInRequired);
         }
-        let mut updated = state.value.clone();
         updated["defaultAccountKey"] = Value::String(account.to_owned());
         self.persist(&mut state, updated)?;
-        drop(state);
-        self.snapshot()
+        project_snapshot(&state.value, &state.order)
     }
 
     pub fn set_name(
@@ -682,8 +590,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         label: &str,
         request_id: &str,
     ) -> Result<AccountsSnapshot, AccountDriverError> {
-        let request_id = canonical_request_id(request_id)?;
-        let label = label.trim();
+        let request_id = request_id.to_ascii_lowercase();
+        let label = python_strip(label);
         let mut state = self
             .state
             .lock()
@@ -720,81 +628,85 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         account: &str,
         request_id: &str,
     ) -> Result<AccountsSnapshot, AccountDriverError> {
-        let request_id = canonical_request_id(request_id)?;
-        self.refresh_selectable_accounts()?;
+        let request_id = request_id.to_ascii_lowercase();
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        let receipts = updated.get("deleteReceipts").and_then(Value::as_object);
-        if let Some(previous) = receipts.and_then(|receipts| receipts.get(&request_id)) {
+        if let Some(previous) = state
+            .value
+            .get("deleteReceipts")
+            .and_then(|receipts| receipts.get(&request_id))
+        {
             if previous.get("accountKey").and_then(Value::as_str) != Some(account) {
                 return Err(AccountDriverError::DeleteRequestConflict);
             }
-        } else {
-            let default = updated.get("defaultAccountKey").and_then(Value::as_str);
-            let replacement = if default == Some(account) {
-                ready_replacement(&updated, account)
-            } else {
-                None
-            };
-            if default == Some(account) && replacement.is_none() {
-                return Err(AccountDriverError::NoDeleteReplacement);
-            }
-            if let Some(replacement) = replacement {
-                updated["defaultAccountKey"] = Value::String(replacement.to_owned());
-            }
-            let row = registry_account_mut(&mut updated, account)?;
-            row["deleted"] = Value::Bool(true);
-            updated
-                .as_object_mut()
-                .ok_or(AccountDriverError::InvalidRegistry)?
-                .entry("deleteReceipts")
-                .or_insert_with(|| Value::Object(Default::default()));
-            updated["deleteReceipts"][&request_id] = serde_json::json!({
-                "accountKey": account,
-                "deletedAt": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|_| AccountDriverError::InvalidRegistry)?
-                    .as_secs_f64(),
-            });
-            self.persist(&mut state, updated)?;
+            return project_snapshot(&state.value, &state.order);
         }
-        drop(state);
-        self.snapshot()
+        registry_account(&state.value, account)?;
+        let mut updated = state.value.clone();
+        self.refresh_selectable(&mut updated, &state.order)?;
+        let default = updated.get("defaultAccountKey").and_then(Value::as_str);
+        let replacement = if default == Some(account) {
+            ready_replacement(&updated, &state.order, account)
+        } else {
+            None
+        };
+        if default == Some(account) && replacement.is_none() {
+            return Err(AccountDriverError::NoDeleteReplacement);
+        }
+        if let Some(replacement) = replacement {
+            updated["defaultAccountKey"] = Value::String(replacement.to_owned());
+        }
+        registry_account_mut(&mut updated, account)?["deleted"] = Value::Bool(true);
+        updated
+            .as_object_mut()
+            .ok_or(AccountDriverError::InvalidRegistry)?
+            .entry("deleteReceipts")
+            .or_insert_with(|| Value::Object(Default::default()));
+        updated["deleteReceipts"][&request_id] = serde_json::json!({
+            "accountKey": account,
+            "deletedAt": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| AccountDriverError::InvalidRegistry)?
+                .as_secs_f64(),
+        });
+        self.persist(&mut state, updated)?;
+        project_snapshot(&state.value, &state.order)
     }
 
     pub fn disconnect(&self, account: &str) -> Result<AccountsSnapshot, AccountDriverError> {
-        self.refresh_selectable_accounts()?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
+        registry_account(&updated, account)?;
+        self.refresh_selectable(&mut updated, &state.order)?;
         let row = registry_account(&updated, account)?;
         let is_disconnected = row.get("disconnected") == Some(&Value::Bool(true));
         let default = updated.get("defaultAccountKey").and_then(Value::as_str);
         if !is_disconnected && default == Some(account) {
-            let replacement = ready_replacement(&updated, account)
+            let replacement = ready_replacement(&updated, &state.order, account)
                 .ok_or(AccountDriverError::NoDisconnectReplacement)?;
             updated["defaultAccountKey"] = Value::String(replacement.to_owned());
         }
         if !is_disconnected {
             registry_account_mut(&mut updated, account)?["disconnected"] = Value::Bool(true);
             self.persist(&mut state, updated)?;
+        } else if updated != state.value {
+            self.persist(&mut state, updated)?;
         }
-        drop(state);
-        self.snapshot()
+        project_snapshot(&state.value, &state.order)
     }
 
     pub fn reconnect(&self, account: &str) -> Result<AccountsSnapshot, AccountDriverError> {
-        self.refresh_account(account, true)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
+        self.refresh_value(&mut updated, account, true)?;
         let row = registry_account_mut(&mut updated, account)?;
         if row.get("status").and_then(Value::as_str) != Some("ready") {
             return Err(AccountDriverError::SignInRequired);
@@ -803,12 +715,19 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .ok_or(AccountDriverError::InvalidRegistry)?
             .remove("disconnected");
         self.persist(&mut state, updated)?;
-        drop(state);
-        self.snapshot()
+        project_snapshot(&state.value, &state.order)
     }
 
     pub fn register(&self, home: &str) -> Result<AccountsSnapshot, AccountDriverError> {
-        if home.trim().is_empty() {
+        self.register_with_restore(home, true)
+    }
+
+    fn register_with_restore(
+        &self,
+        home: &str,
+        restore_deleted: bool,
+    ) -> Result<AccountsSnapshot, AccountDriverError> {
+        if python_strip(home).is_empty() {
             return Err(AccountDriverError::InvalidCodexProfile);
         }
         let path = expanded_profile_path(home)
@@ -823,110 +742,277 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
-        let account_exists = updated
-            .get("accounts")
-            .and_then(Value::as_object)
-            .ok_or(AccountDriverError::InvalidRegistry)?
-            .iter()
-            .find(|(_, row)| {
-                row.get("home").and_then(Value::as_str) == path.to_str()
-                    || metadata
-                        .account_id
-                        .as_deref()
-                        .is_some_and(|id| row.get("accountId").and_then(Value::as_str) == Some(id))
-            })
-            .map(|(key, _)| key.clone());
-        if let Some(key) = account_exists {
-            let row = registry_account_mut(&mut updated, &key)?;
-            if row.get("deleted") == Some(&Value::Bool(true)) {
-                row.as_object_mut()
-                    .ok_or(AccountDriverError::InvalidRegistry)?
-                    .remove("deleted");
-                self.persist(&mut state, updated)?;
-            }
-            drop(state);
-            return self.snapshot();
+        let mut order = state.order.clone();
+        if register_metadata(&mut updated, &mut order, &path, &metadata, restore_deleted)? {
+            persist_registry(&self.path, &mut state, updated, &order)?;
         }
-        let accounts = updated
-            .get_mut("accounts")
-            .and_then(Value::as_object_mut)
-            .ok_or(AccountDriverError::InvalidRegistry)?;
-        let home = path
-            .to_str()
-            .ok_or(AccountDriverError::InvalidCodexProfile)?
-            .to_owned();
-        let digest = hex_sha256(home.as_bytes());
-        let account = format!("profile-{}", &digest[..20]);
-        let label = path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .filter(|name| *name != ".codex" && *name != ".codex-profile")
-            .or_else(|| {
-                path.parent()
-                    .and_then(Path::file_name)
-                    .and_then(OsStr::to_str)
-            })
-            .unwrap_or("Codex profile");
-        let mut row = serde_json::Map::new();
-        row.insert("id".into(), Value::String(account.clone()));
-        row.insert("home".into(), Value::String(home));
-        row.insert("label".into(), Value::String(label.to_owned()));
-        row.insert("source".into(), Value::String("Local profile".into()));
-        apply_metadata(&mut row, &metadata);
-        accounts.insert(account.clone(), Value::Object(row));
-        state.order.accounts.push(account);
-        if let Err(error) = self.persist(&mut state, updated) {
-            if error == AccountDriverError::WriteRegistry {
-                let _removed = state.order.accounts.pop();
-            }
-            return Err(error);
-        }
-        drop(state);
-        self.snapshot()
+        project_snapshot(&state.value, &state.order)
     }
 
-    fn refresh_selectable_accounts(&self) -> Result<(), AccountDriverError> {
-        let keys = {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| AccountDriverError::Poisoned)?;
-            state
-                .value
-                .get("accounts")
-                .and_then(Value::as_object)
-                .ok_or(AccountDriverError::InvalidRegistry)?
-                .iter()
-                .filter_map(|(key, row)| {
-                    (row.get("deleted") != Some(&Value::Bool(true))
-                        && row.get("disconnected") != Some(&Value::Bool(true)))
-                    .then_some(key.clone())
-                })
-                .collect::<Vec<_>>()
+    pub fn discover_codex(&self) -> Result<AccountsSnapshot, AccountDriverError> {
+        let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let codex_home = env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+        let mut candidates = vec![codex_home.clone(), home.join(".codex")];
+        for (base, pattern) in [
+            (home.join("Projects"), "*/.codex-profile"),
+            (home.join("Projects"), "*/.codex"),
+            (home.join(".codex/profiles"), "*"),
+            (home.join(".codex-profiles"), "*"),
+        ] {
+            if base.is_dir() {
+                let mut matches = fs::read_dir(&base)
+                    .map_err(|_| AccountDriverError::InvalidCodexProfile)?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| match pattern {
+                        "*/.codex-profile" => path.join(".codex-profile").is_dir(),
+                        "*/.codex" => path.join(".codex").is_dir(),
+                        "*" => true,
+                        _ => false,
+                    })
+                    .collect::<Vec<_>>();
+                matches.sort();
+                candidates.extend(matches.into_iter().take(1000).map(|path| match pattern {
+                    "*/.codex-profile" => path.join(".codex-profile"),
+                    "*/.codex" => path.join(".codex"),
+                    _ => path,
+                }));
+            }
+        }
+        let mut registrations = Vec::new();
+        for candidate in candidates {
+            if candidate.join("auth.json").is_file()
+                && let Ok(path) = candidate.canonicalize()
+            {
+                let metadata = codex_auth_metadata(&path);
+                if metadata.status == AuthStatus::Ready {
+                    registrations.push((path, metadata));
+                }
+            }
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut updated = state.value.clone();
+        let mut order = state.order.clone();
+        let mut changed = false;
+        for (path, metadata) in registrations {
+            changed |= register_metadata(&mut updated, &mut order, &path, &metadata, false)?;
+        }
+        if changed {
+            persist_registry(&self.path, &mut state, updated, &order)?;
+        }
+        project_snapshot(&state.value, &state.order)
+    }
+
+    pub fn claude_discovery_available() -> bool {
+        let configured = env::var_os(CLAUDE_BIN_OVERRIDE).map(PathBuf::from);
+        let local = env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(".local/bin/claude");
+        let Some(configured) = configured else {
+            return find_executable("claude", env::var_os("PATH").as_deref()).is_some()
+                || is_executable(&local);
         };
-        for key in keys {
-            self.get(&key)?;
+        find_executable(
+            configured.to_string_lossy().as_ref(),
+            env::var_os("PATH").as_deref(),
+        )
+        .is_some()
+    }
+
+    pub fn terminal_login_receipt(&self, login_id: &str) -> Result<Value, AccountDriverError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let receipt = state
+            .value
+            .get("logins")
+            .and_then(|logins| logins.get(login_id))
+            .cloned()
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        match receipt.get("status").and_then(Value::as_str) {
+            Some("ready" | "duplicate" | "cancelled" | "error") => Ok(receipt),
+            _ if receipt.get("loginId").is_none_or(Value::is_null) => {
+                Err(AccountDriverError::LoginResponseUnknown)
+            }
+            _ => Err(AccountDriverError::LoginCancellationUnavailable),
+        }
+    }
+
+    fn refresh_value(
+        &self,
+        value: &mut Value,
+        account: &str,
+        include_inactive: bool,
+    ) -> Result<AccountStatus, AccountDriverError> {
+        let profile = {
+            let row = registry_account(value, account)?;
+            if !include_inactive
+                && (row.get("deleted") == Some(&Value::Bool(true))
+                    || row.get("disconnected") == Some(&Value::Bool(true)))
+            {
+                return Ok(AccountStatus::Unavailable);
+            }
+            if row.get("duplicateOf").is_some_and(python_truthy) {
+                return Ok(status_from_value(row.get("status")));
+            }
+            AuthProfile {
+                provider: row
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex")
+                    .to_owned(),
+                home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
+                claude_options: row.get("claudeOptions").cloned(),
+            }
+        };
+        let metadata = self.reader.read(&profile);
+        let row = registry_account_mut(value, account)?
+            .as_object_mut()
+            .ok_or(AccountDriverError::InvalidRegistry)?;
+        apply_metadata(row, &metadata);
+        Ok(status_from_value(row.get("status")))
+    }
+
+    fn refresh_selectable(
+        &self,
+        value: &mut Value,
+        order: &RegistryOrder,
+    ) -> Result<(), AccountDriverError> {
+        for key in &order.accounts {
+            let row = registry_account(value, key)?;
+            if row.get("deleted") != Some(&Value::Bool(true))
+                && row.get("disconnected") != Some(&Value::Bool(true))
+            {
+                self.refresh_value(value, key, false)?;
+            }
         }
         Ok(())
     }
 
     fn persist(&self, state: &mut RegistryState, updated: Value) -> Result<(), AccountDriverError> {
-        let encoded = encode_registry(&updated, &state.order)
-            .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        let (checked, order) =
-            decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
-        match atomic_replace(&self.path, &encoded) {
-            Ok(()) => {
-                state.value = checked;
-                state.order = order;
-                Ok(())
-            }
-            Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
-            Err(ReplaceError::ReplacedNotDurable) => {
-                state.value = checked;
-                state.order = order;
-                Err(AccountDriverError::DurabilityUnconfirmed)
-            }
+        let order = state.order.clone();
+        persist_registry(&self.path, state, updated, &order)
+    }
+}
+
+fn eligible_default(value: &Value, account: &str) -> bool {
+    let Some(row) = registry_account(value, account)
+        .ok()
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    (row.get("status").and_then(Value::as_str) == Some("ready")
+        || crate::account_policy::can_attempt_native_proof(Some(row)))
+        && row.get("disconnected") != Some(&Value::Bool(true))
+        && row.get("deleted") != Some(&Value::Bool(true))
+}
+
+fn apply_registration_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
+    apply_metadata(row, metadata);
+    row.entry("accountId").or_insert_with(|| {
+        metadata
+            .account_id
+            .clone()
+            .map_or(Value::Null, Value::String)
+    });
+    row.entry("email")
+        .or_insert_with(|| metadata.email.clone().map_or(Value::Null, Value::String));
+    row.entry("plan")
+        .or_insert_with(|| metadata.plan.clone().map_or(Value::Null, Value::String));
+}
+
+fn register_metadata(
+    value: &mut Value,
+    order: &mut RegistryOrder,
+    path: &Path,
+    metadata: &AuthMetadata,
+    restore_deleted: bool,
+) -> Result<bool, AccountDriverError> {
+    let home = path
+        .to_str()
+        .ok_or(AccountDriverError::InvalidCodexProfile)?
+        .to_owned();
+    let existing = order.accounts.iter().find_map(|key| {
+        let row = value.get("accounts")?.get(key)?;
+        (row.get("home").and_then(Value::as_str) == Some(&home)
+            || metadata
+                .account_id
+                .as_deref()
+                .is_some_and(|id| row.get("accountId").and_then(Value::as_str) == Some(id)))
+        .then(|| key.clone())
+    });
+    if let Some(key) = existing {
+        let row = registry_account_mut(value, &key)?
+            .as_object_mut()
+            .ok_or(AccountDriverError::InvalidRegistry)?;
+        return Ok(restore_deleted && row.remove("deleted").is_some());
+    }
+    let digest = hex_sha256(home.as_bytes());
+    let account = format!("profile-{}", &digest[..20]);
+    let label = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| *name != ".codex" && *name != ".codex-profile")
+        .or_else(|| {
+            path.parent()
+                .and_then(Path::file_name)
+                .and_then(OsStr::to_str)
+        })
+        .unwrap_or("Codex profile");
+    let mut row = serde_json::Map::new();
+    row.insert("id".into(), Value::String(account.clone()));
+    row.insert("home".into(), Value::String(home));
+    row.insert("label".into(), Value::String(label.to_owned()));
+    row.insert("source".into(), Value::String("Local profile".into()));
+    apply_registration_metadata(&mut row, metadata);
+    value
+        .get_mut("accounts")
+        .and_then(Value::as_object_mut)
+        .ok_or(AccountDriverError::InvalidRegistry)?
+        .insert(account.clone(), Value::Object(row));
+    order.accounts.push(account);
+    Ok(true)
+}
+
+fn project_snapshot(
+    value: &Value,
+    order: &RegistryOrder,
+) -> Result<AccountsSnapshot, AccountDriverError> {
+    let encoded = encode_registry(value, order).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    crate::account_policy::project_registry(Some(&encoded))
+        .map_err(|_| AccountDriverError::InvalidRegistry)
+}
+
+fn persist_registry(
+    path: &Path,
+    state: &mut RegistryState,
+    mut updated: Value,
+    order: &RegistryOrder,
+) -> Result<(), AccountDriverError> {
+    updated["pendingAccountsChange"] = Value::Bool(true);
+    let encoded =
+        encode_registry(&updated, order).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let (checked, order) =
+        decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    match atomic_replace(path, &encoded) {
+        Ok(()) => {
+            state.value = checked;
+            state.order = order;
+            Ok(())
+        }
+        Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
+        Err(ReplaceError::ReplacedNotDurable) => {
+            state.value = checked;
+            state.order = order;
+            Err(AccountDriverError::DurabilityUnconfirmed)
         }
     }
 }
@@ -950,36 +1036,20 @@ fn registry_account_mut<'a>(
         .ok_or(AccountDriverError::UnknownAccount)
 }
 
-fn ready_replacement<'a>(value: &'a Value, excluded: &str) -> Option<&'a str> {
-    value
-        .get("accounts")
-        .and_then(Value::as_object)?
-        .iter()
-        .find_map(|(key, row)| {
-            (key != excluded
-                && row.get("status").and_then(Value::as_str) == Some("ready")
-                && row.get("deleted") != Some(&Value::Bool(true))
-                && row.get("disconnected") != Some(&Value::Bool(true))
-                && !row.get("duplicateOf").is_some_and(python_truthy))
-            .then_some(key.as_str())
-        })
-}
-
-fn canonical_request_id(value: &str) -> Result<String, AccountDriverError> {
-    let bytes = value.as_bytes();
-    let hyphens = [8, 13, 18, 23];
-    if bytes.len() != 36
-        || bytes.iter().enumerate().any(|(index, byte)| {
-            if hyphens.contains(&index) {
-                *byte != b'-'
-            } else {
-                !byte.is_ascii_hexdigit()
-            }
-        })
-    {
-        return Err(AccountDriverError::InvalidRequestId);
-    }
-    Ok(value.to_ascii_lowercase())
+fn ready_replacement<'a>(
+    value: &'a Value,
+    order: &'a RegistryOrder,
+    excluded: &str,
+) -> Option<&'a str> {
+    order.accounts.iter().find_map(|key| {
+        let row = value.get("accounts")?.get(key)?;
+        (key != excluded
+            && row.get("status").and_then(Value::as_str) == Some("ready")
+            && row.get("deleted") != Some(&Value::Bool(true))
+            && row.get("disconnected") != Some(&Value::Bool(true))
+            && !row.get("duplicateOf").is_some_and(python_truthy))
+        .then_some(key.as_str())
+    })
 }
 
 fn expanded_profile_path(home: &str) -> PathBuf {
@@ -1358,6 +1428,48 @@ mod tests {
         assert!(persisted.contains("_credentialIdentity"));
         assert!(!persisted.contains(PLACEHOLDER_KEY));
         assert!(persisted.contains(&hex_sha256(PLACEHOLDER_KEY.as_bytes())));
+    }
+
+    #[test]
+    fn default_accepts_original_claude_identity_with_keychain_error() {
+        let fixture = TestDir::new();
+        let home = fixture.0.join("claude-home");
+        fs::create_dir_all(&home).expect("create disposable Claude home");
+        let mut value: Value = serde_json::from_slice(&registry(&home)).expect("fixture registry");
+        value["accounts"]["default"]["provider"] = Value::String("claude".into());
+        value["accounts"]["default"]["source"] = Value::String("Claude Code".into());
+        value["accounts"]["default"]["status"] = Value::String("error".into());
+        value["accounts"]["default"]["email"] = Value::String("fixture@example.invalid".into());
+        value["accounts"]["default"]["accountId"] =
+            Value::String("claude:fixture@example.invalid".into());
+        value["accounts"]["default"]["_credentialIdentity"] =
+            Value::String("claude:fixture@example.invalid".into());
+        value["accounts"]["default"]["_authErrorKind"] = Value::String("keychain".into());
+        let path = fixture.0.join("state/accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize fixture"),
+        )
+        .expect("write registry");
+        let reader = FakeReader(AuthMetadata {
+            status: AuthStatus::Error,
+            account_id: None,
+            email: None,
+            plan: None,
+            credential_identity: None,
+            error: Some(AUTH_ERROR),
+            error_kind: Some("keychain"),
+        });
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open fixture");
+        let snapshot = driver
+            .set_default(Some("default"))
+            .expect("eligible Claude default");
+        assert_eq!(
+            snapshot.default_account_key,
+            Value::String("default".into())
+        );
     }
 
     #[test]
