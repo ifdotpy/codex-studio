@@ -504,6 +504,11 @@ pub(crate) mod tests {
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
 
+    pub(crate) fn expire_fixture(service: &ModelCatalogService) {
+        for entry in service.0.cache.lock().expect("cache").values_mut() {
+            entry.expires_at = Some(Instant::now());
+        }
+    }
     pub(crate) fn publish_fixture(
         service: &ModelCatalogService,
         account: &str,

@@ -231,8 +231,12 @@ async fn late_context_change_refuses_submission() {
 async fn missing_native_effort_uses_shared_catalog_published_after_construction() {
     let state = State::new().await;
     let service = crate::model_catalog::ModelCatalogService::new(None);
-    let mut resources = test_resources().unwrap();
-    resources.model_catalog = service.clone();
+    let resources = preparation::PreparationResources::bundled(
+        String::new(),
+        service.clone(),
+        test_resources().unwrap().python_executable,
+    )
+    .unwrap();
     crate::model_catalog::tests::publish_fixture(
         &service,
         "default",
@@ -260,4 +264,222 @@ async fn missing_native_effort_uses_shared_catalog_published_after_construction(
         .await
         .unwrap();
     service.shutdown().await.unwrap();
+}
+
+pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    let epoch = state.epoch;
+    let prepared = state
+        .bridge
+        .worker_run(move |store| {
+            store.transaction(|tx| {
+                let original = AgentRepository::get(tx, &AgentId::from(id.as_str()))?
+                    .unwrap()
+                    .value();
+                for (key, lead) in [("root", true), ("sibling", false), (id.as_str(), false)] {
+                    let mut record = original.clone();
+                    record["id"] = json!(key);
+                    record["rootId"] = json!("root");
+                    record["isLead"] = json!(lead);
+                    record["parentId"] = if lead { Value::Null } else { json!("root") };
+                    record["role"] = json!(if lead { "orchestrator" } else { "implementer" });
+                    record["worktreeReady"] = json!(true);
+                    let record = serde_json::from_value(record).unwrap();
+                    AgentRepository::put(tx, &record)?;
+                }
+                Ok(())
+            })?;
+            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
+            preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+        })
+        .await
+        .unwrap();
+    state
+        .bridge
+        .worker_run(|store| {
+            store.transaction_with(|tx| {
+                let mut sibling = AgentRepository::get(tx, &AgentId::from("sibling"))?.unwrap();
+                sibling.status = studio_runtime_store::AgentStatus::Completed;
+                AgentRepository::put(tx, &sibling)?;
+                Ok::<_, WorkerError>(())
+            })
+        })
+        .await
+        .unwrap();
+    state
+        .bridge
+        .worker_run(move |store| {
+            let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
+            let request = RecoveredRequest {
+                ticket: studio_runtime_providers::RequestTicket {
+                    id: RequestId::String(operation.clone()),
+                    generation: 1,
+                    method: Method::TurnStart,
+                },
+                operation_id: OperationId(operation.clone()),
+                thread_id: prepared.intent.thread_id.clone(),
+                lightweight: false,
+                deadline_ms: 60_000,
+                unknown: false,
+                remote_id: None,
+            };
+            let context = Pending {
+                intent: prepared.intent,
+                method: "turn/start".into(),
+                operation,
+                thread: prepared.thread,
+                compiled: prepared.compiled,
+            };
+            assert!(store::submitted(
+                store,
+                &context,
+                "default",
+                &request,
+                None,
+                prepared.submission.as_ref(),
+                Some(&prepared.guard)
+            )?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(state.event_status("input").await, "dispatching");
+    assert_eq!(state.record().await["startAttempt"]["submitted"], true);
+}
+#[tokio::test]
+async fn sibling_completion_does_not_refuse_non_lead() {
+    scenario_sibling_completion_does_not_refuse_non_lead().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
+    for expired in [false, true] {
+        let state = State::new().await;
+        let id = state.agent.clone();
+        state
+            .bridge
+            .run(move |store| {
+                store.transaction_with(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    row.extra.remove("nativeEffort");
+                    AgentRepository::put(tx, &row)?;
+                    Ok::<_, WorkerError>(())
+                })
+            })
+            .await
+            .unwrap();
+        let catalog = crate::model_catalog::ModelCatalogService::new(None);
+        let page = json!({"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]});
+        if expired {
+            crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());
+            crate::model_catalog::tests::expire_fixture(&catalog);
+        }
+        let resources = preparation::PreparationResources::bundled(
+            String::new(),
+            catalog.clone(),
+            test_resources().unwrap().python_executable,
+        )
+        .unwrap();
+        let mut peer = Peer::new();
+        let mut worker = peer
+            .open_worker_with_resources(state.bridge.clone(), resources.clone())
+            .await;
+        let mut ready = peer.ready.clone();
+        while !*ready.borrow_and_update() {
+            ready.changed().await.unwrap();
+        }
+        state.wake(&worker).await;
+        worker_barrier(&worker).await;
+        let held = state.record().await;
+        assert_eq!(
+            held["startAttempt"]["prepareError"],
+            "model-catalog/refresh-pending"
+        );
+        assert_eq!(held["startAttempt"]["submitted"], false);
+        assert_eq!(held["autoWake"], true);
+        assert_ne!(held["status"], "failed");
+        assert_eq!(state.event_status("input").await, "reserved");
+        assert!(peer.writes.try_recv().is_err());
+        // Refresh initiation and automatic wake are step 2. Prove that a fresh
+        // observation can resume this exact held attempt without a new claim.
+        crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page);
+        let id = state.agent.clone();
+        let epoch = state.epoch;
+        state
+            .bridge
+            .run(move |store| {
+                let db = store.read()?;
+                let read_tx = db.unchecked_transaction()?;
+                let event = studio_runtime_store::QueueEventRepository::get(
+                    &db,
+                    &studio_runtime_store::QueueEventId::from("annotation:input"),
+                )?
+                .unwrap();
+                let metadata =
+                    studio_runtime_store::NotificationDispatchRepository::event_metadata(
+                        &read_tx,
+                        "annotation:input",
+                    )?
+                    .unwrap_or_else(|| json!({}));
+                let intent = TurnIntent {
+                    agent_id: id,
+                    epoch,
+                    attempt_id: held["startAttempt"]["id"].as_str().unwrap().into(),
+                    account_key: "default".into(),
+                    provider: "codex".into(),
+                    thread_id: held["threadId"].as_str().map(str::to_owned),
+                    cwd: held["cwd"].as_str().map(str::to_owned),
+                    model: held["model"].as_str().map(str::to_owned),
+                    events: vec![crate::scheduler::TurnEvent {
+                        id: event.id.0,
+                        kind: event.kind,
+                        text: event.text,
+                        created: event.created,
+                        epoch: event.epoch,
+                        error: event.error,
+                        metadata,
+                    }],
+                };
+                drop(read_tx);
+                drop(db);
+                assert!(
+                    store::preparation_step(store, &intent, || preparation::admit(
+                        store, &resources, &intent
+                    ))?
+                    .is_some()
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        worker.shutdown().await.unwrap();
+        catalog.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn continuation_gate_refuses_a_preexisting_admission_hold() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| {
+            let intent = store::claim(store, "default", &id, epoch)?.unwrap();
+            store.transaction(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                row.extra
+                    .insert("accountTransferId".into(), json!("transfer"));
+                AgentRepository::put(tx, &row)
+            })?;
+            let error =
+                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+                    .err()
+                    .expect("turn admission hold");
+            assert_eq!(error.to_string(), "thread-preparation/AccountTransfer");
+            Ok(())
+        })
+        .await
+        .unwrap();
 }

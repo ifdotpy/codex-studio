@@ -28,44 +28,53 @@ pub fn prepare_turn(
     pipeline::prepare(store, resources, intent, Method::TurnStart, generation).map(PreparedTurn)
 }
 impl PreparedTurn {
-    /// Own the same submission transaction as account_worker::store::submitted.
+    /// Exact native method and parameters handed to SessionControl::prepare.
+    pub fn native_request(&self) -> Value {
+        json!({"method":self.0.method.as_str(),"params":self.0.params})
+    }
+    /// Enter the production submission owner, including durable transport receipt
+    /// persistence and refusal settlement. No provider write occurs here.
     pub fn commit(
         &self,
         store: &RuntimeStore,
         request_id: &str,
         generation: u64,
     ) -> Result<bool, WorkerError> {
-        scheduler::lifecycle_transaction_with(store, |tx| {
-            let prepared = &self.0;
-            if !SchedulerRepository::reconcile_obsolete_before_submit(
-                tx,
-                &prepared.intent.agent_id,
-                prepared.intent.epoch,
-                &prepared.intent.attempt_id,
-            )? {
-                return Ok(false);
-            }
-            let pending = Pending {
-                intent: prepared.intent.clone(),
-                method: "turn/start".into(),
-                operation: format!(
-                    "account:{}:{}:turn/start",
-                    prepared.intent.account_key, prepared.intent.attempt_id
-                ),
-                thread: prepared.thread.clone(),
-                compiled: prepared.compiled.clone(),
-            };
-            pipeline::commit(tx, &pending, &prepared.guard)?;
-            let submission = prepared
-                .submission
-                .as_ref()
-                .ok_or_else(|| refusal("preparation/turn-required".into()))?;
-            let committed =
-                commit_prepared_turn(tx, &prepared.intent, request_id, generation, submission)?;
-            if committed && let Some(compiled) = &prepared.compiled {
-                pipeline::persist_compilation(tx, compiled)?;
-            }
-            Ok(committed)
-        })
+        let prepared = &self.0;
+        let operation = format!(
+            "account:{}:{}:{}",
+            prepared.intent.account_key,
+            prepared.intent.attempt_id,
+            prepared.method.as_str()
+        );
+        let request = RecoveredRequest {
+            ticket: studio_runtime_providers::RequestTicket {
+                id: RequestId::String(request_id.into()),
+                generation,
+                method: prepared.method,
+            },
+            operation_id: OperationId(operation.clone()),
+            thread_id: prepared.intent.thread_id.clone(),
+            lightweight: false,
+            deadline_ms: 60_000,
+            unknown: false,
+            remote_id: None,
+        };
+        let pending = Pending {
+            intent: prepared.intent.clone(),
+            method: prepared.method.as_str().into(),
+            operation,
+            thread: prepared.thread.clone(),
+            compiled: prepared.compiled.clone(),
+        };
+        store::submitted(
+            store,
+            &pending,
+            &prepared.intent.account_key,
+            &request,
+            None,
+            prepared.submission.as_ref(),
+            Some(&prepared.guard),
+        )
     }
 }
