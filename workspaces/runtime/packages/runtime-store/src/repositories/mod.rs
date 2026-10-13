@@ -9,6 +9,7 @@ pub(crate) mod federation;
 pub(crate) mod messages;
 pub(crate) mod monitors;
 pub(crate) mod multi_server;
+pub(crate) mod multi_server_delivery;
 pub(crate) mod profiles;
 pub(crate) mod projects;
 pub(crate) mod questions_reads;
