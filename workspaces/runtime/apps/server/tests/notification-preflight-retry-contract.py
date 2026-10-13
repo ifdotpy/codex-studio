@@ -119,6 +119,10 @@ class NotificationPreflightRetry(unittest.TestCase):
                     blocker.execute("BEGIN IMMEDIATE")
                     proceed.set()
                     self.assertTrue(busy_preflight.wait(HANG_GUARD_SECONDS), "preflight UPDATE did not hit SQLITE_BUSY")
+                    acquired = runtime.lock.acquire(timeout=.2)
+                    self.assertTrue(acquired, "SQLite writer preflight must not retain Runtime.lock")
+                    if acquired:
+                        runtime.lock.release()
                 finally:
                     blocker.rollback()
                     blocker.close()
@@ -146,6 +150,96 @@ class NotificationPreflightRetry(unittest.TestCase):
         self.assertEqual(record["events"], before_events + 1)
         self.assertEqual(item_count, 1)
         self.assertEqual(cursor[0], 41)
+
+    def test_failed_nonblocking_lock_claim_releases_writer_before_retry(self):
+        temporary = tempfile.TemporaryDirectory(prefix="notification-lock-claim-")
+        self.addCleanup(temporary.cleanup)
+        runtime = make_runtime(QuietRuntime, Path(temporary.name), server_factory=object)
+        self.addCleanup(runtime.close)
+        with runtime.db() as db:
+            db.execute("CREATE TABLE fixture_lock_claim (id TEXT PRIMARY KEY)")
+
+        lock_held = threading.Event()
+        allow_writer = threading.Event()
+        lock_miss = threading.Event()
+        owner_finished = threading.Event()
+        callback_finished = threading.Event()
+        errors = []
+        original_acquire = runtime.lock.acquire
+
+        def observed_acquire(*args, **kwargs):
+            acquired = original_acquire(*args, **kwargs)
+            if kwargs.get("blocking") is False and not acquired:
+                lock_miss.set()
+            return acquired
+
+        def owner_write():
+            try:
+                with runtime.lock:
+                    lock_held.set()
+                    if not allow_writer.wait(HANG_GUARD_SECONDS):
+                        raise AssertionError("test did not release the Runtime.lock owner")
+                    with runtime.db() as db:
+                        db.execute("INSERT INTO fixture_lock_claim VALUES ('owner')")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                owner_finished.set()
+
+        def notification_write():
+            try:
+                with runtime.notification_db() as db:
+                    db.execute("INSERT INTO fixture_lock_claim VALUES ('notification')")
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                callback_finished.set()
+
+        owner = threading.Thread(target=owner_write)
+        callback = threading.Thread(target=notification_write)
+        with patch.object(runtime.lock, "acquire", side_effect=observed_acquire):
+            owner.start()
+            try:
+                self.assertTrue(lock_held.wait(HANG_GUARD_SECONDS))
+                callback.start()
+                self.assertTrue(lock_miss.wait(HANG_GUARD_SECONDS),
+                                "notification should release its preflight writer when Runtime.lock is owned")
+                allow_writer.set()
+                self.assertTrue(owner_finished.wait(HANG_GUARD_SECONDS),
+                                "the Runtime.lock owner must be able to write after the failed claim")
+                self.assertTrue(callback_finished.wait(HANG_GUARD_SECONDS),
+                                "notification should retry after the owner commits")
+            finally:
+                allow_writer.set()
+                owner.join(3)
+                callback.join(3)
+                self.assertFalse(owner.is_alive())
+                self.assertFalse(callback.is_alive())
+
+        self.assertEqual(errors, [])
+        with runtime.db() as db:
+            rows = [row[0] for row in db.execute("SELECT id FROM fixture_lock_claim ORDER BY id")]
+        self.assertEqual(rows, ["notification", "owner"])
+
+    def test_busy_error_after_callback_body_is_not_replayed(self):
+        temporary = tempfile.TemporaryDirectory(prefix="notification-body-outcome-")
+        self.addCleanup(temporary.cleanup)
+        runtime = make_runtime(QuietRuntime, Path(temporary.name), server_factory=object)
+        self.addCleanup(runtime.close)
+        with runtime.db() as db:
+            db.execute("CREATE TABLE fixture_notification_effect (id TEXT PRIMARY KEY)")
+
+        effects = []
+        with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+            with runtime.notification_db() as db:
+                effects.append("applied")
+                db.execute("INSERT INTO fixture_notification_effect VALUES ('exact-id')")
+                raise sqlite3.OperationalError("database is locked")
+
+        self.assertEqual(effects, ["applied"])
+        with runtime.db() as db:
+            count = db.execute("SELECT COUNT(*) FROM fixture_notification_effect").fetchone()[0]
+        self.assertEqual(count, 0)
 
     def test_busy_cursor_commit_retries_without_replaying_a_fixed_batch(self):
         temporary = tempfile.TemporaryDirectory(prefix="notification-commit-retry-")

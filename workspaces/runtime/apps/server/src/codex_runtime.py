@@ -2629,18 +2629,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         delay = .05
         while True:
             entered = False
+            retry = False
+            lock_acquired = False
             try:
-                with self.lock, self.db(busy_timeout=50) as db:
-                    db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
-                    entered = True
-                    yield db
-                return
+                try:
+                    # Claim the SQLite writer before Runtime.lock. If another
+                    # transaction owns the writer, this wait must not block
+                    # unrelated runtime state access.
+                    with self.db(busy_timeout=50) as db:
+                        db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
+                        lock_acquired = self.lock.acquire(blocking=False)
+                        if not lock_acquired:
+                            # No callback work has run, so this transaction is
+                            # safe to discard before retrying the lock claim.
+                            db.rollback()
+                            retry = True
+                        else:
+                            entered = True
+                            yield db
+                finally:
+                    # Runtime.db commits on context exit. Keep the state lock
+                    # through that commit, as well as through the callback.
+                    if lock_acquired:
+                        self.lock.release()
             except sqlite3.OperationalError as error:
                 # A body or commit failure is uncertain. Never run it twice.
                 if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
                     raise
-            time.sleep(min(delay, max(0, deadline - time.monotonic())))
-            delay = min(.5, delay * 2)
+                retry = True
+            if retry:
+                if self.closed or time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting to enter the notification transaction")
+                time.sleep(min(delay, max(0, deadline - time.monotonic())))
+                delay = min(.5, delay * 2)
+                continue
+            return
 
     def close_notification_database(self):
         """Close the dispatcher-owned reused connection on its owner thread."""
