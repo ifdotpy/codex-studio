@@ -6,8 +6,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use process_wrap::std::CommandWrap;
-#[cfg(windows)]
-use process_wrap::std::JobObject;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
 use serde::Deserialize;
@@ -201,8 +199,6 @@ fn run_git_program_timeout(
     let mut command = CommandWrap::from(command);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
-    #[cfg(windows)]
-    command.wrap(JobObject);
     let deadline = Instant::now() + timeout;
     let mut child = command.spawn().map_err(|_| GitError::Other)?;
     let stdout = child.stdout().take().ok_or(GitError::Other)?;
@@ -525,7 +521,7 @@ pub fn workspace_inbox(data: WorkspaceInboxData<'_>) -> Vec<Value> {
     } = data;
     let mut inbox = Vec::new();
     for request in requests {
-        if request["status"] == "pending" && !truthy(request.get("deferred")) {
+        if request["status"] == "pending" && !crate::event_write::truthy(request.get("deferred")) {
             inbox.push(json!({
                 "id":request["id"],"kind":"request","agent":request["agent"],
                 "title":"Answer required","text":request["method"],"request":request,
@@ -613,24 +609,16 @@ pub fn workspace_inbox(data: WorkspaceInboxData<'_>) -> Vec<Value> {
             "monitor":monitor,
         }));
     }
-    for rule in rules.iter().filter(|rule| truthy(rule.get("error"))) {
+    for rule in rules
+        .iter()
+        .filter(|rule| crate::event_write::truthy(rule.get("error")))
+    {
         inbox.push(json!({
             "id":rule["id"],"kind":"rule","agent":rule["agent"],"title":rule["name"],"text":rule["error"],
         }));
     }
     inbox
 }
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Null) | None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
-}
-
 fn complaint_needs_response(complaint: &Value) -> bool {
     if matches!(complaint["status"].as_str(), Some("resolved" | "declined")) {
         return false;
