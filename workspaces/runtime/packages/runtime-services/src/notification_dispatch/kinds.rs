@@ -287,7 +287,10 @@ fn turn(agent: &Value, params: &Value) -> Value {
 fn required(service: NotificationDependency) -> DispatchOutcome {
     DispatchOutcome::RequiresService { service }
 }
-fn put_task(tx: &Transaction<'_>, task: &Value) -> Result<(), NotificationDispatchError> {
+pub(super) fn put_task(
+    tx: &Transaction<'_>,
+    task: &Value,
+) -> Result<(), NotificationDispatchError> {
     checked("runtime_tasks", task)?;
     Table::<TaskRecord>::new(tx).put(&TaskRecord::from_value(task.clone())?)?;
     let migrated: bool = tx

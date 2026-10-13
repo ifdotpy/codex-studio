@@ -1,5 +1,5 @@
 //! Injection seam for effects owned by other notification subsystems.
-use super::NotificationDispatchError;
+use super::{DispatchOutcome, NotificationDispatchError, ProviderDeliveryIdentity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use studio_runtime_store::Transaction;
@@ -53,10 +53,66 @@ impl NotificationDependency {
     }
 }
 
+/// Immutable observation handed to analytics/token-rate owners after commit.
+/// `delivery` is the idempotency key; consumers must retain its account and generation.
+/// A caller requiring crash-durable telemetry stages these serializable values in
+/// its existing effect journal before committing, and drains it after commit.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct NotificationObservation {
+    pub agent: Option<Value>,
+    pub method: String,
+    pub params: Value,
+    pub delivery: ProviderDeliveryIdentity,
+    pub observed_at: f64,
+    pub provider_at: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum NotificationPostCommit {
+    Analytics {
+        observation: NotificationObservation,
+        budget_capture_value: Option<u64>,
+    },
+    TokenRateStream(NotificationObservation),
+    TokenRateAssociation(NotificationObservation),
+}
+
 /// Transactional effects only: no provider call, blocking IO, or await here.
 /// The worker supplies budget_service::capture(..., CaptureSource::Live) and
 /// agent_move::capture_cache; both must commit with the notification receipt.
 pub trait NotificationEffects {
+    /// Pure staging only. A receipt replay never calls this method.
+    fn post_commit(
+        &self,
+        _before: Option<&Value>,
+        _after: Option<&Value>,
+        _frame: &Value,
+        _identity: &ProviderDeliveryIdentity,
+        _at: f64,
+        _outcome: &DispatchOutcome,
+    ) -> Vec<NotificationPostCommit> {
+        Vec::new()
+    }
+
+    fn account_notice(
+        &self,
+        _tx: &Transaction<'_>,
+        _method: &str,
+        _params: &Value,
+        _identity: &ProviderDeliveryIdentity,
+        _at: f64,
+    ) -> Result<(), NotificationDispatchError> {
+        Err(NotificationDispatchError::Dependency(
+            NotificationDependency::AccountNotice.name(),
+        ))
+    }
+
+    fn generation_started(&self) -> Result<(), NotificationDispatchError> {
+        Err(NotificationDispatchError::Dependency(
+            NotificationDependency::TokenRate.name(),
+        ))
+    }
+
     fn capture_usage(
         &self,
         _tx: &Transaction<'_>,

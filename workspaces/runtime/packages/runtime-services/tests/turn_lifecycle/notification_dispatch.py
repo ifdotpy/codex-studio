@@ -30,7 +30,8 @@ class ManualTimer:
 
 def snapshot(root):
     import __main__ as oracle
-    result = oracle.snapshot(root, tables=TABLES)
+    tables = TABLES + ('runtime_budget', 'runtime_budget_usage') if _real_effects else TABLES
+    result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
         # Rust durably stores only a base obscured by a later item/started.
         # Compare it to Python's live buffer before removing this exact internal
@@ -127,6 +128,9 @@ def seed(runtime, case):
                 elif event.get('no_metadata'):
                     db.execute('DELETE FROM runtime_event_meta WHERE id=?', (event_id,))
             db.execute("UPDATE runtime_events SET status='dispatching' WHERE agent='agent'")
+        if case.get('workspace'):
+            from codex_sync_entities import put as put_entity
+            put_entity(db, 'workspace', 'current', runtime.workspace_entity_view(db))
         if 'search_phase' in case:
             db.execute('UPDATE runtime_search_rollout SET phase=?', (case['search_phase'],))
     runtime._stream_buffer = codex_streaming.StreamBuffer(runtime)
@@ -233,7 +237,7 @@ def transition(runtime, case):
             params = frame.get('params', {})
             key = ('default', 'connection-' + str(generation), params.get('threadId'), params.get('turnId'), params.get('itemId'), frame['method'])
             outcome = {'status': 'ignored', 'reason': 'closed-stream'} if key in runtime._stream_buffer.closed else {'status': 'written'}
-            agent = runtime.agent(agent_id)
+            agent = runtime.agent(agent_id) if not case.get("account_only") else {}
             if agent.get('deletedAt'):
                 outcome = {'status':'ignored','reason':'deleted-agent'}
             elif (frame['method'] in {'item/started', 'item/completed', 'item/agentMessage/delta',
@@ -264,6 +268,7 @@ def digest(value):
 # One Runtime holds the disposable root; each case receives an independent SQLite
 # backup, fresh stream buffer, and empty decoded-record cache.
 _runtime = None
+_real_effects = False
 _pristine = None
 _seeds = {}
 
@@ -275,12 +280,21 @@ def backup(source):
 
 
 def run_case(command, template, runtime_type):
+    global _runtime, _pristine, _real_effects
+    if command['command'] == 'post_commit':
+        with sqlite3.connect(pathlib.Path(command['root']) / 'analytics.sqlite3') as db, patch.object(time, 'time', lambda:1234.5):
+            db.row_factory = sqlite3.Row
+            for effect in command['effects']:
+                if effect['kind'] == 'analytics':
+                    _runtime.analytics_event(db, effect['agent'], effect['method'], effect['params'],
+                        at=effect['at'], budget_capture_value=effect['budget_capture_value'])
+        return analytics_snapshot(pathlib.Path(command['root']) / 'analytics.sqlite3')
     if command['command'] == 'metrics':
         import resource
         import os
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return {'userSeconds':usage.ru_utime,'systemSeconds':usage.ru_stime,'clockTicks':os.sysconf('SC_CLK_TCK')}
-    global _runtime, _pristine
+    _real_effects = command["case"].get("runtime_effects", False)
     if _runtime is None:
         root = pathlib.Path(command['root'])
         shutil.copytree(template, root)
@@ -288,7 +302,10 @@ def run_case(command, template, runtime_type):
         with _runtime.read_db() as db:
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
-    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets') if k in case}, sort_keys=True)
+    if case.get('analytics_semantics'):
+        with sqlite3.connect(template / 'analytics.sqlite3') as source, sqlite3.connect(runtime.analytics_db_path) as target:
+            source.backup(target)
+    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace') if k in case}, sort_keys=True)
     runtime.close_notification_database()
     runtime.__dict__.pop('_agent_records_cache', None)
     prepared_path = runtime.root.parent / 'prepared.json'
@@ -325,9 +342,41 @@ def run_case(command, template, runtime_type):
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
     runtime.corpus_captures = []
+    runtime.corpus_post_commit = []
+    if _real_effects:
+        from codex_token_rate import token_rates
+        def scheduled(captures, *, overflow=0):
+            assert not overflow, 'bounded corpus must not overflow analytics'
+            for operation, args, kwargs, size in captures:
+                if case.get('analytics_semantics'):
+                    with sqlite3.connect(runtime.analytics_db_path) as db:
+                        db.row_factory = sqlite3.Row
+                        operation(db, *args, **kwargs)
+                    continue
+                assert operation == runtime.analytics_event, 'unexpected analytics operation'
+                agent, method, params = args
+                runtime.corpus_post_commit.append(dict(kind='analytics', agent=copy.deepcopy(agent), method=method,
+                    params=copy.deepcopy(params), account=agent.get('accountKey', 'default'), connection='connection-7',
+                    at=kwargs['at'], budget_capture_value=kwargs.get('budget_capture_value')))
+        def association(observation):
+            runtime.corpus_post_commit.append(dict(kind='association', agent=observation.agent, method=observation.method,
+                params=observation.params, account=observation.account_key, connection=observation.connection_id,
+                at=observation.observed_at, budget_capture_value=None))
+        def stream(method, params, account, connection, at=None):
+            runtime.corpus_post_commit.append(dict(kind='stream', agent=None, method=method, params=copy.deepcopy(params),
+                account=account, connection=connection, at=at, budget_capture_value=None))
+        runtime.analytics_safe = Runtime.analytics_safe.__get__(runtime)
+        runtime.schedule_analytics_captures = scheduled
+        runtime._dispatch_token_rate_observation = association
+        token_rates(runtime).stream = stream
+    else:
+        runtime.analytics_safe = lambda *a, **k: None
+        runtime._dispatch_token_rate_observation = lambda *a, **k: None
     runtime.corpus_before_refusal = None
-    transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'beforeRefusal': runtime.corpus_before_refusal}
+    gmtime = time.gmtime
+    with patch.object(time, 'gmtime', lambda seconds=None: gmtime(1234.5 if seconds is None else seconds)):
+        transition(runtime, case)
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'post_commit': runtime.corpus_post_commit, 'analytics': analytics_snapshot(runtime.analytics_db_path) if case.get('analytics_semantics') else None, 'beforeRefusal': runtime.corpus_before_refusal}
 
 
 def close():
@@ -336,3 +385,20 @@ def close():
         _pristine.close()
     for saved, _, _ in _seeds.values():
         saved.close()
+
+
+def analytics_snapshot(path):
+    import __main__ as oracle
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'analytics_%' ORDER BY name")]
+        result = {}
+        for table in tables:
+            rows = []
+            for row in db.execute('SELECT * FROM "' + table + '"'):
+                record = dict(row)
+                if 'record' in record:
+                    record['record'] = json.loads(record['record'])
+                rows.append(oracle.normalize(record))
+            result[table] = sorted(rows, key=lambda row:json.dumps(row, sort_keys=True))
+        return result
