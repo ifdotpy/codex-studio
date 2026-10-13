@@ -86,6 +86,10 @@ impl HttpState {
         self
     }
 
+    pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        self.model_catalog.shutdown().await
+    }
+
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)

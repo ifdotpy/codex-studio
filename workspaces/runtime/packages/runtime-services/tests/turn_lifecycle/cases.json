@@ -1,0 +1,6929 @@
+[
+  {
+    "id": "accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A10"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "unknown",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A11"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "rejected",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A11"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "not_sent",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "queued_pending",
+    "findings": ["A11"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "interrupted",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["B1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["B2"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["B1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "denials",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "tooManyDenials"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "tooManyDenials",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "tooManyDenials",
+                "message": "denied"
+              },
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "tooManyDenials",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "policy_interrupted",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "refused",
+        "codexErrorInfo": "cyberPolicy"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "cyberPolicy",
+                "message": "refused"
+              },
+              "nativeError": {
+                "codexErrorInfo": "cyberPolicy",
+                "message": "refused"
+              },
+              "nativeStatus": "interrupted",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "cyberPolicy",
+                    "message": "refused"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "saved_error",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "agent": {
+      "nativeTurnError": {
+        "turnId": "turn",
+        "error": {
+          "message": "original error"
+        }
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "original error"
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "paused_failed",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A9"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "deleted_accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "deleted",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "findings": ["A4"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": false,
+    "replay": true
+  },
+  {
+    "id": "scope_accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "agent": {
+      "threadId": "changed-thread"
+    },
+    "findings": ["A4"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": false,
+    "replay": true
+  },
+  {
+    "id": "startup_unknown",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "findings": ["A5", "B3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/autoWake",
+        "python": true,
+        "pythonPresent": true,
+        "rust": false,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/contextRepairWait",
+        "python": {
+          "error": "Context repair waits for a confirmed input receipt: event",
+          "events": ["event"],
+          "nextCheckAt": 0,
+          "scope": "native",
+          "source": {
+            "accountKey": "default",
+            "attemptId": null,
+            "epoch": 0,
+            "id": "agent",
+            "threadId": "thread"
+          }
+        },
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": true,
+          "connectionId": null,
+          "epoch": 0,
+          "source": "restart",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/error",
+        "python": "Context repair waits for a confirmed input receipt: event",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/nativeFailureHold",
+        "python": null,
+        "pythonPresent": false,
+        "rust": true,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/reason",
+        "python": "Native input submission has no confirmed turn identity.",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "activeAtReservation": false,
+          "connectionId": null,
+          "created": "<time>",
+          "epoch": 0,
+          "events": ["event"],
+          "id": "attempt",
+          "nativeOperationId": "turn:agent:event:attempt:attempt",
+          "submitted": true,
+          "supervisorIdentity": null,
+          "threadId": "thread"
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/startOutcomeHold",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": 0,
+          "reason": "Python submission identity requires native history reconciliation; input will not be replayed.",
+          "stage": "recovery"
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/status",
+        "python": "queued",
+        "pythonPresent": true,
+        "rust": "interrupted",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": true,
+          "connectionId": null,
+          "epoch": 0,
+          "source": "restart",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/reason",
+        "python": "Native input submission has no confirmed turn identity.",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/autoWake",
+        "python": true,
+        "pythonPresent": true,
+        "rust": false,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/contextRepairWait",
+        "python": {
+          "error": "Context repair waits for a confirmed input receipt: event",
+          "scope": "native"
+        },
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/error",
+        "python": "Context repair waits for a confirmed input receipt: event",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {},
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/status",
+        "python": "queued",
+        "pythonPresent": true,
+        "rust": "interrupted",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      }
+    ],
+    "tier": "fast",
+    "return": 1
+  },
+  {
+    "id": "startup_paused_unknown",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A5", "B3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": false,
+          "connectionId": null,
+          "epoch": 0,
+          "source": "restart",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": false,
+          "connectionId": null,
+          "epoch": 0,
+          "reason": "Native input submission has no confirmed turn identity.",
+          "stage": "held",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "activeAtReservation": false,
+          "connectionGeneration": 1,
+          "connectionId": null,
+          "created": "<time>",
+          "epoch": 0,
+          "events": ["event"],
+          "id": "attempt",
+          "nativeOperationId": "turn:agent:event:attempt:attempt",
+          "requestTicket": "ticket",
+          "submitted": true,
+          "supervisorIdentity": null,
+          "threadId": "thread"
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": false,
+          "connectionId": null,
+          "epoch": 0,
+          "source": "restart",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": false,
+          "connectionId": null,
+          "epoch": 0,
+          "reason": "Native input submission has no confirmed turn identity.",
+          "stage": "held",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {},
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      }
+    ],
+    "tier": "fast",
+    "return": 1
+  },
+  {
+    "id": "startup_noattempt",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "running",
+    "agent": {
+      "status": "running",
+      "turnId": "native-turn"
+    },
+    "remove": ["startAttempt"],
+    "findings": ["A5"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "generation": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/error",
+        "python": "Server restarted during a turn. Review history, then send a new instruction.",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/nativeFailureHold",
+        "python": null,
+        "pythonPresent": false,
+        "rust": true,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/reason",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/stage",
+        "python": "pending",
+        "pythonPresent": true,
+        "rust": "held",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "generation": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/startOutcomeHold",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": 0,
+          "reason": "Python submission identity requires native history reconciliation; input will not be replayed.",
+          "stage": "recovery"
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/supervisorRestore",
+        "python": {
+          "accountKey": "default",
+          "at": "<time>",
+          "reason": "supervisor_mode_disabled",
+          "status": "not_restored"
+        },
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "generation": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/connectionId",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/reason",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/stage",
+        "python": "pending",
+        "pythonPresent": true,
+        "rust": "held",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery/supervisor",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "generation": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/error",
+        "python": "Server restarted during a turn. Review history, then send a new instruction.",
+        "pythonPresent": true,
+        "rust": "Python submission identity requires native history reconciliation; input will not be replayed.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      }
+    ],
+    "tier": "fast",
+    "return": 1
+  },
+  {
+    "id": "disconnected",
+    "transition": "disconnect",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["B3"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "generation_change",
+    "transition": "generation_change",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["B3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/disconnectRecovery/source",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "restart",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/error",
+        "python": "Codex disconnected. Review the transcript before resuming.",
+        "pythonPresent": true,
+        "rust": "Server restarted during a turn. Review history, then send a new instruction.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/restartRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": true,
+          "connectionId": null,
+          "epoch": 0,
+          "reason": "Native input submission has no confirmed turn identity.",
+          "stage": "held",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "activeAtReservation": false,
+          "connectionGeneration": 1,
+          "connectionId": null,
+          "created": "<time>",
+          "epoch": 0,
+          "events": ["event"],
+          "id": "attempt",
+          "nativeOperationId": "turn:agent:event:attempt:attempt",
+          "requestTicket": "ticket",
+          "submitted": true,
+          "supervisorIdentity": null,
+          "threadId": "thread"
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_events/0/error",
+        "python": "Codex disconnected",
+        "pythonPresent": true,
+        "rust": "Server restarted before delivery acknowledgement",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/disconnectRecovery/source",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "restart",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/runtime_execution_runs/0/record/restartRecovery",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "accountKey": "default",
+          "at": "<time>",
+          "autoWake": true,
+          "connectionId": null,
+          "epoch": 0,
+          "reason": "Native input submission has no confirmed turn identity.",
+          "stage": "held",
+          "startAttempt": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "requestTicket": "ticket",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread"
+          },
+          "supervisor": null,
+          "threadId": "thread",
+          "turnId": null
+        },
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/error",
+        "python": "Codex disconnected. Review the transcript before resuming.",
+        "pythonPresent": true,
+        "rust": "Server restarted during a turn. Review history, then send a new instruction.",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/0/payload/value/startAttempt",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {},
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      },
+      {
+        "path": "/sync_entities/1/payload/value/error",
+        "python": "Codex disconnected",
+        "pythonPresent": true,
+        "rust": "Server restarted before delivery acknowledgement",
+        "rustPresent": true,
+        "deviation": "durable_reconciliation_hold"
+      }
+    ],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "interrupted_answer",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "last_answer",
+    "agent": {
+      "lastAnswer": "Python saved answer"
+    },
+    "findings": ["A10"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "claim_queued",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "queued_pending",
+    "findings": ["B1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/claimResult",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "agent": {
+            "accountKey": "default",
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "autoWake": true,
+            "compactions": 0,
+            "compactionsObservedOnly": false,
+            "concurrency": 32,
+            "contextUsage": null,
+            "created": "<time>",
+            "cwd": "/fixture",
+            "cyberAccessProgram": "standard",
+            "daybreakEnabled": false,
+            "effort": "medium",
+            "environment": "host",
+            "epoch": 0,
+            "error": null,
+            "events": 0,
+            "executionMode": "native",
+            "executionSettingsAccountKey": "default",
+            "fastMode": false,
+            "hostProjectPath": "${PYTHON_ROOT}",
+            "id": "agent",
+            "imageWorkspace": false,
+            "imageWorkspaceBaseRef": null,
+            "imageWorkspaceCreatedAt": null,
+            "imageWorkspaceError": null,
+            "imageWorkspaceHasGit": false,
+            "imageWorkspacePhase": null,
+            "imageWorkspaceReady": false,
+            "imageWorkspaceRepo": null,
+            "imageWorkspaceSubpath": ".",
+            "inFlight": true,
+            "isLead": true,
+            "layrReady": false,
+            "maxAgents": 64,
+            "maxAgentsExplicit": false,
+            "model": "fixture-model",
+            "name": "lifecycle fixture",
+            "nativeToolCatalog": {
+              "digest": "58cb71871dbca9c5cc8a5f686b1957f238310d13b56ec9d42520941d573706db",
+              "threadId": "thread"
+            },
+            "needsTitle": false,
+            "parentId": null,
+            "profileId": null,
+            "profileInstructions": "",
+            "prompt": "seed",
+            "provider": "codex",
+            "reviewDefaults": {
+              "effort": null,
+              "model": null
+            },
+            "role": "orchestrator",
+            "rootId": "agent",
+            "startAttempt": {
+              "accountKey": "default",
+              "activeAtReservation": false,
+              "created": "<time>",
+              "epoch": 0,
+              "events": ["event"],
+              "id": "attempt",
+              "submitted": false
+            },
+            "status": "starting",
+            "subagentConcurrencyVersion": 2,
+            "tail": "",
+            "threadId": "thread",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "turnEpoch": 0,
+            "turnId": null,
+            "usageResumeEnabled": true,
+            "workerBaseBehindMain": null,
+            "workerBaseCommit": null,
+            "workerBaseMainRef": null,
+            "workerBaseRef": null,
+            "workerDefaults": {
+              "daybreakEnabled": false,
+              "delegationDepth": 1,
+              "effort": "high",
+              "fastMode": false,
+              "model": "gpt-6-luna"
+            },
+            "workspaceBackend": null,
+            "workspaceInGit": false,
+            "workspaceMode": "worktree",
+            "workspaceModeExplicit": false,
+            "worktree": false,
+            "worktreeReady": false,
+            "worktreeWarning": null,
+            "yoloMode": true
+          },
+          "metadata": {
+            "event": {
+              "timing": {
+                "enqueuedAt": "<time>",
+                "fastSkipReason": "scheduleOverride"
+              }
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/inputIdentity",
+        "python": null,
+        "pythonPresent": false,
+        "rust": [
+          {
+            "agent": "agent",
+            "created": "<time>",
+            "epoch": 0,
+            "error": null,
+            "id": "event",
+            "kind": "user",
+            "metadata": {},
+            "text": "input"
+          }
+        ],
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    },
+    "replay": true
+  },
+  {
+    "id": "submit_python_claim",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
+        "expectedAbsent": true
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true,
+    "contextProjection": "context_preparation_unported"
+  },
+  {
+    "id": "started_notice",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "running",
+    "findings": ["A10", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": false
+  },
+  {
+    "id": "accepted_replay",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true
+  },
+  {
+    "id": "unknown_replay",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "message": "turn/start response timed out; outcome unknown",
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "rejected_replay",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "not_sent_replay",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "message": "Provider did not send turn/start",
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "interrupted_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "completed_replay",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "failed_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "denials_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "tooManyDenials"
+      }
+    },
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "tooManyDenials",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "tooManyDenials",
+                "message": "denied"
+              },
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "tooManyDenials",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "policy_interrupted_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "refused",
+        "codexErrorInfo": "cyberPolicy"
+      }
+    },
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "cyberPolicy",
+                "message": "refused"
+              },
+              "nativeError": {
+                "codexErrorInfo": "cyberPolicy",
+                "message": "refused"
+              },
+              "nativeStatus": "interrupted",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "cyberPolicy",
+                    "message": "refused"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "saved_error_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "agent": {
+      "nativeTurnError": {
+        "turnId": "turn",
+        "error": {
+          "message": "original error"
+        }
+      }
+    },
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "original error"
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "paused_failed_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "interrupted_answer_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "last_answer",
+    "agent": {
+      "lastAnswer": "Python saved answer"
+    },
+    "findings": ["A3"],
+    "replay": true,
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_queued",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "queued_pending",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_claimed",
+    "transition": "stop",
+    "phase": "claimed",
+    "state": "queued_pending",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_submitted",
+    "transition": "stop",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_accepted",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": true
+  },
+  {
+    "id": "accepted__native_failure_hold",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "accepted__last_answer",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "accepted__account_transfer",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "accepted__workspace_operation",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "accepted__native_thread_block",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "unknown__native_failure_hold",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "unknown__last_answer",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "unknown__account_transfer",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "unknown__workspace_operation",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "unknown__native_thread_block",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "rejected__native_failure_hold",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "rejected__last_answer",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "rejected__account_transfer",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "rejected__workspace_operation",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "rejected__native_thread_block",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "not_sent__native_failure_hold",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent__last_answer",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent__account_transfer",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent__workspace_operation",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent__native_thread_block",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "started_notice__native_failure_hold",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": false
+  },
+  {
+    "id": "started_notice__last_answer",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "fast",
+    "return": false
+  },
+  {
+    "id": "started_notice__account_transfer",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": false
+  },
+  {
+    "id": "started_notice__workspace_operation",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": false
+  },
+  {
+    "id": "started_notice__native_thread_block",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": false
+  },
+  {
+    "id": "interrupted__native_failure_hold",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "interrupted__last_answer",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "interrupted__account_transfer",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "interrupted__workspace_operation",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "interrupted__native_thread_block",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__native_failure_hold",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__last_answer",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__account_transfer",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__workspace_operation",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__native_thread_block",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__native_failure_hold",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__last_answer",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__account_transfer",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__workspace_operation",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__native_thread_block",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "stop_accepted__native_failure_hold",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "native_failure_hold",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_accepted__last_answer",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "last_answer",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_accepted__account_transfer",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "account_transfer",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_accepted__workspace_operation",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "workspace_operation",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_accepted__native_thread_block",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "native_thread_block",
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "accepted__paused",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": true
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "accepted__stopped",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": true
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "unknown__paused",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "unknown__stopped",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "rejected__paused",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "rejected__stopped",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "not_sent__paused",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent__stopped",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "started_notice__paused",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "started_notice__stopped",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "interrupted__paused",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "interrupted__stopped",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__paused",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed__stopped",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__paused",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "paused",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "completed__stopped",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "stopped",
+    "findings": ["A9", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "completed",
+              "status": "completed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "completed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "terminal_existing_result",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "terminal_execution_run",
+    "findings": ["A13"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "run": {
+      "status": "interrupted",
+      "finished": 12.0,
+      "result": "saved terminal result",
+      "resultItemId": "saved-item",
+      "error": null
+    },
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "claim_replay",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "queued_pending",
+    "findings": ["A1", "A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/claimResult",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "agent": {
+            "accountKey": "default",
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "autoWake": true,
+            "compactions": 0,
+            "compactionsObservedOnly": false,
+            "concurrency": 32,
+            "contextUsage": null,
+            "created": "<time>",
+            "cwd": "/fixture",
+            "cyberAccessProgram": "standard",
+            "daybreakEnabled": false,
+            "effort": "medium",
+            "environment": "host",
+            "epoch": 0,
+            "error": null,
+            "events": 0,
+            "executionMode": "native",
+            "executionSettingsAccountKey": "default",
+            "fastMode": false,
+            "hostProjectPath": "${PYTHON_ROOT}",
+            "id": "agent",
+            "imageWorkspace": false,
+            "imageWorkspaceBaseRef": null,
+            "imageWorkspaceCreatedAt": null,
+            "imageWorkspaceError": null,
+            "imageWorkspaceHasGit": false,
+            "imageWorkspacePhase": null,
+            "imageWorkspaceReady": false,
+            "imageWorkspaceRepo": null,
+            "imageWorkspaceSubpath": ".",
+            "inFlight": true,
+            "isLead": true,
+            "layrReady": false,
+            "maxAgents": 64,
+            "maxAgentsExplicit": false,
+            "model": "fixture-model",
+            "name": "lifecycle fixture",
+            "nativeToolCatalog": {
+              "digest": "58cb71871dbca9c5cc8a5f686b1957f238310d13b56ec9d42520941d573706db",
+              "threadId": "thread"
+            },
+            "needsTitle": false,
+            "parentId": null,
+            "profileId": null,
+            "profileInstructions": "",
+            "prompt": "seed",
+            "provider": "codex",
+            "reviewDefaults": {
+              "effort": null,
+              "model": null
+            },
+            "role": "orchestrator",
+            "rootId": "agent",
+            "startAttempt": {
+              "accountKey": "default",
+              "activeAtReservation": false,
+              "created": "<time>",
+              "epoch": 0,
+              "events": ["event"],
+              "id": "attempt",
+              "submitted": false
+            },
+            "status": "starting",
+            "subagentConcurrencyVersion": 2,
+            "tail": "",
+            "threadId": "thread",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "turnEpoch": 0,
+            "turnId": null,
+            "usageResumeEnabled": true,
+            "workerBaseBehindMain": null,
+            "workerBaseCommit": null,
+            "workerBaseMainRef": null,
+            "workerBaseRef": null,
+            "workerDefaults": {
+              "daybreakEnabled": false,
+              "delegationDepth": 1,
+              "effort": "high",
+              "fastMode": false,
+              "model": "gpt-6-luna"
+            },
+            "workspaceBackend": null,
+            "workspaceInGit": false,
+            "workspaceMode": "worktree",
+            "workspaceModeExplicit": false,
+            "worktree": false,
+            "worktreeReady": false,
+            "worktreeWarning": null,
+            "yoloMode": true
+          },
+          "metadata": {
+            "event": {
+              "timing": {
+                "enqueuedAt": "<time>",
+                "fastSkipReason": "scheduleOverride"
+              }
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/inputIdentity",
+        "python": null,
+        "pythonPresent": false,
+        "rust": [
+          {
+            "agent": "agent",
+            "created": "<time>",
+            "epoch": 0,
+            "error": null,
+            "id": "event",
+            "kind": "user",
+            "metadata": {},
+            "text": "input"
+          }
+        ],
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "replay": true,
+    "tier": "fast",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    }
+  },
+  {
+    "id": "submission_replay",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1", "A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
+        "expectedAbsent": true
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "replay": true,
+    "tier": "fast",
+    "return": true,
+    "contextProjection": "context_preparation_unported"
+  },
+  {
+    "id": "interrupt_accepted",
+    "transition": "interrupt_accepted",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "accepted"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "accepted"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
+  },
+  {
+    "id": "interrupt_rejected",
+    "transition": "interrupt_rejected",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "rejected",
+          "responseError": "rejected"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "rejected",
+          "responseError": "rejected"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
+  },
+  {
+    "id": "interrupt_unknown",
+    "transition": "interrupt_unknown",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "unknown",
+          "responseError": "interrupt response unknown"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/interrupt",
+        "python": null,
+        "rust": {
+          "requestTicket": "interrupt-ticket",
+          "generation": 1,
+          "threadId": "thread",
+          "turnId": "turn",
+          "outcome": "unknown",
+          "responseError": "interrupt response unknown"
+        },
+        "pythonPresent": false,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": {
+      "prepared": true,
+      "settled": null
+    }
+  },
+  {
+    "id": "accepted_conflict",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "probe": {
+      "turnId": "changed"
+    },
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
+  },
+  {
+    "id": "rejected_conflict",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "probe": {
+      "message": "changed"
+    },
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
+  },
+  {
+    "id": "interrupted_conflict",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "findings": ["A3"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "probe": {
+      "transition": "failed"
+    },
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
+  },
+  {
+    "id": "submit_python_claim_conflict",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "pythonPresent": true,
+        "rust": null,
+        "rustPresent": false,
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
+        "expectedAbsent": true
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "probe": {
+      "ticket": "changed"
+    },
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt",
+    "contextProjection": "context_preparation_unported"
+  },
+  {
+    "id": "claim_queued_conflict",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "queued_pending",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/claimResult",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "agent": {
+            "accountKey": "default",
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "autoWake": true,
+            "compactions": 0,
+            "compactionsObservedOnly": false,
+            "concurrency": 32,
+            "contextUsage": null,
+            "created": "<time>",
+            "cwd": "/fixture",
+            "cyberAccessProgram": "standard",
+            "daybreakEnabled": false,
+            "effort": "medium",
+            "environment": "host",
+            "epoch": 0,
+            "error": null,
+            "events": 0,
+            "executionMode": "native",
+            "executionSettingsAccountKey": "default",
+            "fastMode": false,
+            "hostProjectPath": "${PYTHON_ROOT}",
+            "id": "agent",
+            "imageWorkspace": false,
+            "imageWorkspaceBaseRef": null,
+            "imageWorkspaceCreatedAt": null,
+            "imageWorkspaceError": null,
+            "imageWorkspaceHasGit": false,
+            "imageWorkspacePhase": null,
+            "imageWorkspaceReady": false,
+            "imageWorkspaceRepo": null,
+            "imageWorkspaceSubpath": ".",
+            "inFlight": true,
+            "isLead": true,
+            "layrReady": false,
+            "maxAgents": 64,
+            "maxAgentsExplicit": false,
+            "model": "fixture-model",
+            "name": "lifecycle fixture",
+            "nativeToolCatalog": {
+              "digest": "58cb71871dbca9c5cc8a5f686b1957f238310d13b56ec9d42520941d573706db",
+              "threadId": "thread"
+            },
+            "needsTitle": false,
+            "parentId": null,
+            "profileId": null,
+            "profileInstructions": "",
+            "prompt": "seed",
+            "provider": "codex",
+            "reviewDefaults": {
+              "effort": null,
+              "model": null
+            },
+            "role": "orchestrator",
+            "rootId": "agent",
+            "startAttempt": {
+              "accountKey": "default",
+              "activeAtReservation": false,
+              "created": "<time>",
+              "epoch": 0,
+              "events": ["event"],
+              "id": "attempt",
+              "submitted": false
+            },
+            "status": "starting",
+            "subagentConcurrencyVersion": 2,
+            "tail": "",
+            "threadId": "thread",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "turnEpoch": 0,
+            "turnId": null,
+            "usageResumeEnabled": true,
+            "workerBaseBehindMain": null,
+            "workerBaseCommit": null,
+            "workerBaseMainRef": null,
+            "workerBaseRef": null,
+            "workerDefaults": {
+              "daybreakEnabled": false,
+              "delegationDepth": 1,
+              "effort": "high",
+              "fastMode": false,
+              "model": "gpt-6-luna"
+            },
+            "workspaceBackend": null,
+            "workspaceInGit": false,
+            "workspaceMode": "worktree",
+            "workspaceModeExplicit": false,
+            "worktree": false,
+            "worktreeReady": false,
+            "worktreeWarning": null,
+            "yoloMode": true
+          },
+          "metadata": {
+            "event": {
+              "timing": {
+                "enqueuedAt": "<time>",
+                "fastSkipReason": "scheduleOverride"
+              }
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/inputIdentity",
+        "python": null,
+        "pythonPresent": false,
+        "rust": [
+          {
+            "agent": "agent",
+            "created": "<time>",
+            "epoch": 0,
+            "error": null,
+            "id": "event",
+            "kind": "user",
+            "metadata": {},
+            "text": "input"
+          }
+        ],
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "probe": {
+      "transition": "submission"
+    },
+    "afterEventText": "changed frozen input",
+    "tier": "fast",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    },
+    "probeRefusal": "invalid stored sync object runtime_agents/agent"
+  },
+  {
+    "id": "reattach_account_transfer",
+    "transition": "reattach",
+    "phase": "accepted",
+    "seedRecovery": true,
+    "state": "account_transfer",
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "findings": ["A6", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "reattach_workspace_operation",
+    "transition": "reattach",
+    "phase": "accepted",
+    "seedRecovery": true,
+    "state": "workspace_operation",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "findings": ["A6", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "reattach_native_thread_block",
+    "transition": "reattach",
+    "phase": "accepted",
+    "seedRecovery": true,
+    "state": "native_thread_block",
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "findings": ["A6", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "reattach_native_failure_hold",
+    "transition": "reattach",
+    "phase": "accepted",
+    "seedRecovery": true,
+    "state": "native_failure_hold",
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "findings": ["A6", "A7", "B6"],
+    "expectedDifferences": [],
+    "roundtripHold": true,
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "reattach_context_wait",
+    "transition": "reattach",
+    "phase": "accepted",
+    "seedRecovery": true,
+    "state": "context_wait",
+    "agent": {
+      "contextRepairWait": {
+        "error": "held"
+      }
+    },
+    "findings": ["A6", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "malformed_agent_submission",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "malformed_rows",
+    "findings": ["A12"],
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_agents",
+      "id": "agent",
+      "message": "invalid stored object runtime_agents/agent"
+    },
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "malformed_agent_accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "malformed_rows",
+    "findings": ["A12", "B4", "B5"],
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_agents",
+      "id": "agent"
+    },
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "malformed_agent_unknown",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "malformed_rows",
+    "findings": ["A12"],
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_agents",
+      "id": "agent"
+    },
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "malformed_agent_restart",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "malformed_rows",
+    "findings": ["A12"],
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_agents",
+      "id": "agent"
+    },
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "existing_python_claim_identity",
+    "transition": "claim",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A2"],
+    "expectRefusal": {
+      "table": "runtime_execution_attempts",
+      "id": "attempt"
+    },
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "terminal_conflicts_with_saved_run",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "terminal_execution_run",
+    "run": {
+      "status": "completed",
+      "finished": 1.0,
+      "result": "Saved result",
+      "resultItemId": "answer",
+      "error": null
+    },
+    "findings": ["A13"],
+    "expectRefusal": {
+      "table": "runtime_execution_runs",
+      "id": "run:attempt"
+    },
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "stop_idle",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "idle",
+    "agent": {
+      "status": "idle",
+      "inFlight": false
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_deleted",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "deleted",
+    "agent": {
+      "deletedAt": 1.0
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_account_transfer",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "account_transfer",
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_workspace_operation",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "workspace_operation",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_native_thread_block",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "native_thread_block",
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_native_failure_hold",
+    "transition": "stop",
+    "phase": "queued",
+    "state": "native_failure_hold",
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_idle",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "idle",
+    "agent": {
+      "status": "idle",
+      "inFlight": false
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": true
+  },
+  {
+    "id": "pause_deleted",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "deleted",
+    "agent": {
+      "deletedAt": 1.0
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_account_transfer",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "account_transfer",
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_workspace_operation",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "workspace_operation",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_native_thread_block",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "native_thread_block",
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_native_failure_hold",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "native_failure_hold",
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "claim_idle",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "idle",
+    "agent": {
+      "status": "idle",
+      "inFlight": false
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_deleted",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "deleted",
+    "agent": {
+      "deletedAt": 1.0,
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_account_transfer",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "account_transfer",
+    "agent": {
+      "accountTransferId": "transfer"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_workspace_operation",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "workspace_operation",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_native_thread_block",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "native_thread_block",
+    "agent": {
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_native_failure_hold",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "native_failure_hold",
+    "agent": {
+      "nativeFailureHold": true
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "accepted_python_fields",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "findings": ["B4"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "accepted": "turn",
+              "agent": "agent",
+              "epoch": 0
+            },
+            "result": {
+              "bound": true,
+              "interrupt": false
+            }
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "unknown_python_fields",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "findings": ["B4"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "started_notice_python_fields",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "findings": ["B4"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": false
+  },
+  {
+    "id": "interrupted_python_fields",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "python_unknown",
+    "findings": ["B4"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": null,
+              "nativeError": null,
+              "nativeStatus": "interrupted",
+              "status": "interrupted",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "failed_python_fields",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "python_unknown",
+    "findings": ["B4"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "message": "Codex ended this turn with an error."
+              },
+              "nativeError": null,
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "malformed_interrupt",
+    "transition": "interrupt_accepted",
+    "phase": "accepted",
+    "state": "malformed_rows",
+    "findings": ["A12"],
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_agents",
+      "id": "agent"
+    },
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null
+  },
+  {
+    "id": "malformed_terminal_run",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "malformed_rows",
+    "findings": ["A12"],
+    "corrupt": [
+      {
+        "table": "runtime_execution_runs",
+        "id": "run:attempt",
+        "field": "epoch",
+        "value": "CORPUS_PRIVATE_PAYLOAD"
+      }
+    ],
+    "expectRefusal": {
+      "table": "runtime_execution_runs",
+      "id": "run:attempt"
+    },
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": null
+  },
+  {
+    "id": "completed_deleted",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": false,
+    "replay": true
+  },
+  {
+    "id": "failed_deleted",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": false,
+    "replay": true
+  },
+  {
+    "id": "interrupted_deleted",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": false,
+    "replay": true
+  },
+  {
+    "id": "started_notice_deleted",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": null
+  },
+  {
+    "id": "unknown_deleted",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "rejected_deleted",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "not_sent_deleted",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "deleted",
+    "findings": ["A4", "B6"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "full",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "stop_matrix_paused",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_matrix_stopped",
+    "transition": "stop",
+    "phase": "accepted",
+    "state": "stopped",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_matrix_python_attempt",
+    "transition": "stop",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "stop_matrix_python_unknown",
+    "transition": "stop",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_queued_pending",
+    "transition": "pause",
+    "phase": "queued",
+    "state": "queued_pending",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_running",
+    "transition": "pause",
+    "phase": "accepted",
+    "state": "running",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_paused",
+    "transition": "pause",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_stopped",
+    "transition": "pause",
+    "phase": "accepted",
+    "state": "stopped",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_last_answer",
+    "transition": "pause",
+    "phase": "accepted",
+    "state": "last_answer",
+    "agent": {
+      "lastAnswer": "Existing Python answer"
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_python_attempt",
+    "transition": "pause",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "pause_matrix_python_unknown",
+    "transition": "pause",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "agent": {},
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": true
+  },
+  {
+    "id": "claim_paused",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "claim_stopped",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "stopped",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false
+    },
+    "findings": ["B6"],
+    "expectedDifferences": [],
+    "tier": "full",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent_after_submit",
+    "transition": "not_sent",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": ["A11"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "reattach_running",
+    "transition": "reattach",
+    "phase": "accepted",
+    "state": "running",
+    "seedRecovery": true,
+    "findings": ["A6", "B6"],
+    "tier": "fast",
+    "return": null,
+    "expectedDifferences": []
+  },
+  {
+    "id": "rejected_busy",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "running",
+    "findings": ["A11"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "account": "default",
+                "error": {
+                  "message": "rejected"
+                },
+                "generation": 1,
+                "thread": "thread",
+                "ticket": "ticket"
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "attempt": {
+      "activeAtReservation": true
+    },
+    "agent": {
+      "turnId": "active-turn",
+      "status": "running"
+    },
+    "tier": "fast",
+    "replay": true,
+    "return": true
+  },
+  {
+    "id": "unknown_busy",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "running",
+    "findings": ["A11"],
+    "message": "turn/start response timed out; outcome unknown",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "unknown": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "uncertain",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "attempt": {
+      "activeAtReservation": true
+    },
+    "agent": {
+      "turnId": "active-turn",
+      "status": "running"
+    },
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "not_sent_busy",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "running",
+    "findings": ["A11"],
+    "message": "Provider did not send turn/start",
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "startResult": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "input": {
+                "outcome": "pending",
+                "reason": null
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "attempt": {
+      "activeAtReservation": true
+    },
+    "agent": {
+      "turnId": "active-turn",
+      "status": "running"
+    },
+    "return": null,
+    "replay": true
+  },
+  {
+    "id": "reattach_restart",
+    "transition": "reattach",
+    "state": "running",
+    "phase": "accepted",
+    "seedRecovery": "restart",
+    "findings": ["A6", "B6"],
+    "return": null,
+    "expectedDifferences": []
+  },
+  {
+    "id": "started_notice__active_tools",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "running",
+    "findings": ["A10", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": false,
+    "agent": {
+      "activeTools": [
+        {
+          "id": "tool",
+          "name": "fixture"
+        }
+      ]
+    }
+  },
+  {
+    "id": "disconnect_without_start_attempt",
+    "transition": "disconnect",
+    "phase": "submitted",
+    "seedRecovery": "disconnect",
+    "removeAfterRecovery": ["startAttempt"],
+    "tier": "fast",
+    "return": null,
+    "expectedDifferences": [],
+    "state": "recovered_unknown"
+  },
+  {
+    "id": "reconcile_resolved_idle",
+    "transition": "reconcile",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": false
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": true,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "reconcile_resolved_active",
+    "transition": "reconcile",
+    "state": "running",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": true
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": true,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "reconcile_preserves_selected_progress",
+    "transition": "reconcile",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "events": ["event", "later"]
+    },
+    "event": {
+      "kind": "agent_message",
+      "text": "{\"sender\": \"sender\", \"room\": \"room\", \"importance\": \"progress\", \"progress_key\": \"task\", \"progress_version\": 1, \"text\": \"progress\"}"
+    },
+    "extraEvents": [
+      {
+        "id": "later",
+        "kind": "agent_message",
+        "text": "{\"sender\": \"sender\", \"room\": \"room\", \"importance\": \"progress\", \"progress_key\": \"task\", \"progress_version\": 2, \"text\": \"progress\"}",
+        "metadata": {
+          "preserveProgress": true,
+          "earlierProgressUpdates": 3
+        }
+      }
+    ],
+    "return": false,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "submit_retires_resolved_complaint",
+    "transition": "reconcile_submission",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": false
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": false,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "misalignment_notice",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "misalignmentPolicyViolation"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "misalignmentPolicyViolation",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "misalignmentPolicyViolation",
+                "message": "denied"
+              },
+              "nativeStatus": "interrupted",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "misalignmentPolicyViolation",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "flex_notice",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "flexUnavailable"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "flexUnavailable",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "flexUnavailable",
+                "message": "denied"
+              },
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "flexUnavailable",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  }
+]

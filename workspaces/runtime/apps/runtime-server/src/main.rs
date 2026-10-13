@@ -98,9 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_account_driver(account_driver);
     let sync_changes = state.sync_changes_handle();
-    let app = router(state)?;
+    let app = router(state.clone())?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    axum::serve(
+    let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
@@ -108,7 +108,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_signal().await;
         sync_changes.close();
     })
-    .await?;
+    .await;
+    state.shutdown_services().await?;
+    result?;
     Ok(())
 }
 

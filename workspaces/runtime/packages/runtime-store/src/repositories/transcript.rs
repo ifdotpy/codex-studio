@@ -5,7 +5,7 @@ use crate::records::{
     TranscriptItemRecord,
 };
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -20,6 +20,18 @@ const LEGACY_ADDRESS_TABLES: &[TableRequirement] = &[TableRequirement {
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_item_fulltext",
     columns: &["id", "body"],
+}];
+const SEARCH_INDEXED_TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_search_indexed",
+    columns: &["id"],
+}];
+const SEARCH_NEXT_META_TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_search_next_meta",
+    columns: &["id", "agent", "kind", "search_rowid"],
+}];
+const SEARCH_ROLLOUT_TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_search_rollout",
+    columns: &["id", "phase", "cursor", "updated"],
 }];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
@@ -45,6 +57,18 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         ConditionalTableRequirement {
             table_exists: "runtime_search_rows",
             tables: LEGACY_ADDRESS_TABLES,
+        },
+        ConditionalTableRequirement {
+            table_exists: "runtime_search_indexed",
+            tables: SEARCH_INDEXED_TABLES,
+        },
+        ConditionalTableRequirement {
+            table_exists: "runtime_search_next_meta",
+            tables: SEARCH_NEXT_META_TABLES,
+        },
+        ConditionalTableRequirement {
+            table_exists: "runtime_search_rollout",
+            tables: SEARCH_ROLLOUT_TABLES,
         },
     ],
     triggers: &[],
@@ -213,6 +237,77 @@ impl TranscriptRepository {
         Ok(None)
     }
 
+    /// Persist a Python-shaped transcript row and keep whichever search
+    /// projections are present in the same transaction.
+    pub fn put_item(
+        transaction: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        record: &Value,
+        created: f64,
+        text: &str,
+        index_search: bool,
+    ) -> TranscriptStoreResult<()> {
+        if record.get("id").and_then(Value::as_str) != Some(id)
+            || !matches!(
+                record.get("role").and_then(Value::as_str),
+                Some("assistant" | "user" | "system")
+            )
+        {
+            return Err(invalid_record("runtime_items", id));
+        }
+        let has_fulltext = table_exists(transaction, "runtime_item_fulltext")?;
+        if text.chars().count() > 20_000 && !has_fulltext {
+            return Err(invalid_record("runtime_item_fulltext", id));
+        }
+        let owner = transaction
+            .query_row("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?;
+        if owner.as_deref().is_some_and(|owner| owner != agent) {
+            return Err(invalid_record("runtime_items", id));
+        }
+        transaction.execute(
+            "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4) \
+             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            params![
+                id,
+                agent,
+                serde_json::to_string(record).map_err(|_| invalid_record("runtime_items", id))?,
+                created
+            ],
+        )?;
+        if text.chars().count() > 20_000 {
+            transaction.execute(
+                "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
+                 ON CONFLICT(id) DO UPDATE SET body=excluded.body",
+                params![id, text],
+            )?;
+        } else if has_fulltext {
+            transaction.execute("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
+        }
+        if index_search {
+            index_search_item(
+                transaction,
+                id,
+                agent,
+                if record["role"] == "system" {
+                    record
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("system")
+                } else {
+                    record.get("role").and_then(Value::as_str).unwrap_or("")
+                },
+                text,
+            )?;
+        } else {
+            delete_search_item(transaction, id)?;
+        }
+        Ok(())
+    }
+
     pub fn resolve_item(
         connection: &Connection,
         agent: &str,
@@ -288,6 +383,149 @@ fn visible(record: &Value) -> bool {
     record
         .get("afterRestore")
         .is_none_or(|after_restore| after_restore.is_null())
+}
+
+fn index_search_item(
+    transaction: &Transaction<'_>,
+    id: &str,
+    agent: &str,
+    kind: &str,
+    body: &str,
+) -> TranscriptStoreResult<()> {
+    let phase = search_phase(transaction)?;
+    if !matches!(phase.as_str(), "active" | "dropping" | "complete")
+        && table_exists(transaction, "runtime_search")?
+    {
+        let previous = if table_exists(transaction, "runtime_search_rows")? {
+            transaction
+                .query_row(
+                    "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+        if let Some(rowid) = previous {
+            transaction.execute("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
+        } else if !table_exists(transaction, "runtime_search_rows")? {
+            transaction.execute("DELETE FROM runtime_search WHERE id=?1", [id])?;
+        }
+        transaction.execute(
+            "INSERT INTO runtime_search(id,agent,kind,body) VALUES(?1,?2,?3,?4)",
+            params![id, agent, kind, body],
+        )?;
+        let rowid = transaction.last_insert_rowid();
+        if table_exists(transaction, "runtime_search_rows")? {
+            transaction.execute(
+                "INSERT INTO runtime_search_rows(id,search_rowid) VALUES(?1,?2) \
+                 ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
+                params![id, rowid],
+            )?;
+        }
+        if table_exists(transaction, "runtime_search_indexed")? {
+            transaction.execute(
+                "INSERT OR IGNORE INTO runtime_search_indexed(id) VALUES(?1)",
+                [id],
+            )?;
+        }
+    }
+    if matches!(
+        phase.as_str(),
+        "building" | "active" | "dropping" | "complete"
+    ) && table_exists(transaction, "runtime_search_next")?
+        && table_exists(transaction, "runtime_search_next_meta")?
+    {
+        let previous = transaction
+            .query_row(
+                "SELECT search_rowid FROM runtime_search_next_meta WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let rowid = if let Some(rowid) = previous {
+            transaction.execute("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
+            transaction.execute(
+                "UPDATE runtime_search_next_meta SET agent=?1,kind=?2 WHERE id=?3",
+                params![agent, kind, id],
+            )?;
+            rowid
+        } else {
+            let rowid: i64 = transaction.query_row(
+                "SELECT coalesce(max(search_rowid),0)+1 FROM runtime_search_next_meta",
+                [],
+                |row| row.get(0),
+            )?;
+            transaction.execute(
+                "INSERT INTO runtime_search_next_meta(id,agent,kind,search_rowid) VALUES(?1,?2,?3,?4)",
+                params![id, agent, kind, rowid],
+            )?;
+            rowid
+        };
+        transaction.execute(
+            "INSERT INTO runtime_search_next(rowid,body) VALUES(?1,?2)",
+            params![rowid, body],
+        )?;
+    }
+    Ok(())
+}
+
+fn delete_search_item(transaction: &Transaction<'_>, id: &str) -> TranscriptStoreResult<()> {
+    let phase = search_phase(transaction)?;
+    if !matches!(phase.as_str(), "active" | "dropping" | "complete")
+        && table_exists(transaction, "runtime_search_rows")?
+    {
+        let rowid = transaction
+            .query_row(
+                "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(rowid) = rowid {
+            if table_exists(transaction, "runtime_search")? {
+                transaction.execute("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
+            }
+            transaction.execute("DELETE FROM runtime_search_rows WHERE id=?1", [id])?;
+            if table_exists(transaction, "runtime_search_indexed")? {
+                transaction.execute("DELETE FROM runtime_search_indexed WHERE id=?1", [id])?;
+            }
+        }
+    }
+    if matches!(
+        phase.as_str(),
+        "building" | "active" | "dropping" | "complete"
+    ) && table_exists(transaction, "runtime_search_next")?
+        && table_exists(transaction, "runtime_search_next_meta")?
+    {
+        let rowid = transaction
+            .query_row(
+                "SELECT search_rowid FROM runtime_search_next_meta WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(rowid) = rowid {
+            transaction.execute("DELETE FROM runtime_search_next WHERE rowid=?1", [rowid])?;
+            transaction.execute("DELETE FROM runtime_search_next_meta WHERE id=?1", [id])?;
+        }
+    }
+    Ok(())
+}
+
+fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
+    if !table_exists(connection, "runtime_search_rollout")? {
+        return Ok("legacy".to_owned());
+    }
+    Ok(connection
+        .query_row(
+            "SELECT phase FROM runtime_search_rollout WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| "legacy".to_owned()))
 }
 
 #[cfg(test)]

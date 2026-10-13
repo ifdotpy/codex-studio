@@ -77,3 +77,15 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+[doc("Run the full Rust lifecycle and notification matrices (manual heavy tier; no load generators).")]
+test-rust-runtime-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
+
+[doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
+test-rust-runtime-corpora-mutations *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
+
+[doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
+test-rust-session-fairness:
+    @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'

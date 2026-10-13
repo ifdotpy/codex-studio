@@ -7,10 +7,12 @@
   per service.
 - **Public interface:** each service module's functions and port traits.
 - **Allowed dependencies:** `studio-runtime-store`, `studio-runtime-providers`,
-  `studio-runtime-process`, `studio-operations`.
-- **Forbidden dependencies:** `studio-runtime-http`, Axum, Tokio, the server
+  `studio-runtime-process`, `studio-operations`; Tokio and the existing
+  `futures-util` for the provider session and account tasks.
+- **Forbidden dependencies:** `studio-runtime-http`, Axum, the server
   application, the Python runtime.
-- **Invariants:** synchronous code only; no service holds a store transaction
+- **Invariants:** application decisions remain synchronous; the provider session
+  and account tasks own asynchronous orchestration. No service holds a store transaction
   across a call into a provider or process port; an outcome that cannot be
   observed is reported as unknown and never retried here.
 - **Focused check:** `cargo nextest run -p studio-runtime-services`.
@@ -229,14 +231,19 @@ The Python account mutation points that a later owner must port are `refresh`,
 `start_login`, `login_receipts`, `cancel_login`, `login_completed`, and
 `set_rate_limits`. This read slice implements none of them.
 
-`GET /api/models` remains unimplemented with dependency
-`provider-session/model-list`. Python connects the account and sends paginated
-`model/list` requests with `limit: 100` (`router.py:176-209`,
-`codex_catalog.py:130-170`); `ModelCatalogCache` is process memory with a
-300-second successful-snapshot TTL and a five-second wait
-(`codex_catalog.py:32-43`). Pending and unavailable replies are HTTP 400
-(`router.py:198-207`). The Rust route stays at 501 until a provider session
-owns connection, pagination, cache, timeout, and pending/unavailable states.
+`GET /api/models` serves the Codex catalog through the Tokio session and a
+temporary stdio process-group attachment. The cache returns pending immediately,
+serves stale values during one refresh, and applies a single exchange deadline
+to initialization and pagination. The process adapter stops and reaps the child
+before a refresh result is published. Claude catalogs retain their named
+`provider-service/claude-model-catalog` dependency. The temporary adapter requires
+Unix; other platforms report the catalog unavailable.
+
+`model_catalog.rs` owns pagination, validation, cache, and pending/unavailable
+states. The async HTTP handler only runs the account snapshot read on the
+blocking pool. `rust-models-http-contract.py` tests pending/cache behavior,
+Python-written account state, and no provider start or registry write on refusal
+against both backends.
 
 The producer test uses Python `AccountStore` writes and the real
 `Runtime.store_rate_limits` → `codex_sync_entities.patch`/`put`/`project` path
@@ -256,3 +263,227 @@ On macOS, Rust currently reports the named reason
 unchanged. Python can read passive Keychain authentication through its
 Security.framework helper; this slice does not add platform APIs or a new
 dependency to reproduce that behavior.
+
+## Provider session task
+
+`provider_session_task::SessionHandle::open(factory, handle, options, config)`
+validates the recovered book and the actual initialize command before opening
+anything. It returns before attachment startup. The model catalog uses it for
+ephemeral metadata requests.
+
+The handle owns `events: mpsc::Receiver<SessionEvent>`,
+`status: watch::Receiver<SessionStatus>`, and a cloneable `control: SessionControl`.
+Clone control to select admission futures alongside event reception. Control has:
+
+- `prepare(RequestSpec).await -> Result<PreparedRequest, SessionTaskError>`;
+- `submit(PreparedRequest).await -> Result<RequestTicket, SessionTaskError>`;
+- `prepare_frame(OperationId, &Frame)` and `submit_frame(PreparedFrame).await`
+  for callback responses and recognized notifications;
+- `settled(EventCursor).await` after the consumer commits durable settlement;
+- `cancel()` to signal shutdown independently of every bounded lane.
+
+The account supplies durable, unique request/operation identities, prepares before
+committing Submitted, then submits once. `PreparedRequest::deadline_ms()` and
+`recovery_record()` expose the original deadline and recovery intent before that
+commit. Preparation starts the deadline; persistence or admission delay never
+restarts it. The prepared record is intent, not evidence of a provider write.
+`AdmissionUnknown` means the admission
+receipt was lost; never resubmit. Other admission errors mean no write was admitted.
+Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
+Keep each admission future pinned/owned across unrelated select outcomes. Dropping
+its owner before observing the result fences the session, including a buffered
+result; ordinary polling by mutable reference does not fence it.
+
+Written request outcomes include `recovery: Some(RecoveredRequest)` containing
+`ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and
+`remote_id`.
+Persist this correlation record with the write outcome; numeric requests need the
+remote-to-local ID mapping after reattach. Supply these records through
+`SessionTaskConfig.recovered`; the session installs the adapter mappings before
+opening. Preserve the original deadline and update `unknown` when durable Unknown
+is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
+Recovery restores serialized thread ownership; a lightweight request does not
+reserve its thread. Conflicting recovered serialized owners are refused before
+open. All 32 unresolved requests can be recovered; initialization has a separate
+record slot. Merge late Written evidence by request/operation identity, preserving
+any durable Unknown flag. A late write receipt must not resurrect a request already
+durably resolved; restore only unresolved records.
+Deadlines and journal timestamps use the supplied `SessionClock` epoch. Preserve
+that epoch across reattachment in a running process; across runtime restart the
+account/store layer must translate its durable deadline into the new clock epoch.
+A missing remote ID after an uncertain write is still uncertainty, not evidence
+of NotSent or permission to resend.
+
+Crash window: Submitted is durable, but Written is not. This includes a crash
+before submit reaches the supervisor and a crash after acceptance but before the
+consumer persists Written. Restore the prepared record and keep the request Unknown;
+never resend it. Without the missing numeric correlation, a replayed reply remains
+an orphan envelope for durable reconciliation rather than a guessed local match.
+Protocol v1 returns the stored remote ID with `duplicate: true`, without writing
+stdin again, when a repeated operation ID has the same payload digest. However,
+if that operation ID is absent it accepts and writes the request. Its
+`operationStatus` lookup only supports `monitor:` identities, not arbitrary
+request operation IDs. Therefore repeating a write is not a safe receipt lookup
+for this crash window, and SessionControl exposes no such reconciliation call.
+
+Replies and deadlines are pure `RequestOutcome` decisions. The shared clock in
+OpenOptions timestamps arrival before the session consumes a journal entry;
+`receive_at` keeps lateness independent of timer/consumer scheduling.
+
+Each `SessionEvent` contains at most one original journal entry (including raw
+stdout, stderr, exit, initialization and orphan replies) plus bounded outcomes.
+Never settle a cursor just because it was read. Only a contiguous prefix of
+consumer-settled entries is ACKed. Control.settled success records that intent;
+it does not claim the supervisor already accepted the ACK. The settlement window
+is 64 entries, unresolved requests 32, each external lane 16, and pending callbacks 34. Each admitted request reserves its prepared write in its bounded record; callback
+capacity cannot prevent a serialized successor from being released. There are two
+retained event slots and one bounded pure transition batch. Non-shutdown select
+arms are unbiased; ACKs and writes alternate when both are ready, as do request
+and callback writes.
+
+Readiness is AwaitingReply, then InitializedWritePending, then Ready only after
+the initialized write receipt. The initialized operation is scoped to the actual
+child generation. The session owns the one SessionState and its deadline source.
+
+`shutdown().await` on the handle signals stop and joins the adapter before returning
+`SessionExit`. `completion().await` joins without initiating stop; cancelling either
+wait retains the join owner. Persist `exit.adapter.recovery_needed`, final outcomes,
+and `undelivered`; also drain buffered consumer events. After joining the adapter,
+the session drains its journal lane into this handoff: at most 17 envelopes (one
+retained transition plus 16 buffered entries). Retained control outcomes go in
+`exit.outcomes`. Evidence stays task-owned before fallible processing, including
+across an injected panic; terminal cleanup does not execute more protocol writes.
+Shutdown never ACKs or waits for room in the consumer lane.
+
+A consumer can commit durable settlement and receive `settled` success, then shut
+down before the ACK is sent or its receipt is observed. Shutdown can succeed with
+this prefix still unacknowledged. `SessionExit.pending_acknowledgement` returns the
+highest contiguous locally settled cursor without a confirmed ACK (also after a
+lost ACK receipt). Reconcile redelivery against durable settlement on the next
+attachment, then authorize that prefix again. Neither local settlement nor a
+successful shutdown proves supervisor ACK completion; worker/store crash-window
+and durable replay reconciliation tests belong to the account-worker stage.
+The adapter's documented blocking-job cleanup limitation still applies. Dropping a handle only signals
+cancellation; explicit shutdown/completion is required for the join barrier.
+
+## Account worker
+
+[`start_account_worker`](src/account_worker.rs) owns one account on a Tokio task.
+The server must create and share one `StoreBridge` per `RuntimeStore`; its startup
+recovery runs before account admission, and its semaphore bounds `spawn_blocking`
+SQLite jobs. Account commands, session requests, effects, and deferred journal
+entries all have explicit capacity limits. Dropping the account handle signals
+sticky cancellation. `shutdown` waits up to `SHUTDOWN_GRACE` for the worker,
+then releases account ownership. An already started blocking job retains the
+bridge permit until it finishes; replacement recovery queues behind that job.
+Other accounts sharing the bridge also wait. Worker reads use the same permit;
+independent store readers do not need it. The account registry mutex is released
+before recovery or session startup awaits.
+
+Work follows claim → typed preparation → session prepare → durable Submitted →
+submit. The submission transaction rechecks obsolete complaints/work notices,
+publishes their retirement, and records transcript input and links before any
+provider write. A new event for an active turn stays pending and is claimed only
+after that turn settles. Journal handling commits lifecycle and notification
+writes, replaces the stream buffer, then calls `settled(cursor)`. Terminal
+notices and transcript `turnStatus` marks share the lifecycle receipt transaction.
+A replay returns saved decisions without repeating transcript or search effects.
+
+Recovery restores only unresolved request records into `RecoveredRequest`.
+Submitted without a durable Written receipt stays Unknown, including when no
+write reached the provider. It is never resent. Late replies can refine that
+state; unknown numeric correlation remains an orphan for later reconciliation.
+The bounded shutdown handoff persists delivered/undelivered evidence and adapter
+recovery identity. Local settlement does not prove that the supervisor accepted
+its ACK; journal receipts make redelivery safe.
+
+The paused-time scripted seam tests in
+[`account_worker/tests.rs`](src/account_worker/tests.rs) exercise the actual
+session and store bridge. They cover normal completion, pending input during an
+active turn, interrupt before the start reply, queued cancellation, provider
+exit, generation change, duplicate/stale/out-of-order notifications, deadline
+expiry and late replies, full-queue shutdown, and restart between Submitted and
+Written. `just test-rust-runtime-corpora` compares Python-written pre-states and
+real lifecycle/dispatch transactions and every before/after bridge boundary in
+the scripted scenarios. The default suite keeps representative crash witnesses;
+full matrix timing separates scenario replay from replacement recovery. The
+separately selected
+`just test-rust-runtime-corpora-mutations` tests the same wiring against seeded
+regressions, including transcript notices and the context exception's boundary.
+
+The bridge rechecks account ownership in claim and submission transactions.
+Lifecycle rejection/NotSent settlement retires transport receipts atomically.
+Stop and notification interrupts are durable pending effects. Each replacement
+recovers proven-unsubmitted claims for its own account, restores the stored
+attempt for journal delivery, and defers callback admission until initialization.
+Only explicit admission refusal proves NotSent; unrelated failures preserve Unknown.
+
+Acknowledged journal prefixes are compacted into one cursor checkpoint. Unresolved
+requests and pending effects remain indexed by account. Journal receipts retain a
+digest, not another copy of the provider payload. Stream deltas commit in the same
+transaction as cursor eligibility. Their pending text is bounded by
+`STREAM_FLUSH_BYTES` in [`store.rs`](src/account_worker/store.rs); canonical
+transcript/search rewriting occurs on completion, that threshold, or Python's
+`codex_streaming.FLUSH_SECONDS` cadence. Assistant text is never truncated. The
+command-output buffer uses Python's character-tail rule; command item dispatch is
+still a named gap of the notification service.
+
+A flushed base normally comes from the canonical item. Only an `item/started`
+that replaces this visible text needs a temporary base receipt. Its hash and the
+base row commit together; the next flush or close deletes the row, and recovery
+prunes streams no longer active. No blob store or schema was added. A flush costs
+O(total item text); per-delta work handles bounded preview and pending text rather
+than copying the accumulated answer. The corpus compares these exceptional bases
+to Python's live buffer before excluding the validated internal receipt rows.
+
+The scheduler split itself moved functions without changing their bodies. Later
+compatibility corrections are proved by named Python-written cases:
+`disconnect_without_start_attempt` covers absent top-level attempts and nested
+disconnect identity; `reattach_running` and `reattach_restart` cover nested
+accepted attempts and generation lookup. Missing optional policy fields use Null
+instead of panicking; the same Python-written cases exercise their absence.
+`claim_deleted` covers ordinary deleted rows; `reconcile_resolved_active`,
+`reconcile_resolved_idle`, and `reconcile_preserves_selected_progress` cover
+retirement metadata and preparation policy. Worker-only rehydration leaves the
+repository's exact `reattach_*` corpus output unchanged.
+
+Catalog refreshes share the semaphore in [`model_catalog.rs`](src/model_catalog.rs).
+Registry reads prune removed accounts and replaced homes. The service retains
+refresh task handles; server shutdown cancels and drains them. Catalog requests
+drain session events while awaiting command receipts, preserving bounded-lane
+progress. The ephemeral adapter also bounds the child reap after sending kill.
+
+### Known gaps before server wiring
+
+The worker is **not eligible for wiring to a real provider** until start-time
+context preparation is implemented. [`preparation.rs`](src/account_worker/preparation.rs)
+defines a typed input (event intent plus stored agent and state root) and output
+(provider parameters plus prepared submission), currently passing event text
+through. Python `Runtime.start` in `codex_runtime.py:7046` reads event metadata,
+message clocks, and unanswered complaints before appending context.
+`EfficiencyMixin.model_turn_context` in `codex_efficiency.py:715` records the
+context manifest after reading known context/epoch, root agent mode, role skill,
+progress-file guidance, plan, complaints and finished-worktree reminders.
+The registered `context_preparation_unported` class permits only those missing
+preparation fields and appended text; base text, input identity, links, search
+metadata, notices, terminal state and dispatch writes compare exactly.
+
+Active-turn steer is a separate follow-up requiring a differential corpus against
+Python selection/submission policy. Its touch points are scheduler
+`selection::claim` (currently refuses in-flight claims), attempt reconciliation,
+`SessionControl::prepare/submit` with `Method::TurnSteer`, and lifecycle settlement.
+Stage 5 intentionally has no `claim_steer` API.
+
+Preparation currently refuses Claude turns, new threads, assets, pending settings,
+and unprepared workspaces instead of guessing their provider parameters. Native
+history reconciliation for held generations and numeric orphan replies remains
+separate. [`callback.rs`](src/account_worker/callback.rs) is the typed callback seam.
+Approvals, questions and dynamic tool calls currently receive a typed unsupported
+JSON-RPC error after their journal entry commits. The response has its own
+Submitted/Written receipts; its cursor is acknowledged only after Written, and
+unknown response writes are never resent. Dynamic tools and approvals must be
+served by their real services before a real provider can be wired; explicit
+rejection does not make this a complete provider runtime.
+The server factory/TurnRuntime caller is not part of this stage.
+The old provider process/session/turn-driver thread code and tests are removed;
+the model catalog uses the accepted async session and ephemeral stdio adapter.

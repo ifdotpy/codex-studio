@@ -8,7 +8,7 @@ use crate::records::{
     AgentId, AnnotationRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table,
 };
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{QueueEvent, StoreError, StoreResult};
+use crate::{AgentRepository, QueueEvent, StoreError, StoreResult};
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -278,20 +278,15 @@ impl EventWriteRepository {
         lifecycle: Option<(bool, Option<&str>)>,
         name: Option<&str>,
     ) -> StoreResult<()> {
+        let has_agents = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')", [], |row| row.get::<_, bool>(0))?;
+        let agent = if has_agents {
+            AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        } else {
+            None
+        };
         Self::update_agent_sync(transaction, agent_id, |value| {
-            let status_changed = status
-                .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
-            let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
-                value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
-                    || value.get("turnId").and_then(Value::as_str) != turn_id
-            });
-            let name_changed = name.is_some_and(|name| {
-                value.get("name").and_then(Value::as_str) != Some(name)
-                    || value.get("manualName").and_then(Value::as_bool) != Some(true)
-            });
-            if !status_changed && !lifecycle_changed && !name_changed {
-                return false;
-            }
+            let before = value.clone();
             if let Some(status) = status {
                 value.insert("status".to_owned(), Value::String(status.to_owned()));
             }
@@ -313,7 +308,42 @@ impl EventWriteRepository {
                 overview.insert("resultTruncated".into(), Value::Bool(false));
                 overview.insert("resultTurnId".into(), Value::Null);
             }
-            true
+            if let Some(agent) = &agent {
+                value.insert("epoch".to_owned(), Value::from(agent.epoch));
+                for key in [
+                    "turnEpoch",
+                    "error",
+                    "nativeFailureHold",
+                    "activity",
+                    "activeTools",
+                    "startAttempt",
+                    "turnId",
+                    "inFlight",
+                    "autoWake",
+                    "capacityRetry",
+                    "lastCompletedTurn",
+                    "lastCompletedTurnStatus",
+                    "lastCompletedTurnError",
+                    "startOutcomeHold",
+                    "lastAnswer",
+                    "disconnectRecovery",
+                    "restartRecovery",
+                    "nativeSafetyBuffering",
+                    "nativeStatus",
+                    "nativeTurnError",
+                    "unhandledNotifications",
+                    "lastEvent",
+                    "tail",
+                    "contextUsage",
+                ] {
+                    if let Some(field) = agent.extra.get(key) {
+                        value.insert(key.to_owned(), field.clone());
+                    } else {
+                        value.remove(key);
+                    }
+                }
+            }
+            value != &before
         })
     }
 
@@ -443,6 +473,21 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"starting\",\"inFlight\":false,\"turnId\":null}}',0);",
             )
             .expect("projection fixture creates");
+        connection
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("runtime agent fixture creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES('a',?1)",
+                [
+                    json!({"id":"a","rootId":"a","name":"Agent","status":"running","epoch":2,
+                "inFlight":true,"turnId":"turn-1","lastAnswer":"",
+                "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
+                "restartRecovery":{"stage":"held"}})
+                    .to_string(),
+                ],
+            )
+            .expect("runtime lifecycle receipt persists");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_lifecycle(
             &transaction,
@@ -466,6 +511,18 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+        assert_eq!(
+            (
+                &value["lastAnswer"],
+                &value["disconnectRecovery"],
+                &value["restartRecovery"]
+            ),
+            (
+                &json!(""),
+                &json!({"epoch":2,"turnId":"turn-1"}),
+                &json!({"stage":"held"})
+            )
+        );
     }
 
     #[test]

@@ -39,16 +39,18 @@ pub use records::{
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
+pub use repositories::execution_history::ExecutionHistoryRepository;
 pub use repositories::federation::FederationRepository;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
+pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::projects::ProjectsRepository;
 pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;
-pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
+pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
 pub use repositories::sync_documents::{
     EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
 };

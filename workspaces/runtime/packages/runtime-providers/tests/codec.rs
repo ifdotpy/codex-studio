@@ -1,7 +1,8 @@
 use serde_json::{Map, Value, json};
 use studio_runtime_providers::{
-    CodecError, Frame, LineDecoder, MAX_FRAME_BYTES, Method, NotificationFrame, PendingBook,
-    RequestFrame, RequestId, RequestState, ResponseBody, encode_line,
+    CodecError, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES, Method,
+    NotificationFrame, PendingBook, RequestFrame, RequestId, RequestState, ResponseBody,
+    decode_journal_entry, encode_line,
 };
 
 fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame {
@@ -123,6 +124,30 @@ fn decoder_reports_malformed_oversized_and_truncated_frames() {
     assert!(matches!(
         truncated.finish(),
         Err(CodecError::TruncatedFrame { .. })
+    ));
+}
+
+#[test]
+fn journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes() {
+    let raw = b"provider diagnostic, not JSON\r\n".to_vec();
+    let decoded = decode_journal_entry(41, 9, raw.clone());
+    assert_eq!(decoded.cursor, 41);
+    assert_eq!(decoded.generation, 9);
+    assert!(matches!(
+        decoded.payload,
+        DecodedJournalPayload::RawStdout { bytes, error: CodecError::MalformedJson(_) }
+            if bytes == raw
+    ));
+
+    let frame = decode_journal_entry(42, 9, b"{\"method\":\"turn/started\"}\n".to_vec());
+    assert_eq!(frame.cursor, 42);
+    assert_eq!(frame.generation, 9);
+    assert!(matches!(
+        frame.payload,
+        DecodedJournalPayload::Frame(Frame::Notification(NotificationFrame {
+            method: Method::TurnStarted,
+            ..
+        }))
     ));
 }
 

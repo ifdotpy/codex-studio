@@ -9,10 +9,16 @@ publish.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+studio-runtime-providers = { path = "../runtime-providers" }
 thiserror.workspace = true
 strum.workspace = true
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+process-wrap.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 
 [lints]

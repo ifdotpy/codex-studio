@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::{Method, RequestId};
 use thiserror::Error;
@@ -38,6 +38,14 @@ struct Entry {
     state: RequestState,
 }
 
+#[derive(Clone, Copy)]
+enum SettledKind {
+    Replied,
+    Cancelled,
+}
+
+const SETTLED_ID_HISTORY_LIMIT: usize = 256;
+
 /// Pure per-connection ID allocation and response tracking.
 ///
 /// A book is scoped to one provider connection. On disconnect, pending work is
@@ -46,7 +54,8 @@ struct Entry {
 pub struct PendingBook {
     next_numeric_id: u64,
     entries: BTreeMap<RequestId, Entry>,
-    used_ids: BTreeSet<RequestId>,
+    settled_ids: BTreeMap<RequestId, SettledKind>,
+    settled_order: VecDeque<RequestId>,
     closed: bool,
 }
 
@@ -81,12 +90,14 @@ impl PendingBook {
             .ok_or(BookError::IdExhausted)
     }
 
-    /// Register an externally allocated ID, used for the bridge's string UUIDs.
+    /// Register an externally allocated ID, used for the bridge's string IDs.
+    /// Callers allocate IDs monotonically or uniquely; this book retains only
+    /// a bounded window of settled identities for duplicate detection.
     pub fn register(&mut self, id: RequestId, method: Method) -> Result<(), BookError> {
         if self.closed {
             return Err(BookError::ConnectionClosed);
         }
-        if !self.used_ids.insert(id.clone()) {
+        if self.entries.contains_key(&id) || self.settled_ids.contains_key(&id) {
             return Err(BookError::DuplicateId);
         }
         self.entries.insert(
@@ -102,7 +113,13 @@ impl PendingBook {
     /// Observe a provider response. A response to an unknown request is late
     /// evidence; duplicate and never-requested IDs remain explicit errors.
     pub fn observe_response(&mut self, id: &RequestId) -> Result<ResponseMatch, BookError> {
-        let entry = self.entries.get_mut(id).ok_or(BookError::UnknownId)?;
+        let Some(entry) = self.entries.remove(id) else {
+            return if matches!(self.settled_ids.get(id), Some(SettledKind::Replied)) {
+                Err(BookError::DuplicateResponse)
+            } else {
+                Err(BookError::UnknownId)
+            };
+        };
         let matched = match entry.state {
             RequestState::Pending => ResponseMatch::Pending {
                 method: entry.method,
@@ -112,7 +129,7 @@ impl PendingBook {
             },
             RequestState::Replied => return Err(BookError::DuplicateResponse),
         };
-        entry.state = RequestState::Replied;
+        self.remember_settled(id.clone(), SettledKind::Replied);
         Ok(matched)
     }
 
@@ -124,7 +141,25 @@ impl PendingBook {
             self.entries.insert(id.clone(), entry);
             return Err(BookError::DuplicateResponse);
         }
+        self.remember_settled(id.clone(), SettledKind::Cancelled);
         Ok(entry.method)
+    }
+
+    /// Positive evidence of no send can retire even a deadline-unknown ticket.
+    pub(crate) fn reject_unsent(&mut self, id: &RequestId) -> Result<(), BookError> {
+        self.entries.remove(id).ok_or(BookError::UnknownId)?;
+        self.remember_settled(id.clone(), SettledKind::Cancelled);
+        Ok(())
+    }
+
+    fn remember_settled(&mut self, id: RequestId, kind: SettledKind) {
+        self.settled_ids.insert(id.clone(), kind);
+        self.settled_order.push_back(id);
+        while self.settled_order.len() > SETTLED_ID_HISTORY_LIMIT {
+            if let Some(oldest) = self.settled_order.pop_front() {
+                self.settled_ids.remove(&oldest);
+            }
+        }
     }
 
     /// Mark every request without an observed response as unknown after EOF,
@@ -138,9 +173,22 @@ impl PendingBook {
         }
     }
 
+    /// Mark one accepted request unknown without losing the connection or
+    /// other outstanding tickets.
+    pub fn mark_unknown(&mut self, id: &RequestId) -> Result<(), BookError> {
+        let entry = self.entries.get_mut(id).ok_or(BookError::UnknownId)?;
+        if entry.state == RequestState::Pending {
+            entry.state = RequestState::Unknown;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn state(&self, id: &RequestId) -> Option<RequestState> {
-        self.entries.get(id).map(|entry| entry.state)
+        self.entries.get(id).map(|entry| entry.state).or_else(|| {
+            matches!(self.settled_ids.get(id), Some(SettledKind::Replied))
+                .then_some(RequestState::Replied)
+        })
     }
 
     #[must_use]
@@ -157,5 +205,33 @@ impl PendingBook {
             .values()
             .filter(|entry| entry.state == RequestState::Unknown)
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settled_book_history_is_bounded_and_numeric_ids_keep_advancing() {
+        let mut book = PendingBook::new();
+        let mut last_id = RequestId::Number(0);
+        for _ in 0..(SETTLED_ID_HISTORY_LIMIT * 4) {
+            let id = book
+                .allocate_numeric(Method::ModelList)
+                .expect("allocate monotonically increasing request ID");
+            book.observe_response(&id)
+                .expect("settle allocated request");
+            last_id = id;
+        }
+
+        assert!(book.entries.is_empty());
+        assert_eq!(book.settled_ids.len(), SETTLED_ID_HISTORY_LIMIT);
+        assert_eq!(book.settled_order.len(), SETTLED_ID_HISTORY_LIMIT);
+        assert_eq!(book.state(&last_id), Some(RequestState::Replied));
+        assert_eq!(
+            book.allocate_numeric(Method::ModelList),
+            Ok(RequestId::Number((SETTLED_ID_HISTORY_LIMIT * 4 + 1) as u64))
+        );
     }
 }

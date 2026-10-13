@@ -1,0 +1,107 @@
+{
+  "rust_receipts": {
+    "approvedClass": "c",
+    "reason": "Rust immutable transport and lifecycle result receipts, absent in Python.",
+    "entrypoints": [],
+    "fields": [
+      "/runtime_agents/*/record/startAttempt/connectionGeneration",
+      "/runtime_agents/*/record/startAttempt/requestTicket",
+      "/runtime_execution_attempts/*/record/claimResult",
+      "/runtime_execution_attempts/*/record/connectionGeneration",
+      "/runtime_execution_attempts/*/record/inputIdentity",
+      "/runtime_execution_attempts/*/record/receipts",
+      "/runtime_execution_attempts/*/record/requestTicket",
+      "/runtime_agents/*/record/startAttempt/interrupt",
+      "/runtime_execution_attempts/*/record/interrupt",
+      "/runtime_operation_receipts/*"
+    ],
+    "returnContract": "Python callbacks are compared by first-call row effects; their raw results are reported. Rust entry-point return values are pinned per case. Rust receipt replay alone must return the saved first result with zero total changes; changed content is refused without writes. Python callbacks have no corresponding idempotent receipt contract."
+  },
+  "durable_reconciliation_hold": {
+    "approvedClass": "b",
+    "reason": "Legacy unknown or paused recovery and generation change retain a named durable hold until native history reconciliation is wired.",
+    "entrypoints": [],
+    "fields": [
+      "/runtime_agents/*/record/autoWake",
+      "/runtime_agents/*/record/contextRepairWait",
+      "/runtime_agents/*/record/disconnectRecovery",
+      "/runtime_agents/*/record/disconnectRecovery/connectionId",
+      "/runtime_agents/*/record/disconnectRecovery/source",
+      "/runtime_agents/*/record/disconnectRecovery/startAttempt",
+      "/runtime_agents/*/record/disconnectRecovery/supervisor",
+      "/runtime_agents/*/record/error",
+      "/runtime_agents/*/record/nativeFailureHold",
+      "/runtime_agents/*/record/restartRecovery",
+      "/runtime_agents/*/record/restartRecovery/connectionId",
+      "/runtime_agents/*/record/restartRecovery/reason",
+      "/runtime_agents/*/record/restartRecovery/stage",
+      "/runtime_agents/*/record/restartRecovery/supervisor",
+      "/runtime_agents/*/record/startAttempt",
+      "/runtime_agents/*/record/startOutcomeHold",
+      "/runtime_agents/*/record/status",
+      "/runtime_agents/*/record/supervisorRestore",
+      "/runtime_events/*/error",
+      "/runtime_execution_runs/*/record/disconnectRecovery",
+      "/runtime_execution_runs/*/record/disconnectRecovery/connectionId",
+      "/runtime_execution_runs/*/record/disconnectRecovery/source",
+      "/runtime_execution_runs/*/record/disconnectRecovery/startAttempt",
+      "/runtime_execution_runs/*/record/disconnectRecovery/supervisor",
+      "/runtime_execution_runs/*/record/restartRecovery",
+      "/runtime_execution_runs/*/record/restartRecovery/connectionId",
+      "/runtime_execution_runs/*/record/restartRecovery/reason",
+      "/runtime_execution_runs/*/record/restartRecovery/stage",
+      "/runtime_execution_runs/*/record/restartRecovery/supervisor",
+      "/sync_entities/*/payload/value/autoWake",
+      "/sync_entities/*/payload/value/contextRepairWait",
+      "/sync_entities/*/payload/value/error",
+      "/sync_entities/*/payload/value/startAttempt",
+      "/sync_entities/*/payload/value/status"
+    ]
+  },
+  "token-usage-partials": {
+    "reason": "contextUsage persists; usage-policy/budget-capture, agent-move/cache-capture-not-ported and analytics/token-rate-observation-not-ported are counted.",
+    "fields": [
+      "/runtime_agents/*/record/tokenUsageAccounting",
+      "/runtime_agents/*/record/tokensUsed",
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_budget/*",
+      "/runtime_budget_usage/*",
+      "/sync_entities/*/payload/value/tokensUsed"
+    ]
+  },
+  "questions-service/async-question": {
+    "reason": "Questions are counted; pending question/complaint service is outside this slice.",
+    "fields": [
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_requests/*",
+      "/sync_entities/*"
+    ]
+  },
+  "unhandled-notification-kinds": {
+    "reason": "Module-table kinds persist their named counter and receipt; Python service effects are explicitly not compared.",
+    "fields": [
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_operation_receipts/*/result"
+    ]
+  },
+  "radio-policy": {
+    "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
+    "fields": ["/entryResult"]
+  },
+  "bounded-open-streams": {
+    "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
+    "fields": ["/entryResult"]
+  },
+  "context_preparation_unported": {
+    "approvedClass": "a",
+    "reason": "Dynamic start-time context is independently captured from Python. Only its appended text and verified derived search postings are projected out of the Python comparison; identity, base input, transcript links, terminal fields and search metadata remain exact. The Rust snapshot is never projected.",
+    "entrypoints": ["prepare_turn"],
+    "fields": [
+      "/runtime_event_meta/*/record/contextManifest",
+      "/runtime_event_meta/*/record/modelEventProjection",
+      "/runtime_items/*/record/text",
+      "/runtime_search/*/body",
+      "/runtime_search_next_postings/*"
+    ]
+  }
+}
