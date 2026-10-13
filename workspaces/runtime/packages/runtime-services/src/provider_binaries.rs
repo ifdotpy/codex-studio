@@ -2,6 +2,8 @@
 //!
 //! Filesystem discovery, child execution, provider sessions, and publication
 //! belong to callers. This module only interprets supplied snapshots.
+//! Windows npm `codex.cmd` shim resolution is an explicit unsupported outcome
+//! until Windows becomes a runtime cutover target.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -37,22 +39,48 @@ const UPSTREAM_PACKAGES: &[(&str, &str, &str)] = &[
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SemanticVersion {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
+    pub major: VersionNumber,
+    pub minor: VersionNumber,
+    pub patch: VersionNumber,
     pub prerelease: Option<Vec<PrereleasePart>>,
+}
+
+/// Non-negative decimal integer used by Python's unbounded version parser.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VersionNumber(String);
+
+impl VersionNumber {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Ord for VersionNumber {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+impl PartialOrd for VersionNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PrereleasePart {
-    Numeric(u64),
+    Numeric(VersionNumber),
     Text(String),
 }
 
 impl Ord for SemanticVersion {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.major, self.minor, self.patch)
-            .cmp(&(other.major, other.minor, other.patch))
+        (&self.major, &self.minor, &self.patch)
+            .cmp(&(&other.major, &other.minor, &other.patch))
             .then_with(|| match (&self.prerelease, &other.prerelease) {
                 (None, None) => Ordering::Equal,
                 (None, Some(_)) => Ordering::Greater,
@@ -239,7 +267,15 @@ fn parse_at(bytes: &[u8], start: usize) -> Option<(SemanticVersion, usize)> {
         for part in suffix.split('.') {
             parts.push(
                 if !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()) {
-                    PrereleasePart::Numeric(part.parse().ok()?)
+                    let normalized = part.trim_start_matches('0');
+                    PrereleasePart::Numeric(VersionNumber(
+                        if normalized.is_empty() {
+                            "0"
+                        } else {
+                            normalized
+                        }
+                        .to_owned(),
+                    ))
                 } else {
                     PrereleasePart::Text(part.to_owned())
                 },
@@ -260,7 +296,7 @@ fn parse_at(bytes: &[u8], start: usize) -> Option<(SemanticVersion, usize)> {
     ))
 }
 
-fn number(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
+fn number(bytes: &[u8], start: usize) -> Option<(VersionNumber, usize)> {
     let mut end = start;
     while bytes.get(end).is_some_and(u8::is_ascii_digit) {
         end += 1;
@@ -268,8 +304,19 @@ fn number(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
     if end == start {
         return None;
     }
-    let value = std::str::from_utf8(&bytes[start..end]).ok()?.parse().ok()?;
-    Some((value, end))
+    let digits = std::str::from_utf8(&bytes[start..end]).ok()?;
+    let normalized = digits.trim_start_matches('0');
+    Some((
+        VersionNumber(
+            if normalized.is_empty() {
+                "0"
+            } else {
+                normalized
+            }
+            .to_owned(),
+        ),
+        end,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -518,6 +565,8 @@ impl NativePlatform {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum BinaryResolutionError {
+    #[error("Windows npm codex.cmd shim resolution is unsupported")]
+    UnsupportedWindowsShimResolution,
     #[error("Codex npm launcher has no valid package metadata")]
     InvalidPackageMetadata,
     #[error("Codex npm launcher has an unexpected package name")]
@@ -552,6 +601,9 @@ pub fn resolve_npm_launcher(
         .is_some_and(|value| value.eq_ignore_ascii_case("bin"));
     let is_launcher = name.eq_ignore_ascii_case("codex.js")
         || (platform.is_windows() && name.eq_ignore_ascii_case("codex.cmd"));
+    if platform.is_windows() && name.eq_ignore_ascii_case("codex.cmd") {
+        return Err(BinaryResolutionError::UnsupportedWindowsShimResolution);
+    }
     if !is_launcher || !in_bin {
         return Ok(launcher.to_path_buf());
     }
@@ -780,16 +832,25 @@ pub fn decide_provider_version(snapshot: ProviderVersionSnapshot) -> ProviderVer
     let warning = snapshot
         .running_version
         .as_deref()
+        .filter(|version| !version.is_empty())
         .and_then(|version| version_warning(provider, version, VersionEvidence::Running))
         .or_else(|| {
-            snapshot.installed_version.as_deref().and_then(|version| {
-                version_warning(provider, version, VersionEvidence::LaunchedExecutable)
-            })
+            snapshot
+                .installed_version
+                .as_deref()
+                .filter(|version| !version.is_empty())
+                .and_then(|version| {
+                    version_warning(provider, version, VersionEvidence::LaunchedExecutable)
+                })
         })
         .or_else(|| {
-            snapshot.configured_version.as_deref().and_then(|version| {
-                version_warning(provider, version, VersionEvidence::ConfiguredProfile)
-            })
+            snapshot
+                .configured_version
+                .as_deref()
+                .filter(|version| !version.is_empty())
+                .and_then(|version| {
+                    version_warning(provider, version, VersionEvidence::ConfiguredProfile)
+                })
         });
     let baseline_key = parse_version(provider.tested_baseline());
     let outdated = [
@@ -807,11 +868,24 @@ pub fn decide_provider_version(snapshot: ProviderVersionSnapshot) -> ProviderVer
     });
     let status = if outdated {
         CheckStatus::Outdated
-    } else if snapshot.running_version.is_some() {
+    } else if snapshot
+        .running_version
+        .as_deref()
+        .is_some_and(|version| !version.is_empty())
+    {
         CheckStatus::Current
-    } else if snapshot.error.is_some()
-        && snapshot.installed_version.is_none()
-        && snapshot.configured_version.is_none()
+    } else if snapshot
+        .error
+        .as_deref()
+        .is_some_and(|error| !error.is_empty())
+        && snapshot
+            .installed_version
+            .as_deref()
+            .is_none_or(str::is_empty)
+        && snapshot
+            .configured_version
+            .as_deref()
+            .is_none_or(str::is_empty)
     {
         CheckStatus::Error
     } else {
@@ -819,7 +893,7 @@ pub fn decide_provider_version(snapshot: ProviderVersionSnapshot) -> ProviderVer
     };
     let message = warning
         .map(|warning| warning.message)
-        .or(snapshot.running_note)
+        .or_else(|| snapshot.running_note.filter(|note| !note.is_empty()))
         .or_else(|| {
             matches!(status, CheckStatus::Unknown | CheckStatus::Error)
                 .then(|| "Could not determine a provider CLI version.".to_owned())
@@ -1094,22 +1168,22 @@ mod tests {
         assert_eq!(
             parse_version("v1.2.3-rc.11"),
             Some(SemanticVersion {
-                major: 1,
-                minor: 2,
-                patch: 3,
+                major: super::VersionNumber("1".to_owned()),
+                minor: super::VersionNumber("2".to_owned()),
+                patch: super::VersionNumber("3".to_owned()),
                 prerelease: Some(vec![
                     super::PrereleasePart::Text("rc".to_owned()),
-                    super::PrereleasePart::Numeric(11),
+                    super::PrereleasePart::Numeric(super::VersionNumber("11".to_owned())),
                 ]),
             })
         );
     }
 
     #[test]
-    fn malformed_or_overflowing_versions_are_not_comparable() {
+    fn malformed_versions_are_not_comparable() {
         assert!(parse_version("1.2").is_none());
         assert!(parse_version("x01.2.3").is_some());
-        assert!(parse_version("999999999999999999999999.2.3").is_none());
+        assert!(parse_version("999999999999999999999999.2.3").is_some());
         assert!(parse_version("1.2.3-").is_none());
     }
 

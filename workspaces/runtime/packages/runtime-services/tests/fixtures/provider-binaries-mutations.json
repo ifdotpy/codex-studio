@@ -48,5 +48,47 @@
       }
     ],
     "witnesses": ["hashes: canonical bundle digest matches the Python oracle"]
+  },
+  {
+    "id": "PB05",
+    "description": "sort large core integers as plain strings",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "self.0\n            .len()\n            .cmp(&other.0.len())\n            .then_with(|| self.0.cmp(&other.0))",
+        "after": "self.0.cmp(&other.0)"
+      }
+    ],
+    "witnesses": [
+      "comparisons: Python-sized core and prerelease integers preserve numeric order"
+    ]
+  },
+  {
+    "id": "PB06",
+    "description": "reverse explicit candidate discovery precedence",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": ".chain(inputs.explicit_path)\n            .chain(inputs.path_lookup)",
+        "after": ".chain(inputs.path_lookup)\n            .chain(inputs.explicit_path)"
+      }
+    ],
+    "witnesses": [
+      "discovery: explicit runtime path precedes command lookup and PATH entries"
+    ]
+  },
+  {
+    "id": "PB07",
+    "description": "accept a companion symlink outside the native bundle directory",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "if identity.path.parent() != Some(directory) {",
+        "after": "if false && identity.path.parent() != Some(directory) {"
+      }
+    ],
+    "witnesses": [
+      "identity: symlinked companion must resolve inside the binary source directory"
+    ]
   }
 ]

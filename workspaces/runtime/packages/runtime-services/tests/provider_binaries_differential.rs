@@ -1,11 +1,18 @@
-use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::fs::{PermissionsExt, symlink};
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+use std::fs;
+use std::path::{Path, PathBuf};
 use studio_runtime_services::provider_binaries::{
-    Provider, ProviderVersionInput, ProviderVersionSnapshot, SemanticVersion, VersionEvidence,
-    VersionSource, bundle_digest, compare_versions, decide_provider_version, parse_native_version,
-    parse_version, version_warning,
+    BinaryIdentityError, BinaryResolutionError, DiscoveryInputs, NativePlatform, Provider,
+    ProviderVersionInput, ProviderVersionSnapshot, SemanticVersion, VersionEvidence, VersionSource,
+    binary_file_identity, bundle_digest, companion_identities, compare_versions,
+    decide_provider_version, discovery_paths, parse_native_version, parse_version,
+    resolve_npm_launcher, version_warning,
 };
 
 #[test]
@@ -19,7 +26,7 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
     let source = manifest.join("../../apps/server/src");
     let corpus_path = manifest.join("tests/fixtures/provider-binary-versions.json");
     let script = manifest.join("tests/provider_binaries_oracle.py");
-    let output = Command::new(python_executable())
+    let output = Command::new(python_executable(&source))
         .arg(script)
         .arg(source)
         .arg(&corpus_path)
@@ -36,10 +43,10 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
         &std::fs::read(corpus_path).expect("provider version corpus readable"),
     )
     .expect("provider version corpus JSON");
+    let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
 
-    let parsed = corpus["versions"]
-        .as_array()
-        .expect("version corpus")
+    let versions = corpus_family(&corpus, "versions", "fullVersions", full);
+    let parsed = versions
         .iter()
         .map(|value| {
             value
@@ -58,9 +65,8 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
         "parsed version corpus"
     );
 
-    let comparisons = corpus["comparisons"]
-        .as_array()
-        .expect("comparison corpus")
+    let comparison_cases = corpus_family(&corpus, "comparisons", "fullComparisons", full);
+    let comparisons = comparison_cases
         .iter()
         .map(|case| {
             let source = match case["source"].as_str() {
@@ -90,7 +96,7 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
         "update notices"
     );
 
-    let cases = corpus["diagnostics"].as_array().expect("diagnostic corpus");
+    let cases = corpus_family(&corpus, "diagnostics", "fullDiagnostics", full);
     let diagnostics = cases
         .iter()
         .map(|case| {
@@ -176,9 +182,8 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
         "tested-version warnings"
     );
 
-    let native_versions = corpus["nativeVersions"]
-        .as_array()
-        .expect("native version corpus")
+    let native_version_cases = corpus_family(&corpus, "nativeVersions", "fullNativeVersions", full);
+    let native_versions = native_version_cases
         .iter()
         .map(|value| {
             value
@@ -217,6 +222,78 @@ fn provider_version_core_matches_the_python_oracle_corpus() {
     );
 }
 
+fn corpus_family(corpus: &Value, key: &str, full_key: &str, full: bool) -> Vec<Value> {
+    let mut cases = corpus[key].as_array().expect("corpus family").clone();
+    if full {
+        cases.extend(
+            corpus[full_key]
+                .as_array()
+                .expect("full corpus family")
+                .iter()
+                .cloned(),
+        );
+    }
+    cases
+}
+
+#[test]
+fn provider_binary_discovery_keeps_precedence_and_deduplicates_paths() {
+    let paths = discovery_paths(DiscoveryInputs {
+        pinned_path: None,
+        explicit_path: Some(PathBuf::from("explicit")),
+        path_lookup: Some(PathBuf::from("lookup")),
+        path_entries: vec![PathBuf::from("path"), PathBuf::from("lookup")],
+        chatgpt_bundle: Some(PathBuf::from("bundle")),
+    });
+    assert_eq!(
+        paths,
+        ["explicit", "lookup", "path", "bundle"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_binary_identity_rejects_a_companion_symlink_outside_the_bundle() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let bundle = root.path().join("bundle");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&bundle).expect("bundle directory");
+    fs::create_dir_all(&outside).expect("outside directory");
+    let binary = bundle.join("codex");
+    let external_companion = outside.join("codex-code-mode-host");
+    fs::write(&binary, "fake binary").expect("fake binary bytes");
+    fs::write(&external_companion, "fake companion").expect("fake companion bytes");
+    for path in [&binary, &external_companion] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("fake executable permission");
+    }
+    symlink(&external_companion, bundle.join("codex-code-mode-host"))
+        .expect("external companion symlink");
+    assert!(binary_file_identity(&binary).is_ok());
+    assert_eq!(
+        companion_identities(&binary, NativePlatform::LinuxX64).err(),
+        Some(BinaryIdentityError::CompanionOutsideSource(
+            "codex-code-mode-host"
+        ))
+    );
+}
+
+#[test]
+fn windows_npm_cmd_shim_reports_the_named_unsupported_outcome() {
+    assert_eq!(
+        resolve_npm_launcher(
+            Path::new("/fixture/AppData/Roaming/npm/codex.cmd"),
+            b"{}",
+            &[],
+            NativePlatform::WindowsX64,
+        ),
+        Err(BinaryResolutionError::UnsupportedWindowsShimResolution)
+    );
+}
+
 fn version_key_json(version: SemanticVersion) -> Value {
     let is_release = version.prerelease.is_none();
     let prerelease = version.prerelease.unwrap_or_else(|| {
@@ -226,7 +303,7 @@ fn version_key_json(version: SemanticVersion) -> Value {
         .into_iter()
         .map(|part| match part {
             studio_runtime_services::provider_binaries::PrereleasePart::Numeric(value) => {
-                json!([0, value])
+                json!([0, value.as_str()])
             }
             studio_runtime_services::provider_binaries::PrereleasePart::Text(value) => {
                 json!([1, value])
@@ -234,9 +311,9 @@ fn version_key_json(version: SemanticVersion) -> Value {
         })
         .collect::<Vec<_>>();
     json!([
-        version.major,
-        version.minor,
-        version.patch,
+        version.major.as_str(),
+        version.minor.as_str(),
+        version.patch.as_str(),
         is_release,
         parts
     ])
@@ -270,8 +347,6 @@ fn optional_string(case: &Value, field: &str) -> Option<String> {
     case[field].as_str().map(str::to_owned)
 }
 
-fn python_executable() -> PathBuf {
-    std::env::var_os("CODEX_AGENTS_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python3"))
+fn python_executable(source: &std::path::Path) -> PathBuf {
+    prepared_python::prepared_python(source)
 }
