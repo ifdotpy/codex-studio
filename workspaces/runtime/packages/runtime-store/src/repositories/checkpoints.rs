@@ -236,7 +236,7 @@ impl CheckpointsRepository {
             "threadId": agent.get("threadId"),
             "cwd": agent.get("cwd"),
         });
-        let operation = json!({
+        let mut operation = json!({
             "id": operation_id,
             "kind": kind.as_str(),
             "agent": expected.agent.id,
@@ -247,6 +247,9 @@ impl CheckpointsRepository {
             "phase": "capture_pending",
             "created": now,
         });
+        if kind == CaptureKind::Turn {
+            operation["completionSource"] = completion_source(&current.agent.record);
+        }
         transaction.execute(
             "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
             params![operation_id, serde_json::to_string(&operation)?],
@@ -321,7 +324,11 @@ impl CheckpointsRepository {
             "threadId": agent.get("threadId"),
             "cwd": agent.get("cwd"),
         });
-        if object.get("source") != Some(&source) {
+        if object.get("source") != Some(&source)
+            || (object.get("kind").and_then(Value::as_str) == Some("checkpoint")
+                && object.get("completionSource")
+                    != Some(&completion_source(&current.agent.record)))
+        {
             return Ok(false);
         }
         object.insert(
@@ -367,7 +374,10 @@ impl CheckpointsRepository {
         })?;
         if agent_record.get("id").and_then(Value::as_str) != Some(agent_id)
             || operation_record.get("id").and_then(Value::as_str) != Some(operation_id)
-            || operation_id.split_once(':').map(|(_, suffix)| suffix) != Some(id)
+            || operation_record
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_none_or(|kind| operation_id.strip_prefix(&format!("{kind}:")) != Some(id))
             || checkpoint.get("historyParent").and_then(Value::as_str) != expected_parent_id
             || agent_record
                 .get("workspaceReservationId")
@@ -385,6 +395,15 @@ impl CheckpointsRepository {
             || operation_record.get("phase").and_then(Value::as_str) != Some("capture_running")
             || operation_record.get("agent").and_then(Value::as_str) != Some(agent_id)
             || checkpoint.get("agent").and_then(Value::as_str) != Some(agent_id)
+            || operation_record.get("epoch") != agent_record.get("epoch")
+            || operation_record.get("source")
+                != Some(&json!({
+                    "accountKey": agent_record.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
+                    "threadId": agent_record.get("threadId"), "cwd": agent_record.get("cwd"),
+                }))
+            || (operation_record.get("kind").and_then(Value::as_str) == Some("checkpoint")
+                && operation_record.get("completionSource")
+                    != Some(&completion_source(&agent.record)))
         {
             return Ok(false);
         }
@@ -700,6 +719,33 @@ impl CheckpointsRepository {
         }
         Ok(())
     }
+}
+
+// Fields which invalidate a completed-turn callback, excluding its own reservation.
+fn completion_source(agent: &Value) -> Value {
+    const FIELDS: &[&str] = &[
+        "id",
+        "epoch",
+        "cwd",
+        "accountKey",
+        "threadId",
+        "lastCompletedTurn",
+        "startAttempt",
+        "inFlight",
+        "turnId",
+        "autoWake",
+        "status",
+        "deletedAt",
+        "agentArchive",
+        "imageWorkspace",
+        "worktreeReady",
+    ];
+    Value::Object(
+        FIELDS
+            .iter()
+            .filter_map(|key| agent.get(*key).map(|v| ((*key).into(), v.clone())))
+            .collect(),
+    )
 }
 
 fn same_workspace_activity(current: &WorkspaceSnapshot, expected: &WorkspaceSnapshot) -> bool {
