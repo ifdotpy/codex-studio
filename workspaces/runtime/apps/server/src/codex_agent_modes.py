@@ -9,11 +9,11 @@ if TYPE_CHECKING:
     from codex_runtime import Runtime
 
 DEFAULT_SUBAGENT_CONCURRENCY = 32
-MAX_SUBAGENT_CONCURRENCY = 512
+MAX_SUBAGENT_CONCURRENCY = 2048
 DEFAULT_MAX_TEAM_AGENTS = 64
-MAX_TEAM_AGENTS = 1024
 LEAD_TEAM_RECORDS = 1
 QUEUED_WORKER_HEADROOM = 1
+MAX_TEAM_AGENTS = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS + QUEUED_WORKER_HEADROOM
 DEFAULT_GLOBAL_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS
 CONCURRENCY_SCHEMA_VERSION = 2
 
@@ -79,7 +79,7 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         raise ValueError('Change subagent concurrency separately from execution settings')
     revision, request = data.get('expected_mode_revision'), data.get('request_id')
     if type(limit) is not int or not 0 <= limit <= MAX_SUBAGENT_CONCURRENCY:
-        raise ValueError('Subagent concurrency must be an integer from 0 to 512')
+        raise ValueError(f'Subagent concurrency must be an integer from 0 to {MAX_SUBAGENT_CONCURRENCY}')
     if type(revision) is not int or revision < 0:
         raise ValueError('A nonnegative expected mode revision is required')
     if not isinstance(request, str) or not 1 <= len(request) <= 200:

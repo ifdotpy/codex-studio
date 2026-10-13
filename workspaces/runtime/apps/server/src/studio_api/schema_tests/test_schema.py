@@ -349,6 +349,26 @@ class SchemaContractTests(unittest.TestCase):
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
         accepted_loosenings = {
+            ("/components/schemas/ConfigureRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/ConfigureRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/components/schemas/ConversationRequest/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1conversation/post/requestBody/content/application~1json/schema/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
             ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
                 ("absent from closed object", "accepted property", "Adds the deleted state to the draft input DTO."),
             ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):

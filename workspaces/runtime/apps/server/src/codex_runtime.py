@@ -11369,7 +11369,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             limit = data.get("maxAgents", root["maxAgents"])
             budget = data.get("tokenBudget", root["tokenBudget"])
             if type(limit) is not int or not 1 <= limit <= MAX_TEAM_AGENTS:
-                raise ValueError("Team size must be an integer from 1 to 1024")
+                raise ValueError(f"Team size must be an integer from 1 to {MAX_TEAM_AGENTS}")
             if budget is not None and (type(budget) is not int or budget <= 0):
                 raise ValueError("Token budget must be positive or null")
             for a in self.team_agents(db, key, include_deleted=True):

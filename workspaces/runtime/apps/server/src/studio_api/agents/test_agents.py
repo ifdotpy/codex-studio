@@ -12,6 +12,7 @@ from .models import (
     AccountTransferRequest,
     CapacityRetryRequest,
     ConversationRequest,
+    ConfigureRequest,
     CreateAgentRequest,
     CreateLeadRequest,
     ImportRequest,
@@ -38,6 +39,28 @@ class AgentRequestModelTests(unittest.TestCase):
             body.model_dump(mode="json", exclude_unset=True),
             {"id": "12345678-1234-4234-8234-123456789abc", "previous": "prior", "reuse_empty": False},
         )
+
+    def test_subagent_limits_accept_2048_and_team_headroom_2050(self) -> None:
+        lead = CreateAgentRequest.model_validate_json(
+            '{"prompt":"x","concurrency":2048,"maxAgents":2050}'
+        )
+        conversation = ConversationRequest.model_validate_json(
+            '{"id":"lead","subagent_concurrency":2048}'
+        )
+        configure = ConfigureRequest.model_validate_json(
+            '{"id":"lead","concurrency":2048,"maxAgents":2050}'
+        )
+        self.assertEqual((lead.concurrency, lead.maxAgents), (2048, 2050))
+        self.assertEqual(conversation.subagent_concurrency, 2048)
+        self.assertEqual((configure.concurrency, configure.maxAgents), (2048, 2050))
+        for model, body in (
+            (CreateAgentRequest, '{"prompt":"x","concurrency":2049}'),
+            (ConversationRequest, '{"id":"lead","subagent_concurrency":2049}'),
+            (ConfigureRequest, '{"id":"lead","concurrency":2049}'),
+            (CreateAgentRequest, '{"prompt":"x","concurrency":2048,"maxAgents":2051}'),
+        ):
+            with self.subTest(model=model.__name__, body=body), self.assertRaises(ValidationError):
+                model.model_validate_json(body)
 
     def test_conversation_settings_preserve_explicit_null(self) -> None:
         body = ConversationRequest.model_validate_json(

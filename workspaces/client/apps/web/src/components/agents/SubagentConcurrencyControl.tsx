@@ -7,7 +7,7 @@ import "./subagent-concurrency-control.css";
 
 const DEFAULT_CONCURRENCY = 32;
 const MIN_CONCURRENCY = 0;
-const MAX_CONCURRENCY = 512;
+const MAX_CONCURRENCY = 2048;
 const CONCURRENCY_HELP =
   "0 disables subagents. The lead does not count. Extra work waits in the queue.";
 const UNSUPPORTED_HELP =
@@ -221,7 +221,7 @@ function ScopedConcurrencyControl({
       return;
     const validDraft = validConcurrency(target);
     if (!stored.pending && (!validDraft || target === confirmed.concurrency)) {
-      if (!validDraft) setError("Enter a whole number from 0 to 512.");
+      if (!validDraft) setError("Enter a whole number from 0 to 2048.");
       else dirty.current = false;
       return;
     }
