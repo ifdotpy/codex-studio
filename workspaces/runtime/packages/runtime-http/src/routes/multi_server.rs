@@ -323,6 +323,7 @@ inventory::submit! {
             "remote-transport/owner-lookup",
             "remote-transport/signed-server-requests",
             "remote-transport/tailscale-discovery",
+            "server-credentials/platform-support",
         ],
     }
 }
