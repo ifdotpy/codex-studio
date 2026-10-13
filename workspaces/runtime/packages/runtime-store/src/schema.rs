@@ -231,6 +231,11 @@ pub fn python_json_compact(value: &Value) -> String {
     python_json_separated(value, ",", ":", false)
 }
 
+/// Python's sorted UTF-8 JSON with the default spaced separators.
+pub fn python_json_unicode(value: &Value) -> String {
+    python_json_separated(value, ", ", ": ", false)
+}
+
 /// Sorted ASCII JSON with explicitly selected separators for provider catalog digests.
 pub fn python_json_with_separators(value: &Value, item: &str, key: &str) -> String {
     python_json_separated(value, item, key, true)
