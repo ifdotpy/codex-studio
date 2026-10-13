@@ -180,6 +180,78 @@ pub fn sha256_hex(value: &[u8]) -> String {
     result
 }
 
+/// Python-compatible sorted-key JSON used for persisted signatures.
+pub fn python_json(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) => value.to_string(),
+        Value::Number(number) if number.is_f64() => {
+            let text = format!("{:?}", number.as_f64().unwrap_or_default());
+            if let Some((mantissa, exponent)) = text.split_once('e') {
+                let exponent: i32 = exponent.parse().unwrap_or_default();
+                format!(
+                    "{mantissa}e{}{exponent:02}",
+                    if exponent < 0 { "-" } else { "+" }
+                )
+            } else {
+                text
+            }
+        }
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => python_quote(text),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(python_json)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+}
+
+fn python_quote(value: &str) -> String {
+    let mut output = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            c if c < ' ' || c == '\u{7f}' => output.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c as u32 > 0x7f => {
+                let n = c as u32;
+                if n <= 0xffff {
+                    output.push_str(&format!("\\u{n:04x}"));
+                } else {
+                    let n = n - 0x10000;
+                    output.push_str(&format!(
+                        "\\u{:04x}\\u{:04x}",
+                        0xd800 + (n >> 10),
+                        0xdc00 + (n & 0x3ff)
+                    ));
+                }
+            }
+            c => output.push(c),
+        }
+    }
+    output.push('"');
+    output
+}
+
 fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_json::Error> {
     let mut value = if deleted {
         Map::new()
