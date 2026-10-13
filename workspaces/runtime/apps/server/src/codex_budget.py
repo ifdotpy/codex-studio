@@ -147,8 +147,11 @@ def _capture(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord
 def budget_capture(db: sqlite3.Connection, a: "AgentRecord", p: dict[str, Any], *,
                    at: float | None = None, source: str = 'live') -> int:
     state = _state(db, a)
+    previous = json.dumps(state, sort_keys=True)
     _capture(db, a, state, p, time.time() if at is None else at, source)
-    return _save(db, a, state)['spent']
+    if json.dumps(state, sort_keys=True) != previous:
+        return _save(db, a, state)['spent']
+    return state['spent']
 
 
 def _coverage(runtime: "Runtime", db: sqlite3.Connection, a: "AgentRecord",

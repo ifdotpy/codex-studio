@@ -25,6 +25,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 import codex_analytics
 import codex_analytics_history as history
+import codex_runtime
 
 
 class Runtime(fixture.Runtime):
@@ -136,7 +137,19 @@ class HistoryLockOrder(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM analytics_history').fetchone()[0], 0)
         self.assertTrue(self.runtime.analytics_history_step())
         # The next step copies the newly stored analytics receipts to the ledger.
-        self.assertTrue(self.runtime.analytics_history_step())
+        writer_sql = []
+        original_connect = codex_runtime.sqlite_connect
+        def connect(*args, **options):
+            db = original_connect(*args, **options)
+            if options.get('site') == 'Runtime.db':
+                db.set_trace_callback(writer_sql.append)
+            return db
+        with patch.object(codex_runtime, 'sqlite_connect', side_effect=connect):
+            self.assertTrue(self.runtime.analytics_history_step())
+        self.assertFalse(any(sql.lower().startswith('insert into runtime_budget values')
+                             for sql in writer_sql))
+        self.assertFalse(any(sql.lower().startswith('update runtime_agents set record=json_set')
+                             for sql in writer_sql))
         self.assertFalse(self.runtime.analytics_history_step())
         budget, rows, usage, checkpoint = self.usage()
         self.assertEqual(budget['spent'], 100)

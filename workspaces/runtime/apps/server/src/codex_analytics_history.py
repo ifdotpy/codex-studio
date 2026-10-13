@@ -779,7 +779,8 @@ class AnalyticsHistoryMixin:
                         if (current.get('threadId') != a['threadId']
                                 or current.get('accountKey', 'default') != a.get('accountKey', 'default')):
                             return False
-                        budget_values[index] = budget_capture(budget_db, event_agent, p, at=at, source='rollout')
+                        budget_values[index] = budget_capture(
+                            budget_db, event_agent, p, at=at, source='rollout')
             with self.analytics_history_db() as db:
                 current = self.agent(a["id"], db)
                 if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
