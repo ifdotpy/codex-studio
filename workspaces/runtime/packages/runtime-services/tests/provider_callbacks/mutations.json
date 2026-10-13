@@ -62,5 +62,25 @@
         "after": "lifecycle::settle(record, &value, true)?;"
       }
     ]
+  },
+  {
+    "id": "resolver-ambiguity",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/messages.rs",
+    "edits": [
+      {
+        "before": "if matches.next().is_some() {",
+        "after": "if false && matches.next().is_some() {"
+      }
+    ]
+  },
+  {
+    "id": "resolver-scope",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/messages.rs",
+    "edits": [
+      {
+        "before": "if allowed {",
+        "after": "if true || allowed {"
+      }
+    ]
   }
 ]

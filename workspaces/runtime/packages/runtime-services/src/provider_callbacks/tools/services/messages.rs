@@ -226,28 +226,7 @@ pub(super) fn peers(
         ));
     }
     let actor = snapshot.actor();
-    let root = text(actor, "rootId")?;
-    let mut visible = Vec::new();
-    for agent in records::all(tx, "runtime_agents")? {
-        if studio_runtime_store::truthy(agent.get("deletedAt")) {
-            continue;
-        }
-        let mut ids = vec![text(actor, "id")?, text(&agent, "id")?];
-        ids.sort();
-        let room = json!({"id":"peer-check","kind":"private","members":ids});
-        let allowed = if agent["rootId"] == root {
-            true
-        } else {
-            match authorize(tx, text(&agent, "id")?, text(actor, "id")?, &room) {
-                Ok(()) => true,
-                Err(CallbackError::Invalid(_)) => false,
-                Err(error) => return Err(error),
-            }
-        };
-        if allowed {
-            visible.push(agent);
-        }
-    }
+    let visible = visible_agents(tx, snapshot)?;
     let mut agents = visible
         .into_iter()
         .map(|a| {
@@ -318,4 +297,60 @@ pub(super) fn peers(
         result["parent"] = actor["parentId"].clone();
     }
     Ok(result)
+}
+
+/// Visibility is shared by discovery and prefix resolution; hidden agents never
+/// create ambiguity or become candidates merely because their IDs match.
+fn visible_agents(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+) -> Result<Vec<Value>, CallbackError> {
+    let actor = snapshot.actor();
+    let mut visible = Vec::new();
+    for agent in records::all(tx, "runtime_agents")? {
+        if studio_runtime_store::truthy(agent.get("deletedAt")) {
+            continue;
+        }
+        let mut ids = vec![text(actor, "id")?, text(&agent, "id")?];
+        ids.sort();
+        let room = json!({"id":"peer-check","kind":"private","members":ids});
+        let allowed = if agent["rootId"] == actor["rootId"] {
+            true
+        } else {
+            match authorize(tx, text(&agent, "id")?, text(actor, "id")?, &room) {
+                Ok(()) => true,
+                Err(CallbackError::Invalid(_)) => false,
+                Err(error) => return Err(error),
+            }
+        };
+        if allowed {
+            visible.push(agent);
+        }
+    }
+    Ok(visible)
+}
+
+pub(super) fn resolve_agent(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    supplied: &str,
+) -> Result<String, CallbackError> {
+    if supplied.chars().count() < 8 {
+        return Err(CallbackError::Invalid(
+            "Too short agent ID; use at least 8 characters",
+        ));
+    }
+    let mut matches = visible_agents(tx, snapshot)?
+        .into_iter()
+        .filter_map(|agent| agent["id"].as_str().map(str::to_owned))
+        .filter(|id| id.starts_with(supplied));
+    let first = matches.next().ok_or(CallbackError::Invalid(
+        "Unknown agent ID in this caller's scope",
+    ))?;
+    if matches.next().is_some() {
+        return Err(CallbackError::Invalid(
+            "Ambiguous agent ID; use a full ID from orchestration_peers",
+        ));
+    }
+    Ok(first)
 }

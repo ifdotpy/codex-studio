@@ -767,3 +767,97 @@ fn provider_callbacks_python_dynamic_read_and_title() {
         );
     }
 }
+
+#[test]
+fn provider_callbacks_python_visible_id_resolution() {
+    let (_dir, store, context) = fixture();
+    for (index, case) in template().value["resolutions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        for (tool, args) in [
+            (
+                "orchestration_task",
+                json!({"action":"list","owner":case["supplied"]}),
+            ),
+            (
+                "orchestration_message",
+                json!({"target":case["supplied"],"text":"Resolved within caller scope"}),
+            ),
+        ] {
+            let count = || {
+                store
+                    .read()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM runtime_chat_messages", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap()
+            };
+            let before = count();
+            let frame = call(&context, &format!("resolver-{index}-{tool}"), tool, args);
+            let result = reply(dispatch(&store, &context, &frame, 20.0).unwrap());
+            if let Some(expected) = case.get("result") {
+                assert_eq!(body(&result)["success"], true, "{case}: {result:?}");
+                if tool == "orchestration_message" {
+                    let value = tool_value(&result);
+                    assert_eq!(
+                        value["deliveries"]
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .collect::<Vec<_>>(),
+                        vec![expected.as_str().unwrap()]
+                    );
+                    assert_eq!(count(), before + 1);
+                }
+            } else {
+                assert_eq!(body(&result)["success"], false, "{case}");
+                let python_error = case["error"].as_str().unwrap();
+                let label = python_error.split(" agent ID").next().unwrap();
+                assert!(
+                    body(&result)["contentItems"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains(label),
+                    "{case}: {result:?}"
+                );
+                assert_eq!(count(), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_callbacks_existing_python_card_uses_stored_identity() {
+    let (_dir, store, context) = fixture();
+    let card = &template().value["legacyCard"];
+    let result = answer(
+        &store,
+        &context,
+        card["id"].as_str().unwrap(),
+        AnswerAuthority::User,
+        &json!({"decision":"decline"}),
+        20.0,
+    )
+    .unwrap();
+    assert_eq!(
+        result.identity.rpc_id,
+        serde_json::from_value(card["rpcId"].clone()).unwrap()
+    );
+    assert_eq!(body(&result), &json!({"decision":"decline"}));
+    delivery(&store, &result.identity, DeliveryOutcome::Submitted).unwrap();
+    delivery(&store, &result.identity, DeliveryOutcome::Written).unwrap();
+    let status: String = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
+            [card["id"].as_str().unwrap()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "answered");
+}

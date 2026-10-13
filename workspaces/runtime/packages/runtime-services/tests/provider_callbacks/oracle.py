@@ -128,6 +128,29 @@ for index, (tool, arguments) in enumerate([
     with patch("time.time", return_value=20.0):
         runtime.dynamic(message,"default","connection")
     dynamic_cases.append({"message":message,"expected":runtime.replies[-1]["result"]})
+# Exercise the real visible-ID resolver against Python-written agents. Hidden
+# prefix collisions must not affect a caller's scope; archived rows stay hidden.
+resolver_agents = []
+for source, identity, archived in [
+    (worker, "aaaaaaaa-1111-4111-8111-111111111111", False),
+    (worker, "aaaaaaaa-2222-4222-8222-222222222222", False),
+    (foreign, "bbbbbbbb-1111-4111-8111-111111111111", False),
+    (worker, "bbbbbbbb-2222-4222-8222-222222222222", False),
+    (worker, "cccccccc-1111-4111-8111-111111111111", True),
+]:
+    actor = {**source, "id":identity, "deletedAt":15.0 if archived else None}
+    if source is foreign:
+        actor["rootId"] = identity
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "agents", actor)
+    resolver_agents.append(actor)
+resolutions = []
+for supplied in [worker["id"][:8], resolver_agents[0]["id"], "aaaaaaaa", "aaaaaaa", "ffffffff", foreign["id"][:8], "bbbbbbbb", "cccccccc"]:
+    try:
+        result = runtime.resolve_visible_agent_id(lead["id"], supplied)
+        resolutions.append({"supplied":supplied,"result":result})
+    except ValueError as error:
+        resolutions.append({"supplied":supplied,"error":str(error)})
 # Leave only the requested admission corpus in the cloned starting state.
 with runtime.lock, runtime.db() as db:
     for case in [*dynamic_cases,{"message":warmup}]:
@@ -138,8 +161,13 @@ with runtime.lock, runtime.db() as db:
 # Python-written rows are the Rust snapshot source. No hand-built Rust snapshot.
 with runtime.lock, runtime.db() as db:
     db.execute("DELETE FROM runtime_requests")
+    legacy_card = {"id":"python-written-card", "rpcId":"legacy-rpc", "method":methods[0],
+                   "params":{"threadId":lead["threadId"],"turnId":lead["turnId"]},
+                   "agent":lead["id"],"accountKey":"default","connectionId":"connection", "epoch":3,
+                   "supervisor":{"generation":7}, "status":"pending","createdAt":10.0}
+    runtime.put(db,"requests",legacy_card)
     for actor in [lead,worker,foreign]:
         runtime.put(db,"agents",actor)
     db.commit()
 runtime.close()
-print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"template":str(root)},ensure_ascii=False))
+print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"template":str(root)},ensure_ascii=False))

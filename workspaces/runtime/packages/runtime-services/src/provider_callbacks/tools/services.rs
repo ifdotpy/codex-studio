@@ -67,6 +67,26 @@ pub(super) fn execute(
     if studio_runtime_store::truthy(actor.get("remoteOrigin")) && name != "orchestration_request" {
         return Err(CallbackError::Dependency("multi-server/worker-call"));
     }
+    let mut resolved_args = args.clone();
+    let field = match kind {
+        ToolKind::Message => args["target"]
+            .as_str()
+            .filter(|target| {
+                !matches!(*target, "user" | "parent" | "lead" | "broadcast" | "all")
+                    && !target.starts_with("remote:")
+                    && !target.starts_with("federated:")
+            })
+            .map(|_| "target"),
+        ToolKind::Task => args["owner"]
+            .as_str()
+            .filter(|owner| !owner.is_empty())
+            .map(|_| "owner"),
+        _ => None,
+    };
+    if let Some(field) = field {
+        resolved_args[field] = json!(messages::resolve_agent(tx, snapshot, text(args, field)?)?);
+    }
+    let args = &resolved_args;
     match kind {
         ToolKind::Request => Ok(tool_requests::execute(
             tx,
