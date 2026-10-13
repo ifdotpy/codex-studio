@@ -135,3 +135,28 @@ fn missing_native_and_workspace_effects_produce_no_decision() {
         );
     }
 }
+
+#[test]
+fn malformed_assignment_fields_cannot_bypass_archive_blockers() {
+    let base = corpus()
+        .into_iter()
+        .find(|case| case["name"] == "unassign")
+        .expect("assignment case")["records"]
+        .clone();
+    for (field, value) in [
+        ("owner", json!(true)),
+        ("version", json!("2")),
+        ("version", Value::Null),
+        ("releases", json!({})),
+        ("releases", Value::Null),
+    ] {
+        let mut records = base.clone();
+        records["tables"]["runtime_work"][0][field] = value;
+        let result =
+            ManagementSnapshot::from_records(serde_json::from_value(records).expect("rows"));
+        assert!(
+            matches!(result,Err(ManagementError::Stored { table,id }) if table=="runtime_work" && id=="work"),
+            "{field}"
+        );
+    }
+}
