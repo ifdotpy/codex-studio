@@ -1,5 +1,7 @@
 #[cfg(unix)]
 mod claude_login;
+#[cfg(unix)]
+mod io_runtime;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -102,6 +104,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_account_driver(account_driver.clone());
     #[cfg(unix)]
+    let io_runtime = io_runtime::IoRuntime::start(store.clone())?;
+    #[cfg(unix)]
+    {
+        state = state.with_terminal_driver(io_runtime.terminal_driver());
+    }
+    #[cfg(unix)]
     claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;
     let sync_changes = state.sync_changes_handle();
     let shutdown_state = state.clone();
@@ -113,13 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await;
-    let terminal_state = shutdown_state.clone();
-    let terminal_cleanup =
-        tokio::task::spawn_blocking(move || terminal_state.close_terminal_sessions())
-            .await
-            .map_err(|error| format!("terminal shutdown worker failed: {error}"))?;
-    sync_changes.close();
+    #[cfg(unix)]
+    let terminal_cleanup = tokio::task::spawn_blocking(move || io_runtime.shutdown())
+        .await
+        .map_err(|error| format!("terminal shutdown worker failed: {error}"))?;
+    #[cfg(unix)]
     terminal_cleanup?;
+    sync_changes.close();
     shutdown_state.shutdown_services().await?;
     serve_result?;
     Ok(())
