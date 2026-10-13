@@ -1,0 +1,6072 @@
+[
+  {
+    "id": "cold",
+    "family": "context",
+    "fast": true
+  },
+  {
+    "id": "warm",
+    "family": "context",
+    "fast": true,
+    "prior": {}
+  },
+  {
+    "id": "undelivered",
+    "family": "context",
+    "fast": true,
+    "prior": {},
+    "history": "undelivered"
+  },
+  {
+    "id": "uncertain",
+    "family": "context",
+    "fast": false,
+    "prior": {},
+    "history": "uncertain",
+    "receipt": {
+      "outcome": {
+        "kind": "unknown"
+      }
+    }
+  },
+  {
+    "id": "compaction",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "epoch": ["thread", 1]
+      }
+    },
+    "prior": {
+      "actor": {
+        "epoch": ["thread", 0]
+      }
+    }
+  },
+  {
+    "id": "compaction-developer",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "epoch": ["thread", 1]
+      }
+    },
+    "prior": {
+      "actor": {
+        "epoch": ["thread", 0]
+      }
+    },
+    "developer": true
+  },
+  {
+    "id": "new-thread",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "epoch": ["new-thread", 0]
+      }
+    },
+    "prior": {
+      "actor": {
+        "epoch": ["thread", 0]
+      }
+    },
+    "developer": true
+  },
+  {
+    "id": "single",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "root": {
+        "concurrency": 0,
+        "mode_revision": 3
+      }
+    }
+  },
+  {
+    "id": "mode-change",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "root": {
+        "concurrency": 64,
+        "mode_revision": 1
+      }
+    },
+    "prior": {
+      "root": {
+        "concurrency": 32,
+        "mode_revision": 0
+      }
+    }
+  },
+  {
+    "id": "mode-delivered",
+    "family": "context",
+    "fast": false,
+    "prior": {},
+    "history": "undelivered",
+    "deliveredMode": true
+  },
+  {
+    "id": "mode-stale",
+    "family": "context",
+    "fast": false,
+    "snapshot": {
+      "root": {
+        "concurrency": 64,
+        "mode_revision": 2
+      }
+    },
+    "prior": {
+      "root": {
+        "concurrency": 0,
+        "mode_revision": 1
+      }
+    },
+    "history": "undelivered",
+    "deliveredMode": true
+  },
+  {
+    "id": "mode-1",
+    "family": "context",
+    "fast": false,
+    "snapshot": {
+      "root": {
+        "concurrency": 1
+      }
+    }
+  },
+  {
+    "id": "mode-512",
+    "family": "context",
+    "fast": false,
+    "snapshot": {
+      "root": {
+        "concurrency": 512
+      }
+    }
+  },
+  {
+    "id": "latest-other-epoch",
+    "family": "context",
+    "fast": false,
+    "snapshot": {
+      "delivered_manifests": [
+        {
+          "epoch": ["older-thread", 3],
+          "sequence": 99,
+          "versions": {}
+        }
+      ]
+    }
+  },
+  {
+    "id": "plan",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "plan": {
+        "id": "lead",
+        "rootId": "lead",
+        "steps": [
+          {
+            "step": "Investigate",
+            "status": "in_progress"
+          }
+        ],
+        "explanation": ""
+      }
+    }
+  },
+  {
+    "id": "plan-empty",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "plan": {
+        "id": "lead",
+        "rootId": "lead",
+        "steps": [],
+        "explanation": ""
+      }
+    }
+  },
+  {
+    "id": "plan-explanation",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "plan": {
+        "id": "lead",
+        "rootId": "lead",
+        "steps": [],
+        "explanation": "Reason"
+      }
+    }
+  },
+  {
+    "id": "plan-cleared",
+    "family": "dynamic",
+    "fast": true,
+    "prior": {
+      "plan": {
+        "id": "lead",
+        "rootId": "lead",
+        "steps": [
+          {
+            "step": "Investigate",
+            "status": "in_progress"
+          }
+        ],
+        "explanation": ""
+      }
+    }
+  },
+  {
+    "id": "plan-unchanged",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "plan": {
+        "id": "lead",
+        "rootId": "lead",
+        "steps": [
+          {
+            "step": "Investigate",
+            "status": "in_progress"
+          }
+        ],
+        "explanation": ""
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "complaint-new",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-unchanged",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    },
+    "prior": {}
+  },
+  {
+    "id": "complaint-change-status",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "in_progress",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    },
+    "prior": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-change-version",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 2,
+          "created": 2.5
+        }
+      ]
+    },
+    "prior": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-change-text",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "Updated complaint",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    },
+    "prior": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-responded",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": ["lead"],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-other-response",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": ["other"],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-resolved",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "resolved",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-declined",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "declined",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-user",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "user",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-missing-author",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": null,
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-wrong-lead",
+    "family": "dynamic",
+    "fast": false,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "other",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "complaint-user-task",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": true,
+          "response_authors": ["lead"],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "worker-context",
+    "family": "role",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "id": "worker",
+        "is_lead": false
+      }
+    }
+  },
+  {
+    "id": "role-changed",
+    "family": "role",
+    "fast": true,
+    "snapshot": {
+      "guidance": {
+        "role": "Changed role block"
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "role-empty",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "role": ""
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "role-unicode",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "role": "役割\nPlease act carefully."
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "role-large",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "role": {
+          "repeat": "role guidance\n",
+          "count": 1000
+        }
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "progress-changed",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "progress": "New progress path"
+      }
+    },
+    "prior": {}
+  },
+  {
+    "id": "progress-empty",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "progress": ""
+      }
+    }
+  },
+  {
+    "id": "worktrees-0",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": []
+    }
+  },
+  {
+    "id": "worktrees-2",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-3",
+    "family": "reminders",
+    "fast": true,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-4",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-3",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "reminder-after-compaction",
+    "family": "reminders",
+    "fast": true,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ],
+      "actor": {
+        "epoch": ["thread", 1]
+      }
+    },
+    "prior": {
+      "actor": {
+        "epoch": ["thread", 0]
+      }
+    },
+    "reminderDelivered": true
+  },
+  {
+    "id": "reminder-not-delivered",
+    "family": "reminders",
+    "fast": true,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    },
+    "prior": {},
+    "history": "undelivered"
+  },
+  {
+    "id": "worktrees-paused",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": false
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": false
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": false
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-paused-awake",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "paused",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-deleted",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": true,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": true,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": true,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-not-ready",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": false,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": false,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": false,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-wrong-root",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "other",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "other",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "other",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-active",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "active",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "active",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "active",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-failed",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "failed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "failed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "failed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "worktrees-interrupted",
+    "family": "reminders",
+    "fast": false,
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "interrupted",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "interrupted",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "interrupted",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "event-user",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "user",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-followup",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "followup",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-complaint",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-agent_message",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-child_result",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-work_review",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-work_decision",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_decision",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-radio_turn",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "radio_turn",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-monitor_exit",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "event-unknown",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "unknown",
+        "text": "plain event text"
+      }
+    ]
+  },
+  {
+    "id": "json-shape-63",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-64",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": []
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-65",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": 42
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-66",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-67",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": {}
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-68",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": ["object"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-69",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": {
+            "complaints": []
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "json-shape-70",
+    "family": "events",
+    "fast": false,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": {
+            "complaints": [
+              {
+                "complaint_id": 3
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "complaint-suppressed",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": {
+            "complaints": [
+              {
+                "complaint_id": "complaint"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "prior": {}
+  },
+  {
+    "id": "complaint-preserved",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "complaint",
+        "text": {
+          "json": {
+            "complaints": [
+              {
+                "complaint_id": "complaint"
+              }
+            ]
+          }
+        },
+        "preserve_complaint": true
+      }
+    ]
+  },
+  {
+    "id": "progress-increasing",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-decreasing",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-conflict",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1,
+            "text": "first"
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1,
+            "text": "second"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-preserved",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        },
+        "preserve_progress": true
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-invalid--1",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": -1
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-invalid-1",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": "1"
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-invalid-True",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": true
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-invalid-None",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": null
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-invalid-1.0",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1.0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-sender-",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-sender-None",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": null,
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-sender-other",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "other",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-room-",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-room-None",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": null,
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-room-other",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "other",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-progress_key-",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-progress_key-None",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": null,
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-key-progress_key-other",
+    "family": "progress",
+    "fast": false,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "other",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-interleaved",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 0
+          }
+        }
+      },
+      {
+        "kind": "user",
+        "text": "middle"
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 3
+          }
+        }
+      },
+      {
+        "kind": "agent_message",
+        "text": {
+          "json": {
+            "sender": "worker",
+            "room": "room",
+            "importance": "progress",
+            "progress_key": "topic",
+            "progress_version": 2
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-19999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 19999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-20000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 20000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-20001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 20001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-21999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 21999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-22000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 22000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-22001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 22001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-23999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 23999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-24000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 24000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-120-24001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-19999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 19999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-20000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 20000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-20001",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 20001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-21999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 21999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-22000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 22000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-22001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 22001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-23999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 23999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-24000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 24000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-30028-24001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-19999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 19999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-20000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 20000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-20001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 20001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-21999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 21999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-22000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 22000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-22001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 22001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-23999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 23999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-24000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 24000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-128512-24001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "😀",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-19999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 19999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-20000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 20000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-20001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 20001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-21999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 21999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-22000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 22000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-22001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 22001
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-23999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 23999
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-24000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 24000
+        }
+      }
+    ]
+  },
+  {
+    "id": "size-34-24001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "\"\\\n",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "unbounded-user",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "user",
+        "text": {
+          "repeat": "😀",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "unbounded-followup",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "text": {
+          "repeat": "😀",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "unbounded-work_decision",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "work_decision",
+        "text": {
+          "repeat": "😀",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "unbounded-radio_turn",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "radio_turn",
+        "text": {
+          "repeat": "😀",
+          "count": 24001
+        }
+      }
+    ]
+  },
+  {
+    "id": "batch-budget-1",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      }
+    ]
+  },
+  {
+    "id": "batch-budget-2",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      }
+    ]
+  },
+  {
+    "id": "batch-budget-3",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 9000
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 9000
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 9000
+        }
+      }
+    ]
+  },
+  {
+    "id": "batch-budget-30",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      }
+    ]
+  },
+  {
+    "id": "batch-budget-200",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 2500
+        }
+      }
+    ]
+  },
+  {
+    "id": "shared-transcript-budget",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "text": {
+          "repeat": "😀",
+          "count": 19999
+        }
+      },
+      {
+        "text": "last three"
+      },
+      {
+        "text": "retained ID, empty excerpt"
+      }
+    ]
+  },
+  {
+    "id": "result-child_result-19999",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 19999
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-work_review-19999",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 19999
+              },
+              "checks": {
+                "repeat": "x",
+                "count": 1000
+              },
+              "files": [
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file"
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-child_result-20000",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20000
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-work_review-20000",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20000
+              },
+              "checks": {
+                "repeat": "x",
+                "count": 1000
+              },
+              "files": [
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file"
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-child_result-20001",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-work_review-20001",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": {
+                "repeat": "x",
+                "count": 1000
+              },
+              "files": [
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file"
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-child_result-24000",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 24000
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "result-work_review-24000",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": "Worker",
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 24000
+              },
+              "checks": {
+                "repeat": "x",
+                "count": 1000
+              },
+              "files": [
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file",
+                "file"
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "archive-child-146",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "../unsafe",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "archive-child-147",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "archive-child-148",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": {
+              "repeat": "x",
+              "count": 201
+            },
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "archive-child-149",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker-安全",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing-result-file",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "result": {
+              "repeat": "x",
+              "count": 23000
+            },
+            "resultFile": "/fixture/saved.md"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "huge-checks",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": "short",
+              "checks": {
+                "repeat": "x",
+                "count": 23000
+              },
+              "files": [
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                },
+                {
+                  "repeat": "x",
+                  "count": 400
+                }
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "huge-identity",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "json": {
+            "id": {
+              "repeat": "x",
+              "count": 23000
+            },
+            "log": "/fixture/log",
+            "text": {
+              "repeat": "x",
+              "count": 23000
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "huge-event-id",
+    "family": "evidence",
+    "fast": false,
+    "events": [
+      {
+        "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "x",
+          "count": 24000
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachments-0",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": []
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": []
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachments-1",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": true,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachments-8",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": true,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-1",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-1",
+          "name": "file-1",
+          "size": 1024,
+          "view": {
+            "id": "asset-1",
+            "agent": "lead",
+            "image": false,
+            "name": "file-1",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-2",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-2",
+          "name": "file-2",
+          "size": 1024,
+          "view": {
+            "id": "asset-2",
+            "agent": "lead",
+            "image": true,
+            "name": "file-2",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-3",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-3",
+          "name": "file-3",
+          "size": 1024,
+          "view": {
+            "id": "asset-3",
+            "agent": "lead",
+            "image": false,
+            "name": "file-3",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-4",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-4",
+          "name": "file-4",
+          "size": 1024,
+          "view": {
+            "id": "asset-4",
+            "agent": "lead",
+            "image": true,
+            "name": "file-4",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-5",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-5",
+          "name": "file-5",
+          "size": 1024,
+          "view": {
+            "id": "asset-5",
+            "agent": "lead",
+            "image": false,
+            "name": "file-5",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-6",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-6",
+          "name": "file-6",
+          "size": 1024,
+          "view": {
+            "id": "asset-6",
+            "agent": "lead",
+            "image": true,
+            "name": "file-6",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-7",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-7",
+          "name": "file-7",
+          "size": 1024,
+          "view": {
+            "id": "asset-7",
+            "agent": "lead",
+            "image": false,
+            "name": "file-7",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": [
+            "asset-0",
+            "asset-1",
+            "asset-2",
+            "asset-3",
+            "asset-4",
+            "asset-5",
+            "asset-6",
+            "asset-7"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachments-9",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": true,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-1",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-1",
+          "name": "file-1",
+          "size": 1024,
+          "view": {
+            "id": "asset-1",
+            "agent": "lead",
+            "image": false,
+            "name": "file-1",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-2",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-2",
+          "name": "file-2",
+          "size": 1024,
+          "view": {
+            "id": "asset-2",
+            "agent": "lead",
+            "image": true,
+            "name": "file-2",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-3",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-3",
+          "name": "file-3",
+          "size": 1024,
+          "view": {
+            "id": "asset-3",
+            "agent": "lead",
+            "image": false,
+            "name": "file-3",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-4",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-4",
+          "name": "file-4",
+          "size": 1024,
+          "view": {
+            "id": "asset-4",
+            "agent": "lead",
+            "image": true,
+            "name": "file-4",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-5",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-5",
+          "name": "file-5",
+          "size": 1024,
+          "view": {
+            "id": "asset-5",
+            "agent": "lead",
+            "image": false,
+            "name": "file-5",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-6",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-6",
+          "name": "file-6",
+          "size": 1024,
+          "view": {
+            "id": "asset-6",
+            "agent": "lead",
+            "image": true,
+            "name": "file-6",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-7",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-7",
+          "name": "file-7",
+          "size": 1024,
+          "view": {
+            "id": "asset-7",
+            "agent": "lead",
+            "image": false,
+            "name": "file-7",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-8",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-8",
+          "name": "file-8",
+          "size": 1024,
+          "view": {
+            "id": "asset-8",
+            "agent": "lead",
+            "image": true,
+            "name": "file-8",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": [
+            "asset-0",
+            "asset-1",
+            "asset-2",
+            "asset-3",
+            "asset-4",
+            "asset-5",
+            "asset-6",
+            "asset-7",
+            "asset-8"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-duplicate",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": false,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0", "asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-missing",
+    "family": "attachments",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "assets": ["missing"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-cross-team",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "other",
+          "owner_root_id": "other",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "other",
+            "image": false,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ],
+      "actor": {
+        "forked_from": null
+      }
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-fork",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "other",
+          "owner_root_id": "other",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "other",
+            "image": false,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ],
+      "actor": {
+        "forked_from": "other"
+      }
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-deleted",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "other",
+          "owner_root_id": "lead",
+          "owner_deleted": true,
+          "image": false,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "other",
+            "image": false,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "text/plain",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ],
+      "actor": {
+        "forked_from": null
+      }
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user-None",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup-None",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit-None",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user-0",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": 0
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup-0",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": 0
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit-0",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": 0
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user-0.123456",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": 0.123456
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup-0.123456",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": 0.123456
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit-0.123456",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": 0.123456
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user-0.9999999",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": 0.9999999
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup-0.9999999",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": 0.9999999
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit-0.9999999",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": 0.9999999
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user--1e-06",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": -1e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup--1e-06",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": -1e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit--1e-06",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": -1e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-user-1790000000.125",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "user",
+        "metadata": {
+          "accepted_at": 1790000000.125
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-followup-1790000000.125",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "followup",
+        "metadata": {
+          "accepted_at": 1790000000.125
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-monitor_exit-1790000000.125",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "metadata": {
+          "accepted_at": 1790000000.125
+        }
+      }
+    ]
+  },
+  {
+    "id": "receipt-accepted",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "outcome": {
+        "kind": "accepted"
+      }
+    },
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "receipt-rejected",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "outcome": {
+        "kind": "rejected"
+      }
+    },
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "receipt-unknown",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "outcome": {
+        "kind": "unknown"
+      }
+    },
+    "snapshot": {
+      "workers": [
+        {
+          "id": "worker-0",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-1",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        },
+        {
+          "id": "worker-2",
+          "root_id": "lead",
+          "worktree_ready": true,
+          "deleted": false,
+          "status": "completed",
+          "auto_wake": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "receipt-wrong-operation_id",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "operation_id": "wrong"
+    }
+  },
+  {
+    "id": "receipt-wrong-actor_id",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "actor_id": "wrong"
+    }
+  },
+  {
+    "id": "receipt-wrong-epoch",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "epoch": ["other", 0]
+    }
+  },
+  {
+    "id": "receipt-wrong-event_ids",
+    "family": "acceptance",
+    "fast": true,
+    "receipt": {
+      "event_ids": ["wrong"]
+    }
+  },
+  {
+    "id": "receipt-empty-turn",
+    "family": "acceptance",
+    "fast": false,
+    "receipt": {
+      "outcome": {
+        "kind": "accepted",
+        "turn_id": ""
+      }
+    }
+  },
+  {
+    "id": "receipt-sequence--1",
+    "family": "acceptance",
+    "fast": true,
+    "current": -1
+  },
+  {
+    "id": "receipt-sequence-0",
+    "family": "acceptance",
+    "fast": true,
+    "current": 0
+  },
+  {
+    "id": "receipt-sequence-1",
+    "family": "acceptance",
+    "fast": true,
+    "current": 1
+  },
+  {
+    "id": "empty-batch",
+    "family": "validation",
+    "fast": true,
+    "events": []
+  },
+  {
+    "id": "duplicate-event",
+    "family": "validation",
+    "fast": true,
+    "events": [
+      {
+        "id": "same"
+      },
+      {
+        "id": "same"
+      }
+    ]
+  },
+  {
+    "id": "role-snapshot-diff",
+    "family": "role",
+    "fast": true,
+    "snapshot": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nUpdated line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "prior": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nGuidance line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "expectRoleDiff": true
+  },
+  {
+    "id": "role-snapshot-missing",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nUpdated line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "prior": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nGuidance line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "roleSnapshot": "missing"
+  },
+  {
+    "id": "role-snapshot-corrupt",
+    "family": "role",
+    "fast": false,
+    "snapshot": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nUpdated line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "prior": {
+      "guidance": {
+        "role": "[Studio role skill: fixture]\nSource: fixture\nGuidance line 0: complete the work carefully.\nGuidance line 1: complete the work carefully.\nGuidance line 2: complete the work carefully.\nGuidance line 3: complete the work carefully.\nGuidance line 4: complete the work carefully.\nGuidance line 5: complete the work carefully.\nGuidance line 6: complete the work carefully.\nGuidance line 7: complete the work carefully.\nGuidance line 8: complete the work carefully.\nGuidance line 9: complete the work carefully.\nGuidance line 10: complete the work carefully.\nGuidance line 11: complete the work carefully.\nGuidance line 12: complete the work carefully.\nGuidance line 13: complete the work carefully.\nGuidance line 14: complete the work carefully.\nGuidance line 15: complete the work carefully.\nGuidance line 16: complete the work carefully.\nGuidance line 17: complete the work carefully.\nGuidance line 18: complete the work carefully.\nGuidance line 19: complete the work carefully.\nGuidance line 20: complete the work carefully.\nGuidance line 21: complete the work carefully.\nGuidance line 22: complete the work carefully.\nGuidance line 23: complete the work carefully.\nGuidance line 24: complete the work carefully.\nGuidance line 25: complete the work carefully.\nGuidance line 26: complete the work carefully.\nGuidance line 27: complete the work carefully.\nGuidance line 28: complete the work carefully.\nGuidance line 29: complete the work carefully.\nGuidance line 30: complete the work carefully.\nGuidance line 31: complete the work carefully.\nGuidance line 32: complete the work carefully.\nGuidance line 33: complete the work carefully.\nGuidance line 34: complete the work carefully.\nGuidance line 35: complete the work carefully.\nGuidance line 36: complete the work carefully.\nGuidance line 37: complete the work carefully.\nGuidance line 38: complete the work carefully.\nGuidance line 39: complete the work carefully.\nGuidance line 40: complete the work carefully.\nGuidance line 41: complete the work carefully.\nGuidance line 42: complete the work carefully.\nGuidance line 43: complete the work carefully.\nGuidance line 44: complete the work carefully.\nGuidance line 45: complete the work carefully.\nGuidance line 46: complete the work carefully.\nGuidance line 47: complete the work carefully.\nGuidance line 48: complete the work carefully.\nGuidance line 49: complete the work carefully.\nGuidance line 50: complete the work carefully.\nGuidance line 51: complete the work carefully.\nGuidance line 52: complete the work carefully.\nGuidance line 53: complete the work carefully.\nGuidance line 54: complete the work carefully.\nGuidance line 55: complete the work carefully.\nGuidance line 56: complete the work carefully.\nGuidance line 57: complete the work carefully.\nGuidance line 58: complete the work carefully.\nGuidance line 59: complete the work carefully.\nGuidance line 60: complete the work carefully.\nGuidance line 61: complete the work carefully.\nGuidance line 62: complete the work carefully.\nGuidance line 63: complete the work carefully.\nGuidance line 64: complete the work carefully.\nGuidance line 65: complete the work carefully.\nGuidance line 66: complete the work carefully.\nGuidance line 67: complete the work carefully.\nGuidance line 68: complete the work carefully.\nGuidance line 69: complete the work carefully.\nGuidance line 70: complete the work carefully.\nGuidance line 71: complete the work carefully.\nGuidance line 72: complete the work carefully.\nGuidance line 73: complete the work carefully.\nGuidance line 74: complete the work carefully.\nGuidance line 75: complete the work carefully.\nGuidance line 76: complete the work carefully.\nGuidance line 77: complete the work carefully.\nGuidance line 78: complete the work carefully.\nGuidance line 79: complete the work carefully.\n[End Studio role skill]"
+      }
+    },
+    "roleSnapshot": "corrupt"
+  },
+  {
+    "id": "utf8-byte-edge-6666",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 6666
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-6667",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 6667
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-7333",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 7333
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-7334",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 7334
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-7999",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 7999
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-8000",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 8000
+        }
+      }
+    ]
+  },
+  {
+    "id": "utf8-byte-edge-8001",
+    "family": "sizes",
+    "fast": false,
+    "events": [
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "repeat": "界",
+          "count": 8001
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-range--62135596801",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": -62135596801
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-range--62135596800",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": -62135596800
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-range-253402300799",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": 253402300799
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-range-253402300800",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": 253402300800
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-range-1e+30",
+    "family": "clocks",
+    "fast": false,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": 1e30
+        }
+      }
+    ]
+  }
+]

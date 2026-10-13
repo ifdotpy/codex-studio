@@ -1,0 +1,12 @@
+[
+  {
+    "id": "canonical-context-versions",
+    "approval": "Lead decision, 2026-10-13, turn-prepare-types-1",
+    "reason": "Context versions are opaque tokens computed from recursively sorted canonical JSON. The first Rust turn of an agent may resend context blocks once after cutover. The corpus translates delivered token references between implementations and compares changed-versus-unchanged block decisions, never token spelling. JSON object key order and insignificant whitespace are normalized only in complete generated object lines; user input bubbles remain exact. A truncated parent is checked against its own fulltext prefix before normalization."
+  },
+  {
+    "id": "full-changed-role-block",
+    "approval": "Lead decision, 2026-10-13, turn-prepare-types-1",
+    "reason": "Changed role guidance is delivered as the full current block instead of a unified diff. The delivered role version still determines whether it changed. Rust needs no prior role snapshot file. The oracle runs Python context selection with this approved presentation substitution."
+  }
+]

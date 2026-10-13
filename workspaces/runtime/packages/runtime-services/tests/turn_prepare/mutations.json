@@ -1,0 +1,158 @@
+[
+  {
+    "id": "TP1",
+    "description": "reuse-context-across-compaction",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": ".filter(|m| m.epoch == s.actor.epoch)",
+        "after": ".filter(|_m| true)"
+      }
+    ],
+    "witnesses": ["compaction"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP2",
+    "description": "forget-developer-context",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "&& prepared.epoch.0 == s.actor.epoch.0",
+        "after": "&& prepared.epoch == s.actor.epoch"
+      }
+    ],
+    "witnesses": ["compaction-developer"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP3",
+    "description": "coalesce-conflicting-progress",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if unique.len() == group.len() {",
+        "after": "if !unique.is_empty() {"
+      }
+    ],
+    "witnesses": ["progress-conflict"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP4",
+    "description": "reset-transcript-budget",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "remaining -= text.chars().count();",
+        "after": "remaining = TRANSCRIPT_CHARS;"
+      }
+    ],
+    "witnesses": ["shared-transcript-budget"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP5",
+    "description": "clip-user-input",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "\"user\" | \"followup\" | \"work_decision\" | \"radio_turn\"",
+        "after": "\"followup\" | \"work_decision\" | \"radio_turn\""
+      }
+    ],
+    "witnesses": ["unbounded-user"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP6",
+    "description": "skip-attachment-ownership",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if a.owner_root_id != s.actor.root_id",
+        "after": "if false && a.owner_root_id != s.actor.root_id"
+      }
+    ],
+    "witnesses": ["attachment-cross-team"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP7",
+    "description": "forget-receipt-clocks",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !clocks.is_empty() {",
+        "after": "if false && !clocks.is_empty() {"
+      }
+    ],
+    "witnesses": ["clock-user-0.123456"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP8",
+    "description": "drop-batch-byte-budget",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "let limit = EVENT_BYTES.min(BATCH_BYTES / synthetic.max(1));",
+        "after": "let limit = EVENT_BYTES.max(BATCH_BYTES / synthetic.max(1));"
+      }
+    ],
+    "witnesses": ["batch-budget-3"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP9",
+    "description": "submit-before-artifact-materialization",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !missing.is_empty() {",
+        "after": "if false && !missing.is_empty() {"
+      }
+    ],
+    "witnesses": ["result-child_result-20001"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP10",
+    "description": "promote-unconfirmed-context",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "let ReceiptOutcome::Accepted { turn_id } = &receipt.outcome else {\n        return DeliveryTransition::default();\n    };",
+        "after": "let turn_id = match &receipt.outcome {\n        ReceiptOutcome::Accepted { turn_id } => turn_id,\n        _ => &prepared.operation_id,\n    };"
+      }
+    ],
+    "witnesses": ["receipt-unknown"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP11",
+    "description": "accept-other-operation",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "|| receipt.operation_id != prepared.operation_id",
+        "after": "|| false && receipt.operation_id != prepared.operation_id"
+      }
+    ],
+    "witnesses": ["receipt-wrong-operation_id"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP12",
+    "description": "suppress-unchanged-complaint-reminder",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !unchanged.is_empty() {",
+        "after": "if false && !unchanged.is_empty() {"
+      }
+    ],
+    "witnesses": ["complaint-unchanged"],
+    "suite": "turn_prepare"
+  }
+]
