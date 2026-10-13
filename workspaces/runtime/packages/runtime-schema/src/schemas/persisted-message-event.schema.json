@@ -22,6 +22,19 @@
       "type": "string"
     },
     "status": {
+      "enum": [
+        "pending",
+        "reserved",
+        "dispatching",
+        "uncertain",
+        "failed",
+        "cancelled",
+        "delivered",
+        "stored_only",
+        "queued",
+        "accepted",
+        "sent"
+      ],
       "title": "Status",
       "type": "string"
     }

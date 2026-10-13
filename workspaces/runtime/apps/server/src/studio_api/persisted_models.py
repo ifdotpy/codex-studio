@@ -192,7 +192,8 @@ class PersistedFederationRoomRecord(_OpenPersistedRecord):
 
 
 class PersistedMessageEvent(_OpenPersistedRecord):
-    status: StrictStr
+    status: Literal["pending", "reserved", "dispatching", "uncertain", "failed", "cancelled",
+                    "delivered", "stored_only", "queued", "accepted", "sent"]
     error: StrictStr | None = None
 
 
