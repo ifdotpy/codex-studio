@@ -6,14 +6,19 @@ mod projection;
 mod recovery;
 mod storage;
 mod tools;
-pub use cards::{AnswerAuthority, answer, answer_value, expire, resolve};
+pub use cards::{
+    AnswerAuthority, answer, answer_value, expire, prepare_delete, prepare_user_answer, resolve,
+};
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
 };
 pub use projection::project_tool_result;
 pub use recovery::recover_connection;
 use serde_json::{Value, json};
-pub use storage::{DeliveryOutcome, delivery};
+pub use storage::{
+    DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
+    submission_ready,
+};
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
 
@@ -42,8 +47,8 @@ pub fn dispatch(
     }
     store.transaction_with(|tx| {
         let identity = ReplyIdentity::new(context, &request.id);
-        if let Some(reply) = storage::saved_reply(tx, &identity, &request)? {
-            return Ok(CallbackDecision::Answer(reply));
+        if let Some(decision) = storage::saved_decision(tx, &identity, &request)? {
+            return Ok(decision);
         }
         let result = match request.method.as_str() {
             "currentTime/read" => Some(ResponseBody::Result(json!({"currentTimeAt":now.trunc() as u64}))),

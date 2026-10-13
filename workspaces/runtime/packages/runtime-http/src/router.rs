@@ -22,6 +22,8 @@ pub struct HttpState {
     /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
     pub message_admission:
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
+    pub(crate) callback_runtime:
+        Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
@@ -76,6 +78,7 @@ impl HttpState {
         }
         Self {
             message_admission: None,
+            callback_runtime: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,
@@ -110,6 +113,15 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the retained provider callback reply adapter.
+    pub fn with_callback_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::callback_runtime::CallbackRuntime>,
+    ) -> Self {
+        self.callback_runtime = Some(runtime);
         self
     }
 

@@ -29,6 +29,7 @@ pub mod budget;
 pub mod budget_service;
 pub mod budget_wait;
 pub mod capacity_retry;
+pub mod callback_runtime;
 pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
