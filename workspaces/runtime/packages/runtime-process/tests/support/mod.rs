@@ -121,6 +121,7 @@ impl SupervisorProcess {
             .arg(SUPERVISOR)
             .arg("--state")
             .arg(&state.0)
+            .envs(child_environment(&state.0))
             .env("XDG_CACHE_HOME", state.0.join("cache"))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .current_dir(SOURCE)
@@ -262,7 +263,7 @@ pub(crate) fn open_request(handle: &str, command: Vec<String>, cwd: &Path) -> Op
     OpenRequest {
         handle: SupervisorHandle(handle.to_owned()),
         command,
-        env: BTreeMap::from([("PYTHONUNBUFFERED".into(), "1".into())]),
+        env: child_environment(cwd),
         cwd: cwd.to_string_lossy().into_owned(),
         extra: BTreeMap::new(),
     }
@@ -310,4 +311,21 @@ pub(crate) fn pid_exists(pid: u32) -> bool {
             .map(|output| !String::from_utf8_lossy(&output.stdout).trim().is_empty())
             .unwrap_or(false)
     }
+}
+
+pub(crate) fn child_environment(root: &Path) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::from([
+        ("PYTHONUNBUFFERED".into(), "1".into()),
+        ("PATH".into(), "/usr/bin:/bin".into()),
+    ]);
+    for (name, dir) in [
+        ("HOME", "home"),
+        ("CODEX_HOME", "codex"),
+        ("CLAUDE_CONFIG_DIR", "claude"),
+    ] {
+        let path = root.join(dir);
+        std::fs::create_dir_all(&path).unwrap();
+        env.insert(name.into(), path.to_string_lossy().into_owned());
+    }
+    env
 }

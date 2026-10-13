@@ -164,6 +164,7 @@ impl Receipt {
     }
 }
 
+#[derive(Clone)]
 pub enum CommandReceipt {
     Written {
         remote_id: Option<u64>,

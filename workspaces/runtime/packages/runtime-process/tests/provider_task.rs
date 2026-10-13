@@ -498,7 +498,7 @@ for line in sys.stdin:
 "#;
     let launch = ProviderLaunchSpec::new(
         vec![python, "-u".into(), "-c".into(), script.into()],
-        BTreeMap::from([("PYTHONUNBUFFERED".into(), "1".into())]),
+        support::child_environment(&state.0),
         state.0.clone(),
     );
     let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -843,7 +843,7 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
     let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if 'id' in m: print(json.dumps({'id':m['id'],'result':{}}),flush=True)";
     let launch = ProviderLaunchSpec::new(
         vec![python, "-u".into(), "-c".into(), script.into()],
-        BTreeMap::from([("PYTHONUNBUFFERED".into(), "1".into())]),
+        support::child_environment(&state.0),
         state.0.clone(),
     );
     let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -905,7 +905,7 @@ async fn initialized_identity_is_scoped_to_real_child_generation() {
         let python = python_executable();
         let mut supervisor = SupervisorProcess::start(&state, &python);
         let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)\n elif m.get('method')=='initialized': print(json.dumps({'method':'observed/initialized'}),flush=True)\n elif m.get('method')=='quit': sys.exit(0)";
-        let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],BTreeMap::from([("PYTHONUNBUFFERED".into(),"1".into())]),state.0.clone());
+        let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],support::child_environment(&state.0),state.0.clone());
         let factory = SupervisorProviderTaskFactory::new(state.identity());
         let handle = ProviderHandle::for_account("generation");
         let opts = || OpenOptions { clock: SessionClock::default(), launch: launch.clone(), expected_generation: None };

@@ -245,7 +245,7 @@ fn actor(
     (actor, commands, journal)
 }
 
-async fn read_request(server: &mut BufReader<tokio::io::DuplexStream>) -> Value {
+async fn read_request<S: AsyncRead + Unpin>(server: &mut BufReader<S>) -> Value {
     let mut line = String::new();
     assert_ne!(server.read_line(&mut line).await.unwrap(), 0);
     serde_json::from_str(&line).unwrap()
@@ -579,30 +579,47 @@ async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_en
     task.await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery() {
-    let (socket, mut peer) = tokio::io::duplex(128);
-    let shutdown = Shutdown::default();
-    let handle = ProviderHandle::for_account("panic-open");
-    let (status, observed) = watch::channel(AttachmentStatus {
-        handle: handle.clone(),
-        open_attempted: true,
-        info: None,
-        initialization: InitializationStatus::AwaitingReply,
+thread_local! { static PANIC_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub(super) fn panic_on_open_write(bytes: &[u8]) {
+    PANIC_OPEN.with(|armed| {
+        if armed.get()
+            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["action"] == "open")
+        {
+            armed.set(false);
+            panic!("injected after production open socket write");
+        }
     });
-    let (commands, _inbox) = mpsc::channel(1);
-    let (_events, journal) = mpsc::channel(1);
-    async fn panic_task(
-        socket: tokio::io::DuplexStream,
-        status: watch::Sender<AttachmentStatus>,
-    ) -> TaskExit {
-        let _owned = (socket, status);
-        panic!("test panic after uncertain open");
-    }
-    let task = tokio::spawn(panic_task(socket, status));
-    let mut attachment = ProviderAttachment::from_task(commands, journal, observed, shutdown, task);
-    let exit = attachment.completion().await;
-    assert!(matches!(exit.result, Err(AdapterError::TaskFailed)));
-    assert_eq!(exit.recovery_needed.unwrap().handle, handle);
-    assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!("panic-open-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ignored = std::fs::remove_dir_all(&self.0); } }
+        let _cleanup = Cleanup(root.clone());
+        let listener = tokio::net::UnixListener::bind(root.join("supervisor.sock")).unwrap();
+        let identity = BackendIdentity { backend_id: BackendId("panic-test".into()), state_dir: root.clone() };
+        let factory = SupervisorProviderTaskFactory::new(identity);
+        let handle = ProviderHandle::for_account("panic-open");
+        PANIC_OPEN.with(|armed| armed.set(true));
+        let mut attachment = factory.open(handle.clone(), OpenOptions { clock: SessionClock::default(), launch: ProviderLaunchSpec::new(vec!["fake".into()], Default::default(), root), expected_generation: None }, Shutdown::default()).await.unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut peer = BufReader::new(socket);
+        let _handshake = read_request(&mut peer).await;
+        peer.get_mut().write_all(b"{\"ok\":true}\n").await.unwrap();
+        let status = read_request(&mut peer).await;
+        assert_eq!(status["action"], "status");
+        peer.get_mut().write_all(format!("{}\n", serde_json::json!({"requestId":status["requestId"], "error":"Unknown supervisor handle"})).as_bytes()).await.unwrap();
+        let open = read_request(&mut peer).await;
+        assert_eq!(open["action"], "open");
+        let exit = attachment.completion().await;
+        assert!(matches!(exit.result, Err(AdapterError::TaskFailed)));
+        let recovery = exit.recovery_needed.unwrap();
+        assert_eq!(recovery.handle, handle);
+        assert_eq!(recovery.generation, None);
+        assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
+    }).await.unwrap();
 }

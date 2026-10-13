@@ -148,6 +148,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
             .flush()
             .await
             .map_err(SupervisorError::from)?;
+        #[cfg(test)]
+        tests::panic_on_open_write(bytes);
         let mut frame = Vec::new();
         loop {
             let available = self
