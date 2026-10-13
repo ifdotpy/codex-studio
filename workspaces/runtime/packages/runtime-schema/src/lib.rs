@@ -344,6 +344,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "ProfileRecord",
         "PullRequest",
         "PullResult",
+        "RenameServer",
         "QuestionEntry",
         "QuestionHistory",
         "QueueItem",

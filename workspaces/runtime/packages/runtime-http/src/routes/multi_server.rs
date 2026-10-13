@@ -232,7 +232,6 @@ fn unavailable_for(method: &str, path: &str, dependencies: &'static [Dependency]
 fn map_credential_error(error: CredentialError) -> ApiError {
     match error {
         CredentialError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-        CredentialError::InvalidName => ApiError::validation(vec!["body".into(), "label".into()]),
         CredentialError::InvalidJournal => {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         }

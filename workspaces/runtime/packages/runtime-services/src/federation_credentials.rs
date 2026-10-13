@@ -29,8 +29,6 @@ pub enum CredentialError {
     Identity(#[from] RemoteTransportError),
     #[error("The server name request ID has different content")]
     Conflict,
-    #[error("Use 1 to 80 visible characters without outer spaces")]
-    InvalidName,
     #[error("Invalid stored object runtime_access_name_requests")]
     InvalidJournal,
     #[error("The identity journal is unavailable")]
@@ -64,7 +62,6 @@ impl Credentials {
         request_id: &str,
         actor: &str,
     ) -> Result<(), CredentialError> {
-        validate_name(label)?;
         if !self.is_local_target(store, target)? {
             return Err(CredentialError::RemoteRequired);
         }
@@ -137,7 +134,7 @@ impl Credentials {
             let pending = Journal::pending_names(tx)?;
             // Refuse malformed journal rows before changing any file.
             for (_, label, _) in &pending {
-                validate_name(label).map_err(|_| CredentialError::InvalidJournal)?;
+                validate_stored_name(label)?;
             }
             for (id, label, actor) in pending {
                 let mut updated = identity.clone();
@@ -159,28 +156,17 @@ fn public_identity(identity: &StoredMultiServerIdentity, origin: Option<&str>) -
     json!({"serverId":identity.server_id,"label":identity.label,"publicKey":identity.public_key,"origin":origin,"tailscaleUser":null})
 }
 
-fn validate_name(label: &str) -> Result<(), CredentialError> {
-    // Python's visible-character rule is not in the committed name schema.
-    // Unicode categories require the schema validator's Unicode-aware regex.
-    static VISIBLE: std::sync::OnceLock<
-        Result<jsonschema::Validator, jsonschema::ValidationError<'static>>,
-    > = std::sync::OnceLock::new();
-    let validator = VISIBLE.get_or_init(|| {
-        jsonschema::validator_for(
-            &json!({"type":"string","minLength":1,"maxLength":80,"pattern":r"^[^\p{C}]*$"}),
-        )
-        .map_err(|error| error.to_owned())
-    });
-    if label != label.trim()
-        || label.chars().any(|c| c.is_whitespace() && c != ' ')
-        || !validator
-            .as_ref()
-            .map_err(|_| CredentialError::Storage)?
-            .is_valid(&json!(label))
+fn validate_stored_name(label: &str) -> Result<(), CredentialError> {
+    if studio_runtime_schema::validate(
+        "RenameServer",
+        &json!({"label": label, "requestId": "recovery"}),
+    )
+    .map_err(|_| CredentialError::InvalidJournal)?
     {
-        return Err(CredentialError::InvalidName);
+        Ok(())
+    } else {
+        Err(CredentialError::InvalidJournal)
     }
-    Ok(())
 }
 
 fn private_directory(root: &Path) -> Result<(), CredentialError> {
