@@ -14,6 +14,7 @@ from runtime_test_environment import make_runtime
 
 import contextlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -27,6 +28,13 @@ import codex_token_rate
 from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
 from codex_streaming import StreamBuffer
+from studio_api.generate_types import (
+    OPENAPI_AUTHORITY,
+    TOKEN_RATE_LIMITS_OUTPUT,
+    _token_rate_max_entries,
+    render_token_rate_limits,
+    render_token_rate_typescript_constant,
+)
 from studio_api.sync.resources.models import MAX_TOKEN_RATE_ENTRIES, TokenRateSnapshot
 spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
@@ -65,6 +73,20 @@ class RateContract(unittest.TestCase):
                     f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)
                 }},
             })
+
+    def test_generated_token_rate_caps_match_the_pydantic_openapi_contract(self):
+        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding='utf-8'))
+        self.assertEqual(_token_rate_max_entries(document), MAX_TOKEN_RATE_ENTRIES)
+        typescript = render_token_rate_typescript_constant(document)
+        self.assertTrue(
+            (ROOT / 'workspaces/client/apps/web/src/generated/api.ts')
+            .read_text(encoding='utf-8')
+            .endswith(f'\n{typescript}\n')
+        )
+        self.assertEqual(
+            TOKEN_RATE_LIMITS_OUTPUT.read_text(encoding='utf-8'),
+            render_token_rate_limits(document),
+        )
 
     def test_event_producer_does_not_wait_for_snapshot_publication(self):
         class DeferredTimer:

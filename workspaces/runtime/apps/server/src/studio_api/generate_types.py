@@ -84,6 +84,11 @@ def render_token_rate_limits(document: dict[str, JsonValue]) -> str:
     return f"// Generated from the Pydantic TokenRateSnapshot contract.\npub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
 
 
+def render_token_rate_typescript_constant(document: dict[str, JsonValue]) -> str:
+    maximum = _token_rate_max_entries(document)
+    return f"export const TOKEN_RATE_MAX_ENTRIES = {maximum} as const;"
+
+
 def _normalize_recursive_json_value(generated: str) -> str:
     """Break openapi-typescript's indexed self-reference for the recursive JSON schema."""
     start = re.search(r"(?m)^([ \t]*)JsonValue: ", generated)
@@ -109,7 +114,7 @@ def render(document: dict[str, JsonValue]) -> str:
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)
-    token_rate_max_entries = _token_rate_max_entries(document)
+    token_rate_typescript_constant = render_token_rate_typescript_constant(document)
     components = document.get("components")
     schemas = components.get("schemas") if isinstance(components, dict) else None
     include_sync_entity_payload = isinstance(schemas, dict) and "SyncEntityPayload" in schemas
@@ -162,8 +167,7 @@ def render(document: dict[str, JsonValue]) -> str:
             check=True,
             text=True,
         )
-        return (output_path.read_text(encoding="utf-8")
-                + f"\nexport const TOKEN_RATE_MAX_ENTRIES = {token_rate_max_entries} as const;\n")
+        return output_path.read_text(encoding="utf-8") + f"\n{token_rate_typescript_constant}\n"
 
 
 def _agent_limit(document: dict[str, JsonValue], model: str, field: str, key: str) -> int:
