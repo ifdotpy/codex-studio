@@ -1,4 +1,9 @@
-"""Real FederationService oracle with disposable SQLite and captured runtime ports."""
+"""Oracle for receipts, federation rooms/inbox, chat rows and emitted event arguments.
+
+Uses real FederationService methods with disposable SQLite. The fixture runtime
+ports do not model runtime_rooms or sync-document materialization; those outputs
+are explicitly outside this differential oracle's coverage.
+"""
 import json
 from pathlib import Path
 import sqlite3

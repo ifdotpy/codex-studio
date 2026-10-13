@@ -1,8 +1,12 @@
+use crate::{
+    federation_delivery as delivery, federation_effects as effects, remote_transport as transport,
+};
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command, time::Duration};
-use studio_runtime_services::{
-    federation_delivery as delivery, federation_effects as effects, remote_transport as transport,
+use std::{
+    path::PathBuf,
+    process::Command,
+    time::{Duration, Instant},
 };
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::federation_messaging::{
@@ -189,13 +193,16 @@ fn federation_corpus() {
             let actual = json!({"receipt":receipt,"room":rows(&store,"runtime_federation_rooms")[0],"inbox":rows(&store,"runtime_federation_inbox"),"chat":chat,"events":events});
             assert_eq!(
                 actual, case["expected"],
-                "complete Python output differs: {name}"
+                "Python receipt/federation-room/inbox/chat/event output differs: {name}"
             );
         }
     }
     replay_and_nonce(&corpus);
     authenticated_consumer(&corpus);
     malformed_records(&corpus);
+    spoofed_origin(&corpus);
+    delivery_failures(&corpus);
+    oversized_batches(&corpus);
     revoked_and_ordered(&corpus);
     rollback_matrix(&corpus);
     outbound_rollback(&corpus);
@@ -272,7 +279,7 @@ fn authenticated_consumer(corpus: &Corpus) {
         effects::handle(
             &store,
             request(),
-            effects::OriginObservation::Unavailable,
+            effects::OriginObservation::unavailable(),
             corpus.now()
         )
         .expect_err("missing trusted origin must refuse")
@@ -283,7 +290,7 @@ fn authenticated_consumer(corpus: &Corpus) {
     let response = effects::handle(
         &store,
         request(),
-        effects::OriginObservation::Observed(None),
+        effects::OriginObservation::observed(None),
         corpus.now(),
     )
     .expect("fixture operation");
@@ -444,6 +451,9 @@ struct PeerTransport<'a> {
     now: f64,
     lose_once: bool,
     calls: usize,
+    bad_receipt: Option<&'static str>,
+    cancel_after: Option<&'a std::sync::atomic::AtomicBool>,
+    deadlines: Vec<Instant>,
 }
 impl delivery::FederationTransport for PeerTransport<'_> {
     fn exchange(
@@ -451,9 +461,10 @@ impl delivery::FederationTransport for PeerTransport<'_> {
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
-        deadline: Duration,
+        budget: &delivery::PassBudget<'_>,
     ) -> transport::RemoteTransportResult<Vec<u8>> {
-        assert_eq!(deadline, Duration::from_secs(8));
+        assert!(budget.remaining().expect("active budget") <= Duration::from_secs(8));
+        self.deadlines.push(budget.deadline());
         assert!(url.starts_with("https://127.0.0.1/"));
         let action = if url.ends_with("message") {
             effects::FederationAction::Message
@@ -480,11 +491,29 @@ impl delivery::FederationTransport for PeerTransport<'_> {
                 signature: header("X-Studio-Federation-Signature"),
                 raw: body,
             },
-            effects::OriginObservation::Observed(None),
+            effects::OriginObservation::observed(None),
             self.now,
         )
         .expect("fixture operation");
+        let response = if let Some(kind) = self.bad_receipt {
+            let identity =
+                transport::load_federation_identity(self.receiver).expect("fixture identity");
+            let mut receipt = response["result"].clone();
+            match kind {
+                "schema" => receipt = json!({}),
+                "message" => receipt["messageId"] = json!("different-message"),
+                "room" => receipt["room"] = json!("different-room"),
+                _ => panic!("unknown receipt fixture"),
+            }
+            effects::signed_response(&identity, receipt, self.now as i64)
+                .expect("signed invalid receipt")
+        } else {
+            response
+        };
         self.calls += 1;
+        if let Some(cancelled) = self.cancel_after {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+        }
         if self.lose_once {
             self.lose_once = false;
             return Err(transport::RemoteTransportError::ExchangeUnknown);
@@ -530,6 +559,9 @@ fn lost_push_response(corpus: &Corpus) {
         now: corpus.now(),
         lose_once: true,
         calls: 0,
+        bad_receipt: None,
+        cancel_after: None,
+        deadlines: Vec::new(),
     };
     assert!(
         delivery::pump_peer(
@@ -563,12 +595,19 @@ fn lost_push_response(corpus: &Corpus) {
     assert_eq!(effect_rows(&receiver).0.len(), 1);
     assert_eq!(effect_rows(&receiver).1.len(), 2);
     assert_eq!(wire.calls, 3, "two pushes and one pull");
+    assert_eq!(
+        wire.deadlines[1], wire.deadlines[2],
+        "push and pull share one absolute deadline"
+    );
     let mut reverse = PeerTransport {
         receiver: &sender,
         sender: corpus.peer(),
         now: wire.now,
         lose_once: false,
         calls: 0,
+        bad_receipt: None,
+        cancel_after: None,
+        deadlines: Vec::new(),
     };
     assert_eq!(
         delivery::pump_peer(
@@ -637,5 +676,130 @@ fn outbound_rollback(corpus: &Corpus) {
             .expect("queue after restart");
             assert_eq!(counts(&store), json!([0, 1, 0, 1, 1]));
         }
+    }
+}
+
+fn spoofed_origin(corpus: &Corpus) {
+    let (_, store) = corpus.store("spoofed-origin", false);
+    store
+        .transaction(|tx| {
+            let mut peer = Repo::record(tx, Table::Peer, corpus.peer(), "")?.expect("peer");
+            peer["whoisUser"] = json!("trusted-owner");
+            Repo::put(tx, Table::Peer, corpus.peer(), "", &peer)
+        })
+        .expect("bind trusted origin");
+    let raw = serde_json::to_vec(&json!({"protocol":1})).expect("body");
+    let before = counts(&store);
+    let request = || effects::SignedRequest {
+        action: effects::FederationAction::Status,
+        peer_id: corpus.peer(),
+        timestamp: corpus.now() as i64,
+        nonce: "spoofed-origin-nonce-12345",
+        signature: "",
+        raw: &raw,
+    };
+    assert!(
+        effects::handle(
+            &store,
+            request(),
+            effects::OriginObservation::observed(Some("spoofed-header".into())),
+            corpus.now()
+        )
+        .expect_err("spoofed origin")
+        .to_string()
+        .contains("origin identity mismatch")
+    );
+    assert!(
+        effects::handle(
+            &store,
+            request(),
+            effects::OriginObservation::unavailable(),
+            corpus.now()
+        )
+        .expect_err("no trusted adapter")
+        .to_string()
+        .contains("trusted-origin-observation")
+    );
+    assert_eq!(counts(&store), before);
+}
+
+fn delivery_failures(corpus: &Corpus) {
+    for kind in ["schema", "message", "room", "cancel", "expired"] {
+        let (_, sender) = corpus.store(&format!("failure-sender-{kind}"), false);
+        let (_, receiver) = corpus.store(&format!("failure-receiver-{kind}"), true);
+        for key in ["one", "two"] {
+            delivery::send_message(&sender, "lead", corpus.room(), "message", key, corpus.now())
+                .expect("queue");
+        }
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let mut wire = PeerTransport {
+            receiver: &receiver,
+            sender: corpus.data["seed"]["local"]["stateId"]
+                .as_str()
+                .expect("local id"),
+            now: corpus.now(),
+            lose_once: false,
+            calls: 0,
+            bad_receipt: if matches!(kind, "schema" | "message" | "room") {
+                Some(kind)
+            } else {
+                None
+            },
+            cancel_after: if kind == "cancel" {
+                Some(&cancelled)
+            } else {
+                None
+            },
+            deadlines: Vec::new(),
+        };
+        if kind == "expired" {
+            let before = counts(&sender);
+            assert_eq!(
+                delivery::pump_peer_until(
+                    &sender,
+                    corpus.peer(),
+                    corpus.now(),
+                    &mut wire,
+                    delivery::PassBudget::new(Instant::now(), &cancelled)
+                )
+                .expect("expired pass"),
+                0
+            );
+            assert_eq!(wire.calls, 0);
+            assert_eq!(counts(&sender), before);
+            continue;
+        }
+        assert!(
+            delivery::pump_peer(&sender, corpus.peer(), corpus.now(), &mut wire, &cancelled)
+                .is_err()
+        );
+        assert_eq!(wire.calls, 1, "pass stops on failure or cancellation");
+        let queued = rows(&sender, "runtime_federation_outbox");
+        assert_eq!(
+            queued
+                .iter()
+                .filter(|v| v["attempts"] == 1 && v["nextAt"] == corpus.now() + 2.0)
+                .count(),
+            1,
+            "all receipt errors persist backoff"
+        );
+        assert!(queued.iter().all(|v| v["status"] == "queued"));
+    }
+}
+
+fn oversized_batches(corpus: &Corpus) {
+    for table in [Table::Outbox, Table::Inbox] {
+        let (_, store) = corpus.store(&format!("oversized-{}", table.name()), false);
+        let raw=json!({"status":"queued","nextAt":0,"created":0,"ack":"pending","padding":"x".repeat(512*1024+1)}).to_string();
+        store.transaction(|tx| {
+            match table {
+                Table::Outbox => tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES('large',?1,?2)",params![corpus.peer(),raw])?,
+                Table::Inbox => tx.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?1,'large',?2)",params![corpus.peer(),raw])?,
+                _ => unreachable!(),
+            };
+            let error=Repo::batch(tx,table,corpus.peer(),corpus.now()).expect_err("oversized row refused by SQL projection");
+            assert!(matches!(error,studio_runtime_store::StoreError::InvalidStoredObject {..}));
+            Ok(())
+        }).expect("batch size fixture");
     }
 }

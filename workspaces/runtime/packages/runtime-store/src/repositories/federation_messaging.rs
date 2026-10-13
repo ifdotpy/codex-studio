@@ -137,21 +137,27 @@ impl FederationMessagingRepository {
     ) -> StoreResult<Vec<(String, Value)>> {
         let sql = match table {
             FederationTable::Outbox => {
-                "SELECT id,record FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued' AND json_extract(record,'$.nextAt')<=?2 ORDER BY json_extract(record,'$.created'),id LIMIT 50"
+                "SELECT id,CASE WHEN length(CAST(record AS BLOB))<=?3 THEN record END FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued' AND json_extract(record,'$.nextAt')<=?2 ORDER BY json_extract(record,'$.created'),id LIMIT 50"
             }
             FederationTable::Inbox => {
-                "SELECT message_id,record FROM runtime_federation_inbox WHERE peer_id=?1 AND json_extract(record,'$.ack') IN ('pending','sent') AND ?2=?2 ORDER BY json_extract(record,'$.created'),message_id LIMIT 50"
+                "SELECT message_id,CASE WHEN length(CAST(record AS BLOB))<=?3 THEN record END FROM runtime_federation_inbox WHERE peer_id=?1 AND json_extract(record,'$.ack') IN ('pending','sent') AND ?2=?2 ORDER BY json_extract(record,'$.created'),message_id LIMIT 50"
             }
             _ => return Err(StoreError::RecordContract("federation batch table")),
         };
         let mut stmt = db.prepare(sql)?;
         let rows = stmt
-            .query_map(params![peer, now], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            .query_map(params![peer, now, MAX_RECORD_BYTES as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(id, raw)| Ok((id.clone(), Self::parse(table, &id, &raw)?)))
+            .map(|(id, raw)| {
+                let raw = raw.ok_or_else(|| StoreError::InvalidStoredObject {
+                    table: table.name(),
+                    id: id.clone(),
+                })?;
+                Ok((id.clone(), Self::parse(table, &id, &raw)?))
+            })
             .collect()
     }
     pub fn room_rate(db: &Connection, peer: &str, room: &str, now: f64) -> StoreResult<u64> {
