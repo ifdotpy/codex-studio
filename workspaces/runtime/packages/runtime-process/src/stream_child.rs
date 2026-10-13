@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+use command_fds::CommandFdExt;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,6 +30,8 @@ pub struct ChildSpec {
     /// Complete environment. No ambient variable is inherited.
     pub environment: BTreeMap<OsString, OsString>,
     pub timeout: Duration,
+    /// Optional locked descriptor inherited by the child, including after parent death.
+    pub inherited_lease: Option<std::fs::File>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +80,7 @@ pub struct StreamChild {
     cancel: watch::Sender<bool>,
     completion: watch::Receiver<Option<Result<ChildEvent, ChildError>>>,
     exit_delivered: bool,
+    pid: Option<u32>,
 }
 
 impl StreamChild {
@@ -96,9 +100,15 @@ impl StreamChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(lease) = spec.inherited_lease {
+            command.as_std_mut().preserved_fds(vec![lease.into()]);
+        }
         let mut wrapped = CommandWrap::from(command);
         wrapped.wrap(ProcessGroup::leader());
         let child = wrapped.spawn()?;
+        let pid = child.id();
+        // Release the parent copy held by the command after successful inheritance.
+        drop(wrapped);
         let (input_tx, input_rx) = mpsc::channel(INPUT_SLOTS);
         let (output_tx, output_rx) = mpsc::channel(OUTPUT_SLOTS);
         let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -115,8 +125,13 @@ impl StreamChild {
             cancel: cancel_tx,
             completion: done_rx,
             exit_delivered: false,
+            pid,
         })
     }
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
     pub async fn next_event(&mut self) -> Option<ChildEvent> {
         if self.exit_delivered {
             return None;
@@ -330,7 +345,33 @@ mod tests {
                 ("MONITOR_TEST".into(), "explicit".into()),
             ]),
             timeout: Duration::from_secs(60),
+            inherited_lease: None,
         }
+    }
+
+    #[tokio::test]
+    async fn inherited_lease_survives_parent_descriptor_drop_until_child_exit() {
+        let root = tempfile::tempdir().expect("fixture");
+        let path = root.path().join("lease");
+        let lease = std::fs::File::create(&path).expect("lease");
+        lease.try_lock().expect("lock");
+        let mut command = spec("printf ready; read line", root.path());
+        command.inherited_lease = Some(lease);
+        let mut child = StreamChild::spawn(command).await.expect("spawn");
+        assert!(child.pid().is_some());
+        assert!(matches!(
+            child.next_event().await,
+            Some(ChildEvent::Output { .. })
+        ));
+        let contender = std::fs::File::open(path).expect("contender");
+        assert!(
+            contender.try_lock().is_err(),
+            "only child holds descriptor now"
+        );
+        child.close().await.expect("reap");
+        contender
+            .try_lock()
+            .expect("child exit releases inherited lease");
     }
 
     #[tokio::test]
