@@ -21,6 +21,99 @@ pub struct CreateWork {
     pub dependencies: Vec<String>,
 }
 
+pub struct WorkActorResult {
+    pub record: Value,
+    pub event_inserted: bool,
+}
+
+/// Execute a work action with a persisted agent as the acting principal.
+pub fn write_as_agent(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    actor_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+    command: WorkWrite,
+) -> Result<WorkActorResult, Error> {
+    let selected = event_write::checked_agent(tx, agent_id)?;
+    let actor = event_write::checked_agent(tx, actor_id)?;
+    if selected.root_id != actor.root_id {
+        return Err(Error::InvalidRequest("Actor belongs to another team"));
+    }
+    if !event_write::truthy(actor.extra.get("autoWake")) {
+        return Err(Error::InvalidRequest("The caller is stopped"));
+    }
+    if let Some(record) = event_write::read_receipt(
+        tx,
+        request_id,
+        signature,
+        "runtime_work",
+        request_id.unwrap_or(agent_id),
+        |value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+        },
+    )? {
+        return Ok(WorkActorResult {
+            record,
+            event_inserted: false,
+        });
+    }
+    let result = match command {
+        WorkWrite::Create(mut input) => {
+            if actor.id != actor.root_id {
+                return Err(Error::InvalidRequest(
+                    "Only the lead can change work assignments",
+                ));
+            }
+            input.actor_id = actor_id.to_owned();
+            create(tx, &selected, input, request_id, signature)?
+        }
+        WorkWrite::Mutate(action) => {
+            match &action {
+                WorkMutation::Update { .. } | WorkMutation::Reject { .. } => {
+                    if actor.id != actor.root_id {
+                        return Err(Error::InvalidRequest(
+                            "Only the lead can change work assignments",
+                        ));
+                    }
+                }
+                WorkMutation::Cancel { task_id, .. } => {
+                    let work = WorkItemsRepository::work_record(tx, task_id)?
+                        .ok_or(Error::InvalidRequest("Unknown work item"))?;
+                    if actor.id != actor.root_id
+                        && work.get("createdBy").and_then(Value::as_str) != Some(actor_id)
+                    {
+                        return Err(Error::InvalidRequest(
+                            "Only the lead or task creator can cancel this task",
+                        ));
+                    }
+                }
+                WorkMutation::ByAgent { .. } => {
+                    return Err(Error::InvalidRequest("Invalid request"));
+                }
+            }
+            mutate(
+                tx,
+                &selected,
+                WorkMutation::ByAgent {
+                    actor_id: actor_id.to_owned(),
+                    action: Box::new(action),
+                },
+                request_id,
+                signature,
+            )?
+        }
+        _ => return Err(Error::InvalidRequest("Invalid request")),
+    };
+    Ok(WorkActorResult {
+        record: result.record,
+        event_inserted: result.event_inserted,
+    })
+}
+
 pub enum WorkMutation {
     Update {
         task_id: String,
@@ -35,6 +128,10 @@ pub enum WorkMutation {
         task_id: String,
         version: Option<i64>,
         reason: String,
+    },
+    ByAgent {
+        actor_id: String,
+        action: Box<WorkMutation>,
     },
     Cancel {
         task_id: String,
@@ -138,6 +235,10 @@ fn mutate(
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, Error> {
+    let (mutation, actor_id) = match mutation {
+        WorkMutation::ByAgent { actor_id, action } => (*action, Some(actor_id)),
+        mutation => (mutation, None),
+    };
     let (task_id, expected) = match &mutation {
         WorkMutation::Update {
             task_id, version, ..
@@ -147,7 +248,8 @@ fn mutate(
         }
         | WorkMutation::Reject {
             task_id, version, ..
-        } => (task_id.clone(), *version),
+        }
+        | WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
     };
     let mut work = WorkItemsRepository::work_record(tx, &task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
@@ -247,7 +349,7 @@ fn mutate(
             }
             push_decision(
                 &mut work,
-                json!({"decision":"cancel", "reason":reason, "by":agent.id.0, "owner":owner, "created":event_write::unix_time()?}),
+                json!({"decision":"cancel", "reason":reason, "by":actor_id.as_deref().unwrap_or(&agent.id.0), "owner":owner, "created":event_write::unix_time()?}),
             )?;
             work["status"] = json!("cancelled");
             work["owner"] = Value::Null;
@@ -258,7 +360,8 @@ fn mutate(
                     &task_id,
                     "The task was cancelled before delivery",
                 )?;
-                if let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
+                if actor_id.as_deref() != Some(owner_id)
+                    && let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
                     && live_recipient(&recipient)
                 {
                     wake |= event_write::enqueue_recovery_event(
@@ -294,22 +397,25 @@ fn mutate(
                 }
                 let recipient = AgentRepository::get(tx, &AgentId::from(owner_id))?
                     .ok_or_else(|| invalid("runtime_agents", owner_id))?;
-                wake |= event_write::enqueue_recovery_event(
-                    tx,
-                    &recipient,
-                    format!("work-decision:{task_id}:{version}"),
-                    "work_decision",
-                    json!({"task":task_id,"decision":"reject","reason":reason}).to_string(),
-                    event_write::unix_time()?,
-                )?;
+                if actor_id.as_deref() != Some(owner_id) {
+                    wake |= event_write::enqueue_recovery_event(
+                        tx,
+                        &recipient,
+                        format!("work-decision:{task_id}:{version}"),
+                        "work_decision",
+                        json!({"task":task_id,"decision":"reject","reason":reason}).to_string(),
+                        event_write::unix_time()?,
+                    )?;
+                }
             }
             WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
             push_decision(
                 &mut work,
-                json!({"resultId":result_id,"decision":"reject","reason":reason,"by":"user","created":event_write::unix_time()?}),
+                json!({"resultId":result_id,"decision":"reject","reason":reason,"by":actor_id.as_deref().unwrap_or("user"),"created":event_write::unix_time()?}),
             )?;
             work["status"] = json!("ready");
         }
+        WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
     }
 
     work["version"] = json!(version + 1);
