@@ -64,10 +64,12 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                 .args(&options.launch.command[1..])
                 .env_clear()
                 .envs(&options.launch.environment)
-                .current_dir(&options.launch.cwd)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            if let Some(cwd) = &options.launch.cwd {
+                command.current_dir(cwd);
+            }
             let mut child = CommandWrap::from(command)
                 .wrap(ProcessGroup::leader())
                 .spawn()
