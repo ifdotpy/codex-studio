@@ -3,7 +3,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Deserialize;
 use serde_json::Value;
 use studio_runtime_services::coordination::{self, CoordinationError};
 
@@ -16,31 +15,28 @@ const CHAT_HISTORY_DEP: [Dependency; 1] = [Dependency::new("coordination-policy/
 const MESSAGE_RECEIPTS_DEP: [Dependency; 1] = [Dependency::new("event-driver/message-receipts")];
 const ROOM_VISIBILITY_DEP: [Dependency; 1] =
     [Dependency::new("coordination-policy/room-visibility")];
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 6] = [
+    Dependency::new("budget-policy/message-admission"),
+    Dependency::new("capacity-retry/store"),
+    Dependency::new("cross-server/remote-events"),
+    Dependency::new("federation-driver/rooms"),
+    Dependency::new("payload-store/uploads"),
+    Dependency::new("workspace-policy/message-admission"),
+];
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct ChatCreate {
     id: String,
     name: String,
     members: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct Connection {
     source: String,
     target: String,
     #[serde(default = "default_connected")]
     connected: bool,
-}
-
-#[derive(Deserialize)]
-struct MessagePost {
-    id: String,
-    room: String,
-    text: String,
-    #[serde(default = "default_delivery")]
-    delivery: String,
-    #[serde(default)]
-    assets: Vec<Value>,
 }
 
 pub(crate) fn routes() -> RouteGroup {
@@ -51,7 +47,11 @@ pub(crate) fn routes() -> RouteGroup {
             agent_chat,
         ),
         get("/api/messages", OperationStatus::Implemented, messages),
-        post("/api/messages", OperationStatus::Implemented, post_message),
+        post(
+            "/api/messages",
+            OperationStatus::partial(&MESSAGE_SEND_DEPENDENCIES),
+            post_message,
+        ),
         get(
             "/api/messages/receipts",
             OperationStatus::partial(&MESSAGE_RECEIPTS_DEP),
@@ -129,10 +129,25 @@ async fn connect_chat(
 
 async fn post_message(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<MessagePost>,
+    ApiJson(body): ApiJson<crate::generated::ManagedMessageBody>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
+    let assets = body
+        .assets
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| match value {
+            Some(value) => serde_json::to_value(*value).map_err(|_| ApiError::internal()),
+            None => Ok(Value::Null),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let delivery = body
+        .delivery
+        .as_ref()
+        .map(crate::generated::ManagedMessageBodyDelivery::as_str)
+        .unwrap_or("queue")
+        .to_owned();
     let result = tokio::task::spawn_blocking(move || {
         let posted = store
             .transaction_with_error(|transaction| {
@@ -142,8 +157,8 @@ async fn post_message(
                         room: &body.room,
                         id: &body.id,
                         text: &body.text,
-                        delivery: &body.delivery,
-                        assets: &body.assets,
+                        delivery: &delivery,
+                        assets: &assets,
                     },
                 )
             })
@@ -185,10 +200,6 @@ async fn delete_room() -> Result<Json<Value>, ApiError> {
 
 fn default_connected() -> bool {
     true
-}
-
-fn default_delivery() -> String {
-    "queue".to_owned()
 }
 
 fn coordination_error(error: CoordinationError) -> ApiError {
