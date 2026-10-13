@@ -160,11 +160,13 @@ def corpus():
     return cases
 
 
-def template(path):
+def template(path, wake_fixture=False):
     path.mkdir(parents=True,exist_ok=True)
     schema=json.loads((ROOT/"workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json").read_text())
     for name in ("canvas.sqlite3","analytics.sqlite3"):
         db=sqlite3.connect(path/name)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
         db.execute("BEGIN")
         objects=schema[name]["sqlite_master"]
         order={"table":0,"index":1,"view":2,"trigger":3}
@@ -178,10 +180,17 @@ def template(path):
             a=agent();r=resume()
             with patch("time.time",return_value=800.0):UsageResumeMixin.usage_resume_save(None,db,a,r)
             db.execute("INSERT INTO runtime_agents VALUES (?,?)",("a",json.dumps(a)))
+            if wake_fixture:
+                cases=json.loads((Path(__file__).parent.parent/"continuation/cases.json").read_text())
+                data=next(c["input"] for c in cases if c["name"]=="progress-(1, 2)")
+                fixture=Fixture(data)
+                for e in fixture.connection.execute("SELECT * FROM runtime_events"):
+                    db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",tuple(e))
+                fixture.connection.close()
         for sql in triggers:db.execute(sql)
         db.commit();db.close()
 
 
 if __name__=="__main__":
-    if len(sys.argv)>1 and sys.argv[1]=="template":template(Path(sys.argv[2]))
+    if len(sys.argv)>1 and sys.argv[1]=="template":template(Path(sys.argv[2]), len(sys.argv)>3 and sys.argv[3]=="wake")
     else:print(json.dumps(corpus(),allow_nan=False))

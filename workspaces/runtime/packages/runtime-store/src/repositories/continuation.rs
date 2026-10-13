@@ -67,6 +67,12 @@ impl ContinuationRepository {
                     table: "runtime_agents",
                     id: id.clone(),
                 })?;
+            if a.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(StoreError::InvalidStoredObject {
+                    table: "runtime_agents",
+                    id,
+                });
+            }
             parent = a.get("parentId").and_then(Value::as_str).map(str::to_owned);
             ancestors.push(a);
             if parent.as_ref().is_some_and(|id| {
@@ -133,10 +139,10 @@ impl ContinuationRepository {
                         }
                     }
                 }
-                if let Some(id) = payload.get("task").and_then(Value::as_str) {
-                    if let Some(w) = raw(db, "runtime_work", id)? {
-                        work.insert(id.into(), w);
-                    }
+                if let Some(id) = payload.get("task").and_then(Value::as_str)
+                    && let Some(w) = raw(db, "runtime_work", id)?
+                {
+                    work.insert(id.into(), w);
                 }
             }
         }
