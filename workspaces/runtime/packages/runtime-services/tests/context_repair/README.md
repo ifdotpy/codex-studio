@@ -83,3 +83,18 @@ necessary after cutover.
 with `--manifest` pointing here and `--filter binary(context_repair_corpus)`.
 The runner builds a disposable copy and counts only failed tests as detections.
 Build failures and unavailable fixture infrastructure do not count.
+
+## Native start outcomes
+
+The writers enumerate three values: Python's `codex_native_input_projection.py`
+writes `accepted`; the Claude bridge's `bridge.mjs` writes `preparing`,
+`not_applied`, and `accepted`. Older native history can omit the field or use
+null. The oracle extracts the literal assignments from both writers and checks
+this inventory. Every admitted value matches the Python decision oracle.
+
+`failed`, `completed`, and `interrupted` are turn statuses, not start outcomes.
+Python's loose consumer happens to accept other outcome strings as delivery, but
+the checked Rust constructor rejects every unwritten outcome with
+`history.turn.startOutcome`. The regression corpus covers those strings, wrong
+types, absent/null outcomes, and a failed turn whose input was accepted. CR16
+removes this validation and must fail the located-error witness.

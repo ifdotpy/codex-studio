@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -69,9 +70,33 @@ def recurring():
         ("unidentified-input",lambda c:(c["turns"][0].update(startOutcome="not_applied"),c["turns"].append(dict(id="other",items=[dict(type="userMessage",content=[])])))),
         ("item-identity",lambda c:c["turns"][0].update(clientUserMessageId=None,items=[dict(type="userMessage",clientId="event")])),
         ("missing-turn-id",lambda c:c["turns"][0].update(id=None)),
+        ("absent-start-outcome",lambda c:c["turns"][0].pop("startOutcome")),
+        ("failed-turn-after-acceptance",lambda c:c["turns"][0].update(status="failed")),
     ):
         case=base();case["name"]=name;change(case);case["expected"]=run(case);cases.append(case)
     return cases
+
+
+def outcome_contract():
+    # Enumerate assignments in the actual writers, not consumer allow-lists.
+    projection = ast.parse((ROOT / "workspaces/runtime/apps/server/src/codex_native_input_projection.py").read_text())
+    python_values = {value.value for node in ast.walk(projection) if isinstance(node, ast.Dict)
+                     for key, value in zip(node.keys, node.values)
+                     if isinstance(key, ast.Constant) and key.value == "startOutcome"
+                     and isinstance(value, ast.Constant)}
+    bridge = (ROOT / "workspaces/providers/apps/claude-bridge/bridge.mjs").read_text()
+    bridge_values = set(re.findall(r'(?:startOutcome\s*:\s*|\.startOutcome\s*=\s*)["\']([^"\']+)["\']', bridge))
+    assert python_values == {"accepted"}, python_values
+    assert bridge_values == {"accepted", "preparing", "not_applied"}, bridge_values
+    run = reducer()
+    malformed = []
+    for outcome in ("failed", "completed", "cancelled", "interrupted", "unknown", ""):
+        case = base()
+        case["name"] = "unwritten-start-outcome-" + outcome
+        case["turns"][0]["startOutcome"] = outcome
+        case["expected"] = run(case)
+        malformed.append(case)
+    return dict(written=sorted(python_values | bridge_values), malformed=malformed)
 
 
 def batch_cases():
@@ -117,7 +142,7 @@ def batch_cases():
     return cases
 
 if __name__ == "__main__":
-    print(json.dumps(dict(recurring=recurring(),batches=batch_cases()),ensure_ascii=False))
+    print(json.dumps(dict(recurring=recurring(),batches=batch_cases(),outcomes=outcome_contract()),ensure_ascii=False))
 
 # Optional adapter fixture: one Python-written template, cloned by each case.
 if len(sys.argv) == 2:
