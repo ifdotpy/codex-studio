@@ -409,23 +409,23 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_null_resize_fields_are_refused_without_writes(self) -> None:
-        before = persisted_state(self.backend)
+        before = no_write_snapshot(self.backend.state)
         for name in ("rows", "cols"):
             response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id": "contract-monitor", name: None})
             self.assertEqual(response.status, 400, response.body[:1000])
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
                 self.assertEqual(response.json()["location"], ["body", name])
-        self.assertEqual(persisted_state(self.backend), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive(self) -> None:
-        before = persisted_state(self.backend)
+        before = no_write_snapshot(self.backend.state)
         for _ in range(2):
             response = self.backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json(), {"id":"contract-monitor", "status":"completed"})
         response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id":"contract-monitor", "text":"x"})
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(persisted_state(self.backend), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_pending_monitor_cancel_expires_approval_and_records_exit(self) -> None:
         backend = self.backend
@@ -465,11 +465,11 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             old = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
             db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id='contract-monitor'")
         try:
-            before = persisted_state(backend)
+            before = no_write_snapshot(backend.state)
             response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/monitor-commands")
-            self.assertEqual(persisted_state(backend), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_monitors SET record=? WHERE id='contract-monitor'", (old,))
