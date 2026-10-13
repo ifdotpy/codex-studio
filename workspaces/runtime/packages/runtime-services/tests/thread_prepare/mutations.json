@@ -1,0 +1,123 @@
+[
+  {
+    "id": "thread-repeat-pending",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "is_some_and(|p| p.connection_id == s.account.connection_id)",
+        "after": "is_some_and(|p| p.connection_id != s.account.connection_id)"
+      }
+    ],
+    "witness": "replacement-False-False"
+  },
+  {
+    "id": "thread-reuse-discarded-start",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "p.thread_id.is_some()\n                && p.thread_id == s.actor.thread_id\n                && p.request_digest == request_digest",
+        "after": "p.thread_id == s.actor.thread_id"
+      }
+    ],
+    "witness": "replacement-False-True"
+  },
+  {
+    "id": "thread-resume-tools",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "let tool_catalog = if method == Method::Start || s.account.provider == Provider::Claude {",
+        "after": "let tool_catalog = if true {"
+      }
+    ],
+    "witness": "parameters-78"
+  },
+  {
+    "id": "thread-resume-model",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "if attempt.method == Method::Start {",
+        "after": "if true {"
+      }
+    ],
+    "witness": "receipts-12"
+  },
+  {
+    "id": "thread-permission-upgrade",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "let sandbox = if yolo {",
+        "after": "let sandbox = if !yolo {"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-stale-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.actor.epoch != old.actor.epoch {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "epoch"
+  },
+  {
+    "id": "thread-stale-connection",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "} else if current.account.connection_id != old.account.connection_id {",
+        "after": "} else if false {"
+      }
+    ],
+    "witness": "connection"
+  },
+  {
+    "id": "thread-reattached-context",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "if !(current.account.provider == Provider::Claude\n        && (receipt.reattached || receipt.claude_read_submitted))",
+        "after": "if true"
+      }
+    ],
+    "witness": "receipts-24"
+  },
+  {
+    "id": "thread-catalog-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "let catalog: Vec<Value> = tools\n        .iter()",
+        "after": "let catalog: Vec<Value> = tools\n        .iter().rev()"
+      }
+    ],
+    "witness": "parameters-0"
+  },
+  {
+    "id": "thread-native-effort",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "params.insert(\"effort\".into(), json!(effort));",
+        "after": "params.insert(\"effort\".into(), json!(\"low\"));"
+      }
+    ],
+    "witness": "parameters-13"
+  },
+  {
+    "id": "thread-reuse-changed-params",
+    "file": "workspaces/runtime/packages/runtime-services/src/thread_prepare.rs",
+    "edits": [
+      {
+        "before": "                && p.request_digest == request_digest",
+        "after": ""
+      }
+    ],
+    "witness": "replacement-resume-changed-parameters"
+  }
+]
