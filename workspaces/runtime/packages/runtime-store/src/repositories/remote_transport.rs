@@ -4,7 +4,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 const ACCESS_CLIENTS: &[TableRequirement] = &[TableRequirement {
@@ -34,36 +34,28 @@ const MULTI_SERVER_MAX_RETAINED_NONCES: i64 = 10_000;
 const MULTI_SERVER_MAX_UNPAIRED_NONCES: i64 = 1_280;
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_access_clients",
-            tables: ACCESS_CLIENTS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_access_nonces",
-            tables: ACCESS_NONCES,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_access_outbound",
-            tables: ACCESS_OUTBOUND,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_federation_identity",
-            tables: FEDERATION_IDENTITY,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_federation_nonces",
-            tables: FEDERATION_NONCES,
-        },
-    ],
+    conditional_tables: &[],
     tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[
+        ACCESS_CLIENTS[0],
+        ACCESS_NONCES[0],
+        ACCESS_OUTBOUND[0],
+        FEDERATION_IDENTITY[0],
+        FEDERATION_NONCES[0],
+    ],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "remote_transport",
+        requirements: &REQUIREMENTS,
+    }
+}
 
 /// Outcome of reserving a stable multi-server request identity.
 pub enum OutboundReservation {

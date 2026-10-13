@@ -307,3 +307,14 @@ fn voice_error(error: VoiceError) -> ApiError {
         }
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "voice",
+        routes: Some(routes),
+        dependencies: &[
+        "payload-store/voice-audio",
+        "provider-session/voice",
+        ],
+    }
+}

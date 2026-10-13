@@ -447,3 +447,15 @@ mod tests {
         assert!(pending.await.is_none());
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "sync_stream",
+        routes: Some(routes),
+        dependencies: &[
+        "provider-session/app-server",
+        "resource-policy/windows-file-identity",
+        "usage-policy/token-rates",
+        ],
+    }
+}

@@ -204,3 +204,15 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
         CheckpointsError::Store(_) => ApiError::internal(),
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "checkpoints",
+        routes: Some(routes),
+        dependencies: &[
+        "provider-session/thread-fork",
+        "workspace-state/image-execution",
+        "store-bootstrap/checkpoints-schema",
+        ],
+    }
+}

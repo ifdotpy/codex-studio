@@ -244,3 +244,25 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     ApiError::new(status, error.to_string())
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "agents_create",
+        routes: Some(routes),
+        dependencies: &[
+        "account-driver/unavailable",
+        "agent-discovery/launcher-status",
+        "agent-management/agent-mode-settings",
+        "agent-management/conversation-settings",
+        "agent-management/conversation-termination",
+        "agent-management/empty-chat-reuse",
+        "project-driver/chat-binding",
+        "provider-session/model-list",
+        "provider-session/title-generation",
+        "worker-driver/settings-catalog",
+        "worker-driver/work-assignment",
+        "worker-driver/workspace-preparation",
+        "workspace-state/lead-workspace",
+        ],
+    }
+}

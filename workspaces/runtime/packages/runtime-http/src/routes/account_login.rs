@@ -458,3 +458,16 @@ mod tests {
         ));
     }
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "account_login",
+        routes: Some(routes),
+        dependencies: &[
+        "provider-session/claude-discovery",
+        "provider-session/claude-login",
+        "provider-session/claude-profile-auth",
+        "provider-session/codex-login",
+        ],
+    }
+}

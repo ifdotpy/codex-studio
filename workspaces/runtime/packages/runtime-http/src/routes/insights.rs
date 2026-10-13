@@ -148,3 +148,13 @@ fn valid_agent_id(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
 }
+
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "insights",
+        routes: Some(routes),
+        dependencies: &[
+        "usage-policy/session-cost-refresh",
+        ],
+    }
+}

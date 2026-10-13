@@ -272,3 +272,10 @@ fn record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoiceRecord> {
         created: row.get(9)?,
     })
 }
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "voice",
+        requirements: &REQUIREMENTS,
+    }
+}

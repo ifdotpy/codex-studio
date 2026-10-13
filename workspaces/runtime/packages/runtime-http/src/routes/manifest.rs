@@ -8,50 +8,23 @@ use crate::router::HttpState;
 #[serde(transparent)]
 pub(crate) struct Dependency(&'static str);
 
-/// Names use `<slice>/<capability>` and are removed when the slice that provides them merges.
-const KNOWN_DEPENDENCIES: &[&str] = &[
-    "coordination-policy/inbox",
-    "cross-server/remote-events",
-    "event-driver/annotations",
-    "event-driver/plan-updates",
-    "event-driver/queue-mutations",
-    "event-driver/work-items",
-    "monitor-driver/active-checks",
-    "provider-session/account-rate-limits",
-    "provider-session/model-list",
-    "provider-session/app-server",
-    "provider-session/title-generation",
-    "resource-policy/read-progress-panel",
-    "resource-policy/windows-file-identity",
-    "resource-policy/write-progress-layout",
-    "rule-driver/event-rules",
-    "transcript-service/pull",
-    "transcript/event-driver",
-    "transcript/payload-store",
-    "transcript/search-index",
-    "transcript/workspace-state",
-    "work-policy/views",
-    "workspace-state/git-changes",
-    "workspace-state/image-execution",
-    "workspace-state/organization-effects",
-    "workspace-state/snapshot",
-    "coordination-policy/chat-history",
-    "coordination-policy/room-visibility",
-    "agent-management/conversation-termination",
-    "event-driver/message-receipts",
-    "event-driver/message-send",
-    "federation-driver/rooms",
-    "agent-discovery/launcher-status",
-    "account-driver/unavailable",
-    "worker-driver/settings-catalog",
-    "worker-driver/work-assignment",
-    "worker-driver/workspace-preparation",
-    "project-driver/chat-binding",
-    "agent-management/empty-chat-reuse",
-    "agent-management/agent-mode-settings",
-    "agent-management/conversation-settings",
-    "workspace-state/lead-workspace",
-];
+pub(crate) struct RouteModuleRegistration {
+    pub(crate) name: &'static str,
+    pub(crate) routes: Option<fn() -> RouteGroup>,
+    pub(crate) dependencies: &'static [&'static str],
+}
+
+inventory::collect!(RouteModuleRegistration);
+
+pub(crate) fn registered_dependencies() -> Vec<&'static str> {
+    let mut dependencies = inventory::iter::<RouteModuleRegistration>
+        .into_iter()
+        .flat_map(|registration| registration.dependencies.iter().copied())
+        .collect::<Vec<_>>();
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    dependencies
+}
 
 impl Dependency {
     #[allow(
@@ -67,7 +40,7 @@ impl Dependency {
     }
 
     fn is_known(self) -> bool {
-        KNOWN_DEPENDENCIES.contains(&self.0)
+        registered_dependencies().contains(&self.0)
     }
 }
 

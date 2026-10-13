@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
 use crate::records::{decode_json_record, get_json_record};
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{EventWriteRepository, StoreError, StoreResult};
 
 const CHECKPOINTS: &[TableRequirement] = &[TableRequirement {
@@ -33,35 +33,27 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         name: "runtime_agents",
         columns: &["id", "record"],
     }],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_checkpoints",
-            tables: CHECKPOINTS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_workspace_operations",
-            tables: OPERATIONS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_items",
-            tables: ITEMS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_monitors",
-            tables: MONITORS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_tasks",
-            tables: TASKS,
-        },
-    ],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[
+        CHECKPOINTS[0],
+        OPERATIONS[0],
+        ITEMS[0],
+        MONITORS[0],
+        TASKS[0],
+    ],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "checkpoints",
+        requirements: &REQUIREMENTS,
+    }
+}
 
 const REQUIRED_TABLES: &[&str] = &[
     "runtime_checkpoints",

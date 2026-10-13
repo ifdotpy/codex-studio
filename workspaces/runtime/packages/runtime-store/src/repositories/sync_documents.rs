@@ -462,3 +462,10 @@ pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
         )
         .map_err(StoreError::from)
 }
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "sync_documents",
+        requirements: &REQUIREMENTS,
+    }
+}
