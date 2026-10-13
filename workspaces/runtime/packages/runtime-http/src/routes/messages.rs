@@ -265,26 +265,12 @@ fn default_connected() -> bool {
 
 fn coordination_error(error: CoordinationError) -> ApiError {
     match error {
-        CoordinationError::RequiresDependency(dependency) => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            format!("Not implemented: requires {dependency}"),
-        ),
+        CoordinationError::RequiresDependency(dependency) => ApiError::dependency(dependency),
         CoordinationError::InvalidRequest(message) | CoordinationError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         CoordinationError::InvalidStored { object, id } => invalid_stored(object, &id),
-        CoordinationError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
-            table,
-            id,
-        }) => invalid_stored(table, &id),
-        CoordinationError::Store(studio_runtime_store::StoreError::InvalidSyncObject {
-            scope,
-            id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {scope}/{id}"),
-        ),
-        CoordinationError::Store(_) => ApiError::internal(),
+        CoordinationError::Store(error) => ApiError::stored(error),
     }
 }
 

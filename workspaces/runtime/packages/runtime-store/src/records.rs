@@ -826,17 +826,34 @@ fn quoted_table<R: JsonRecord>() -> String {
     format!("\"{}\"", R::TABLE.replace('"', "\"\""))
 }
 
+pub(crate) fn validate_value(
+    schema: &str,
+    value: Value,
+    invalid: impl Fn() -> crate::StoreError,
+) -> StoreResult<Value> {
+    if !studio_runtime_schema::validate(schema, &value)
+        .map_err(crate::StoreError::SchemaValidation)?
+    {
+        return Err(invalid());
+    }
+    Ok(value)
+}
+
+pub(crate) fn decode_value(
+    schema: &str,
+    encoded: &str,
+    invalid: impl Fn() -> crate::StoreError,
+) -> StoreResult<Value> {
+    let value = serde_json::from_str(encoded).map_err(|_| invalid())?;
+    validate_value(schema, value, invalid)
+}
+
 pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
     };
-    let value: Value = serde_json::from_str(encoded).map_err(|_| invalid())?;
-    if !studio_runtime_schema::validate(R::SCHEMA, &value)
-        .map_err(crate::StoreError::SchemaValidation)?
-    {
-        return Err(invalid());
-    }
+    let value = decode_value(R::SCHEMA, encoded, invalid)?;
     let record = serde_json::from_value::<R>(value).map_err(|_| invalid())?;
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)

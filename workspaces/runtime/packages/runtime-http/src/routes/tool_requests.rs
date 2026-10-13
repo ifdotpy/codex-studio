@@ -88,25 +88,8 @@ fn error(error: ToolRequestError) -> ApiError {
         ToolRequestError::InvalidRequest(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        ToolRequestError::RequiresDependency(name) => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            format!("Not implemented: requires {name}"),
-        ),
-        ToolRequestError::Store(studio_runtime_store::StoreError::InvalidSyncObject {
-            scope,
-            id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {scope}/{id}"),
-        ),
-        ToolRequestError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
-            table,
-            id,
-        }) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
-        _ => ApiError::internal(),
+        ToolRequestError::RequiresDependency(name) => ApiError::dependency(name),
+        ToolRequestError::Store(error) => ApiError::stored(error),
     }
 }
 
