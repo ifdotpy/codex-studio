@@ -15,15 +15,19 @@ const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) type ExchangeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + Send + 'a>>;
 
+pub(crate) struct ExchangeSpec {
+    pub timeout: Duration,
+    pub shutdown: Shutdown,
+    pub initialize_operation: OperationId,
+    pub initialize_params: serde_json::Value,
+}
+
 /// Launch one provider process, run one bounded consumer exchange, then reap it.
 pub(crate) async fn run<T, F>(
     executable: Option<&Path>,
     home: &str,
     isolated: bool,
-    timeout: Duration,
-    shutdown: Shutdown,
-    initialize_operation: OperationId,
-    initialize_params: serde_json::Value,
+    spec: ExchangeSpec,
     exchange: F,
 ) -> Result<T, ()>
 where
@@ -54,32 +58,16 @@ where
     {
         let factory = Arc::new(
             studio_runtime_process::provider_stdio::StdioProviderTaskFactory {
-                deadline: started + timeout,
+                deadline: started + spec.timeout,
                 max_frame_bytes: MAX_FRAME_BYTES,
                 max_output_bytes: MAX_OUTPUT_BYTES,
             },
         );
-        run_with_factory(
-            factory,
-            launch,
-            started,
-            timeout,
-            shutdown,
-            initialize_operation,
-            initialize_params,
-            exchange,
-        )
-        .await
+        run_with_factory(factory, launch, started, spec, exchange).await
     }
     #[cfg(not(unix))]
     {
-        let _ = (
-            launch,
-            shutdown,
-            initialize_operation,
-            initialize_params,
-            exchange,
-        );
+        let _ = (launch, spec, exchange);
         Err(())
     }
 }
@@ -88,18 +76,15 @@ pub(crate) async fn run_with_factory<T, F>(
     factory: Arc<dyn ProviderTaskFactory>,
     launch: ProviderLaunchSpec,
     started: Instant,
-    timeout: Duration,
-    shutdown: Shutdown,
-    initialize_operation: OperationId,
-    initialize_params: serde_json::Value,
+    spec: ExchangeSpec,
     exchange: F,
 ) -> Result<T, ()>
 where
     T: Send,
     F: for<'a> FnOnce(&'a mut SessionHandle, Instant) -> ExchangeFuture<'a, T> + Send,
 {
-    let deadline = started + timeout;
-    let mut stop = shutdown.subscribe();
+    let deadline = started + spec.timeout;
+    let mut stop = spec.shutdown.subscribe();
     if *stop.borrow() || Instant::now() >= deadline {
         return Err(());
     }
@@ -114,11 +99,11 @@ where
         SessionTaskConfig {
             generation: Generation(1),
             claude: false,
-            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-            initialize_operation,
+            timeout_ms: u64::try_from(spec.timeout.as_millis()).unwrap_or(u64::MAX),
+            initialize_operation: spec.initialize_operation,
             request_id_prefix: None,
             recovered: vec![],
-            initialize_params,
+            initialize_params: spec.initialize_params,
         },
     )
     .await
