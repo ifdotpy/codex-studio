@@ -6,10 +6,10 @@ use serde_json::{Value, json};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::Path;
-use studio_runtime_store::StoreResult;
+use studio_runtime_store::{StoreResult, system_reads as records};
 
 use crate::event_write::truthy;
-use crate::sync_policy::{stored_records, table_exists};
+use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -159,53 +159,89 @@ pub(crate) fn room_view_context(
     record: &Value,
     agents: &[Value],
 ) -> StoreResult<RoomViewContext> {
-    let room_id = record.get("id").and_then(Value::as_str).unwrap_or_default();
-    let mut peer_teams = Vec::new();
-    if table_exists(transaction, "sync_entities")? {
-        let mut statement = transaction.prepare(
-            "SELECT payload FROM sync_entities WHERE collection='peerTeam' AND deleted=0",
-        )?;
-        for payload in statement.query_map([], |row| row.get::<_, Option<String>>(0))? {
-            let Some(payload) = payload? else { continue };
-            let Ok(payload) = serde_json::from_str::<Value>(&payload) else {
+    RoomDirectory::with_agents(transaction, agents.to_vec())?.for_room(transaction, record, true)
+}
+
+pub(crate) struct RoomDirectory {
+    pub(crate) agents: Vec<Value>,
+    pub(crate) projects: Vec<Value>,
+    peers: Vec<Value>,
+}
+impl RoomDirectory {
+    pub(crate) fn load(tx: &Transaction<'_>) -> Result<Self, studio_runtime_store::StoreError> {
+        Self::with_agents(tx, records::all(tx, "runtime_agents")?)
+    }
+    fn with_agents(tx: &Transaction<'_>, agents: Vec<Value>) -> StoreResult<Self> {
+        let projects = records::all(tx, "runtime_projects")?;
+        let mut peers = Vec::new();
+        for project in &projects {
+            let Some(path) = project["path"].as_str().filter(|s| !s.is_empty()) else {
                 continue;
             };
-            if let Some(team) = payload.get("value") {
-                peer_teams.push(team.clone());
+            let path = crate::system_reads::resolve_path(path).map_err(|_| {
+                records::invalid(
+                    "runtime_projects",
+                    project["id"].as_str().unwrap_or_default(),
+                )
+            })?;
+            for team in project["peerTeams"].as_array().into_iter().flatten() {
+                let mut members = Vec::new();
+                for id in team["members"].as_array().into_iter().flatten() {
+                    if agents.iter().any(|a| {
+                        a["id"] == *id
+                            && a["rootId"] == *id
+                            && a["isLead"] == true
+                            && !truthy(a.get("deletedAt"))
+                            && !truthy(a.get("parentId"))
+                            && a["cwd"]
+                                .as_str()
+                                .and_then(|p| crate::system_reads::resolve_path(p).ok())
+                                .as_ref()
+                                == Some(&path)
+                    }) && !members.contains(id)
+                    {
+                        members.push(id.clone());
+                    }
+                }
+                if members.len() >= 2 {
+                    let mut team = team.clone();
+                    team["members"] = json!(members);
+                    peers.push(team);
+                }
             }
         }
+        Ok(Self {
+            agents,
+            projects,
+            peers,
+        })
     }
-    let last_message = if table_exists(transaction, "runtime_chat_messages")? {
-        transaction.query_row(
-            "SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",
-            [room_id],
-            |row| {
-                let text: String = row.get(1)?;
-                Ok(json!({
-                    "seq":row.get::<_, i64>(0)?,
-                    "text":text.chars().take(180).collect::<String>(),
-                    "created":row.get::<_, f64>(2)?,
-                    "sender":row.get::<_, String>(3)?
-                }))
+    pub(crate) fn for_room(
+        &self,
+        tx: &Transaction<'_>,
+        room: &Value,
+        last: bool,
+    ) -> Result<RoomViewContext, studio_runtime_store::StoreError> {
+        let id = room["id"].as_str().unwrap_or_default();
+        let last_message = if last && records::exists(tx, "runtime_chat_messages")? {
+            let row=tx.query_row("SELECT id,seq,text,created,sender,deliveries FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,f64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))).optional()?;
+            row.map(|(key,seq,text,created,sender,deliveries)|{
+                let deliveries:Value=serde_json::from_str(&deliveries).map_err(|_|records::invalid("runtime_chat_messages",&key))?;
+                records::validate("runtime_chat_messages",&key,json!({"id":key,"seq":seq,"room":id,"text":text,"created":created,"sender":sender,"deliveries":deliveries}))?;
+                Ok::<Value,studio_runtime_store::StoreError>(json!({"seq":seq,"text":text.chars().take(180).collect::<String>(),"created":created,"sender":sender}))
+            }).transpose()?
+        } else {
+            None
+        };
+        Ok(RoomViewContext {
+            agents: self.agents.clone(),
+            peer_teams: self.peers.clone(),
+            last_message,
+            federation: if room["kind"] == "federated" {
+                records::get(tx, "runtime_federation_rooms", id)?
+            } else {
+                None
             },
-        ).optional()?
-    } else {
-        None
-    };
-    let federation = if record.get("kind").and_then(Value::as_str) == Some("federated")
-        && table_exists(transaction, "runtime_federation_rooms")?
-    {
-        stored_records(transaction, "runtime_federation_rooms")?
-            .into_iter()
-            .find(|(id, _)| id == room_id)
-            .and_then(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
-    } else {
-        None
-    };
-    Ok(RoomViewContext {
-        agents: agents.to_vec(),
-        peer_teams,
-        last_message,
-        federation,
-    })
+        })
+    }
 }

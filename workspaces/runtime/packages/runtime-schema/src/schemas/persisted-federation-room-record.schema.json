@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "PersistedFederationMember": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        }
+      },
+      "required": ["id"],
+      "title": "PersistedFederationMember",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "localApproved": {
+      "title": "Localapproved",
+      "type": "boolean"
+    },
+    "localMembers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Localmembers",
+      "type": "array"
+    },
+    "localParticipants": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Localparticipants",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "peerId": {
+      "title": "Peerid",
+      "type": "string"
+    },
+    "peerLabel": {
+      "title": "Peerlabel",
+      "type": "string"
+    },
+    "remoteApproved": {
+      "title": "Remoteapproved",
+      "type": "boolean"
+    },
+    "remoteMembers": {
+      "items": {
+        "$ref": "#/$defs/PersistedFederationMember"
+      },
+      "title": "Remotemembers",
+      "type": "array"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": ["id", "status", "peerId", "peerLabel", "name"],
+  "title": "PersistedFederationRoomRecord",
+  "type": "object"
+}

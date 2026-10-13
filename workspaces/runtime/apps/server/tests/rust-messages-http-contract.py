@@ -835,16 +835,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=headers)
         self.assertEqual(replay.status, 200, replay.body[:1000])
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_deferred_message_operations_name_their_dependencies(self):
-        for method, path, body, dependency in (
-            ("GET", "/api/agent-chat?room=missing", None, "coordination-policy/chat-history"),
-            ("GET", "/api/messages/receipts", None, "event-driver/message-receipts"),
-            ("POST", "/api/room/delete", {"id": "missing"}, "coordination-policy/room-visibility"),
-        ):
-            response = self.backend.request(method, path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn(dependency, response.json()["error"])
+    def test_missing_message_read_targets_are_rejected(self):
+        for method,path,body in (("GET","/api/agent-chat?room=missing",None),("GET","/api/messages/receipts",None),("POST","/api/room/delete",{"id":"missing"})):
+            response=self.backend.request(method,path,body=body,headers=self.headers())
+            self.assertEqual(response.status,400,response.body[:1000])
 
 
 if __name__ == "__main__":

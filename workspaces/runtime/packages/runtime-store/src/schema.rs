@@ -630,7 +630,7 @@ fn verify_analytics_migration(canvas: &Connection, analytics: &Connection) -> St
     Ok(())
 }
 
-fn table_exists(connection: &Connection, name: &str) -> StoreResult<bool> {
+pub fn table_exists(connection: &Connection, name: &str) -> StoreResult<bool> {
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         params![name],

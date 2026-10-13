@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "reserved",
+        "dispatching",
+        "uncertain",
+        "failed",
+        "cancelled",
+        "delivered",
+        "stored_only",
+        "queued",
+        "accepted",
+        "sent"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": ["id", "status"],
+  "title": "PersistedMessageEvent",
+  "type": "object"
+}

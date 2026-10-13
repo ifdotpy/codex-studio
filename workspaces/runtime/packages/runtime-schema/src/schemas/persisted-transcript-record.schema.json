@@ -6,6 +6,17 @@
         "$ref": "#/$defs/JsonValue"
       },
       "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Id"
+        },
         "kind": {
           "anyOf": [
             {
@@ -66,6 +77,17 @@
         }
       ],
       "title": "Inputs"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Role"
     },
     "text": {
       "anyOf": [

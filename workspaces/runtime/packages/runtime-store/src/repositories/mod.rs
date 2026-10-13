@@ -20,6 +20,7 @@ pub(crate) mod remote_transport;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
+pub mod system_reads;
 pub(crate) mod tasks;
 pub(crate) mod terminals;
 pub(crate) mod transcript;
