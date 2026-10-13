@@ -44,6 +44,8 @@ pub trait TurnDriver {
 pub enum SchedulerError {
     #[error("scheduler attempt timestamp is not finite")]
     InvalidAttemptTimestamp,
+    #[error("{0}")]
+    PolicyRefused(String),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -86,6 +88,12 @@ pub fn consume_wake(
     let Some(claimed) = claimed else {
         return Ok(true);
     };
+    if let Some(reason) = claimed.refusal_reason {
+        return Err(SchedulerError::PolicyRefused(reason));
+    }
+    if claimed.events.is_empty() {
+        return Ok(true);
+    }
 
     let submitted = store.transaction(|transaction| {
         SchedulerRepository::mark_submitted(transaction, agent_id, epoch, attempt_id)

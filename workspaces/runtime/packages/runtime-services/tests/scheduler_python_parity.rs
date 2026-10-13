@@ -35,6 +35,109 @@ with runtime.lock, runtime.db() as db:
 runtime.close()
 "#;
 
+const CREATE_DISPATCH_POLICY_CASES: &str = r#"
+import json, pathlib, shutil, sys, time
+sys.path.insert(0, sys.argv[2])
+from codex_runtime import Runtime
+from codex_wakeups import pending_batch
+class QuietRuntime(Runtime):
+    def schedule(self):
+        return
+class CaptureExecutor:
+    def __init__(self):
+        self.selected = {}
+    def submit(self, _function, agent, rows):
+        self.selected[agent['id']] = [dict(row) for row in rows]
+root = pathlib.Path(sys.argv[1])
+now = time.time()
+policy_cases = json.loads(pathlib.Path(sys.argv[3]).read_text())
+cases = []
+def event(kind, text='input', created=1.0, meta=None):
+    return {'kind':kind, 'text':text, 'created':created, 'meta':meta or {}}
+def add(name, specs, provider='codex'):
+    cases.append({'name':name, 'specs':specs, 'provider':provider})
+for case in policy_cases['kindCases']:
+    add(case['name'], [event(case['kind'], case['text'], meta=case.get('meta'))])
+for complaint in policy_cases['complaints']:
+    add(complaint['name'], [event('complaint', json.dumps({'complaints':[{
+        'complaint_id':complaint['complaintId']}]}))])
+add('event-limit', [event('plan_update', f'event-{i:02}', created=float(i))
+                    for i in range(policy_cases['eventLimit'])])
+add('asset-limit', [event('plan_update', f'asset-{i}', meta={'assets':[i for i in range(count)]})
+                    for i, count in enumerate(policy_cases['assetCounts'])])
+add('composer-limit', [event(row['kind'], row['text'], meta=row.get('meta'))
+                       for row in policy_cases['composerEvents']])
+add('claude-command', [event(row['kind'], row['text'])
+                       for row in policy_cases['claudeCommandEvents']], provider='claude')
+add('progress-delay', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
+     'room':'team','progress_key':'delay','progress_version':version}),
+     created=now+policy_cases['progressDelaySeconds'])
+     for version in policy_cases['progressVersions']])
+add('duplicate-progress', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
+     'room':'team','progress_key':'duplicate','progress_version':policy_cases['duplicateProgressVersion']}))
+     for _ in range(2)])
+add('urgent-progress', [event('agent_message', json.dumps({'importance':'progress','sender':'worker',
+     'room':'team','progress_key':f'urgent-{i}','progress_version':1}))
+     for i in range(policy_cases['urgentProgressCount'])] + [event('user','urgent')])
+runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
+agents = {}
+for case in cases:
+    agent = runtime.create({'name':case['name'], 'cwd':str(root), 'prompt':'temporary'}, defer=True)
+    agent.update(autoWake=True, status='queued', provider=case['provider'])
+    agents[case['name']] = agent
+with runtime.lock, runtime.db() as db:
+    for case in cases:
+        agent = agents[case['name']]
+        runtime.put(db, 'agents', agent)
+        for index, spec in enumerate(case['specs']):
+            event_id = f"{case['name']}:{index}"
+            db.execute('INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)',
+                (event_id, agent['id'], spec['kind'], spec['text'], 'pending', spec['created'],
+                 agent['epoch'], None, None))
+            if spec['meta']:
+                db.execute('INSERT INTO runtime_event_meta VALUES(?,?)',
+                    (event_id, json.dumps(spec['meta'])))
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)')
+    for complaint in policy_cases['complaintRecords']:
+        db.execute('INSERT INTO runtime_complaints VALUES(?,?)', (complaint['id'], json.dumps({
+            'leadId':agents[complaint['agentCase']]['id'], 'status':complaint['status'],
+            'recipient':complaint['recipient'], 'responses':complaint['responses']})))
+agent_ids = {name:{'id':agent['id'], 'epoch':agent['epoch']} for name, agent in agents.items()}
+runtime.close()
+python_root = root.parent / (root.name + '-python')
+shutil.copytree(root, python_root)
+reference = QuietRuntime(python_root, lambda *_args, **_kwargs: None)
+executor = CaptureExecutor()
+reference.delivery_executor = lambda: executor
+import codex_team_isolation
+original_cancel_pending = codex_team_isolation.cancel_pending
+codex_team_isolation.cancel_pending = lambda *_args, **_kwargs: None
+pending = {}
+retired = {}
+for case in cases:
+    agent_id = agent_ids[case['name']]['id']
+    with reference.lock, reference.db() as db:
+        agent = reference.agent(agent_id, db)
+        pending[case['name']] = [row['id'] for row in pending_batch(reference, db, agent)]
+        retired[case['name']] = [list(row) for row in db.execute(
+            "SELECT id,status,error FROM runtime_events WHERE agent=? AND epoch=? AND status!='pending' ORDER BY created,rowid",
+            (agent_id, agent['epoch']))]
+    reference.dispatch_candidates(agent_id)
+    with reference.lock, reference.db() as db:
+        agent = reference.agent(agent_id, db)
+        agent.update(status='queued', inFlight=False)
+        agent.pop('startAttempt', None)
+        reference.put(db, 'agents', agent)
+        db.execute("UPDATE runtime_events SET status='pending' WHERE agent=? AND status='reserved'",
+                   (agent_id,))
+codex_team_isolation.cancel_pending = original_cancel_pending
+selected = {case['name']:[row['id'] for row in executor.selected.get(agent_ids[case['name']]['id'], [])]
+            for case in cases}
+print(json.dumps({'agents':agent_ids, 'pending':pending, 'selected':selected,
+                  'retired':retired, 'python_root':str(python_root), 'now':now}))
+reference.close()
+"#;
+
 #[test]
 fn pending_selection_matches_python_and_claims_rust_event_write_events() {
     let state = TemporaryState::new();
@@ -203,6 +306,170 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         )
         .expect("uncertain event status reads");
     assert_eq!(uncertain, "uncertain");
+}
+
+#[test]
+fn pending_and_dispatch_selection_matches_python_policy_kinds_and_boundaries() {
+    let state = TemporaryState::new();
+    let policy_corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/scheduler_policy_cases.json");
+    let policy_corpus = policy_corpus
+        .to_str()
+        .expect("scheduler policy corpus path is UTF-8");
+    let fixture = run_python(&state.0, CREATE_DISPATCH_POLICY_CASES, &[policy_corpus]);
+    let fixture: Value =
+        serde_json::from_str(&fixture).expect("Python policy fixture returns JSON");
+    let agents = fixture["agents"]
+        .as_object()
+        .expect("Python fixture returns agents by case");
+    let python_selected = fixture["selected"]
+        .as_object()
+        .expect("Python dispatch returns selected IDs by case");
+    let python_pending = fixture["pending"]
+        .as_object()
+        .expect("Python pending_batch returns pending IDs by case");
+    let python_retired = fixture["retired"]
+        .as_object()
+        .expect("Python pending_batch returns retired records by case");
+    let attempt_created = fixture["now"]
+        .as_f64()
+        .expect("Python fixture returns a clock");
+    let expected_refusals = [
+        ("kind-agent_message", "team-isolation-policy"),
+        ("kind-complaint_response", "team-isolation-policy"),
+        ("kind-followup", "team-isolation-policy"),
+        ("kind-radio", "radio-policy"),
+        ("kind-radio_turn", "radio-policy"),
+        ("kind-radio-answer", "radio-policy"),
+        ("duplicate-progress", "team-isolation-policy"),
+        ("urgent-progress", "team-isolation-policy"),
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written policy state");
+    for name in [
+        "kind-user",
+        "kind-plan_update",
+        "kind-agent_message",
+        "kind-chat_review",
+        "kind-complaint_response",
+        "kind-followup",
+        "kind-radio",
+        "kind-radio_turn",
+        "kind-complaint-open",
+        "kind-work-review",
+        "kind-radio-answer",
+        "complaint-resolved",
+        "event-limit",
+        "asset-limit",
+        "composer-limit",
+        "claude-command",
+        "progress-delay",
+        "duplicate-progress",
+        "urgent-progress",
+    ] {
+        let agent = &agents[name];
+        let agent_id = agent["id"].as_str().expect("agent ID is a string");
+        let epoch = agent["epoch"].as_i64().expect("agent epoch is an integer");
+        let expected_ids = python_selected[name]
+            .as_array()
+            .expect("Python selected IDs are an array")
+            .iter()
+            .map(|value| value.as_str().expect("event ID is a string").to_owned())
+            .collect::<Vec<_>>();
+        let mut driver = CaptureDriver::default();
+        let mut wake = PendingWake(true);
+        let result = consume_wake(
+            &store,
+            &mut wake,
+            agent_id,
+            epoch,
+            &format!("attempt-{name}"),
+            attempt_created,
+            &mut driver,
+        );
+        if let Some(policy) = expected_refusals.get(name) {
+            assert!(
+                matches!(result, Err(studio_runtime_services::scheduler::SchedulerError::PolicyRefused(ref reason))
+                    if reason == &format!("scheduler cannot claim {}: requires {policy}", if name == "urgent-progress" || name == "duplicate-progress" { "agent_message" } else if name == "kind-radio-answer" { "user" } else { name.strip_prefix("kind-").unwrap_or(name) })),
+                "{name} must fail closed with its named policy: {result:?}"
+            );
+            assert!(
+                driver.ids.is_empty(),
+                "{name} unexpectedly reached the driver"
+            );
+            if name == "kind-radio_turn" {
+                assert!(
+                    expected_ids.is_empty(),
+                    "Python radio policy rejects stale turns"
+                );
+            } else {
+                assert!(!expected_ids.is_empty(), "Python dispatch selected {name}");
+            }
+            if name == "urgent-progress" {
+                assert_eq!(
+                    expected_ids.first().map(String::as_str),
+                    Some("urgent-progress:32")
+                );
+            }
+        } else {
+            assert!(result.expect("safe scheduler case completes"));
+            assert_eq!(
+                driver.ids, expected_ids,
+                "Python dispatch mismatch for {name}"
+            );
+        }
+        let expected_pending = python_pending[name]
+            .as_array()
+            .expect("Python pending IDs are an array")
+            .iter()
+            .map(|value| value.as_str().expect("event ID is a string").to_owned())
+            .collect::<Vec<_>>();
+        let reader = store.read().expect("Rust policy state reads");
+        let actual_pending = reader
+            .prepare(
+                "SELECT id FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
+            )
+            .expect("pending state query prepares")
+            .query_map((agent_id, epoch), |row| row.get::<_, String>(0))
+            .expect("pending state query executes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("pending state query reads");
+        assert_eq!(
+            actual_pending, expected_pending,
+            "pending preparation mismatch for {name}"
+        );
+        let expected_retired = python_retired[name]
+            .as_array()
+            .expect("Python retired records are an array")
+            .iter()
+            .map(|record| {
+                (
+                    record[0].as_str().expect("event ID is a string").to_owned(),
+                    record[1]
+                        .as_str()
+                        .expect("event status is a string")
+                        .to_owned(),
+                    record[2].as_str().map(str::to_owned),
+                )
+            })
+            .collect::<Vec<_>>();
+        let actual_retired = reader
+            .prepare(
+                "SELECT id,status,error FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status!='pending' ORDER BY created,rowid",
+            )
+            .expect("retired state query prepares")
+            .query_map((agent_id, epoch), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get(2)?))
+            })
+            .expect("retired state query executes")
+            .collect::<Result<Vec<(String, String, Option<String>)>, _>>()
+            .expect("retired state query reads");
+        assert_eq!(
+            actual_retired, expected_retired,
+            "pending retirement mismatch for {name}"
+        );
+    }
 }
 
 #[test]
@@ -513,10 +780,20 @@ impl TemporaryState {
 
 impl Drop for TemporaryState {
     fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            eprintln!("temporary scheduler state cleanup failed: {error}");
+        for path in [self.0.clone(), python_reference_path(&self.0)] {
+            if let Err(error) = fs::remove_dir_all(path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("temporary scheduler state cleanup failed: {error}");
+            }
         }
     }
+}
+
+fn python_reference_path(root: &Path) -> PathBuf {
+    let name = format!(
+        "{}-python",
+        root.file_name().unwrap_or_default().to_string_lossy()
+    );
+    root.with_file_name(name)
 }

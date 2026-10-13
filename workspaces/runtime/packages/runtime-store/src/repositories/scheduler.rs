@@ -2,7 +2,7 @@
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
@@ -25,13 +25,31 @@ const EVENT_META: &[TableRequirement] = &[TableRequirement {
     name: "runtime_event_meta",
     columns: &["id", "record"],
 }];
+const COMPLAINTS: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_complaints",
+    columns: &["id", "record"],
+}];
+const WORK: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_work",
+    columns: &["id", "record"],
+}];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: TABLES,
-    conditional_tables: &[ConditionalTableRequirement {
-        table_exists: "runtime_event_meta",
-        tables: EVENT_META,
-    }],
+    conditional_tables: &[
+        ConditionalTableRequirement {
+            table_exists: "runtime_complaints",
+            tables: COMPLAINTS,
+        },
+        ConditionalTableRequirement {
+            table_exists: "runtime_event_meta",
+            tables: EVENT_META,
+        },
+        ConditionalTableRequirement {
+            table_exists: "runtime_work",
+            tables: WORK,
+        },
+    ],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -45,6 +63,8 @@ pub struct ClaimedEvents {
     pub agent: AgentRecord,
     pub events: Vec<QueueEvent>,
     pub metadata: BTreeMap<String, Value>,
+    /// Set when persisted inputs require a scheduler policy that Rust does not yet provide.
+    pub refusal_reason: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,19 +172,104 @@ impl SchedulerRepository {
             }
         }
 
-        if events
-            .iter()
-            .any(|event| requires_event_policy(&event.kind))
-            || metadata
-                .values()
-                .any(|value| value.get("radioAnswerTurnId").is_some())
-        {
+        let (complaints, work) = load_policy_records(transaction, &events)?;
+        let mut prepared = prepare_pending_batch(&agent, events, metadata, &complaints);
+        apply_preparation(transaction, &prepared)?;
+
+        if prepared.events.is_empty() {
+            set_waiting(transaction, &mut agent, agent_id)?;
             return Ok(None);
         }
-        let selected = select_turn_batch(&agent, events, &metadata, limit);
-        let mut events = selected;
+
+        let mut events = select_dispatch_batch(
+            &agent,
+            prepared.events.clone(),
+            &prepared.metadata,
+            limit,
+            attempt_created,
+        );
         if events.is_empty() {
             return Ok(None);
+        }
+
+        loop {
+            let obsolete_reviews = events
+                .iter()
+                .filter(|event| {
+                    event.kind == "work_review" && work_review_is_obsolete(&agent, event, &work)
+                })
+                .map(|event| event.id.0.clone())
+                .collect::<BTreeSet<_>>();
+            if obsolete_reviews.is_empty() {
+                break;
+            }
+            for id in &obsolete_reviews {
+                let changed = transaction.execute(
+                    "UPDATE runtime_events SET status='stored_only',error=?1 \
+                     WHERE id=?2 AND agent=?3 AND epoch=?4 AND status='pending'",
+                    params![
+                        "The exact result already has a decision",
+                        id,
+                        agent_id,
+                        epoch
+                    ],
+                )?;
+                if changed != 1 {
+                    return Err(StoreError::SchemaMismatch(
+                        "scheduler work review changed during pending reconciliation".to_owned(),
+                    ));
+                }
+            }
+            prepared
+                .events
+                .retain(|event| !obsolete_reviews.contains(&event.id.0));
+            events = select_dispatch_batch(
+                &agent,
+                prepared.events.clone(),
+                &prepared.metadata,
+                limit,
+                attempt_created,
+            );
+            if events.is_empty() {
+                let pending = transaction
+                    .query_row(
+                        "SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' LIMIT 1",
+                        params![agent_id, epoch],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                if !pending {
+                    set_waiting(transaction, &mut agent, agent_id)?;
+                }
+                return Ok(None);
+            }
+        }
+
+        let policy_refusal = events
+            .iter()
+            .find_map(|event| {
+                event_policy_dependency(&event.kind)
+                    .map(|dependency| (event.kind.clone(), dependency))
+            })
+            .or_else(|| {
+                events.iter().find_map(|event| {
+                    prepared
+                        .metadata
+                        .get(&event.id.0)
+                        .and_then(|value| value.get("radioAnswerTurnId"))
+                        .map(|_| (event.kind.clone(), "radio-policy"))
+                })
+            });
+        if let Some((kind, dependency)) = policy_refusal {
+            return Ok(Some(ClaimedEvents {
+                agent,
+                events: Vec::new(),
+                metadata: prepared.metadata,
+                refusal_reason: Some(format!(
+                    "scheduler cannot claim {kind}: requires {dependency}"
+                )),
+            }));
         }
 
         for event in &mut events {
@@ -211,7 +316,8 @@ impl SchedulerRepository {
         Ok(Some(ClaimedEvents {
             agent,
             events,
-            metadata,
+            metadata: prepared.metadata,
+            refusal_reason: None,
         }))
     }
 
@@ -463,17 +569,445 @@ impl SchedulerRepository {
     }
 }
 
-fn requires_event_policy(kind: &str) -> bool {
-    matches!(
-        kind,
-        "agent_message"
-            | "chat_review"
-            | "complaint"
-            | "complaint_response"
-            | "followup"
-            | "radio_turn"
-            | "work_review"
+struct PreparedBatch {
+    events: Vec<QueueEvent>,
+    metadata: BTreeMap<String, Value>,
+    metadata_updates: BTreeMap<String, Value>,
+    retired: BTreeMap<String, String>,
+    cancelled: BTreeMap<String, String>,
+}
+
+fn load_policy_records(
+    transaction: &Transaction<'_>,
+    events: &[QueueEvent],
+) -> StoreResult<(BTreeMap<String, Value>, BTreeMap<String, Value>)> {
+    let mut complaints = BTreeMap::new();
+    let mut work = BTreeMap::new();
+    let has_complaints = events.iter().any(|event| event.kind == "complaint")
+        && table_exists(transaction, "runtime_complaints")?;
+    let has_work = events.iter().any(|event| event.kind == "work_review")
+        && table_exists(transaction, "runtime_work")?;
+
+    for event in events {
+        if event.kind == "complaint"
+            && has_complaints
+            && let Some(ids) = complaint_ids(&event.text)
+        {
+            for id in ids {
+                if complaints.contains_key(&id) {
+                    continue;
+                }
+                if let Some(value) = read_json_record(transaction, "runtime_complaints", &id)? {
+                    complaints.insert(id, value);
+                }
+            }
+        }
+        if event.kind == "work_review"
+            && has_work
+            && let Some((task_id, _)) = work_review_ids(event)
+            && !work.contains_key(&task_id)
+            && let Some(value) = read_json_record(transaction, "runtime_work", &task_id)?
+        {
+            work.insert(task_id, value);
+        }
+    }
+    Ok((complaints, work))
+}
+
+fn table_exists(transaction: &Transaction<'_>, table: &str) -> StoreResult<bool> {
+    Ok(transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+fn read_json_record(
+    transaction: &Transaction<'_>,
+    table: &str,
+    id: &str,
+) -> StoreResult<Option<Value>> {
+    let sql = match table {
+        "runtime_complaints" => "SELECT record FROM runtime_complaints WHERE id=?1",
+        "runtime_work" => "SELECT record FROM runtime_work WHERE id=?1",
+        _ => return Ok(None),
+    };
+    let raw = transaction
+        .query_row(sql, [id], |row| row.get::<_, String>(0))
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
+        scope: table.to_owned(),
+        id: id.to_owned(),
+    })?;
+    if !value.is_object() {
+        return Err(StoreError::InvalidSyncObject {
+            scope: table.to_owned(),
+            id: id.to_owned(),
+        });
+    }
+    Ok(Some(value))
+}
+
+fn complaint_ids(text: &str) -> Option<Vec<String>> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let entries = value.get("complaints")?.as_array()?;
+    if entries.is_empty() {
+        return None;
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .get("complaint_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn complaint_needs_response(complaint: &Value) -> Option<bool> {
+    let status = complaint.get("status")?.as_str()?;
+    if matches!(status, "resolved" | "declined") {
+        return Some(false);
+    }
+    if complaint.get("sourceType").and_then(Value::as_str) == Some("user_task") && status == "open"
+    {
+        return Some(true);
+    }
+    let responsible = if complaint.get("recipient")?.as_str()? == "user" {
+        "user"
+    } else {
+        complaint.get("leadId")?.as_str()?
+    };
+    let responses = complaint.get("responses")?.as_array()?;
+    Some(
+        !responses
+            .iter()
+            .any(|response| response.get("author").and_then(Value::as_str) == Some(responsible)),
     )
+}
+
+fn complaints_resolved(
+    agent: &AgentRecord,
+    event: &QueueEvent,
+    records: &BTreeMap<String, Value>,
+) -> bool {
+    complaint_ids(&event.text).is_some_and(|ids| {
+        ids.iter().all(|id| {
+            records.get(id).is_some_and(|complaint| {
+                complaint.get("leadId").and_then(Value::as_str) == Some(agent.id.0.as_str())
+                    && complaint_needs_response(complaint) == Some(false)
+            })
+        })
+    })
+}
+
+fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    if value.get("importance")?.as_str()? != "progress" {
+        return None;
+    }
+    let sender = value.get("sender")?.as_str()?.to_owned();
+    let room = value.get("room")?.as_str()?.to_owned();
+    let key = value.get("progress_key")?.as_str()?.to_owned();
+    if sender.is_empty() || room.is_empty() || key.is_empty() {
+        return None;
+    }
+    let version = value.get("progress_version")?.as_u64().or_else(|| {
+        value
+            .get("progress_version")?
+            .as_i64()
+            .and_then(|v| u64::try_from(v).ok())
+    })?;
+    Some(((sender, room, key), version))
+}
+
+fn prepare_pending_batch(
+    agent: &AgentRecord,
+    events: Vec<QueueEvent>,
+    metadata: BTreeMap<String, Value>,
+    complaints: &BTreeMap<String, Value>,
+) -> PreparedBatch {
+    let mut metadata = metadata;
+    let mut metadata_updates = BTreeMap::new();
+    let mut retired = BTreeMap::new();
+    let mut cancelled = BTreeMap::new();
+
+    for event in events.iter().filter(|event| event.kind == "chat_review") {
+        cancelled.insert(
+            event.id.0.clone(),
+            "Scheduled chat reviews have been removed".to_owned(),
+        );
+    }
+
+    for event in events.iter().filter(|event| event.kind == "complaint") {
+        if complaints_resolved(agent, event, complaints) {
+            retired.insert(
+                event.id.0.clone(),
+                "Every referenced complaint already has a response".to_owned(),
+            );
+        }
+    }
+
+    let mut groups = BTreeMap::<(String, String, String), Vec<(usize, u64)>>::new();
+    let mut preserve = Vec::with_capacity(events.len());
+    for (index, event) in events.iter().enumerate() {
+        let saved = metadata
+            .get(&event.id.0)
+            .and_then(|value| value.get("preserveProgress"))
+            .is_some_and(truthy);
+        preserve.push(saved);
+        if event.kind == "agent_message"
+            && let Some((key, version)) = progress_update(&event.text)
+        {
+            groups.entry(key).or_default().push((index, version));
+        }
+    }
+
+    for group in groups.values() {
+        let duplicate_version = group
+            .iter()
+            .map(|(_, version)| *version)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != group.len();
+        if duplicate_version || group.iter().any(|(index, _)| preserve[*index]) {
+            for (index, _) in group {
+                let id = events[*index].id.0.clone();
+                let value = metadata.entry(id.clone()).or_insert_with(|| json!({}));
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("preserveProgress".to_owned(), Value::Bool(true));
+                    metadata_updates.insert(id, value.clone());
+                }
+            }
+            continue;
+        }
+        if group.len() < 2 {
+            continue;
+        }
+        let Some((latest_index, _)) = group.iter().max_by_key(|(_, version)| *version) else {
+            continue;
+        };
+        let latest_id = events[*latest_index].id.0.clone();
+        let previous_count = group.iter().try_fold(0_u64, |sum, (index, _)| {
+            match metadata
+                .get(&events[*index].id.0)
+                .and_then(|value| value.get("earlierProgressUpdates"))
+            {
+                None | Some(Value::Null) => Some(sum),
+                Some(Value::Number(number)) => number
+                    .as_u64()
+                    .or_else(|| number.as_i64().and_then(|value| u64::try_from(value).ok()))
+                    .and_then(|value| sum.checked_add(value)),
+                _ => None,
+            }
+        });
+        let Some(previous_count) = previous_count else {
+            for (index, _) in group {
+                let id = events[*index].id.0.clone();
+                let value = metadata.entry(id.clone()).or_insert_with(|| json!({}));
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("preserveProgress".to_owned(), Value::Bool(true));
+                    metadata_updates.insert(id, value.clone());
+                }
+            }
+            continue;
+        };
+        let Some(count) = previous_count.checked_add((group.len() - 1) as u64) else {
+            continue;
+        };
+        for (index, _) in group {
+            let id = events[*index].id.0.clone();
+            if id != latest_id {
+                retired.insert(id, format!("Superseded by progress event {latest_id}"));
+            }
+        }
+        let value = metadata
+            .entry(latest_id.clone())
+            .or_insert_with(|| json!({}));
+        if let Some(object) = value.as_object_mut() {
+            object.insert("earlierProgressUpdates".to_owned(), json!(count));
+            metadata_updates.insert(latest_id, value.clone());
+        }
+    }
+
+    let prepared_events = events
+        .into_iter()
+        .filter_map(|mut event| {
+            if retired.contains_key(&event.id.0) || cancelled.contains_key(&event.id.0) {
+                return None;
+            }
+            if let Some(count) = metadata
+                .get(&event.id.0)
+                .and_then(|value| value.get("earlierProgressUpdates"))
+                .filter(|count| truthy(count))
+                && let Ok(Value::Object(mut value)) = serde_json::from_str(&event.text)
+            {
+                value.insert("earlierProgressUpdates".to_owned(), count.clone());
+                value.insert(
+                    "history".to_owned(),
+                    Value::String(
+                        "Read earlier progress with orchestration_chat_read in this room."
+                            .to_owned(),
+                    ),
+                );
+                event.text = Value::Object(value).to_string();
+            }
+            Some(event)
+        })
+        .collect();
+
+    PreparedBatch {
+        events: prepared_events,
+        metadata,
+        metadata_updates,
+        retired,
+        cancelled,
+    }
+}
+
+fn apply_preparation(transaction: &Transaction<'_>, prepared: &PreparedBatch) -> StoreResult<()> {
+    for (id, reason) in &prepared.retired {
+        let changed = transaction.execute(
+            "UPDATE runtime_events SET status='stored_only',error=?1 WHERE id=?2 AND status='pending'",
+            params![reason, id],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::SchemaMismatch(
+                "scheduler event changed during pending preparation".to_owned(),
+            ));
+        }
+    }
+    for (id, reason) in &prepared.cancelled {
+        let changed = transaction.execute(
+            "UPDATE runtime_events SET status='cancelled',error=?1 WHERE id=?2 AND status='pending'",
+            params![reason, id],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::SchemaMismatch(
+                "scheduler event changed during pending preparation".to_owned(),
+            ));
+        }
+    }
+    if !prepared.metadata_updates.is_empty() {
+        if !table_exists(transaction, "runtime_event_meta")? {
+            return Err(StoreError::SchemaMismatch(
+                "scheduler progress preparation requires runtime_event_meta".to_owned(),
+            ));
+        }
+        for (id, value) in &prepared.metadata_updates {
+            transaction.execute(
+                "INSERT OR REPLACE INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                params![id, serde_json::to_string(value)?],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn work_review_ids(event: &QueueEvent) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(&event.text).ok()?;
+    Some((
+        value.get("task")?.as_str()?.to_owned(),
+        value.get("result")?.get("id")?.as_str()?.to_owned(),
+    ))
+}
+
+fn work_review_is_obsolete(
+    agent: &AgentRecord,
+    event: &QueueEvent,
+    work: &BTreeMap<String, Value>,
+) -> bool {
+    let Some((task_id, result_id)) = work_review_ids(event) else {
+        return false;
+    };
+    work.get(&task_id).is_some_and(|record| {
+        record.get("rootId").and_then(Value::as_str) == Some(agent.id.0.as_str())
+            && record
+                .get("results")
+                .and_then(Value::as_array)
+                .is_some_and(|results| {
+                    results.iter().any(|result| {
+                        result.get("id").and_then(Value::as_str) == Some(result_id.as_str())
+                    })
+                })
+            && record
+                .get("decisions")
+                .and_then(Value::as_array)
+                .is_some_and(|decisions| {
+                    decisions.iter().any(|decision| {
+                        decision.get("resultId").and_then(Value::as_str) == Some(result_id.as_str())
+                    })
+                })
+    })
+}
+
+fn event_policy_dependency(kind: &str) -> Option<&'static str> {
+    match kind {
+        "agent_message" | "complaint_response" | "followup" => Some("team-isolation-policy"),
+        "radio" | "radio_turn" => Some("radio-policy"),
+        _ => None,
+    }
+}
+
+fn set_waiting(
+    transaction: &Transaction<'_>,
+    agent: &mut AgentRecord,
+    agent_id: &str,
+) -> StoreResult<()> {
+    agent.status = AgentStatus::Waiting;
+    AgentRepository::put(transaction, agent)?;
+    EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
+}
+
+fn select_dispatch_batch(
+    agent: &AgentRecord,
+    events: Vec<QueueEvent>,
+    metadata: &BTreeMap<String, Value>,
+    limit: usize,
+    now: f64,
+) -> Vec<QueueEvent> {
+    let maximum = limit.min(MAX_EVENTS_PER_TURN);
+    let mut page = events.iter().take(maximum).cloned().collect::<Vec<_>>();
+    if progress_only(&page) {
+        if let Some(urgent) = events
+            .iter()
+            .skip(maximum)
+            .find(|event| !is_progress(event))
+        {
+            page = std::iter::once(urgent.clone())
+                .chain(page.into_iter().take(maximum.saturating_sub(1)))
+                .collect();
+        } else if let Some(oldest) = page.iter().map(|event| event.created).reduce(f64::min)
+            && now - oldest < 1.0
+        {
+            return Vec::new();
+        }
+    }
+    select_turn_batch(agent, page, metadata, maximum)
+}
+
+fn progress_only(events: &[QueueEvent]) -> bool {
+    !events.is_empty() && events.iter().all(is_progress)
+}
+
+fn is_progress(event: &QueueEvent) -> bool {
+    if event.kind != "agent_message" {
+        return false;
+    }
+    serde_json::from_str::<Value>(&event.text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("importance")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .is_some_and(|importance| importance == "progress")
 }
 
 fn select_turn_batch(
@@ -541,11 +1075,13 @@ fn truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SchedulerRepository, select_turn_batch};
+    use super::{
+        SchedulerRepository, prepare_pending_batch, select_dispatch_batch, select_turn_batch,
+    };
     use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
     use crate::{QueueEvent, QueueEventId};
     use rusqlite::Connection;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
 
     fn database() -> Connection {
@@ -1114,46 +1650,402 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_event_policy_kind_is_not_claimed_or_changed() {
+    fn protected_event_kinds_fail_closed_with_named_policy_and_no_claim() {
+        for (kind, policy) in [
+            ("agent_message", "team-isolation-policy"),
+            ("complaint_response", "team-isolation-policy"),
+            ("followup", "team-isolation-policy"),
+            ("radio", "radio-policy"),
+            ("radio_turn", "radio-policy"),
+        ] {
+            let mut connection = database();
+            connection
+                .execute("UPDATE runtime_events SET kind=?1 WHERE id='first'", [kind])
+                .expect("sensitive event writes");
+            let before_agent: String = connection
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='agent'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("agent snapshot reads");
+            let before_events: Vec<(String, String)> = connection
+                .prepare("SELECT id,status FROM runtime_events ORDER BY id")
+                .expect("event snapshot prepares")
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("event snapshot queries")
+                .collect::<Result<_, _>>()
+                .expect("event snapshot reads");
+            let transaction = connection
+                .transaction()
+                .expect("refusal transaction begins");
+            let refused = SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 32)
+                .expect("unsupported policy kind returns a named refusal")
+                .expect("protected event returns a refusal receipt");
+            assert!(refused.events.is_empty());
+            assert_eq!(
+                refused.refusal_reason.as_deref(),
+                Some(format!("scheduler cannot claim {kind}: requires {policy}").as_str())
+            );
+            transaction.commit().expect("refusal commits");
+            let after_agent: String = connection
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='agent'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("agent snapshot reads");
+            let after_events: Vec<(String, String)> = connection
+                .prepare("SELECT id,status FROM runtime_events ORDER BY id")
+                .expect("event snapshot prepares")
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .expect("event snapshot queries")
+                .collect::<Result<_, _>>()
+                .expect("event snapshot reads");
+            assert_eq!(after_agent, before_agent, "agent changed for {kind}");
+            assert_eq!(after_events, before_events, "events changed for {kind}");
+        }
+    }
+
+    #[test]
+    fn removed_chat_reviews_are_cancelled_with_python_reason() {
         let mut connection = database();
         connection
-            .execute(
-                "UPDATE runtime_events SET kind='agent_message' WHERE id='first'",
-                [],
+            .execute_batch(
+                "UPDATE runtime_events SET kind='chat_review' WHERE id='first';
+                 DELETE FROM runtime_events WHERE id!='first';",
             )
-            .expect("sensitive event writes");
-        let before: String = connection
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='agent'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent snapshot reads");
-        let transaction = connection
-            .transaction()
-            .expect("refusal transaction begins");
+            .expect("removed review event writes");
+        let transaction = connection.transaction().expect("claim transaction begins");
         assert!(
-            SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 32)
-                .expect("unsupported policy kind is refused")
+            SchedulerRepository::claim(&transaction, "agent", 4, "review", 10.0, 32)
+                .expect("removed review is reconciled")
                 .is_none()
         );
-        transaction.commit().expect("refusal commits");
-        let after: String = connection
+        transaction.commit().expect("review retirement commits");
+        let (status, error): (String, String) = connection
             .query_row(
-                "SELECT record FROM runtime_agents WHERE id='agent'",
+                "SELECT status,error FROM runtime_events WHERE id='first'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("retired review state reads");
+        assert_eq!(status, "cancelled");
+        assert_eq!(error, "Scheduled chat reviews have been removed");
+    }
+
+    #[test]
+    fn complaint_preparation_retires_resolved_and_claims_unresolved_records() {
+        let mut resolved = database();
+        resolved
+            .execute_batch(
+                "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 DELETE FROM runtime_events;
+                 INSERT INTO runtime_complaints VALUES(
+                   'settled','{\"leadId\":\"agent\",\"status\":\"resolved\",\"responses\":[]}');
+                 INSERT INTO runtime_events VALUES(
+                   'settled-notice','agent','complaint',
+                   '{\"complaints\":[{\"complaint_id\":\"settled\"}]}',
+                   'pending',1.0,4,NULL,NULL);",
+            )
+            .expect("resolved complaint fixture writes");
+        let transaction = resolved.transaction().expect("claim transaction begins");
+        assert!(
+            SchedulerRepository::claim(&transaction, "agent", 4, "resolved", 10.0, 32)
+                .expect("resolved complaint reconciles")
+                .is_none()
+        );
+        transaction.commit().expect("resolved complaint commits");
+        let (status, error): (String, String) = resolved
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id='settled-notice'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("resolved notice state reads");
+        assert_eq!(status, "stored_only");
+        assert_eq!(error, "Every referenced complaint already has a response");
+
+        let mut unresolved = database();
+        unresolved
+            .execute_batch(
+                "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 DELETE FROM runtime_events;
+                 INSERT INTO runtime_complaints VALUES(
+                   'open','{\"leadId\":\"agent\",\"status\":\"open\",\"recipient\":\"lead\",\"responses\":[]}');
+                 INSERT INTO runtime_events VALUES(
+                   'open-notice','agent','complaint',
+                   '{\"complaints\":[{\"complaint_id\":\"open\"}]}',
+                   'pending',1.0,4,NULL,NULL);",
+            )
+            .expect("unresolved complaint fixture writes");
+        let transaction = unresolved.transaction().expect("claim transaction begins");
+        let claimed = SchedulerRepository::claim(&transaction, "agent", 4, "open", 10.0, 32)
+            .expect("unresolved complaint claim executes")
+            .expect("unresolved complaint remains actionable");
+        assert_eq!(claimed.events[0].id.0, "open-notice");
+        assert_eq!(claimed.events[0].kind, "complaint");
+        assert_eq!(claimed.refusal_reason, None);
+        transaction
+            .commit()
+            .expect("unresolved complaint claim commits");
+    }
+
+    #[test]
+    fn work_review_with_exact_existing_decision_is_retired() {
+        let mut connection = database();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 DELETE FROM runtime_events;
+                 INSERT INTO runtime_work VALUES(
+                   'task','{\"rootId\":\"agent\",\"results\":[{\"id\":\"result\"}],\"decisions\":[{\"resultId\":\"result\"}]}');
+                 INSERT INTO runtime_events VALUES(
+                   'review','agent','work_review',
+                   '{\"task\":\"task\",\"result\":{\"id\":\"result\"}}',
+                   'pending',1.0,4,NULL,NULL);",
+            )
+            .expect("work review fixture writes");
+        let transaction = connection.transaction().expect("claim transaction begins");
+        assert!(
+            SchedulerRepository::claim(&transaction, "agent", 4, "review", 10.0, 32)
+                .expect("obsolete work review reconciles")
+                .is_none()
+        );
+        transaction
+            .commit()
+            .expect("work review retirement commits");
+        let (status, error): (String, String) = connection
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id='review'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("work review state reads");
+        assert_eq!(status, "stored_only");
+        assert_eq!(error, "The exact result already has a decision");
+    }
+
+    #[test]
+    fn obsolete_work_review_does_not_stall_other_pending_events() {
+        let mut connection = database();
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("work table creates");
+        connection
+            .execute(
+                "UPDATE runtime_events SET kind='work_review',text=?1 WHERE id='first'",
+                [r#"{"task":"task","result":{"id":"result"}}"#],
+            )
+            .expect("obsolete work review event writes");
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES('task',?1)",
+                [r#"{"rootId":"agent","results":[{"id":"result"}],"decisions":[{"resultId":"result"}]}"#],
+            )
+            .expect("obsolete work record writes");
+        let transaction = connection.transaction().expect("claim transaction begins");
+        let claimed = SchedulerRepository::claim(&transaction, "agent", 4, "review", 10.0, 32)
+            .expect("obsolete review is retired before claim")
+            .expect("remaining pending events continue in this claim");
+        assert_eq!(
+            claimed
+                .events
+                .iter()
+                .map(|event| event.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["tie", "later"]
+        );
+        transaction.commit().expect("remaining claim commits");
+        let (status, error): (String, String) = connection
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id='first'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("obsolete review state reads");
+        assert_eq!(status, "stored_only");
+        assert_eq!(error, "The exact result already has a decision");
+    }
+
+    #[test]
+    fn progress_preparation_persists_fold_before_team_policy_refusal() {
+        let mut connection = database();
+        connection
+            .execute_batch(
+                "DELETE FROM runtime_events;
+                 INSERT INTO runtime_events VALUES
+                   ('progress-old','agent','agent_message',
+                    '{\"importance\":\"progress\",\"sender\":\"worker\",\"room\":\"team\",\"progress_key\":\"build\",\"progress_version\":1}',
+                    'pending',1.0,4,NULL,NULL),
+                   ('progress-latest','agent','agent_message',
+                    '{\"importance\":\"progress\",\"sender\":\"worker\",\"room\":\"team\",\"progress_key\":\"build\",\"progress_version\":2}',
+                    'pending',2.0,4,NULL,NULL);",
+            )
+            .expect("progress fixture writes");
+        let transaction = connection.transaction().expect("claim transaction begins");
+        let refused = SchedulerRepository::claim(&transaction, "agent", 4, "progress", 10.0, 32)
+            .expect("progress is refused until team isolation exists")
+            .expect("protected progress returns a refusal receipt");
+        assert_eq!(
+            refused.refusal_reason.as_deref(),
+            Some("scheduler cannot claim agent_message: requires team-isolation-policy")
+        );
+        transaction.commit().expect("progress preparation commits");
+        let (status, error): (String, String) = connection
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE id='progress-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("folded progress state reads");
+        assert_eq!(status, "stored_only");
+        assert_eq!(error, "Superseded by progress event progress-latest");
+        let latest: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='progress-latest'",
                 [],
                 |row| row.get(0),
             )
-            .expect("agent snapshot reads");
-        let status: String = connection
-            .query_row(
-                "SELECT status FROM runtime_events WHERE id='first'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("event status reads");
-        assert_eq!(after, before);
-        assert_eq!(status, "pending");
+            .expect("latest progress metadata reads");
+        let latest: Value = serde_json::from_str(&latest).expect("metadata remains JSON");
+        assert_eq!(latest["earlierProgressUpdates"], 1);
+    }
+
+    #[test]
+    fn pending_preparation_folds_unique_progress_and_preserves_duplicate_versions() {
+        let agent = AgentRecord {
+            id: AgentId::from("agent"),
+            root_id: AgentId::from("agent"),
+            epoch: 4,
+            status: AgentStatus::Queued,
+            extra: BTreeMap::new(),
+        };
+        let events = vec![
+            selected_event(
+                "progress-1",
+                "agent_message",
+                r#"{"importance":"progress","sender":"worker","room":"team","progress_key":"build","progress_version":1}"#,
+            ),
+            selected_event(
+                "progress-2",
+                "agent_message",
+                r#"{"importance":"progress","sender":"worker","room":"team","progress_key":"build","progress_version":2}"#,
+            ),
+            selected_event(
+                "duplicate-a",
+                "agent_message",
+                r#"{"importance":"progress","sender":"worker","room":"team","progress_key":"test","progress_version":1}"#,
+            ),
+            selected_event(
+                "duplicate-b",
+                "agent_message",
+                r#"{"importance":"progress","sender":"worker","room":"team","progress_key":"test","progress_version":1}"#,
+            ),
+        ];
+        let prepared = prepare_pending_batch(&agent, events, BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(
+            prepared
+                .events
+                .iter()
+                .map(|event| event.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["progress-2", "duplicate-a", "duplicate-b"]
+        );
+        assert_eq!(
+            prepared.retired.get("progress-1").map(String::as_str),
+            Some("Superseded by progress event progress-2")
+        );
+        assert_eq!(prepared.metadata["progress-2"]["earlierProgressUpdates"], 1);
+        assert_eq!(prepared.metadata["duplicate-a"]["preserveProgress"], true);
+        assert_eq!(prepared.metadata["duplicate-b"]["preserveProgress"], true);
+        let projected: Value = serde_json::from_str(&prepared.events[0].text)
+            .expect("folded model projection remains JSON");
+        assert_eq!(projected["earlierProgressUpdates"], 1);
+        assert_eq!(
+            projected["history"],
+            "Read earlier progress with orchestration_chat_read in this room."
+        );
+    }
+
+    #[test]
+    fn dispatch_boundary_waits_for_old_progress_and_moves_urgent_event_ahead() {
+        let agent = AgentRecord {
+            id: AgentId::from("agent"),
+            root_id: AgentId::from("agent"),
+            epoch: 4,
+            status: AgentStatus::Queued,
+            extra: BTreeMap::new(),
+        };
+        let progress = |id: String, created| QueueEvent {
+            id: QueueEventId::from(id),
+            agent: AgentId::from("agent"),
+            kind: "agent_message".to_owned(),
+            text: r#"{"importance":"progress"}"#.to_owned(),
+            status: "pending".to_owned(),
+            created,
+            epoch: 4,
+            turn_id: None,
+            error: None,
+        };
+        let mut events = (0..32)
+            .map(|index| progress(format!("progress-{index}"), 9.5))
+            .collect::<Vec<_>>();
+        assert!(
+            select_dispatch_batch(&agent, events.clone(), &BTreeMap::new(), 32, 10.0).is_empty()
+        );
+        events[0].created = 8.0;
+        let selected = select_dispatch_batch(&agent, events, &BTreeMap::new(), 32, 10.0);
+        assert_eq!(selected.len(), 32);
+
+        let mut recent = (0..32)
+            .map(|index| progress(format!("recent-{index}"), 9.5))
+            .collect::<Vec<_>>();
+        recent.push(selected_event("urgent", "user", "urgent"));
+        let selected = select_dispatch_batch(&agent, recent, &BTreeMap::new(), 32, 10.0);
+        assert_eq!(selected.len(), 32);
+        assert_eq!(selected[0].id.0, "urgent");
+        assert_eq!(selected[1].id.0, "recent-0");
+    }
+
+    #[test]
+    fn work_review_obsolescence_requires_exact_root_result_and_decision() {
+        let agent = AgentRecord {
+            id: AgentId::from("agent"),
+            root_id: AgentId::from("root"),
+            epoch: 4,
+            status: AgentStatus::Queued,
+            extra: BTreeMap::new(),
+        };
+        let event = selected_event(
+            "review",
+            "work_review",
+            r#"{"task":"task","result":{"id":"result"}}"#,
+        );
+        let record = json!({
+            "rootId":"agent",
+            "results":[{"id":"result"}],
+            "decisions":[{"resultId":"result"}]
+        });
+        assert!(super::work_review_is_obsolete(
+            &agent,
+            &event,
+            &BTreeMap::from([("task".to_owned(), record.clone())])
+        ));
+        let mut wrong_root = record.clone();
+        wrong_root["rootId"] = json!("other");
+        assert!(!super::work_review_is_obsolete(
+            &agent,
+            &event,
+            &BTreeMap::from([("task".to_owned(), wrong_root)])
+        ));
+        let mut no_decision = record;
+        no_decision["decisions"] = json!([]);
+        assert!(!super::work_review_is_obsolete(
+            &agent,
+            &event,
+            &BTreeMap::from([("task".to_owned(), no_decision)])
+        ));
     }
 
     #[test]
