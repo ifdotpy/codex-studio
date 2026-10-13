@@ -419,6 +419,15 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(persisted_state(backend), before)
 
+    def test_null_resize_fields_are_refused_without_writes(self) -> None:
+        before = persisted_state(self.backend)
+        for name in ("rows", "cols"):
+            response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id": "contract-monitor", name: None})
+            self.assertEqual(response.status, 400, response.body[:1000])
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                self.assertEqual(response.json()["location"], ["body", name])
+        self.assertEqual(persisted_state(self.backend), before)
+
     def test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive(self) -> None:
         before = persisted_state(self.backend)
         for _ in range(2):

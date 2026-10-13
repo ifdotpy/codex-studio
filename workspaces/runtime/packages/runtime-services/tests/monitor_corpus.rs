@@ -26,7 +26,7 @@ fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
                 response: serde_json::Value::Null,
             },
             "cancel" => policy::cancel(&snapshot, None, 2000.0).expect("monitor fixture"),
-            "finish" => policy::finish(
+            "finish" | "legacy" => policy::finish(
                 &snapshot,
                 op.as_ref(),
                 case["argument"][0].as_i64(),
@@ -46,7 +46,13 @@ fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
                 .expect("monitor fixture")
             }
             "tick" => policy::tick(&snapshot, 2000.0).expect("monitor fixture"),
-            "probe" => policy::probe_result(&snapshot, case["argument"].as_i64().expect("generation"), serde_json::json!({"error":"Liveness command not run because monitor approval is required."}), 2000.0).expect("probe"),
+            "probe" => policy::probe_result(
+                &snapshot,
+                case["argument"].as_i64().expect("generation"),
+                case["probeResults"][0].clone(),
+                2000.0,
+            )
+            .expect("probe"),
             "input" => {
                 let input = serde_json::from_value(case["argument"]["input"].clone())
                     .expect("input fixture");
@@ -102,6 +108,24 @@ fn python_monitor_writers_drive_checked_snapshots_and_complete_decisions() {
             _ => unreachable!(),
         };
         assert_eq!(actual.record, case["after"], "{}", case["name"]);
+        let probes: Vec<_> = actual
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                policy::Effect::Probe {
+                    generation,
+                    command,
+                } => Some(serde_json::json!([generation, command])),
+                _ => None,
+            })
+            .collect();
+        let expected_probes: Vec<_> = case["probes"]
+            .as_array()
+            .expect("recorded probes")
+            .iter()
+            .map(|probe| serde_json::json!([probe[1], probe[3]]))
+            .collect();
+        assert_eq!(probes, expected_probes, "{} probes", case["name"]);
         if case["action"] == "cancel" {
             assert_eq!(actual.response, case["response"], "{}", case["name"]);
         }
@@ -123,12 +147,14 @@ fn transaction_adapter_matches_python_event_payloads_and_expiry() {
                 "tick-10-0--1-",
                 "tick-10-0--1-printf alive",
                 "tick-owner-epoch",
+                "legacy-True",
+                "legacy-False",
             ]
             .contains(&case["name"].as_str().expect("case name"))
         {
             continue;
         }
-        if !["cancel", "finish", "tick"]
+        if !["cancel", "finish", "legacy", "tick", "probe"]
             .contains(&case["action"].as_str().expect("monitor fixture"))
         {
             continue;
@@ -140,11 +166,17 @@ fn transaction_adapter_matches_python_event_payloads_and_expiry() {
                 let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
                 let decision = match case["action"].as_str().expect("monitor fixture") {
                     "cancel" => policy::cancel(&snapshot, None, 2000.0)?,
-                    "finish" => policy::finish(
+                    "finish" | "legacy" => policy::finish(
                         &snapshot,
                         snapshot.operation(),
                         case["argument"][0].as_i64(),
                         case["argument"][1].as_str(),
+                        2000.0,
+                    )?,
+                    "probe" => policy::probe_result(
+                        &snapshot,
+                        case["argument"].as_i64().expect("generation"),
+                        case["probeResults"][0].clone(),
                         2000.0,
                     )?,
                     "tick" => policy::tick(&snapshot, 2000.0)?,

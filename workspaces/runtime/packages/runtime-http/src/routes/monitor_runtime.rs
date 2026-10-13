@@ -64,13 +64,26 @@ async fn input(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some((pointer, _)) = studio_runtime_schema::first_error("MonitorInput", &body)
+        .map_err(|_| ApiError::internal())?
+    {
+        let mut location = vec![Value::String("body".into())];
+        location.extend(
+            pointer
+                .split('/')
+                .skip(1)
+                .map(|part| Value::String(part.replace("~1", "/").replace("~0", "~"))),
+        );
+        return Err(ApiError::validation(location));
+    }
     let id = body
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(ApiError::internal)?
         .to_owned();
     // Preserve field presence: a resize-only request is different from an empty write.
-    let input: Input = serde_json::from_value(body).map_err(|_| ApiError::internal())?;
+    let input: Input = serde_json::from_value(body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     tokio::task::spawn_blocking(move || {
         monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)

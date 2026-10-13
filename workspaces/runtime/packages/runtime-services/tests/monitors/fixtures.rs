@@ -36,6 +36,11 @@ pub fn seed(store: &RuntimeStore, case: &Value) {
         .transaction(|tx| {
             tx.execute("DELETE FROM runtime_events", [])?;
             tx.execute("DELETE FROM runtime_monitors", [])?;
+            if let Some(events) = case["priorEvents"].as_array() {
+                for e in events {
+                    tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES(?,?,?,?,?,?,?,?,?)", rusqlite::params![e["id"].as_str(),e["agent"].as_str(),e["kind"].as_str(),serde_json::to_string(&e["text"]).expect("event"),e["status"].as_str(),e["created"].as_f64(),e["epoch"].as_i64(),e["turn_id"].as_str(),e["error"].as_str()])?;
+                }
+            }
             AgentRepository::put(tx, &AgentRecord::from_value(case["actor"].clone())?)?;
             Table::new(tx).put(&MonitorRecord::from_value(case["before"].clone())?)
         })

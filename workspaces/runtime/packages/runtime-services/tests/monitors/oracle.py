@@ -27,6 +27,7 @@ class Fixture:
     monitors_tick = Runtime.monitors_tick
     _finish_monitor = Runtime._finish_monitor
     _monitor_exit_event = Runtime._monitor_exit_event
+    _monitor_reattach_notice = Runtime._monitor_reattach_notice
     _recovery_event_pending = Runtime._recovery_event_pending
     enqueue_recovery_event = Runtime.enqueue_recovery_event
     def __init__(self):
@@ -94,16 +95,27 @@ def case(name, action, changes, argument=None, actor_changes=None):
     actor = fixture.agent("agent")
     actor.update(actor_changes or {})
     fixture.put(fixture.connection, "agents", actor)
+    probe_results = []
+    def record_probe(frame, event, value):
+        if event == "return" and frame.f_code is Runtime.monitor_stall_probe.__code__:
+            probe_results.append(copy.deepcopy(frame.f_locals["result"]))
+    if action == "legacy":
+        previous = dict(before, status="lost", exitCode=None, error="Server restarted. Command outcome unknown; not rerun.")
+        fixture.connection.execute("INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)", (f"monitor:{before['id']}", "agent", "monitor_exit", json.dumps(previous), "cancelled", 1500.0, 2, None, None))
+    prior_events = [{**dict(row), "text": json.loads(row["text"])} for row in fixture.connection.execute("SELECT * FROM runtime_events ORDER BY id")]
     with patch("codex_runtime.time.time", return_value=NOW):
         if action == "create": result = fixture.monitor("agent", argument, key="create-case", approved=False)
         elif action == "cancel": result = fixture.cancel_monitor(before["id"])
-        elif action == "finish":
+        elif action in ("finish", "legacy"):
             code, error = argument
             result = fixture._finish_monitor(before["id"], code, error, finished=NOW)
         elif action == "output":
             result = fixture.output({"processId": before["id"], "deltaBase64": base64.b64encode(bytes(argument)).decode()})
         elif action == "tick": result = fixture.monitors_tick()
-        elif action == "probe": result = fixture.monitor_stall_probe(before["id"], argument, 1, "printf alive", "agent", 2)
+        elif action == "probe":
+            sys.setprofile(record_probe)
+            try: result = fixture.monitor_stall_probe(before["id"], argument, 1, "printf alive", "agent", 2)
+            finally: sys.setprofile(None)
         elif action == "input":
             fixture.input_outcome = argument["outcome"]
             with patch("codex_rules.uuid.uuid4", return_value="ticket-1"), patch("codex_rules.time.time", return_value=NOW):
@@ -111,7 +123,7 @@ def case(name, action, changes, argument=None, actor_changes=None):
                 except (RuntimeError, SubmissionRejected): result = None
         else: raise AssertionError(action)
     events = [{**dict(row), "text": json.loads(row["text"])} for row in fixture.connection.execute("SELECT * FROM runtime_events ORDER BY id")]
-    cases.append(dict(name=name, action=action, before=before, actor=actor, argument=argument, after=result if action == "create" else fixture.saved(), response=result, events=events, probes=fixture.probes, submissions=fixture.submissions))
+    cases.append(dict(name=name, action=action, before=before, actor=actor, argument=argument, after=result if action == "create" else fixture.saved(), response=result, events=events, priorEvents=prior_events, probes=fixture.probes, probeResults=probe_results, submissions=fixture.submissions))
     fixture.connection.close()
 
 operation = {"agent":"agent", "epoch":2, "accountKey":"default", "connectionId":"connection"}
@@ -119,6 +131,12 @@ with patch("codex_runtime.time.time", return_value=NOW):
     for actor_changes in ({}, {"autoWake":False}, {"deletedAt":1.0}, {"epoch":3}):
         for generation in (0,1):
             case(f"probe-{actor_changes}-{generation}", "probe", dict(status="running",operation=operation,activityAt=1,stallProbeGeneration=0), generation, actor_changes)
+    case("probe-stale-reservation", "probe", dict(status="running",operation=operation,activityAt=1,activityGeneration=1,stallProbeGeneration=0), 1)
+    for receipt in (
+        {"reattachRecovery":{"status":"running","epoch":2,"accountKey":"default","cancelledNoticeLostAt":1600}},
+        {},
+    ):
+        case(f"legacy-{bool(receipt)}", "legacy", dict(status="running",operation=operation,created=1000,**receipt), [0,None], {"threadId":"thread", "supervisorRestore":{"status":"restored","reason":"live_handle_resumed","epoch":2,"accountKey":"default","threadId":"thread","turnId":"turn","at":1700}})
     case("create-approval", "create", {}, dict(command="printf marker", success_exit_codes=[2,0,2],liveness_command="  printf alive  "))
     for outcome in ("acknowledged", "uncertain", "failed"):
         for data in ({"text":"hello"}, {"text":"hello", "closeStdin":True}, {"rows":43}, {"cols":110}):

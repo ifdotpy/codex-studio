@@ -204,6 +204,7 @@ async fn actual_child_start_output_receipt_and_exit_event_cross_the_consumer() {
         args: vec!["-c".into(), "printf marker".into()],
         cwd: root.path().into(),
         environment: Default::default(),
+        inherited_lease: None,
         timeout: std::time::Duration::from_secs(60),
     })
     .await
@@ -389,4 +390,102 @@ fn native_input_is_called_after_commit_and_unknown_is_never_resent() {
         .is_err()
     );
     assert_eq!(port.sends.get(), 1);
+}
+
+#[test]
+fn launch_admission_serializes_cancel_before_native_submission_completes() {
+    use std::sync::{Barrier, Mutex};
+    use studio_runtime_services::monitor_driver::{self, MonitorNative, Submission};
+    struct Port {
+        entered: Barrier,
+        release: Barrier,
+        sent: Mutex<Vec<String>>,
+    }
+    impl MonitorNative for Port {
+        fn submit(&self, _: &Operation, effect: &monitor_policy::Effect) -> Submission {
+            let monitor_policy::Effect::Native { method, .. } = effect else {
+                panic!("native effect")
+            };
+            if *method == "command/exec" {
+                self.entered.wait();
+                self.release.wait();
+            }
+            self.sent.lock().expect("sent").push((*method).into());
+            Submission::Accepted
+        }
+    }
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    let op = operation(&case);
+    case["before"]["status"] = json!("starting");
+    case["before"]
+        .as_object_mut()
+        .expect("record")
+        .remove("operation");
+    let store = fixtures::store(root.path(), "sequence");
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("id");
+    let prepared = monitor_runtime::PreparedStart {
+        monitor: case["before"].clone(),
+        actor: case["actor"].clone(),
+        operation: op,
+        params: json!({"processId":id,"cwd":case["before"]["cwd"],"timeoutMs":case["before"]["timeout_ms"],"sandboxPolicy":{}}),
+    };
+    let port = Port {
+        entered: Barrier::new(2),
+        release: Barrier::new(2),
+        sent: Mutex::new(vec![]),
+    };
+    std::thread::scope(|scope| {
+        let start = scope.spawn(|| monitor_driver::start(&store, &port, id, &prepared, 2000.0));
+        port.entered.wait(); // The running intent committed, command/exec is unresolved.
+        let refused = monitor_driver::cancel(&store, &port, id, None, 2001.0);
+        let before = record(&store, id);
+        port.release.wait();
+        start.join().expect("start thread").expect("start");
+        assert!(refused.is_err());
+        assert_ne!(before["cancelRequested"], json!(true));
+    });
+    monitor_driver::cancel(&store, &port, id, None, 2002.0).expect("resolved cancel");
+    assert_eq!(
+        *port.sent.lock().expect("sent"),
+        vec!["command/exec", "command/exec/terminate"]
+    );
+}
+
+#[test]
+fn reattach_and_receipts_require_exact_operation_and_live_owner() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let op = operation(&case);
+    let mut lost = case["before"].clone();
+    lost["status"] = json!("lost");
+    lost["reattachRecovery"] = json!({"status":"running","epoch":2});
+    let proof = monitor_policy::ReattachProof {
+        operation: op.clone(),
+        operation_id: format!("monitor:{}", lost["id"].as_str().expect("id")),
+        native_id: 42,
+        current_connection: "new-connection".into(),
+    };
+    let snapshot = MonitorSnapshot::checked(lost.clone(), case["actor"].clone()).expect("snapshot");
+    let restored = monitor_policy::reattach(&snapshot, &proof).expect("reattach");
+    assert_eq!(restored.record["status"], "running");
+    assert_eq!(restored.record["reattachedConnectionId"], "new-connection");
+    assert!(restored.effects.is_empty());
+    let mut foreign = op.clone();
+    foreign.connection_id = "foreign".into();
+    assert!(monitor_policy::output(&snapshot, &foreign, b"foreign", 2000.0).is_err());
+    let mut stopped = case["actor"].clone();
+    stopped["autoWake"] = json!(false);
+    let stopped = MonitorSnapshot::checked(lost.clone(), stopped).expect("stopped");
+    assert!(monitor_policy::reattach(&stopped, &proof).is_err());
+    let mut actor = case["actor"].clone();
+    actor["epoch"] = json!(3);
+    let stale = MonitorSnapshot::checked(lost, actor).expect("stale");
+    assert!(monitor_policy::reattach(&stale, &proof).is_err());
+    let mut wrong = proof;
+    wrong.operation_id = "monitor:foreign".into();
+    assert!(monitor_policy::reattach(&snapshot, &wrong).is_err());
 }
