@@ -20,7 +20,6 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing
 from codex_sync_entities import register_functions
 
