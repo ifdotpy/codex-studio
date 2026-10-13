@@ -92,50 +92,52 @@ async fn reset_limits(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, Api
 
 async fn capacity_retry(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::CapacityRetryRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if action == "retry" {
+    if body.action == crate::generated::RetryAction::Retry {
         return Err(dependency_error(
             "POST",
             "/api/capacity-retry",
             &CAPACITY_DEPENDENCIES,
         ));
     }
-    let (agent_id, retry_id) = required_ids(&body, "retry_id")?;
+    let agent_id = body.id;
+    let retry_id = body.retry_id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
     let result = tokio::task::spawn_blocking(move || {
         store.transaction_with(|transaction| -> Result<Value, UsageRepositoryError> {
             let value = cancel_capacity_retry(transaction, &agent_id, &retry_id, now)?;
-            serde_json::from_value::<crate::generated::RetryResponse>(value.clone())
-                .map_err(|_| UsageRepositoryError::InvalidRecord)?;
-            Ok(value)
+            let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
+                .map_err(|_| UsageRepositoryError::InvalidStoredObject {
+                    table: "runtime_capacity_retries",
+                    id: retry_id.clone(),
+                })?;
+            serde_json::to_value(response).map_err(|_| UsageRepositoryError::InvalidStoredObject {
+                table: "runtime_capacity_retries",
+                id: retry_id.clone(),
+            })
         })
     })
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| usage_error(error, "/api/capacity-retry"))?;
-    Ok(Json(super::generated_json::<
-        crate::generated::RetryResponse,
-    >(result)?))
+    Ok(Json(result))
 }
 
 async fn usage_resume(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::UsageResumeRequest>,
 ) -> Result<Json<Option<Value>>, ApiError> {
-    if body.get("enabled").and_then(Value::as_bool) != Some(false) {
+    if body.enabled {
         return Err(dependency_error(
             "POST",
             "/api/usage-resume",
             &USAGE_RESUME_DEPENDENCIES,
         ));
     }
-    let (agent_id, resume_id) = required_ids(&body, "resume_id")?;
+    let agent_id = body.id;
+    let resume_id = body.resume_id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
     let result = tokio::task::spawn_blocking(move || {
@@ -143,37 +145,27 @@ async fn usage_resume(
             |transaction| -> Result<Option<Value>, UsageRepositoryError> {
                 let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
                 if value.is_null() {
-                    Ok(None)
-                } else {
-                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value.clone())
-                        .map_err(|_| UsageRepositoryError::InvalidRecord)?;
-                    Ok(Some(value))
+                    return Ok(None);
                 }
+                let response =
+                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
+                        .map_err(|_| UsageRepositoryError::InvalidStoredObject {
+                            table: "runtime_usage_resumes",
+                            id: resume_id.clone(),
+                        })?;
+                serde_json::to_value(response).map(Some).map_err(|_| {
+                    UsageRepositoryError::InvalidStoredObject {
+                        table: "runtime_usage_resumes",
+                        id: resume_id.clone(),
+                    }
+                })
             },
         )
     })
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| usage_error(error, "/api/usage-resume"))?;
-    let response: Option<Value> = match result {
-        None => None,
-        Some(value) => Some(super::generated_json::<
-            crate::generated::UsageResumeResponse,
-        >(value)?),
-    };
-    Ok(Json(response))
-}
-
-fn required_ids(body: &Value, secondary: &str) -> Result<(String, String), ApiError> {
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-    let secondary_id = body
-        .get(secondary)
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-    Ok((id.to_owned(), secondary_id.to_owned()))
+    Ok(Json(result))
 }
 
 fn current_time() -> Result<f64, ApiError> {
@@ -209,7 +201,10 @@ fn usage_error(error: UsageRepositoryError, path: &'static str) -> ApiError {
             };
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        UsageRepositoryError::InvalidRecord => ApiError::internal(),
+        UsageRepositoryError::InvalidStoredObject { table, id } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
+        ),
         UsageRepositoryError::Sqlite(_) | UsageRepositoryError::Store(_) => ApiError::internal(),
     }
 }

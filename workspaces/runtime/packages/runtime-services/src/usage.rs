@@ -1,7 +1,6 @@
 //! Local usage snapshot readers that do not require provider or turn drivers.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -43,16 +42,16 @@ pub fn account_cost_snapshot(
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
     let home_text = home.to_string_lossy().into_owned();
-    let account_root = state_dir.join("account-costs").join(digest(&python_array(&[
-        serde_json::to_value(account_key).map_err(|_| UsageError::CacheRead)?,
-        account_id.clone(),
-        serde_json::to_value(&home_text).map_err(|_| UsageError::CacheRead)?,
-    ])));
-    let cache_scope = digest(&python_array(&[
-        serde_json::to_value(&home_text).map_err(|_| UsageError::CacheRead)?,
-        serde_json::to_value(account_root.to_string_lossy().as_ref())
-            .map_err(|_| UsageError::CacheRead)?,
+    let account_identity =
+        crate::event_write::python_json(&json!([account_key, account_id, home_text]));
+    let account_root = state_dir
+        .join("account-costs")
+        .join(digest(&account_identity));
+    let cache_identity = crate::event_write::python_json(&json!([
+        home_text,
+        account_root.to_string_lossy().as_ref()
     ]));
+    let cache_scope = digest(&cache_identity);
     let saved = read_json(&account_root.join("local-costs.json"));
     let mut state = saved
         .filter(|saved| saved.get("scope").and_then(Value::as_str) == Some(&cache_scope))
@@ -63,9 +62,15 @@ pub fn account_cost_snapshot(
         .get("checkedAt")
         .and_then(Value::as_f64)
         .or_else(|| state.get("at").and_then(Value::as_f64));
-    let stale = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS)
+    let mut stale = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS)
         || state.get("error").is_some_and(|error| !error.is_null());
     if let Some(data) = state.get_mut("data").and_then(Value::as_object_mut) {
+        let current_day = local_day(now);
+        if data.get("sourceDay").and_then(Value::as_str) != Some(&current_day) {
+            data.insert("todayUSD".to_owned(), Value::Null);
+            data.insert("todayTokens".to_owned(), Value::Null);
+            stale = true;
+        }
         data.insert("accountId".to_owned(), account_id);
         data.insert(
             "source".to_owned(),
@@ -136,28 +141,24 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn python_array(values: &[Value]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+fn digest(value: &str) -> String {
+    studio_runtime_store::sha256_hex(value.as_bytes())
 }
 
-fn digest(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+fn local_day(timestamp: f64) -> String {
+    chrono::DateTime::from_timestamp(timestamp as i64, 0)
+        .map(|utc| {
+            utc.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::account_cost_snapshot;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn reads_python_shaped_local_cache_without_starting_a_refresh() {
@@ -165,22 +166,25 @@ mod tests {
         let home = root.join("profile");
         let account_root = root.join("state/account-costs");
         let key = "default";
-        let account_id = "account-1";
-        let account_hash = super::digest(&format!(
-            "[\"{key}\", \"{account_id}\", \"{}\"]",
-            home.to_string_lossy()
-        ));
+        let account_id = "account-雪";
+        assert!(crate::event_write::python_json(&json!(account_id)).contains("\\u96ea"));
+        let account_identity = crate::event_write::python_json(&json!([
+            key,
+            account_id,
+            home.to_string_lossy().as_ref()
+        ]));
+        let account_hash = super::digest(&account_identity);
         let cache = account_root.join(account_hash);
-        let scope = super::digest(&format!(
-            "[\"{}\", \"{}\"]",
-            home.to_string_lossy(),
-            cache.to_string_lossy()
-        ));
+        let cache_identity = crate::event_write::python_json(&json!([
+            home.to_string_lossy().as_ref(),
+            cache.to_string_lossy().as_ref()
+        ]));
+        let scope = super::digest(&cache_identity);
         std::fs::create_dir_all(&cache).expect("fixture directory");
         std::fs::write(
             cache.join("local-costs.json"),
-            json!({"scope":scope,"state":{"at":1,"checkedAt":1,"error":null,
-                "data":{"todayUSD":2.5,"sourceDay":"1970-01-01"}}})
+            json!({"scope":scope,"state":{"at":120,"checkedAt":120,"error":null,
+                "data":{"todayUSD":2.5,"todayTokens":7,"sourceDay":"1900-01-01"}}})
             .to_string(),
         )
         .expect("fixture cache");
@@ -192,10 +196,53 @@ mod tests {
             122.0,
         )
         .expect("cache read");
-        assert_eq!(response["data"]["todayUSD"], 2.5);
+        assert_eq!(response["data"]["todayUSD"], Value::Null);
+        assert_eq!(response["data"]["todayTokens"], Value::Null);
         assert_eq!(response["data"]["source"], "Codex profile logs");
         assert_eq!(response["refreshing"], false);
         assert_eq!(response["stale"], true);
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
+    }
+
+    #[test]
+    fn missing_source_day_clears_daily_totals_and_marks_cache_stale() {
+        let root = std::env::temp_dir().join(format!("usage-cost-day-{}", std::process::id()));
+        let home = root.join("profile");
+        let key = "default";
+        let account_id = "account-1";
+        let account_root = root.join("state/account-costs");
+        let account_identity = crate::event_write::python_json(&json!([
+            key,
+            account_id,
+            home.to_string_lossy().as_ref()
+        ]));
+        let cache = account_root.join(super::digest(&account_identity));
+        let scope_identity = crate::event_write::python_json(&json!([
+            home.to_string_lossy().as_ref(),
+            cache.to_string_lossy().as_ref()
+        ]));
+        let scope = super::digest(&scope_identity);
+        std::fs::create_dir_all(&cache).expect("fixture directory");
+        std::fs::write(
+            cache.join("local-costs.json"),
+            json!({
+                "scope": scope,
+                "state": {"at": 100.0, "checkedAt": 100.0, "error": null,
+                    "data": {"todayUSD": 3.0, "todayTokens": 8}}
+            })
+            .to_string(),
+        )
+        .expect("fixture cache");
+        let response = account_cost_snapshot(
+            &root.join("state"),
+            key,
+            &json!({"id":key,"accountId":account_id,"home":home,"status":"ready"}),
+            101.0,
+        )
+        .expect("cache read");
+        assert_eq!(response["stale"], true);
+        assert_eq!(response["data"]["todayUSD"], Value::Null);
+        assert_eq!(response["data"]["todayTokens"], Value::Null);
         std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 }

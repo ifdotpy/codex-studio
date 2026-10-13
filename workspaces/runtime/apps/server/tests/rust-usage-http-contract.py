@@ -35,7 +35,7 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             try:
                 now = time.time()
                 records = []
-                for name in ("cancel", "retry", "disable", "enable"):
+                for name in ("cancel", "retry", "disable", "enable", "malformed"):
                     agent_id = str(uuid.uuid4())
                     agent = runtime.create(
                         {"id": agent_id, "name": f"Usage {name}", "cwd": str(cls.backend.cwd), "prompt": ""},
@@ -66,6 +66,7 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 cls.retry_id, cls.retry_retry, _ = records[1]
                 cls.disable_id, _, cls.disable_resume = records[2]
                 cls.enable_id, _, cls.enable_resume = records[3]
+                cls.malformed_id, _, cls.malformed_resume = records[4]
             finally:
                 runtime.close()
         home = cls.backend.codex_home.resolve()
@@ -140,7 +141,26 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(disabled.status, 200, disabled.body[:1000])
         self.assertEqual(disabled.json()["status"], "cancelled")
-        with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
+        if self.rust_backend:
+            with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
+                applied_rows = (
+                    db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.disable_id,)).fetchone()[0],
+                    db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.disable_resume,)).fetchone()[0],
+                )
+            replay = self.backend.request(
+                "POST", "/api/usage-resume",
+                body={"id": self.disable_id, "resume_id": self.disable_resume, "enabled": False},
+                headers=self.write_headers(),
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            for field in ("id", "status", "accountKey", "dueAt", "reason"):
+                self.assertEqual(replay.json()[field], disabled.json()[field])
+            with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
+                replayed_rows = (
+                    db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.disable_id,)).fetchone()[0],
+                    db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.disable_resume,)).fetchone()[0],
+                )
+                self.assertEqual(replayed_rows, applied_rows)
             self.assertEqual(db.execute(
                 "SELECT json_extract(record,'$.status') FROM runtime_capacity_retries WHERE id=?",
                 (self.cancel_retry,),
@@ -159,6 +179,34 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(body["data"]["last30DaysUSD"], 12.5)
         self.assertFalse(body["refreshing"])
         self.assertFalse(body["stale"])
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust invalid stored-object contract")
+    def test_malformed_resume_names_its_stored_object_and_leaves_rows_unchanged(self) -> None:
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+            raw = db.execute(
+                "SELECT record FROM runtime_usage_resumes WHERE id=?", (self.malformed_resume,),
+            ).fetchone()[0]
+            malformed = json.loads(raw)
+            malformed["dueAt"] = "tomorrow"
+            db.execute("UPDATE runtime_usage_resumes SET record=? WHERE id=?", (json.dumps(malformed), self.malformed_resume))
+        with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
+            before = (
+                db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.malformed_id,)).fetchone()[0],
+                db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.malformed_resume,)).fetchone()[0],
+            )
+        result = self.backend.request(
+            "POST", "/api/usage-resume",
+            body={"id": self.malformed_id, "resume_id": self.malformed_resume, "enabled": False},
+            headers=self.write_headers(),
+        )
+        self.assertEqual(result.status, 500, result.body[:1000])
+        self.assertIn(f"runtime_usage_resumes/{self.malformed_resume}", result.json()["error"])
+        with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
+            after = (
+                db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.malformed_id,)).fetchone()[0],
+                db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.malformed_resume,)).fetchone()[0],
+            )
+        self.assertEqual(after, before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend refusal contract")
     def test_turn_submitting_actions_refuse_without_mutating_persisted_rows(self) -> None:
