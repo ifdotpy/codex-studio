@@ -270,6 +270,26 @@ fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
 
 #[test]
 fn multi_server_corpus_witness() {
+    let report = studio_runtime_store::check_state_readonly(fixture().root.path())
+        .expect("state-check accepts the real Python writers");
+    let names: std::collections::BTreeSet<_> = report.tables.iter().map(|t| t.table).collect();
+    assert_eq!(names.len(), report.tables.len(), "one report per table");
+    for table in [
+        "runtime_access_clients",
+        "runtime_access_discovered",
+        "runtime_server_outbox",
+    ] {
+        let checked = report
+            .tables
+            .iter()
+            .find(|t| t.table == table)
+            .expect("registered table");
+        assert!(
+            checked.row_count > 0,
+            "Python fixture must populate {table}"
+        );
+        assert_eq!(checked.rejected_count, 0, "{table}: {:?}", checked.failures);
+    }
     python_authentication_outputs_match_complete_principal_and_writes();
     malformed_stored_rows_are_located_without_panics();
     owner_observations_reject_tags_wrong_ip_and_spoofed_login();

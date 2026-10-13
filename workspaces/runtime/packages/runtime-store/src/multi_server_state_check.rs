@@ -6,27 +6,17 @@ use std::collections::BTreeMap;
 
 pub(crate) fn check(connection: &Connection) -> StoreResult<Vec<StateCheckTable>> {
     let mut result = Vec::new();
-    for (table, schema, projection) in [
-        ("runtime_access_clients", "PersistedAccessClient", "record"),
-        (
-            "runtime_access_discovered",
-            "PersistedAccessClient",
-            "record",
-        ),
-        ("runtime_access_invites", "PersistedAccessInvite", "record"),
-        (
-            "runtime_access_receipts",
-            "PersistedAccessReceipt",
-            "record",
-        ),
+    for (table, projection) in [
+        ("runtime_access_clients", "record"),
+        ("runtime_access_discovered", "record"),
+        ("runtime_access_invites", "record"),
+        ("runtime_access_receipts", "record"),
         (
             "runtime_server_inbox",
-            "PersistedServerDelivery",
             "json_object('id',id,'signature',signature,'state',state,'result',result,'created_at',created_at,'completed_at',completed_at)",
         ),
         (
             "runtime_server_outbox",
-            "PersistedServerDelivery",
             "json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at)",
         ),
     ] {
@@ -52,8 +42,13 @@ pub(crate) fn check(connection: &Connection) -> StoreResult<Vec<StateCheckTable>
                     .ok()
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                 {
-                    Some(value) => studio_runtime_schema::first_error(schema, &value)
-                        .map_err(StoreError::SchemaValidation)?,
+                    Some(value) => studio_runtime_schema::first_error(
+                        studio_runtime_schema::table_schema(table).ok_or_else(|| {
+                            StoreError::SchemaValidation(format!("no storage schema for {table}"))
+                        })?,
+                        &value,
+                    )
+                    .map_err(StoreError::SchemaValidation)?,
                     None => Some((String::new(), "JSON".to_owned())),
                 };
                 if let Some(error) = error {

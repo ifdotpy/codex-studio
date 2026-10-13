@@ -942,6 +942,7 @@ fn stored_items(
             transaction,
             &TranscriptItem {
                 id: id.clone(),
+                agent: agent_id.to_owned(),
                 record: item.clone(),
             },
         )?;

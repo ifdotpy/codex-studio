@@ -189,6 +189,10 @@ driver=orchestration.MultiServerService(runtime,Transport())
 with patch.object(orchestration.time,"time",return_value=NOW),runtime.db() as db:
     driver.queue(db,"peer-server","browser_callback",{"actor":"fixture","url":"http://127.0.0.1/callback"},"python-queued")
     queued=dict(db.execute("SELECT * FROM runtime_server_outbox WHERE id='python-queued'").fetchone())
+    # All three producers share this durable row writer. The storage contract
+    # must accept location and orchestration bodies as well as browser bodies.
+    driver.queue(db,"peer-server","add_location",{"project":"fixture","path":"/fixture","request":{"path":"/fixture"}},"python-location")
+    driver.queue(db,"peer-server","input",{"actor":"fixture","text":"fixture"},"python-input")
 # The real receive writer creates waiting/running/complete rows; retain each
 # pre-restart record, then ask Python to resume the exact same envelope.
 delivery_states=[]

@@ -181,8 +181,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
     use crate::system_reads;
     let mut reports = Vec::new();
     for (table, column) in [
-        ("runtime_access_clients", "record"),
-        ("runtime_access_discovered", "record"),
         ("runtime_chat_messages", "deliveries"),
         ("runtime_events", "status"),
         ("runtime_execution_effects", "record"),
@@ -215,8 +213,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         } else if table == "runtime_events" {
             "SELECT id,json_object('id',id,'status',status,'error',error) FROM runtime_events"
                 .to_owned()
-        } else if table == "runtime_server_outbox" {
-            "SELECT id,json_object('id',id) FROM runtime_server_outbox".to_owned()
         } else if table == "runtime_tool_request_aliases" {
             "SELECT alias,json_object('agent',agent,'alias',alias,'request',request) FROM runtime_tool_request_aliases".to_owned()
         } else {
