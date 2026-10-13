@@ -4,6 +4,15 @@ use crate::event_write::{AnnotationWrite, annotate};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use tokio::sync::oneshot;
+fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
+    preparation::PreparationResources::bundled(
+        String::new(),
+        crate::model_catalog::ModelCatalogService::new(None),
+        crate::agents_create::prepared_python(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ),
+    )
+}
 const CREATE_AGENTS: &str = r#"
 import json, pathlib, sqlite3, sys
 sys.path.insert(0, sys.argv[4])
@@ -289,6 +298,7 @@ impl Peer {
                 request_id_prefix: None,
                 recovered: vec![],
             },
+            test_resources().unwrap(),
         )
         .await
         .unwrap()
@@ -723,13 +733,8 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                 unknown: false,
                 remote_id: None,
             };
-            let prepared = preparation::prepare(
-                store,
-                &preparation::PreparationResources::bundled(String::new())?,
-                &intent,
-                Method::TurnStart,
-                1,
-            )?;
+            let prepared =
+                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)?;
             assert!(store::submitted(
                 store,
                 &Pending {
@@ -1746,7 +1751,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
             }
             let intent = store::claim(store, "default", &agent, epoch)?.unwrap();
             let prepared = preparation::prepare(store,
-                &preparation::PreparationResources::bundled(String::new())?,
+                &test_resources()?,
                 &intent, Method::TurnStart, 1)?;
             store.transaction(|tx| {
                 if mutation == "input" {

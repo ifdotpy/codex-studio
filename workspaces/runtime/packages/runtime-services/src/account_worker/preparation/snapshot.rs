@@ -17,9 +17,18 @@ pub struct PreparationResources {
     pub role_guidance: BTreeMap<PathBuf, String>,
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
+    /// Resolved interpreter used to start this runtime, also embedded in guidance.
+    pub python_executable: PathBuf,
 }
 impl PreparationResources {
-    pub fn bundled(account_home: String) -> Result<Self, WorkerError> {
+    pub fn bundled(
+        account_home: String,
+        model_catalog: ModelCatalogService,
+        python_executable: PathBuf,
+    ) -> Result<Self, WorkerError> {
+        if !python_executable.is_absolute() {
+            return Err(refusal("preparation/resolved-python-required".into()));
+        }
         #[derive(Deserialize)]
         struct Bundled {
             instructions: String,
@@ -66,7 +75,8 @@ impl PreparationResources {
             tools: data.tools,
             legacy_tools,
             skills_root,
-            model_catalog: ModelCatalogService::new(None),
+            model_catalog,
+            python_executable,
             account_home,
         })
     }
@@ -230,7 +240,7 @@ pub(super) fn guidance(
             .and_then(Path::parent)
             .ok_or_else(|| invalid("skills root"))?
             .join("workspaces/runtime/apps/server/src/codex_progress_layout.py");
-        let python = std::env::var("CODEX_AGENTS_PYTHON").unwrap_or_else(|_| "python3".into());
+        let python = resources.python_executable.to_string_lossy();
         resources
             .progress_template
             .replace("{progress_file}", &path.to_string_lossy())
@@ -642,4 +652,41 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn guidance_uses_the_resolved_runtime_interpreter() {
+        let python = crate::agents_create::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
+        let resources = PreparationResources::bundled(
+            String::new(),
+            ModelCatalogService::new(None),
+            python.clone(),
+        )
+        .expect("runtime resources");
+        let bundle = guidance(
+            &resources,
+            &json!({"id":"lead", "isLead":true}),
+            Path::new("/state"),
+        )
+        .expect("progress guidance");
+        assert!(
+            bundle
+                .progress
+                .contains(&shell_quote(&python.to_string_lossy()))
+        );
+        assert!(
+            PreparationResources::bundled(
+                String::new(),
+                ModelCatalogService::new(None),
+                PathBuf::from("python3"),
+            )
+            .is_err()
+        );
+    }
 }

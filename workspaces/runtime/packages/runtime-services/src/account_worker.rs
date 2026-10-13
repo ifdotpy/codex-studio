@@ -212,15 +212,8 @@ pub async fn start_account_worker(
     factory: Arc<dyn ProviderTaskFactory>,
     options: OpenOptions,
     config: SessionTaskConfig,
+    resources: preparation::PreparationResources,
 ) -> Result<AccountHandle, WorkerError> {
-    let resources = preparation::PreparationResources::bundled(
-        options
-            .launch
-            .environment
-            .get("CODEX_HOME")
-            .cloned()
-            .unwrap_or_default(),
-    )?;
     start_account_worker_with_preparation(bridge, account, factory, options, config, resources)
         .await
 }
