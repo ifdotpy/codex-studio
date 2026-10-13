@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import tempfile
 import time
 import urllib.parse
 from collections import defaultdict
-from typing import Any
+from typing import Any, Iterator
 
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -43,11 +44,15 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/changes"): {
-        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
+        "primary": {
+            "query": {"agent": "$agent"}, "query_omit": ["scope"], "expected": "2xx",
+        },
         "additional": [{
             "name": "image execution dependency",
             "query": {"agent": "$agent"},
-            "set_execution_mode": "vm",
+            "query_omit": ["scope"],
+            "fixture_mutations": {"agent_execution_mode": "vm"},
+            "restore": ["agent_record"],
             "expected": "501",
             "expected_error": "Not implemented: requires workspace-state/image-execution",
         }],
@@ -101,7 +106,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"expected": "2xx"},
         "additional": [{
             "name": "local identity dependency",
-            "remove_identity": True,
+            "fixture_mutations": {"remove_identity": True},
+            "restore": ["identity_file"],
             "expected": "501",
             "expected_error": "Not implemented: requires server-credentials/local-identity",
         }],
@@ -791,6 +797,54 @@ def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
     return value
 
 
+@contextmanager
+def probe_fixture_state(
+    backend: Any,
+    identifiers: dict[str, str],
+    probe_case: dict[str, Any],
+) -> Iterator[None]:
+    """Apply a keyed probe's shared-state mutation and always restore it."""
+    mutations = probe_case.get("fixture_mutations", {})
+    restore = set(probe_case.get("restore", []))
+    if ("agent_execution_mode" in mutations) != ("agent_record" in restore):
+        raise ValueError("agent execution mode probe mutations must declare agent_record restoration")
+    if ("remove_identity" in mutations) != ("identity_file" in restore):
+        raise ValueError("identity file probe mutations must declare identity_file restoration")
+
+    agent_record: dict[str, Any] | None = None
+    identity_file: tuple[Path, bytes, int] | None = None
+    try:
+        if "agent_execution_mode" in mutations:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (identifiers["agent"],),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded ledger agent is missing")
+                agent_record = json.loads(row[0])
+                changed = {**agent_record, "executionMode": mutations["agent_execution_mode"]}
+                connection.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (json.dumps(changed), identifiers["agent"]),
+                )
+        if "remove_identity" in mutations:
+            path = backend.state / "multi-server" / "identity.json"
+            identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
+            path.unlink()
+        yield
+    finally:
+        if agent_record is not None:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                connection.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (json.dumps(agent_record), identifiers["agent"]),
+                )
+        if identity_file is not None:
+            path, content, mode = identity_file
+            path.write_bytes(content)
+            path.chmod(mode)
+
+
 def probe_operations(
     manifest: dict[tuple[str, str], dict[str, Any]],
     planned_assertions: dict[str, set[str]],
@@ -857,33 +911,18 @@ def probe_operations(
                     }
                     if method in JSON_METHODS or method == "DELETE":
                         headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
-                    if probe_case.get("remove_identity"):
-                        (backend.state / "multi-server" / "identity.json").unlink(missing_ok=True)
-                    if probe_case.get("set_execution_mode"):
-                        with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
-                            row = connection.execute(
-                                "SELECT record FROM runtime_agents WHERE id=?",
-                                (identifiers["agent"],),
-                            ).fetchone()
-                            if row is None:
-                                raise RuntimeError("seeded ledger agent is missing")
-                            record = json.loads(row[0])
-                            record["executionMode"] = probe_case["set_execution_mode"]
-                            connection.execute(
-                                "UPDATE runtime_agents SET record=? WHERE id=?",
-                                (json.dumps(record), identifiers["agent"]),
-                            )
                     database_before = (
                         sqlite_snapshot(backend.state / "canvas.sqlite3")
                         if probe_case.get("assert_no_write") else None
                     )
-                    result = backend.request(
-                        method,
-                        path,
-                        body=body if method in JSON_METHODS else None,
-                        headers=headers,
-                        timeout=2.0,
-                    )
+                    with probe_fixture_state(backend, identifiers, probe_case):
+                        result = backend.request(
+                            method,
+                            path,
+                            body=body if method in JSON_METHODS else None,
+                            headers=headers,
+                            timeout=2.0,
+                        )
                     try:
                         response_body = json.loads(result.body)
                     except (ValueError, TypeError):

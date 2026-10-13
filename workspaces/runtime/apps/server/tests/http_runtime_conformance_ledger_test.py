@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -90,12 +93,53 @@ class LedgerTraceContract(unittest.TestCase):
         changes_path, _, _ = ledger.valid_probe(
             "GET", "/api/changes", identifiers, changes,
         )
-        self.assertEqual(changes_path, "/api/changes?agent=lead-agent&scope=chat")
-        self.assertEqual(changes["set_execution_mode"], "vm")
+        self.assertEqual(changes_path, "/api/changes?agent=lead-agent")
+        self.assertEqual(changes["fixture_mutations"]["agent_execution_mode"], "vm")
+        self.assertIn("agent_record", changes["restore"])
 
         models = ledger.PROBE_CASES[("GET", "/api/models")]["additional"][0]
         models_path, _, _ = ledger.valid_probe("GET", "/api/models", identifiers, models)
         self.assertEqual(models_path, "/api/models?account_key=claude-account")
+
+    def test_probe_fixture_restore_runs_when_the_probe_raises(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-probe-restore-") as scratch:
+            state = Path(scratch)
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute(
+                    "INSERT INTO runtime_agents VALUES(?, ?)",
+                    ("lead-agent", json.dumps({"id": "lead-agent", "executionMode": "host"})),
+                )
+            identity_path = state / "multi-server" / "identity.json"
+            identity_path.parent.mkdir()
+            identity_path.write_bytes(b'{"serverId":"local"}')
+            identity_path.chmod(0o600)
+            case = {
+                "fixture_mutations": {
+                    "agent_execution_mode": "vm", "remove_identity": True,
+                },
+                "restore": ["agent_record", "identity_file"],
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(
+                    SimpleNamespace(state=state), {"agent": "lead-agent"}, case,
+                ):
+                    self.assertFalse(identity_path.exists())
+                    with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                        changed = json.loads(connection.execute(
+                            "SELECT record FROM runtime_agents WHERE id='lead-agent'",
+                        ).fetchone()[0])
+                    self.assertEqual(changed["executionMode"], "vm")
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(identity_path.read_bytes(), b'{"serverId":"local"}')
+            self.assertEqual(identity_path.stat().st_mode & 0o777, 0o600)
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                restored = json.loads(connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id='lead-agent'",
+                ).fetchone()[0])
+            self.assertEqual(restored["executionMode"], "host")
 
     def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
         panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
