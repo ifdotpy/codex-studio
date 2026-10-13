@@ -89,7 +89,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = BackendProcess(Path(scratch))
         cls.addClassCleanup(cls.backend.close)
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-        scratch_root = Path("/var/tmp/cs-rust-files")
+        scratch_root = Path(os.environ["TMPDIR"]) / "files-workspaces"
         scratch_root.mkdir(parents=True, exist_ok=True)
         cls.workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=scratch_root))
         cls.addClassCleanup(shutil.rmtree, cls.workspace)

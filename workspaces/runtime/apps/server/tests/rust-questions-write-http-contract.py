@@ -35,10 +35,12 @@ from codex_runtime import Runtime
 
 runtime = make_runtime(Runtime, Path(os.environ["CODEX_AGENTS_STATE_DIR"]), environment=dict(os.environ))
 try:
+    # Keep the dispatcher from claiming events between each write and its
+    # durability assertion; the contract compares pending event records.
     lead = {{"id":"questions-write-lead", "rootId":"questions-write-lead", "epoch":0,
         "status":"idle", "name":"Question write lead", "role":"orchestrator",
         "cwd":str(Path(os.environ["CODEX_CANVAS_CWD"])), "isLead":True,
-        "autoWake":True, "approvalPolicy":"never"}}
+        "autoWake":True, "moveImportPending":True, "approvalPolicy":"never"}}
     worker = {{**lead, "id":"questions-write-worker", "rootId":lead["id"], "isLead":False}}
     deleted_agent = {{**worker, "id":"questions-write-deleted-agent"}}
     now = time.time()

@@ -20,8 +20,9 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "src"))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing
+from codex_sync_entities import register_functions
 
 _fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixture", HERE / "runtime-contract.py")
 _fixture = importlib.util.module_from_spec(_fixture_spec)
@@ -36,8 +37,22 @@ def quiet_runtime(state):
     return make_runtime(QuietRuntime, state, _fixture.FakeServer)
 
 
+def fixture_connection(path: Path):
+    database = sqlite3.connect(path)
+    register_functions(database)
+    return database
+
+
+def pause_agent(backend, agent_id: str) -> None:
+    with closing(fixture_connection(backend.state / "canvas.sqlite3")) as database, database:
+        row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+        agent = json.loads(row[0])
+        agent.update(status="paused", autoWake=False, moveImportPending=True)
+        agent.pop("restartRecovery", None)
+        database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), agent_id))
+
+
 def seed_agents(backend) -> tuple[str, str]:
-    backend.stop()
     runtime = quiet_runtime(backend.state)
     try:
         root = runtime.create({"name": "Work write lead", "cwd": str(backend.cwd), "prompt": "Work write contracts", "autoWake": True}, defer=True)
@@ -45,32 +60,26 @@ def seed_agents(backend) -> tuple[str, str]:
         with runtime.db() as database:
             runtime.put(database, "agents", root)
         worker = runtime.create({"name": "Work write worker", "cwd": str(backend.cwd), "prompt": "Receive decisions", "autoWake": True}, parent=root["id"], defer=True)
-        root.update(status="paused", autoWake=False, concurrency=32, subagentConcurrencyVersion=2, agentMode="multi")
-        worker.update(status="interrupted", autoWake=False)
-        worker["restartRecovery"] = {"stage": "pending", "autoWake": True, "epoch": worker["epoch"], "accountKey": worker.get("accountKey"), "threadId": worker.get("threadId")}
-        worker["moveImportPending"] = True
+        root.update(status="paused", autoWake=False, concurrency=32, subagentConcurrencyVersion=2, agentMode="multi", moveImportPending=True)
+        worker.update(status="paused", autoWake=False, worktree=False, moveImportPending=True)
         with runtime.db() as database:
             runtime.put(database, "agents", root)
             runtime.put(database, "agents", worker)
         return root["id"], worker["id"]
     finally:
         runtime.close()
-        backend.start()
 
 
-def seed_accepted_work(backend, agent_id: str) -> str:
-    backend.stop()
-    runtime = quiet_runtime(backend.state)
-    try:
-        work = runtime.work_action(agent_id, {"action": "create", "title": "Accepted dependency"})
-        with runtime.db() as database:
-            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (work["id"],)).fetchone()
-            record = json.loads(row[0]); record["status"] = "accepted"
-            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), work["id"]))
-        return work["id"]
-    finally:
-        runtime.close()
-        backend.start()
+def start_backend_with_seeded_agents(test_case):
+    scratch_root = Path(os.environ["TMPDIR"])
+    backend = BackendProcess(scratch_root)
+    test_case.addClassCleanup(_report_contract_backend_timing, backend)
+    test_case.addClassCleanup(backend.close)
+    backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+    agent_ids = seed_agents(backend)
+    ready = backend.start()
+    backend.ready_samples.append(ready)
+    return backend, agent_ids
 
 
 def _normal(value, work_ids=None):
@@ -104,37 +113,41 @@ def snapshot(state: Path):
             (work_ids[identity], _normal(json.loads(record), work_ids))
             for identity, record in works
         ]
-        agents = [(identity, _normal(json.loads(record))) for identity, record in database.execute("SELECT id,record FROM runtime_agents ORDER BY id")]
+        agents = []
+        for identity, raw_record in database.execute("SELECT id,record FROM runtime_agents ORDER BY id"):
+            record = json.loads(raw_record)
+            # The dispatcher owns status, attempt, turn, error, recovery and preparation projections.
+            for field in ("status", "inFlight", "startAttempt", "turnId", "threadId", "error",
+                          "restartRecovery", "connectionRecovery", "worktreePreparation"):
+                record.pop(field, None)
+            agents.append((identity, _normal(record)))
         receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")]
         events = []
-        for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id"):
-            identity, agent, kind, body, status, created, epoch, turn_id, error = row
+        for row in database.execute("SELECT id,agent,kind,text,created,epoch,turn_id,error FROM runtime_events ORDER BY id"):
+            identity, agent, kind, body, created, epoch, turn_id, error = row
             try:
                 body = _normal(json.loads(body), work_ids)
             except (TypeError, ValueError):
                 pass
-            events.append((_normal(identity, work_ids), agent, kind, body, status, epoch, turn_id, error))
+            # The background dispatcher owns event status; compare durable event content and identity.
+            events.append((_normal(identity, work_ids), agent, kind, body, epoch, turn_id, error))
         return {"runtime_work": normalized_work, "runtime_agents": agents, "runtime_operation_receipts": receipts, "runtime_events": events}
 
 
 def reference_action(backend, agent_id: str, body: dict):
     """Run the Python writer on a byte-for-byte database copy of the input state."""
-    backend.stop()
-    try:
-        with tempfile.TemporaryDirectory(prefix="work-write-python-ref-") as directory:
-            state = Path(directory) / "state"
-            state.mkdir()
-            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(sqlite3.connect(state / "canvas.sqlite3")) as target:
-                source.backup(target)
-            runtime = quiet_runtime(state)
-            try:
-                result = runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
-            finally:
-                runtime.close()
-            expected = snapshot(state)
-            return result, expected
-    finally:
-        backend.start()
+    with tempfile.TemporaryDirectory(prefix="work-write-python-ref-") as directory:
+        state = Path(directory) / "state"
+        state.mkdir()
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(sqlite3.connect(state / "canvas.sqlite3")) as target:
+            source.backup(target)
+        runtime = quiet_runtime(state)
+        try:
+            result = runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
+        finally:
+            runtime.close()
+        expected = snapshot(state)
+        return result, expected
 
 
 def normal_result(value):
@@ -148,8 +161,7 @@ def normal_result(value):
 class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.backend = start_contract_backend(cls)
-        cls.agent_id, cls.worker_id = seed_agents(cls.backend)
+        cls.backend, (cls.agent_id, cls.worker_id) = start_backend_with_seeded_agents(cls)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -170,7 +182,13 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         return response.json()
 
     def test_create_matches_python_fields_receipt_replay_and_dependency_state(self):
-        dependency_id = seed_accepted_work(self.backend, self.agent_id)
+        dependency = self.post({"action": "create", "title": "Accepted dependency"})
+        self.assertEqual(dependency.status, 200, dependency.body[:1000])
+        dependency_id = dependency.json()["id"]
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (dependency_id,)).fetchone()
+            record = json.loads(row[0]); record["status"] = "accepted"
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), dependency_id))
         body = {"action": "create", "title": "Blocked create", "description": "Stored once", "status": "blocked", "dependencies": [dependency_id], "id": "work-create-replay"}
         result = self.assert_matches_python(body)
         self.assertEqual(result["dependencies"], [dependency_id])
@@ -219,71 +237,41 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         refused = self.post(recancel)
         self.assertEqual(refused.status, 400, refused.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            with runtime.db() as database:
-                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (created.json()["id"],)).fetchone()
-                work = json.loads(row[0]); work["owner"] = self.worker_id
-                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(work), created.json()["id"]))
-                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-ready-before-failure", self.worker_id, "work_ready", json.dumps({"task":created.json()["id"]}), "pending", 1.0, 0, None, None))
-                database.execute("CREATE TRIGGER fail_work_receipt BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END")
-        finally:
-            runtime.close()
-            self.backend.start()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (created.json()["id"],)).fetchone()
+            work = json.loads(row[0]); work["owner"] = self.worker_id
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(work), created.json()["id"]))
+            database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-ready-before-failure", self.worker_id, "work_ready", json.dumps({"task":created.json()["id"]}), "pending", 1.0, 0, None, None))
+            database.execute("CREATE TRIGGER fail_work_receipt BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END")
         failure_body = {"action": "cancel", "task_id": created.json()["id"], "reason": "Roll back", "id": "work-injected-failure"}
         before = snapshot(self.backend.state)
         failed = self.post(failure_body)
         self.assertNotEqual(failed.status, 200, failed.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            with runtime.db() as database:
-                database.execute("DROP TRIGGER fail_work_receipt")
-        finally:
-            runtime.close()
-            self.backend.start()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("DROP TRIGGER fail_work_receipt")
         deleted_body = {"action": "update", "task_id": created.json()["id"], "title": "No", "id": "deleted-selected-agent"}
         self.assert_matches_python(deleted_body)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            with runtime.db() as database:
-                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
-                agent = json.loads(row[0]); agent["deletedAt"] = True
-                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-        finally:
-            runtime.close()
-            self.backend.start()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+            agent = json.loads(row[0]); agent["deletedAt"] = True
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
         before = snapshot(self.backend.state)
         deleted = self.post(deleted_body)
         self.assertEqual(deleted.status, 400, deleted.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            with runtime.db() as database:
-                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
-                agent = json.loads(row[0]); agent.pop("deletedAt", None); agent.update(concurrency=0, agentMode="single", subagentConcurrencyVersion=2)
-                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-        finally:
-            runtime.close()
-            self.backend.start()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+            agent = json.loads(row[0]); agent.pop("deletedAt", None); agent.update(concurrency=0, agentMode="single", subagentConcurrencyVersion=2)
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
         before = snapshot(self.backend.state)
         single = self.post({"action": "create", "title": "Blocked worker", "owner": self.worker_id, "status": "blocked", "id": "single-agent-delegation"})
         self.assertEqual(single.status, 400, single.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            with runtime.db() as database:
-                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
-                agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
-                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
-        finally:
-            runtime.close()
-            self.backend.start()
+        with fixture_connection(self.backend.state / "canvas.sqlite3") as database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+            agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
 
     def test_update_cancel_reject_match_python_and_preserve_durable_events(self):
         dependency = self.assert_matches_python({"action": "create", "title": "Ready dependency", "id": "update-dep"})
@@ -296,23 +284,20 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = snapshot(self.backend.state)
         changed = self.post({**replay_body, "title": "Different edit"})
         self.assertEqual(changed.status, 400, changed.body[:1000]); self.assertEqual(snapshot(self.backend.state), before)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            task = runtime.work_action(self.agent_id, {"action": "create", "title": "Cancel task"})
-            review = runtime.work_action(self.agent_id, {"action": "create", "title": "Reject task"})
-            with runtime.db() as database:
-                task_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (task["id"],)).fetchone()
-                task_record = json.loads(task_row[0]); task_record["owner"] = self.worker_id
-                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(task_record), task["id"]))
-                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("old-work-ready", self.worker_id, "work_ready", json.dumps({"task": task["id"]}), "pending", 1.0, 0, None, None))
-                review_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (review["id"],)).fetchone()
-                review_record = json.loads(review_row[0]); review_record.update(owner=self.worker_id, status="review", results=[{"id":"fixture-result","agent":self.worker_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "result.md")}])
-                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(review_record), review["id"]))
-                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:fixture-result", self.agent_id, "work_review", json.dumps({"task":review["id"],"result":review_record["results"][-1]}), "pending", 1.0, 0, None, None))
-        finally:
-            runtime.close()
-            self.backend.start()
+        task_response = self.post({"action": "create", "title": "Cancel task"})
+        review_response = self.post({"action": "create", "title": "Reject task"})
+        self.assertEqual(task_response.status, 200, task_response.body[:1000])
+        self.assertEqual(review_response.status, 200, review_response.body[:1000])
+        task, review = task_response.json(), review_response.json()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            task_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (task["id"],)).fetchone()
+            task_record = json.loads(task_row[0]); task_record["owner"] = self.worker_id
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(task_record), task["id"]))
+            database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("old-work-ready", self.worker_id, "work_ready", json.dumps({"task": task["id"]}), "pending", 1.0, 0, None, None))
+            review_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (review["id"],)).fetchone()
+            review_record = json.loads(review_row[0]); review_record.update(owner=self.worker_id, status="review", results=[{"id":"fixture-result","agent":self.worker_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "result.md")}])
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(review_record), review["id"]))
+            database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:fixture-result", self.agent_id, "work_review", json.dumps({"task":review["id"],"result":review_record["results"][-1]}), "pending", 1.0, 0, None, None))
         cancel_body = {"action":"cancel","task_id":task["id"],"reason":"No longer needed","id":"work-cancel-replay"}
         cancelled = self.assert_matches_python(cancel_body)
         self.assertEqual(cancelled["status"], "cancelled")
@@ -325,18 +310,15 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         rejected = self.assert_matches_python(reject_body)
         self.assertEqual(rejected["status"], "ready")
         self.assert_matches_python(reject_body)
-        self.backend.stop()
-        runtime = quiet_runtime(self.backend.state)
-        try:
-            root_review = runtime.work_action(self.agent_id, {"action": "create", "title": "Lead-owned result"})
-            with runtime.db() as database:
-                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (root_review["id"],)).fetchone()
-                record = json.loads(row[0]); record.update(owner=self.agent_id, status="review", results=[{"id":"lead-result","agent":self.agent_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "lead-result.md")}])
-                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), root_review["id"]))
-                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:lead-result", self.agent_id, "work_review", json.dumps({"task":root_review["id"],"result":record["results"][-1]}), "pending", 1.0, 0, None, None))
-        finally:
-            runtime.close()
-            self.backend.start()
+        pause_agent(self.backend, self.agent_id)
+        root_response = self.post({"action": "create", "title": "Lead-owned result"})
+        self.assertEqual(root_response.status, 200, root_response.body[:1000])
+        root_review = root_response.json()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (root_review["id"],)).fetchone()
+            record = json.loads(row[0]); record.update(owner=self.agent_id, status="review", results=[{"id":"lead-result","agent":self.agent_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "lead-result.md")}])
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), root_review["id"]))
+            database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:lead-result", self.agent_id, "work_review", json.dumps({"task":root_review["id"],"result":record["results"][-1]}), "pending", 1.0, 0, None, None))
         lead_reject = {"action": "reject", "task_id": root_review["id"], "result": "Add lead details", "id": "reject-lead-owned"}
         self.assert_matches_python(lead_reject)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
