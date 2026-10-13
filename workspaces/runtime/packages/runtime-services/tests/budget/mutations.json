@@ -1,0 +1,182 @@
+[
+  {
+    "id": "B01",
+    "description": "cutoff-equality",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "p.at > state.cutoff",
+        "after": "p.at >= state.cutoff"
+      }
+    ],
+    "witnesses": ["cutoff-equality"]
+  },
+  {
+    "id": "B02",
+    "description": "exact-response-replay-conflict",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if p.exact && p.amount.is_some_and(|n| n != previous.tokens)",
+        "after": "if false && p.exact && p.amount.is_some_and(|n| n != previous.tokens)"
+      }
+    ],
+    "witnesses": ["exact-response-replay-conflict"]
+  },
+  {
+    "id": "B03",
+    "description": "branch-history",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if p.source == CaptureSource::Live || p.at >= state.created",
+        "after": "if true || p.source == CaptureSource::Live || p.at >= state.created"
+      }
+    ],
+    "witnesses": ["branch-history"]
+  },
+  {
+    "id": "B04",
+    "description": "notice-reset-ambiguity",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if reset && Some(amount) == state.last_amount",
+        "after": "if false && reset && Some(amount) == state.last_amount"
+      }
+    ],
+    "witnesses": ["notice-reset-ambiguity"]
+  },
+  {
+    "id": "B05",
+    "description": "historical-notices",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "state.historical_notices = add(state.historical_notices, amount)?;",
+        "after": "state.historical_notices = add(state.historical_notices, 0)?;"
+      }
+    ],
+    "witnesses": ["historical-notices"]
+  },
+  {
+    "id": "B06",
+    "description": "budget-10",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "spent >= budget",
+        "after": "spent > budget"
+      }
+    ],
+    "witnesses": ["budget-10"]
+  },
+  {
+    "id": "B07",
+    "description": "uncovered-floor",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if state.before.saturating_add(state.after)",
+        "after": "if false && state.before.saturating_add(state.after)"
+      }
+    ],
+    "witnesses": ["uncovered-floor"]
+  },
+  {
+    "id": "B08",
+    "description": "defer-unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_wait.rs",
+    "edits": [
+      {
+        "before": "if unknown\n",
+        "after": "if false && unknown\n"
+      }
+    ],
+    "witnesses": ["defer-unknown"]
+  },
+  {
+    "id": "B09",
+    "description": "wait-resume",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_wait.rs",
+    "edits": [
+      {
+        "before": "if field(previous, \"attemptId\") == attempt_id",
+        "after": "if false && field(previous, \"attemptId\") == attempt_id"
+      }
+    ],
+    "witnesses": ["wait-resume"]
+  },
+  {
+    "id": "B10",
+    "description": "wait-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_wait.rs",
+    "edits": [
+      {
+        "before": "&& identity(wait, a)",
+        "after": "&& (true || identity(wait, a))"
+      }
+    ],
+    "witnesses": ["wait-receipt-epoch"]
+  },
+  {
+    "id": "B11",
+    "description": "foreign-event-turn_id",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_wait.rs",
+    "edits": [
+      {
+        "before": "&& row.turn_id.is_none()",
+        "after": "&& (true || row.turn_id.is_none())"
+      }
+    ],
+    "witnesses": ["foreign-event-turn_id"]
+  },
+  {
+    "id": "B12",
+    "description": "wait-resume",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_wait.rs",
+    "edits": [
+      {
+        "before": "row.status = \"reserved\".into();",
+        "after": "row.status = \"pending\".into();"
+      }
+    ],
+    "witnesses": ["wait-resume"]
+  },
+  {
+    "id": "B13",
+    "description": "capture_failpoints_restart_and_lost_response",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget_service.rs",
+    "edits": [
+      {
+        "before": "ROLLBACK TO budget_scope; RELEASE budget_scope",
+        "after": "RELEASE budget_scope"
+      }
+    ],
+    "witnesses": ["capture_failpoints_restart_and_lost_response"]
+  },
+  {
+    "id": "B14",
+    "description": "team-deletedAt",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/budget.rs",
+    "edits": [
+      {
+        "before": "WHERE coalesce(nullif(json_extract(record,'$.rootId'),''),id)=?1 ORDER BY id",
+        "after": "WHERE coalesce(nullif(json_extract(record,'$.rootId'),''),id)=?1 AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id"
+      }
+    ],
+    "witnesses": ["team-deletedAt"]
+  },
+  {
+    "id": "B15",
+    "description": "estimated-timestamp",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if p.estimated {",
+        "after": "if false && p.estimated {"
+      }
+    ],
+    "witnesses": ["estimated-timestamp"]
+  }
+]

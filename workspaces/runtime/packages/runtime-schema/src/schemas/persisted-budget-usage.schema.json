@@ -1,0 +1,36 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "at": {
+      "title": "At",
+      "type": "number"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["response", "notice"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "tokens": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Tokens",
+      "type": "integer"
+    }
+  },
+  "required": ["id", "agent", "kind", "tokens", "at"],
+  "title": "PersistedBudgetUsage",
+  "type": "object"
+}

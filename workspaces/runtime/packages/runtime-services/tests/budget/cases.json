@@ -1,0 +1,5105 @@
+[
+  {
+    "name": "exact-response-replay-conflict",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "unicode-identity",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "\u03c0 \ud83d\ude00 , :",
+          "rawTokenUsageRecord": {
+            "response_id": "\u03c0 \ud83d\ude00 , :"
+          },
+          "requestUsage": {
+            "totalTokens": 12
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 42
+            },
+            "last": {
+              "totalTokens": 42
+            }
+          },
+          "turnId": "\u03b4 , :"
+        }
+      }
+    ]
+  },
+  {
+    "name": "historical-floor",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 1000,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old",
+          "rawTokenUsageRecord": {
+            "response_id": "old"
+          },
+          "requestUsage": {
+            "totalTokens": 1000
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "new",
+          "rawTokenUsageRecord": {
+            "response_id": "new"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old-extra",
+          "rawTokenUsageRecord": {
+            "response_id": "old-extra"
+          },
+          "requestUsage": {
+            "totalTokens": 50
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 1020
+            },
+            "last": {
+              "totalTokens": 20
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "notice-reset-ambiguity",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 100
+            },
+            "last": {
+              "totalTokens": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 102,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 110
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        }
+      }
+    ]
+  },
+  {
+    "name": "notice-thread-and-out-of-order",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 100
+            },
+            "last": {
+              "totalTokens": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 104,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 120
+            },
+            "last": {
+              "totalTokens": 20
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 110
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 105,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 130
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "threadId": "fork"
+        }
+      }
+    ]
+  },
+  {
+    "name": "notice-without-counter",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "params": {
+          "tokenUsage": {
+            "last": {
+              "totalTokens": 7
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude-fields",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "params": {
+          "usageSource": "claudeResponse",
+          "responseId": "r",
+          "requestUsage": {
+            "inputTokens": 2,
+            "cachedInputTokens": 3,
+            "cacheWriteInputTokens": 5,
+            "outputTokens": 7
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "missing-usage",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "estimated-timestamp",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 30
+          },
+          "_analyticsTimestampSource": "fileModifiedEstimate"
+        }
+      }
+    ]
+  },
+  {
+    "name": "branch-history",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 50,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 10,
+        "params": {
+          "responseId": "old",
+          "rawTokenUsageRecord": {
+            "response_id": "old"
+          },
+          "requestUsage": {
+            "totalTokens": 30
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "new",
+          "rawTokenUsageRecord": {
+            "response_id": "new"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        },
+        "source": "history"
+      }
+    ]
+  },
+  {
+    "name": "historical-notices",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        },
+        "source": "history"
+      }
+    ]
+  },
+  {
+    "name": "budget-None",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "budget-0",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 0,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "budget-9",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 9,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "budget-10",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 10,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "budget-11",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 11,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "budget-100",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "team-deletedAt",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 15,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 20,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        },
+        "deletedAt": 100
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "team-rootId",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 15,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "other",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 20,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "coverage-complete",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 0,
+              "final_size": 0,
+              "tail": ""
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-absent",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": null,
+            "file": null
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-incomplete",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "scanning",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": null
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-partial",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "partial",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": null
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-unavailable",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": null
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-identity",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [2, 1],
+              "size": 0,
+              "final_size": 0,
+              "tail": ""
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-offset",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 1,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 0,
+              "final_size": 0,
+              "tail": ""
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "coverage-request-records",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {}
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 0,
+              "final_size": 0,
+              "tail": ""
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-settings",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 20,
+              "final_size": 20,
+              "tail": "{\"type\":\"settings\"}\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-usage",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 30,
+              "final_size": 30,
+              "tail": "{\"type\":\"token_usage_record\"}\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-compacted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 21,
+              "final_size": 21,
+              "tail": "{\"type\":\"compacted\"}\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-counter",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 35,
+              "final_size": 35,
+              "tail": "{\"payload\":{\"type\":\"token_count\"}}\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-incomplete",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 2,
+              "final_size": 2,
+              "tail": "{}"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-invalid",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 2,
+              "final_size": 2,
+              "tail": "{\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-grew",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 3,
+              "final_size": 99,
+              "tail": "{}\n"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "tail-oversized",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 65537,
+              "final_size": 65537,
+              "tail": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 "
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "uncovered-floor",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission",
+        "histories": {
+          "a": {
+            "history": {
+              "status": "current",
+              "coverage": "availableRecords",
+              "identity": [1, 2],
+              "offset": 0,
+              "context": {
+                "requestUsageAvailable": true
+              }
+            },
+            "file": {
+              "identity": [1, 2],
+              "size": 0,
+              "final_size": 0,
+              "tail": ""
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "wait-resume",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {}
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-account",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "accountKey": "other"
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-epoch",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "epoch": 1
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-thread",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "threadId": "other"
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-submitted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "startAttempt": {
+            "id": "attempt",
+            "epoch": 0,
+            "accountKey": "account",
+            "submitted": true,
+            "events": ["event"]
+          }
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-unknown",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "startAttempt": {
+            "id": "attempt",
+            "epoch": 0,
+            "accountKey": "account",
+            "submitted": null,
+            "events": ["event"]
+          }
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-deleted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "deletedAt": 100
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "wait-stopped",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "set": {
+          "autoWake": false
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "defer-unknown",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "update",
+        "set": {}
+      },
+      {
+        "op": "defer",
+        "unknown": true
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "defer-submitted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "update",
+        "set": {
+          "startAttempt": {
+            "id": "attempt",
+            "epoch": 0,
+            "accountKey": "account",
+            "submitted": true,
+            "events": ["event"]
+          }
+        }
+      },
+      {
+        "op": "defer",
+        "unknown": false
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "defer-foreign-epoch",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "update",
+        "set": {
+          "epoch": 1
+        }
+      },
+      {
+        "op": "defer",
+        "unknown": false
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "defer-wrong-account",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "update",
+        "set": {
+          "accountKey": "other"
+        }
+      },
+      {
+        "op": "defer",
+        "unknown": false
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "action-resume",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": [],
+          "action": "review",
+          "actionRequestId": "request",
+          "actionIdentity": {
+            "accountKey": "account",
+            "threadId": "thread",
+            "epoch": 0
+          }
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "update",
+        "set": {}
+      },
+      {
+        "op": "claim"
+      }
+    ],
+    "receipts": {
+      "request": {
+        "receipt": {
+          "attemptId": "attempt"
+        },
+        "outcome": {
+          "status": "pending"
+        }
+      }
+    }
+  },
+  {
+    "name": "action-stale",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": [],
+          "action": "review",
+          "actionRequestId": "request",
+          "actionIdentity": {
+            "accountKey": "account",
+            "threadId": "thread",
+            "epoch": 0
+          }
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "update",
+        "set": {
+          "epoch": 1
+        }
+      },
+      {
+        "op": "claim"
+      }
+    ],
+    "receipts": {
+      "request": {
+        "receipt": {
+          "attemptId": "attempt"
+        },
+        "outcome": {
+          "status": "pending"
+        }
+      }
+    }
+  },
+  {
+    "name": "historical-copy-floor",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 100,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        },
+        "historical_agent": {
+          "id": "a",
+          "rootId": "a",
+          "epoch": 0,
+          "status": "starting",
+          "accountKey": "account",
+          "threadId": "old-thread",
+          "created": 0,
+          "tokensUsed": 0,
+          "tokenBudget": null,
+          "autoWake": true,
+          "inFlight": true,
+          "turnId": null,
+          "startAttempt": {
+            "id": "attempt",
+            "epoch": 0,
+            "accountKey": "account",
+            "submitted": false,
+            "events": ["event"]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "response-survives-fork-account",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "update",
+        "set": {
+          "threadId": "fork",
+          "accountKey": "other"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "notice-account-identity",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "update",
+        "set": {
+          "accountKey": "other"
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "empty-history-turn-None",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "empty-history-turn-turn",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": "turn",
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "no-thread-with-spending",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": null,
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-56",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": []
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-57",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event", "event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-58",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["missing"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-59",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"],
+          "action": "review"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-60",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": [],
+          "action": "invalid"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-61",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"],
+          "observedTurnId": "accepted"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-62",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"],
+          "turnId": "accepted"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-63",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"],
+          "notSubmittedReason": "cancelled"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-64",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "other",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "invalid-attempt-65",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"],
+          "threadId": "other"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "event-status-pending",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "pending",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "event-status-reserved",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "reserved",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "event-status-dispatching",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "event-status-submitted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "submitted",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "foreign-event-turn_id",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": "turn",
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "foreign-event-epoch",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 1,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "foreign-event-agent",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "other",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "prior-turn-completed",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": "old",
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        },
+        "lastCompletedTurn": "old",
+        "lastCompletedTurnStatus": "completed"
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "prior-turn-failed",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": "old",
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        },
+        "lastCompletedTurn": "old",
+        "lastCompletedTurnStatus": "failed"
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "prior-turn-interrupted",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": "old",
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        },
+        "lastCompletedTurn": "old",
+        "lastCompletedTurnStatus": "interrupted"
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "prior-turn-inProgress",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": "old",
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        },
+        "lastCompletedTurn": "old",
+        "lastCompletedTurnStatus": "inProgress"
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "action-repair-False",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "new",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": [],
+          "action": "review",
+          "actionRequestId": "request",
+          "actionIdentity": {
+            "accountKey": "account",
+            "threadId": "old",
+            "epoch": 0
+          },
+          "threadId": "new"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "claim"
+      }
+    ]
+  },
+  {
+    "name": "action-repair-True",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "new",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": [],
+          "action": "review",
+          "actionRequestId": "request",
+          "actionIdentity": {
+            "accountKey": "account",
+            "threadId": "old",
+            "epoch": 0
+          },
+          "threadId": "new"
+        },
+        "contextRepair": {
+          "phase": "completed",
+          "agent": "a",
+          "source": {
+            "id": "a",
+            "accountKey": "account",
+            "threadId": "old",
+            "epoch": 0,
+            "attemptId": "attempt"
+          },
+          "newThreadId": "new"
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "claim"
+      }
+    ]
+  },
+  {
+    "name": "status-None-False",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "status",
+        "check_coverage": false
+      }
+    ]
+  },
+  {
+    "name": "status-None-True",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "status",
+        "check_coverage": true
+      }
+    ]
+  },
+  {
+    "name": "status-1-False",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "status",
+        "check_coverage": false
+      }
+    ]
+  },
+  {
+    "name": "status-1-True",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "status",
+        "check_coverage": true
+      }
+    ]
+  },
+  {
+    "name": "cutoff-equality",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 100,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 5
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "wait-receipt-epoch",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 10,
+        "tokenBudget": 1,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "admission"
+      },
+      {
+        "op": "defer"
+      },
+      {
+        "op": "defer",
+        "now": 102
+      },
+      {
+        "op": "update",
+        "paths": {
+          "/budgetStartWait/epoch": 1
+        }
+      },
+      {
+        "op": "claim",
+        "now": 103
+      },
+      {
+        "op": "claim",
+        "now": 104
+      }
+    ],
+    "events": [
+      {
+        "id": "event",
+        "agent": "a",
+        "epoch": 0,
+        "status": "dispatching",
+        "kind": "user",
+        "text": "Exact input",
+        "created": 1.0,
+        "turn_id": null,
+        "error": null
+      }
+    ]
+  },
+  {
+    "name": "history-table-unavailable",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": 100,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 10
+          }
+        }
+      },
+      {
+        "op": "admission",
+        "history_table": false
+      }
+    ]
+  },
+  {
+    "name": "python-seeded-exact-response-replay-conflict",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ],
+    "seed_captures": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "python-seeded-notice-reset-ambiguity",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 100
+            },
+            "last": {
+              "totalTokens": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 102,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 110
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        }
+      }
+    ],
+    "seed_captures": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 100
+            },
+            "last": {
+              "totalTokens": 100
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 102,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 110
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 103,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        }
+      }
+    ]
+  },
+  {
+    "name": "python-seeded-historical-floor",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 1000,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old",
+          "rawTokenUsageRecord": {
+            "response_id": "old"
+          },
+          "requestUsage": {
+            "totalTokens": 1000
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "new",
+          "rawTokenUsageRecord": {
+            "response_id": "new"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old-extra",
+          "rawTokenUsageRecord": {
+            "response_id": "old-extra"
+          },
+          "requestUsage": {
+            "totalTokens": 50
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 1020
+            },
+            "last": {
+              "totalTokens": 20
+            }
+          }
+        }
+      }
+    ],
+    "seed_captures": [
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old",
+          "rawTokenUsageRecord": {
+            "response_id": "old"
+          },
+          "requestUsage": {
+            "totalTokens": 1000
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "new",
+          "rawTokenUsageRecord": {
+            "response_id": "new"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 99,
+        "params": {
+          "responseId": "old-extra",
+          "rawTokenUsageRecord": {
+            "response_id": "old-extra"
+          },
+          "requestUsage": {
+            "totalTokens": 50
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 1020
+            },
+            "last": {
+              "totalTokens": 20
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "python-seeded-historical-notices",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "created": 0,
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        },
+        "source": "history"
+      }
+    ],
+    "seed_captures": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 10
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 20
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          }
+        },
+        "source": "history"
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 30
+            },
+            "last": {
+              "totalTokens": 10
+            }
+          },
+          "responseId": "r"
+        },
+        "source": "history"
+      }
+    ]
+  }
+]
