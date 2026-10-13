@@ -41,6 +41,7 @@ pub struct RecoveredRequest {
     pub ticket: RequestTicket,
     pub operation_id: OperationId,
     pub thread_id: Option<String>,
+    pub lightweight: bool,
     pub deadline_ms: u64,
     pub unknown: bool,
     pub remote_id: Option<u64>,
@@ -220,6 +221,7 @@ impl SessionHandle {
                 recovered.thread_id.clone(),
                 recovered.deadline_ms,
                 recovered.unknown,
+                recovered.lightweight,
             )?;
             if let Some(remote) = recovered.remote_id {
                 let RequestId::Number(local) = recovered.ticket.id else {
@@ -241,6 +243,7 @@ impl SessionHandle {
                     ticket: recovered.ticket,
                     operation: Some(recovered.operation_id),
                     thread_id: recovered.thread_id,
+                    lightweight: recovered.lightweight,
                     send: SendState::Unknown,
                     write: None,
                     ready: false,
@@ -255,6 +258,7 @@ impl SessionHandle {
                 operation: Some(config.initialize_operation.clone()),
                 send: SendState::Queued,
                 thread_id: None,
+                lightweight: false,
                 write: Some(initialize),
                 ready: true,
             },
@@ -484,6 +488,7 @@ struct Record {
     operation: Option<OperationId>,
     send: SendState,
     thread_id: Option<String>,
+    lightweight: bool,
     write: Option<PreparedWrite>,
     ready: bool,
 }
@@ -743,6 +748,7 @@ impl SessionTask {
                                 ticket: ticket.clone(),
                                 operation_id: write.operation.clone(),
                                 thread_id: record.thread_id.clone(),
+                                lightweight: record.lightweight,
                                 deadline_ms: self
                                     .state
                                     .request_deadline_ms(&ticket.id)
@@ -988,6 +994,7 @@ impl SessionTask {
                 operation: Some(spec.operation_id),
                 send: SendState::Queued,
                 thread_id: spec.thread_id,
+                lightweight: spec.lightweight,
                 write,
                 ready: false,
             },

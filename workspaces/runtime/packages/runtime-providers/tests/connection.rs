@@ -1024,7 +1024,7 @@ fn restored_request_preserves_original_deadline_and_prior_unknown() {
             method: Method::ModelList,
         };
         session
-            .restore_request(&ticket, None, 5, unknown)
+            .restore_request(&ticket, None, 5, unknown, false)
             .expect("valid recovery");
         assert_eq!(session.request_deadline_ms(&ticket.id), Some(5));
         assert_eq!(
@@ -1050,5 +1050,43 @@ fn restored_request_preserves_original_deadline_and_prior_unknown() {
                 ..
             }
         )));
+    }
+}
+
+#[test]
+fn restored_serialized_and_lightweight_requests_preserve_thread_ownership() {
+    for lightweight in [false, true] {
+        let mut session = state(true);
+        let restored = RequestTicket {
+            generation: 9,
+            id: RequestId::Number(80),
+            method: Method::TurnStart,
+        };
+        session
+            .restore_request(&restored, Some("thread".into()), 100, true, lightweight)
+            .expect("restore");
+        let (_, actions) = session
+            .submit_with_id(
+                RequestId::Number(81),
+                Method::TurnStart,
+                json!({"threadId":"thread","input":[]}),
+                1,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("submit successor");
+        assert_eq!(outgoing(&actions).len(), usize::from(lightweight));
+        let actions = session
+            .receive_at(
+                Frame::Response {
+                    id: restored.id,
+                    body: ResponseBody::Result(json!({})),
+                    fields: Default::default(),
+                },
+                2,
+            )
+            .expect("resolve restored");
+        assert_eq!(outgoing(&actions).len(), usize::from(!lightweight));
     }
 }

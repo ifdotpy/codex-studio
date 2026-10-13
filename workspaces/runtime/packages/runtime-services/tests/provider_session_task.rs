@@ -1015,6 +1015,7 @@ fn recovered(id: RequestId, method: Method, deadline_ms: u64) -> RecoveredReques
         },
         operation_id: OperationId("recovered".into()),
         thread_id: None,
+        lightweight: false,
         deadline_ms,
         unknown: false,
         remote_id: None,

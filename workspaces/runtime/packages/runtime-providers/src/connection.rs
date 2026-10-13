@@ -81,6 +81,8 @@ pub enum SessionError {
     MissingRequest,
     #[error("Claude thread-serialized request requires a thread id")]
     MissingThreadId,
+    #[error("recovery contains conflicting active requests for a serialized thread")]
+    ConflictingRecoveredThread,
     #[error("initialized notification cannot be marked written in this state")]
     InitializationNotReady,
 }
@@ -208,16 +210,30 @@ impl SessionState {
         thread_id: Option<String>,
         deadline_ms: u64,
         unknown: bool,
+        lightweight: bool,
     ) -> Result<(), SessionError> {
         if ticket.generation != self.generation {
             return Err(SessionError::StaleGeneration);
         }
+        let serialized = self.claude && !lightweight && is_thread_serialized(ticket.method);
+        if serialized {
+            let thread = thread_id.as_ref().ok_or(SessionError::MissingThreadId)?;
+            if self.active_threads.contains_key(thread) {
+                return Err(SessionError::ConflictingRecoveredThread);
+            }
+        }
         self.track_existing_request_until(
             ticket.id.clone(),
             ticket.method,
-            thread_id,
+            thread_id.clone(),
             deadline_ms,
         )?;
+        if serialized && let Some(thread) = thread_id {
+            if let Some(pending) = self.pending.get_mut(&ticket.id) {
+                pending.serialized = true;
+            }
+            self.active_threads.insert(thread, ticket.id.clone());
+        }
         if unknown {
             self.book.mark_unknown(&ticket.id)?;
         }
