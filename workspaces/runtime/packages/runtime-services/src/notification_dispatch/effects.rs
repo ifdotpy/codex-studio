@@ -54,9 +54,9 @@ impl NotificationDependency {
 }
 
 /// Immutable observation handed to analytics/token-rate owners after commit.
-/// `delivery` is the idempotency key; consumers must retain its account and generation.
-/// A caller requiring crash-durable telemetry stages these serializable values in
-/// its existing effect journal before committing, and drains it after commit.
+/// The effect kind plus `delivery` is the idempotency key; retain account and generation.
+/// The caller stages these serializable values in its existing effect journal
+/// before committing, and drains the journal after commit.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NotificationObservation {
     pub agent: Option<Value>,

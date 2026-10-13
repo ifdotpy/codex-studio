@@ -2,30 +2,15 @@
 //! analytics and volatile rates are immutable values for the caller after commit.
 use crate::budget::CaptureSource;
 use crate::notification_dispatch::{
-    DispatchOutcome, NotificationDependency, NotificationDispatchError, NotificationEffects,
-    NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity,
+    DispatchOutcome, NotificationDispatchError, NotificationEffects, NotificationObservation,
+    NotificationPostCommit, ProviderDeliveryIdentity,
 };
 use serde_json::Value;
 use studio_runtime_store::Transaction;
 
-/// B6 owns this transactional port. Implementations must not perform file or
-/// provider IO. Failure rolls back budget, transcript, stream bases and receipt.
-pub trait MoveCacheCapture {
-    fn capture(
-        &self,
-        tx: &Transaction<'_>,
-        agent: &Value,
-        params: &Value,
-        at: f64,
-    ) -> Result<(), NotificationDispatchError>;
-}
+pub struct RuntimeNotificationEffects;
 
-#[derive(Default)]
-pub struct RuntimeNotificationEffects<'a> {
-    pub move_cache: Option<&'a dyn MoveCacheCapture>,
-}
-
-impl NotificationEffects for RuntimeNotificationEffects<'_> {
+impl NotificationEffects for RuntimeNotificationEffects {
     fn capture_usage(
         &self,
         tx: &Transaction<'_>,
@@ -44,11 +29,11 @@ impl NotificationEffects for RuntimeNotificationEffects<'_> {
         params: &Value,
         at: f64,
     ) -> Result<(), NotificationDispatchError> {
-        self.move_cache
-            .ok_or(NotificationDispatchError::Dependency(
-                NotificationDependency::MoveCache.name(),
-            ))?
-            .capture(tx, agent, params, at)
+        let agent_id = agent["id"]
+            .as_str()
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        crate::agent_move::capture_cache(tx, agent_id, params, at)?;
+        Ok(())
     }
 
     fn account_notice(

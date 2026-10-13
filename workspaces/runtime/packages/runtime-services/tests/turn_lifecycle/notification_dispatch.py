@@ -30,7 +30,7 @@ class ManualTimer:
 
 def snapshot(root):
     import __main__ as oracle
-    tables = TABLES + ('runtime_budget', 'runtime_budget_usage') if _real_effects else TABLES
+    tables = TABLES + ('runtime_budget', 'runtime_budget_usage', 'runtime_agent_moves') if _real_effects else TABLES
     result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
         # Rust durably stores only a base obscured by a later item/started.
@@ -100,6 +100,12 @@ def seed(runtime, case):
         if case.get('submission'):
             agent['startAttempt']['events'] = ['input-' + str(i) for i in range(len(case.get('events', [{'kind':'user','text':'hello'}])))]
         agent.update(case.get('agent', {}))
+        if case.get('move'):
+            from codex_agent_move import AgentMoves, identity
+            agent['movedFrom'] = {'move': 'fixture-move', 'server':'peer'}
+            moves = AgentMoves.__new__(AgentMoves)
+            moves._save(db, dict(id=identity('fixture-move','target'), move='fixture-move', side='target', principal='peer', phase='active', created=700.0, deadline=900.0,
+                descriptor={'agent':copy.deepcopy(agent), 'acceptedResult':{'status':'accepted','requestId':'fixture-move'}}))
         if case.get('expect_refusal'):
             agent['corpusPrivate'] = 'SECRET_STORED_SENTINEL'
         for key in case.get('remove', []):
@@ -302,10 +308,11 @@ def run_case(command, template, runtime_type):
         with _runtime.read_db() as db:
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
+    runtime.connection_ids = {'default': 'connection-7'}
     if case.get('analytics_semantics'):
         with sqlite3.connect(template / 'analytics.sqlite3') as source, sqlite3.connect(runtime.analytics_db_path) as target:
             source.backup(target)
-    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace') if k in case}, sort_keys=True)
+    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace','move') if k in case}, sort_keys=True)
     runtime.close_notification_database()
     runtime.__dict__.pop('_agent_records_cache', None)
     prepared_path = runtime.root.parent / 'prepared.json'

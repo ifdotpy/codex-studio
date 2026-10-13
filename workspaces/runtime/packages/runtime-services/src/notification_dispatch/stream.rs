@@ -1,4 +1,5 @@
 //! Pure, bounded connection stream state. SQLite commit controls when updates apply.
+use super::{NotificationDispatchError, NotificationObservation, NotificationPostCommit};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -31,6 +32,10 @@ struct Entry {
 pub struct NotificationStreamBuffer {
     entries: Vec<Entry>,
     closed: Vec<StreamKey>,
+    #[serde(default)]
+    analytics: Vec<(StreamKey, NotificationObservation)>,
+    #[serde(default)]
+    post_commit: Vec<NotificationPostCommit>,
 }
 
 pub(super) enum EnqueueResult {
@@ -41,6 +46,53 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
+    /// Take staged timer-flush effects from the returned buffer copy. Journal
+    /// them with that buffer in the same transaction; publish only after commit.
+    /// Discard both the returned buffer and these values on rollback.
+    pub fn take_post_commit(&mut self) -> Vec<NotificationPostCommit> {
+        std::mem::take(&mut self.post_commit)
+    }
+    pub(super) fn stage_analytics(
+        &mut self,
+        key: StreamKey,
+        mut observation: NotificationObservation,
+    ) -> Result<(), NotificationDispatchError> {
+        if self.closed.contains(&key) {
+            return Ok(());
+        }
+        // Bound retained sample identities even when deltas are empty. The caller
+        // flushes the committed buffer before retrying this uncommitted frame.
+        if self.analytics.len() + self.post_commit.len() >= 8192 {
+            return Err(NotificationDispatchError::StreamCapacity);
+        }
+        observation.agent = None; // Freeze the agent at flush, as Python does.
+        let bytes: usize = self
+            .analytics
+            .iter()
+            .map(|(_, observation)| observation.params.to_string().len())
+            .sum();
+        if bytes.saturating_add(observation.params.to_string().len()) > 4 * 1024 * 1024 {
+            return Err(NotificationDispatchError::StreamCapacity);
+        }
+        self.analytics.push((key, observation));
+        Ok(())
+    }
+    pub(super) fn flush_analytics(&mut self, key: &StreamKey, agent: &Value) {
+        let mut pending = Vec::new();
+        for (sample_key, mut observation) in std::mem::take(&mut self.analytics) {
+            if &sample_key == key {
+                observation.agent = Some(agent.clone());
+                self.post_commit.push(NotificationPostCommit::Analytics {
+                    observation,
+                    budget_capture_value: None,
+                });
+            } else {
+                pending.push((sample_key, observation));
+            }
+        }
+        self.analytics = pending;
+    }
+
     pub(crate) fn pending_bytes(&self) -> usize {
         self.entries.iter().map(|entry| entry.pending.len()).sum()
     }
@@ -195,6 +247,7 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn close(&mut self, key: &StreamKey) {
+        self.analytics.retain(|(sample_key, _)| sample_key != key);
         self.entries.retain(|entry| &entry.key != key);
         if !self.closed.contains(key) {
             self.closed.push(key.clone());
@@ -205,6 +258,7 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn discard(&mut self, key: &StreamKey) {
+        self.analytics.retain(|(sample_key, _)| sample_key != key);
         self.entries.retain(|entry| &entry.key != key);
     }
 }

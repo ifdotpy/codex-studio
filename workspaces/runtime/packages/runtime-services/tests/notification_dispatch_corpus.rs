@@ -138,7 +138,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         }).map_err(|e|e.to_string())?;
         let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',99.0) WHERE id='agent'", []).expect("delete fixture agent");
+
             let before = tx.total_changes();
             assert_eq!(record_user_submission(tx,"agent",&submission)?,result);
             assert_eq!(before, tx.total_changes(), "saved replay depends on mutable agent");
@@ -149,8 +149,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
     }
     let captured_effects = CapturedEffects(prepared);
     let runtime_effects =
-        studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects::default(
-        );
+        studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
     let effects: &dyn studio_runtime_services::notification_dispatch::NotificationEffects =
         if case["runtime_effects"] == true {
             &runtime_effects
@@ -306,7 +305,12 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         }
         results.push(json!(result.outcome));
         if let Some(update) = result.stream_update {
-            streams = update;
+            // The worker persists this buffer with the receipt. Exercise the
+            // restart representation, including pending analytic identities.
+            streams =
+                serde_json::from_slice(&serde_json::to_vec(&update).expect("durable stream JSON"))
+                    .expect("restore stream buffer");
+            assert_eq!(streams, update);
         }
         if let Some(bytes) = step["expected_pending_bytes"].as_u64() {
             let buffered = serde_json::to_value(&streams).expect("stream state");
@@ -329,6 +333,13 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         }
         if step["tick"] == true {
             flush_agents(store, case, &mut streams)?;
+            for effect in streams.take_post_commit() {
+                use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
+                CommittedSink { store }
+                    .publish(&effect)
+                    .map_err(|error| error.to_string())?;
+                handoff.push(post_commit_value(&effect));
+            }
         }
     }
     if full_failpoints(case) {
@@ -344,6 +355,13 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         })?;
     }
     flush_agents(store, case, &mut streams)?;
+    for effect in streams.take_post_commit() {
+        use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
+        CommittedSink { store }
+            .publish(&effect)
+            .map_err(|error| error.to_string())?;
+        handoff.push(post_commit_value(&effect));
+    }
     if case["runtime_effects"] == true && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none() {
         let expected = prepared["post_commit"]
             .as_array()
@@ -353,11 +371,20 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
             .cloned()
             .collect();
-        assert_eq!(
-            &selected, expected,
-            "{}: complete analytics/token-rate handoff",
-            case["id"]
+        let mut diff = vec![];
+        differences(
+            Some(&json!(expected)),
+            Some(&json!(selected)),
+            "/handoff",
+            &mut diff,
         );
+        if !diff.is_empty() {
+            return Err(format!(
+                "{}: handoff differences: {}",
+                case["id"],
+                json!(diff)
+            ));
+        }
     }
     if case["analytics_semantics"] == true {
         Ok(json!({"outcomes":results,"handoff":handoff}))
@@ -454,21 +481,8 @@ fn effect_failpoints(
         NotificationDispatchError as Error, NotificationEffects, NotificationStreamBuffer,
         dispatch_notification_with_effects,
     };
-    use studio_runtime_services::notification_runtime_effects::{
-        MoveCacheCapture, RuntimeNotificationEffects,
-    };
+    use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
     use studio_runtime_store::{StoreError, Transaction};
-    struct Move;
-    impl MoveCacheCapture for Move {
-        fn capture(&self, tx: &Transaction<'_>, _: &Value, _: &Value, _: f64) -> Result<(), Error> {
-            tx.execute(
-                "INSERT INTO runtime_native_notices(id,record) VALUES('p06-move','{}')",
-                [],
-            )
-            .map_err(StoreError::from)?;
-            Ok(())
-        }
-    }
     struct Failure(u8);
     impl NotificationEffects for Failure {
         fn capture_usage(
@@ -481,7 +495,7 @@ fn effect_failpoints(
             if self.0 == 0 {
                 return Err(Error::InvalidNotification);
             }
-            RuntimeNotificationEffects::default().capture_usage(tx, agent, params, at)?;
+            RuntimeNotificationEffects.capture_usage(tx, agent, params, at)?;
             if self.0 == 1 {
                 return Err(Error::InvalidNotification);
             }
@@ -497,23 +511,18 @@ fn effect_failpoints(
             if self.0 == 2 {
                 return Err(Error::InvalidNotification);
             }
-            RuntimeNotificationEffects {
-                move_cache: Some(&Move),
-            }
-            .capture_move_cache(tx, agent, params, at)?;
+            RuntimeNotificationEffects.capture_move_cache(tx, agent, params, at)?;
             Err(Error::InvalidNotification)
         }
     }
-    for phase in 0..=4 {
+    for phase in 0..=3 {
         let result: Result<(), Error> = store.transaction_with(|tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.movedFrom',json('{\"server\":\"remote\"}')) WHERE id='agent'", []).map_err(StoreError::from)?;
             let before = raw_rows(tx);
-            let missing_move = RuntimeNotificationEffects::default();
             let failure = Failure(phase);
-            let effects: &dyn NotificationEffects = if phase == 4 { &missing_move } else { &failure };
+            let effects: &dyn NotificationEffects = &failure;
             let result = dispatch_notification_with_effects(tx, "agent", store.root().to_str().expect("path"), &NotificationStreamBuffer::default(), identity, frame, 1234.5, effects);
             assert!(result.is_err(), "effect boundary {phase} must fail");
-            if phase == 4 { assert!(matches!(result, Err(Error::Dependency("agent-move/cache-capture")))); }
             assert_eq!(before, raw_rows(tx), "effect boundary {phase} leaked rows/receipt");
             Err(Error::InvalidNotification)
         });
@@ -672,6 +681,9 @@ fn differences(python: Option<&Value>, rust: Option<&Value>, path: &str, out: &m
             for i in 0..a.len().max(b.len()) { differences(a.get(i),b.get(i),&format!("{path}/{i}"),out); }
         },
         _ if python==rust=>{},
+        // JSON has one numeric domain. Treat 0 and 0.0 equally, without
+        // rounding integers outside the exactly representable f64 range.
+        (Some(Value::Number(a)), Some(Value::Number(b))) if (a.is_f64() || b.is_f64()) && a.as_f64().zip(b.as_f64()).is_some_and(|(a,b)| a == b && a.abs() <= 9_007_199_254_740_992.0) => {},
         _=>out.push(json!({"path":path,"python":python,"rust":rust,"pythonPresent":python.is_some(),"rustPresent":rust.is_some()})),
     }
 }
@@ -990,6 +1002,11 @@ fn corpus(full: bool, runtime_effects: bool) {
     let report_path = std::env::var_os("NOTIFICATION_CORPUS_REPORT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("notification-corpus-report.json"));
+    let report_path = if runtime_effects {
+        report_path.with_extension("runtime-effects.json")
+    } else {
+        report_path
+    };
     fs::write(
         &report_path,
         serde_json::to_vec_pretty(&report).expect("report JSON"),

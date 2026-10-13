@@ -374,6 +374,7 @@ pub(super) fn flush_command(
     let previous = super::durable_stream_base(tx, streams, key)?
         .unwrap_or_else(|| command_base(saved.as_ref(), task.as_ref()));
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
+    streams.flush_analytics(key, agent);
     if let Some((text, count, params)) = streams.flush(key, &previous) {
         NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
         let truncated = item["outputTruncated"] == true

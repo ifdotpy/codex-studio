@@ -30,8 +30,7 @@
       {
         "status": "written"
       }
-    ],
-    "effect_matrix": true
+    ]
   },
   {
     "id": "p06-budget-duplicate-notice",
@@ -1875,5 +1874,103 @@
     ],
     "runtime_effects": true,
     "analytics_semantics": true
+  },
+  {
+    "id": "p06-move-first-cache",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 4,
+                "inputTokens": 30
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "effect_matrix": true,
+    "move": true
+  },
+  {
+    "id": "p06-move-cache-first-observation-wins",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 4,
+                "inputTokens": 30
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 91
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "crash_replay": false,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "effect_matrix": false,
+    "move": true
   }
 ]

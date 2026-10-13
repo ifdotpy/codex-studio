@@ -94,6 +94,8 @@ pub enum NotificationDispatchError {
     Store(StoreError),
     #[error(transparent)]
     Budget(#[from] crate::budget::BudgetError),
+    #[error(transparent)]
+    Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
 }
@@ -308,6 +310,26 @@ pub fn dispatch_notification_with_effects(
             }
             validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
             before = Some(agent.clone());
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) {
+                let key = command_key(identity, &params)?;
+                let mut key = key;
+                key.method = kind.clone();
+                for effect in effects.post_commit(
+                    Some(&agent),
+                    Some(&agent),
+                    &payload,
+                    identity,
+                    observed_at,
+                    &DispatchOutcome::Written,
+                ) {
+                    if let NotificationPostCommit::Analytics { observation, .. } = effect {
+                        next_streams.stage_analytics(key.clone(), observation)?;
+                    }
+                }
+            }
             let unload = kind == "thread/closed"
                 || (kind == "thread/status/changed" && params["status"]["type"] == "notLoaded");
             if (unload || matches!(kind.as_str(), "error" | "model/safetyBuffering/updated"))
@@ -529,7 +551,19 @@ pub fn dispatch_notification_with_effects(
             } else {
                 None
             };
-            post_commit = effects.post_commit(
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) && matches!(&outcome, DispatchOutcome::Ignored { reason } if reason == "stale-turn-item")
+            {
+                let mut key = command_key(identity, &params)?;
+                key.method = kind.clone();
+                if let Some(agent) = &before {
+                    next_streams.flush_analytics(&key, agent);
+                }
+            }
+            post_commit = next_streams.take_post_commit();
+            let mut current = effects.post_commit(
                 before.as_ref(),
                 after.as_ref(),
                 &payload,
@@ -537,6 +571,19 @@ pub fn dispatch_notification_with_effects(
                 observed_at,
                 &outcome,
             );
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) {
+                current
+                    .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
+            }
+            for effect in &mut current {
+                if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
+                    enrich_association(transaction, agent_id, observation)?;
+                }
+            }
+            post_commit.extend(current);
         }
         Ok(outcome)
     });
@@ -562,6 +609,22 @@ pub fn recover_task_in_transaction(
             || previous["agent"] != agent["id"]
             || previous["itemId"] != item["id"]
             || previous["type"] != item["type"]
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        use studio_runtime_store::{Table, TaskId, TaskRecord};
+        let task_id = previous["id"]
+            .as_str()
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
+        let stored_agent = NotificationDispatchRepository::agent_record(
+            tx,
+            agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::InvalidNotification)?,
+        )?;
+        if current.as_ref().map(|record| record.value()) != Some(previous)
+            || stored_agent.as_ref() != Some(agent)
         {
             return Err(NotificationDispatchError::InvalidNotification);
         }
@@ -1083,6 +1146,7 @@ fn flush_text_stream(
         .transpose()?
         .unwrap_or_default();
     let previous = durable_stream_base(transaction, streams, key)?.unwrap_or(previous);
+    streams.flush_analytics(key, agent);
     if let Some((text, count, params)) = streams.flush_with_delta(key, &previous, delta) {
         NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
         let phase = old
@@ -1113,6 +1177,43 @@ fn flush_text_stream(
         );
         agent["activity"] = json!({"phase":"writing", "at":observed_at});
         agent["tail"] = Value::String(suffix(&text, 300));
+    }
+    Ok(())
+}
+
+fn enrich_association(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    observation: &mut NotificationObservation,
+) -> Result<(), NotificationDispatchError> {
+    let p = &mut observation.params;
+    let kind = p["item"]["type"].as_str().unwrap_or_default();
+    if !matches!(
+        observation.method.as_str(),
+        "item/started" | "item/completed"
+    ) || matches!(kind, "reasoning" | "userMessage" | "agentMessage")
+        || (kind == "commandExecution"
+            && observation.method == "item/completed"
+            && p["item"]["aggregatedOutput"].is_null())
+    {
+        return Ok(());
+    }
+    let id = format!(
+        "{agent_id}:{}",
+        p["item"]["id"].as_str().unwrap_or_default()
+    );
+    // The existing item writer owns timing derivation. Reuse its stored output,
+    // because Python mutates the item in the association arguments in place.
+    if let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent_id, &id)?
+    {
+        let text = saved_text(tx, &id, &record)?;
+        if let Ok(displayed) = serde_json::from_str::<Value>(&text) {
+            for field in ["startedAtMs", "completedAtMs", "durationMs"] {
+                if let Some(value) = displayed.get(field) {
+                    p["item"][field] = value.clone();
+                }
+            }
+        }
     }
     Ok(())
 }
