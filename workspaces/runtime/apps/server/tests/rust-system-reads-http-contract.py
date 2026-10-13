@@ -20,6 +20,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
+from codex_session_names import identity as native_name_identity
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
@@ -59,6 +60,9 @@ def seed_summary_agent(backend) -> str:
             threadId="summary-thread", updated=123.0, created=120.0,
             hostProjectPath=str(backend.cwd), cwd=str(backend.cwd),
         )
+        # A completed agent still participates in background native-name sync.
+        # Seed its settled identity so exact read snapshots have no other writer.
+        agent["nativeNameSynced"] = native_name_identity(agent)
         with runtime.db() as database:
             runtime.put(database, "agents", agent)
         return agent["id"]
