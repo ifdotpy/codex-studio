@@ -42376,7 +42376,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/TokenRateValue"
             },
-            "maxProperties": 1024,
+            "maxProperties": 4096,
             "propertyNames": {
               "minLength": 1
             },
@@ -42394,13 +42394,13 @@
               "additionalProperties": {
                 "$ref": "#/components/schemas/TokenRateValue"
               },
-              "maxProperties": 1024,
+              "maxProperties": 4096,
               "propertyNames": {
                 "minLength": 1
               },
               "type": "object"
             },
-            "maxProperties": 1024,
+            "maxProperties": 4096,
             "propertyNames": {
               "minLength": 1
             },
@@ -51595,7 +51595,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/TokenRateValue"
             },
-            "maxProperties": 1024,
+            "maxProperties": 4096,
             "propertyNames": {
               "minLength": 1
             },
@@ -51607,13 +51607,13 @@
               "additionalProperties": {
                 "$ref": "#/components/schemas/TokenRateValue"
               },
-              "maxProperties": 1024,
+              "maxProperties": 4096,
               "propertyNames": {
                 "minLength": 1
               },
               "type": "object"
             },
-            "maxProperties": 1024,
+            "maxProperties": 4096,
             "propertyNames": {
               "minLength": 1
             },

@@ -10,7 +10,7 @@ from studio_api.models import ContractModel, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
-MAX_TOKEN_RATE_ENTRIES = 1024
+MAX_TOKEN_RATE_ENTRIES = 4096
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
 MAX_ENTITY_CHANGE_BYTES = 262_144
 ResourceRevision = Annotated[SafeInt, Field(ge=0, le=MAX_SAFE_REVISION)]

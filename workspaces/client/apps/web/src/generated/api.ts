@@ -36428,4 +36428,4 @@ export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
-export const TOKEN_RATE_MAX_ENTRIES = 1024 as const;
+export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;

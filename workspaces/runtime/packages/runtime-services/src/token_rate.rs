@@ -161,7 +161,7 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::TokenRateHub;
+    use super::{TOKEN_RATE_MAX_ENTRIES, TokenRateHub};
     use serde_json::json;
 
     #[tokio::test]
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn maximum_agent_bound_is_enforced_for_rates_and_team_members() {
         let value = json!({"turnId":"t","active":true,"estimated":false,"rate":0,"outputTokens":0});
-        let rates = (0..=1024)
+        let rates = (0..=TOKEN_RATE_MAX_ENTRIES)
             .map(|index| (format!("a{index}"), value.clone()))
             .collect::<serde_json::Map<_, _>>();
         assert!(
@@ -206,7 +206,7 @@ mod tests {
                 .publish(json!({"rates":rates,"teams":{}}))
                 .is_err()
         );
-        let teams = (0..=1024)
+        let teams = (0..=TOKEN_RATE_MAX_ENTRIES)
             .map(|index| (format!("t{index}"), serde_json::json!({})))
             .collect::<serde_json::Map<_, _>>();
         assert!(
@@ -214,7 +214,7 @@ mod tests {
                 .publish(json!({"rates":{},"teams":teams}))
                 .is_err()
         );
-        let team = (0..=1024)
+        let team = (0..=TOKEN_RATE_MAX_ENTRIES)
             .map(|index| (format!("a{index}"), value.clone()))
             .collect::<serde_json::Map<_, _>>();
         assert!(

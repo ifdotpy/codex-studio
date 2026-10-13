@@ -35,6 +35,7 @@ spec.loader.exec_module(fixture)
 
 class RateContract(unittest.TestCase):
     def test_pydantic_token_rate_contract_owns_all_three_entry_bounds(self):
+        self.assertGreaterEqual(MAX_TOKEN_RATE_ENTRIES, 2048)
         schema = TokenRateSnapshot.model_json_schema()
         properties = schema['properties']
         self.assertEqual(properties['rates']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
