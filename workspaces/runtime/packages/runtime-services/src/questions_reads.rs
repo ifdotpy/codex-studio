@@ -6,6 +6,7 @@ use std::fmt;
 use serde::Deserialize;
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value, json};
+use studio_runtime_store::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord};
 use thiserror::Error;
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -22,100 +23,86 @@ pub enum QuestionsReadsError {
     InvalidStoredObject { object: &'static str, id: String },
 }
 
-pub struct QuestionReadRecord {
-    pub id: String,
-    pub raw: String,
-    pub value: Map<String, Value>,
-}
-
 pub fn question_history(
     agent_id: Option<&str>,
-    agents: Vec<(String, Map<String, Value>)>,
-    requests: Vec<QuestionReadRecord>,
+    agents: Vec<AgentRecord>,
+    requests: Vec<(RequestRecord, String)>,
 ) -> Result<Value, QuestionsReadsError> {
     let agent_id = agent_id
         .filter(|id| !id.is_empty())
         .ok_or(QuestionsReadsError::ConversationRequired)?;
     let owner = agents
         .iter()
-        .find(|(id, _)| id == agent_id)
+        .find(|agent| agent.id().as_ref() == agent_id)
         .ok_or(QuestionsReadsError::UnknownAgent)?;
-    validate_agents(&agents)?;
-    if deleted_value(owner.1.get("deletedAt")) {
+    if deleted_value(owner.extra.get("deletedAt")) {
         return Err(QuestionsReadsError::DeletedAgent);
     }
-    let root = string_member(&owner.1, "rootId").unwrap_or_default();
+    let root = owner.root_id.as_ref();
     let mut ids = BTreeSet::new();
-    for (id, agent) in &agents {
-        if string_member(agent, "rootId") == Some(root) && !deleted_value(agent.get("deletedAt")) {
-            ids.insert(id.clone());
+    for agent in &agents {
+        if agent.root_id.as_ref() == root && !deleted_value(agent.extra.get("deletedAt")) {
+            ids.insert(agent.id().as_ref().to_owned());
         }
     }
 
     let mut items = Vec::new();
-    for QuestionReadRecord {
-        id,
-        raw,
-        value: record,
-    } in requests
-    {
-        if string_member(&record, "id") != Some(&id) {
-            return Err(invalid("requests", &id));
-        }
-        let Some(agent) = string_member(&record, "agent") else {
+    for (request, raw) in requests {
+        let id = request.id().to_owned();
+        let record = request
+            .value()
+            .as_object()
+            .expect("validated request record");
+        let Some(agent) = string_member(record, "agent") else {
             continue;
         };
         if !ids.contains(agent) || deleted_value(record.get("deletedAt")) {
             continue;
         }
-        if !is_question(&record) {
+        if !is_question(record) {
             continue;
         }
         let property_order = elicitation_property_order(&raw, &id)?;
-        items.push(question_projection(&record, &id, &property_order)?);
+        items.push(question_projection(record, &id, &property_order)?);
     }
     items.sort_by(|left, right| timestamp(right).total_cmp(&timestamp(left)));
     Ok(json!({"items": items}))
 }
 
-pub fn complaint_detail(
-    stored: Option<(String, Map<String, Value>)>,
-) -> Result<Value, QuestionsReadsError> {
-    let (id, record) = stored.ok_or(QuestionsReadsError::UnknownComplaint)?;
-    if string_member(&record, "id") != Some(&id) {
-        return Err(invalid("complaints", &id));
-    }
-    Ok(Value::Object(record))
+pub fn complaint_detail(stored: Option<ComplaintRecord>) -> Result<Value, QuestionsReadsError> {
+    let record = stored.ok_or(QuestionsReadsError::UnknownComplaint)?;
+    Ok(record.value().clone())
 }
 
 pub fn checkpoint_list(
     agent_id: Option<&str>,
-    agents: Vec<(String, Map<String, Value>)>,
-    checkpoints: Vec<(String, Map<String, Value>)>,
+    agents: Vec<AgentRecord>,
+    checkpoints: Vec<CheckpointRecord>,
 ) -> Result<Value, QuestionsReadsError> {
-    validate_agents(&agents)?;
     let ids = if let Some(agent_id) = agent_id.filter(|id| !id.is_empty()) {
         let caller = agents
             .iter()
-            .find(|(id, _)| id == agent_id)
+            .find(|agent| agent.id().as_ref() == agent_id)
             .ok_or(QuestionsReadsError::UnknownAgent)?;
-        if deleted_value(caller.1.get("deletedAt")) {
+        if deleted_value(caller.extra.get("deletedAt")) {
             return Err(QuestionsReadsError::DeletedAgent);
         }
         vec![agent_id.to_owned()]
     } else {
         agents
             .iter()
-            .filter(|(_, agent)| !deleted_value(agent.get("deletedAt")))
-            .map(|(id, _)| id.clone())
+            .filter(|agent| !deleted_value(agent.extra.get("deletedAt")))
+            .map(|agent| agent.id().as_ref().to_owned())
             .collect()
     };
     let ids = ids.into_iter().collect::<BTreeSet<_>>();
     let mut items = Vec::new();
-    for (id, mut record) in checkpoints {
-        if string_member(&record, "id") != Some(&id) {
-            return Err(invalid("checkpoints", &id));
-        }
+    for checkpoint in checkpoints {
+        let mut record = checkpoint
+            .value()
+            .as_object()
+            .expect("validated checkpoint record")
+            .clone();
         let checkpoint_agent = string_member(&record, "agent").unwrap_or_default();
         if !ids.contains(checkpoint_agent) {
             continue;
@@ -126,15 +113,6 @@ pub fn checkpoint_list(
         items.push(Value::Object(record));
     }
     Ok(json!({"checkpoints": items}))
-}
-
-fn validate_agents(agents: &[(String, Map<String, Value>)]) -> Result<(), QuestionsReadsError> {
-    for (id, agent) in agents {
-        if string_member(agent, "id") != Some(id) {
-            return Err(invalid("agents", id));
-        }
-    }
-    Ok(())
 }
 
 fn deleted_value(value: Option<&Value>) -> bool {
@@ -325,6 +303,13 @@ fn elicitation_property_order(raw: &str, id: &str) -> Result<Vec<String>, Questi
         .map_or_else(Vec::new, |schema| schema.properties.0))
 }
 
+fn invalid(object: &'static str, id: &str) -> QuestionsReadsError {
+    QuestionsReadsError::InvalidStoredObject {
+        object,
+        id: id.to_owned(),
+    }
+}
+
 fn timestamp(record: &Value) -> f64 {
     let answered = record
         .get("answeredAt")
@@ -340,42 +325,30 @@ fn timestamp(record: &Value) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn invalid(object: &'static str, id: &str) -> QuestionsReadsError {
-    QuestionsReadsError::InvalidStoredObject {
-        object,
-        id: id.to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        QuestionReadRecord, QuestionsReadsError, checkpoint_list, complaint_detail,
-        question_history,
-    };
-    use serde_json::{Map, Value, json};
+    use super::{QuestionsReadsError, checkpoint_list, complaint_detail, question_history};
+    use serde_json::json;
+    use studio_runtime_store::{AgentRecord, CheckpointRecord, RequestRecord};
 
-    fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> (String, Map<String, Value>) {
+    fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> AgentRecord {
         let mut record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"});
         if let Some(deleted_at) = deleted_at {
             record["deletedAt"] = json!(deleted_at);
         }
-        (
-            id.to_owned(),
-            record.as_object().expect("agent object").clone(),
-        )
+        AgentRecord::from_value(record).expect("agent fixture validates")
     }
 
-    fn request(id: &str, agent: &str, method: &str, at: i64) -> QuestionReadRecord {
+    fn request(id: &str, agent: &str, method: &str, at: i64) -> (RequestRecord, String) {
         let value = json!({
             "id":id,"agent":agent,"method":method,"status":"answered",
             "createdAt":at,"params":{"questions":[{"id":"name"}]}
         });
-        QuestionReadRecord {
-            id: id.to_owned(),
-            raw: value.to_string(),
-            value: value.as_object().expect("fixture object").clone(),
-        }
+        let raw = value.to_string();
+        (
+            RequestRecord::from_value(value).expect("request fixture validates"),
+            raw,
+        )
     }
 
     #[test]
@@ -405,11 +378,10 @@ mod tests {
     fn preserves_python_written_elicitation_property_order() {
         let source = r#"{"id":"form","agent":"lead","method":"mcpServer/elicitation/request","status":"pending","params":{"mode":"form","requestedSchema":{"properties":{"password":{"format":"password"},"color":{}}}}}"#;
         let value = serde_json::from_str(source).expect("stored object");
-        let record = QuestionReadRecord {
-            id: "form".to_owned(),
-            raw: source.to_owned(),
-            value,
-        };
+        let record = (
+            RequestRecord::from_value(value).expect("request fixture validates"),
+            source.to_owned(),
+        );
         let result = question_history(
             Some("lead"),
             vec![agent("lead", "lead", None)],
@@ -421,27 +393,10 @@ mod tests {
     }
 
     #[test]
-    fn refuses_invalid_records_and_unknown_references() {
+    fn refuses_unknown_references() {
         assert_eq!(
             question_history(Some("missing"), vec![agent("lead", "lead", None)], vec![]),
             Err(QuestionsReadsError::UnknownAgent),
-        );
-        let value = json!({"id":"elsewhere"});
-        let invalid = QuestionReadRecord {
-            id: "q".to_owned(),
-            raw: value.to_string(),
-            value: value.as_object().expect("record object").clone(),
-        };
-        assert_eq!(
-            question_history(
-                Some("lead"),
-                vec![agent("lead", "lead", None)],
-                vec![invalid]
-            ),
-            Err(QuestionsReadsError::InvalidStoredObject {
-                object: "requests",
-                id: "q".to_owned()
-            }),
         );
         assert_eq!(
             complaint_detail(None),
@@ -452,10 +407,7 @@ mod tests {
     #[test]
     fn filters_checkpoint_rows_and_refuses_invalid_records() {
         let row = json!({"id":"checkpoint","agent":"lead","created":1.0,"items":["large"],"_payloadBlobs":{"secret":"sha"},"extension":9007199254740993_u64});
-        let rows = vec![(
-            "checkpoint".to_owned(),
-            row.as_object().expect("checkpoint object").clone(),
-        )];
+        let rows = vec![CheckpointRecord::from_value(row).expect("checkpoint validates")];
         let result = checkpoint_list(Some("lead"), vec![agent("lead", "lead", None)], rows)
             .expect("checkpoint summary succeeds");
         assert!(result["checkpoints"][0].get("items").is_none());

@@ -1,0 +1,17 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    }
+  },
+  "required": ["id"],
+  "title": "PersistedGraphAgentRecord",
+  "type": "object"
+}

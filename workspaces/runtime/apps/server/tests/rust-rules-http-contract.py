@@ -39,7 +39,9 @@ try:
         "id": "rules-contract-live", "rootId": "rules-contract-live", "epoch": 0,
         "status": "idle", "name": "Rules contract live owner", "role": "orchestrator",
         "cwd": str(Path(os.environ["CODEX_CANVAS_CWD"])), "isLead": True,
-        "autoWake": True, "approvalPolicy": "never", "sandbox": "workspace-write",
+        "autoWake": True, "approvalPolicy": "never",
+        "sandbox": {{"type": "workspaceWrite", "writableRoots": [str(Path(os.environ["CODEX_CANVAS_CWD"]))],
+                    "networkAccess": False}},
     }}
     deleted = {{**live, "id": "rules-contract-deleted", "rootId": "rules-contract-deleted",
                "name": "Rules contract deleted owner"}}
@@ -167,7 +169,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT record FROM runtime_rules WHERE id='visible'"
             ).fetchone()[0]
             invalid = json.loads(original)
-            invalid["id"] = "mismatched-row-id"
+            invalid["lowSince"] = "invalid"
             database.execute(
                 "UPDATE runtime_rules SET record=? WHERE id='visible'",
                 (json.dumps(invalid),),
@@ -183,6 +185,37 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 database.execute(
                     "UPDATE runtime_rules SET record=? WHERE id='visible'",
                     (original,),
+                )
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_invalid_stored_agent_is_refused_without_writes(self) -> None:
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        agent_id = "rules-contract-live"
+        with sqlite3.connect(database_path) as database:
+            original = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+            ).fetchone()[0]
+            invalid = json.loads(original)
+            invalid["sandbox"] = "workspace-write"
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(invalid), agent_id),
+            )
+        before = rules_state(backend)
+        try:
+            response = backend.request("GET", "/api/rules", headers=self._headers())
+            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(
+                response.json()["error"],
+                f"Invalid stored object agents/{agent_id}",
+            )
+            self.assertEqual(rules_state(backend), before)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (original, agent_id),
                 )
 
 

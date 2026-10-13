@@ -236,9 +236,9 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         backend = self.backend
         database_path = backend.state / "canvas.sqlite3"
         cases = (
-            ("runtime_requests", "questions-read-new", "createdAt", "invalid"),
-            ("runtime_complaints", "questions-read-complaint", "version", 9007199254740992),
-            ("runtime_checkpoints", "questions-read-checkpoint", "id", "wrong-row-id"),
+            ("runtime_requests", "questions-read-new", "status", 123),
+            ("runtime_complaints", "questions-read-complaint", "text", 17),
+            ("runtime_checkpoints", "questions-read-checkpoint", "created", "invalid"),
         )
         for table, record_id, field, invalid in cases:
             with sqlite3.connect(database_path) as database:

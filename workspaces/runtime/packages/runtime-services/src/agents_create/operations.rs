@@ -302,7 +302,7 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
         )?;
         if !(context.validate)("ConfigureResponse", &result) {
             return Err(MutationError::InvalidStoredObject {
-                object: "runtime_agents",
+                table: "runtime_agents",
                 id: request.id.clone(),
             }
             .into());
@@ -410,16 +410,24 @@ fn account_key(
     let mut selected: Option<(usize, String)> = None;
     for row in rows {
         let (id, raw) = row.map_err(|_| OperationError::Internal)?;
-        let record = decode_record(
-            "runtime_projects",
-            "ProjectMutationRecord",
-            &id,
-            &raw,
-            &|schema, value| (context.validate)(schema, value),
-        )?;
-        let project_path = record.get("path").and_then(Value::as_str);
-        let project_account = record.get("accountKey").and_then(Value::as_str);
-        let path = PathBuf::from(project_path.unwrap_or_default());
+        let invalid = || MutationError::InvalidStoredObject {
+            table: "runtime_projects",
+            id: id.clone(),
+        };
+        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err(invalid().into());
+        }
+        let project_path = record
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        let project_account = match record.get("accountKey") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(account)) => Some(account.as_str()),
+            Some(_) => return Err(invalid().into()),
+        };
+        let path = PathBuf::from(project_path);
         if PathBuf::from(cwd).starts_with(&path)
             && let Some(account) = project_account
         {
@@ -705,7 +713,7 @@ mod tests {
             let interleaved = Cell::new(false);
             let after_interleaving = RefCell::new(None);
             let validate = |schema: &str, _: &Value| {
-                if schema == "AgentRecordResponse" && !interleaved.replace(true) {
+                if schema == "PersistedAgentRecord" && !interleaved.replace(true) {
                     let mut changed = record.clone();
                     match scenario {
                         "agent" => changed["creationIntent"]["prompt"] = json!("Another request"),

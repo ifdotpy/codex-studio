@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Stored profile contract; unknown future fields remain readable.",
+  "properties": {
+    "effort": {
+      "anyOf": [
+        {
+          "enum": ["low", "medium", "high", "xhigh", "max", "ultra"],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Effort"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "instructions": {
+      "title": "Instructions",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "role": {
+      "enum": ["reviewer", "implementer"],
+      "title": "Role",
+      "type": "string"
+    }
+  },
+  "required": ["id", "name", "role", "model", "effort", "instructions"],
+  "title": "PersistedProfileRecord",
+  "type": "object"
+}

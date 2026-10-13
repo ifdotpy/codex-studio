@@ -5,39 +5,17 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
-use std::sync::OnceLock;
 use thiserror::Error;
 
-const REGISTRY_SCHEMA: &str = include_str!("../../runtime-http/account-registry.schema.json");
-const LIMITS_SCHEMA: &str = include_str!("../../runtime-http/workspace-usage-limits.schema.json");
 pub const AUTHENTICATION_RECOVERY_MESSAGE: &str =
     "Sign in again to this account. Chats will continue when sign-in works.";
 
-fn compile_validator(schema_text: &str) -> Result<jsonschema::Validator, ()> {
-    let schema: Value = serde_json::from_str(schema_text).map_err(|_| ())?;
-    jsonschema::validator_for(&schema).map_err(|_| ())
-}
-
 fn registry_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
-    static VALIDATOR: OnceLock<Result<jsonschema::Validator, ()>> = OnceLock::new();
-    let validator = VALIDATOR
-        .get_or_init(|| compile_validator(REGISTRY_SCHEMA))
-        .as_ref()
-        .map_err(|_| ())?;
-    Ok(validator.iter_errors(value).next().map(|error| {
-        (
-            error.instance_path().to_string(),
-            error.kind().keyword().to_owned(),
-        )
-    }))
+    studio_runtime_schema::first_error("account-registry/AccountRegistryRecord", value)
+        .map_err(|_| ())
 }
 
 fn limits_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
-    static VALIDATOR: OnceLock<Result<jsonschema::Validator, ()>> = OnceLock::new();
-    let validator = VALIDATOR
-        .get_or_init(|| compile_validator(LIMITS_SCHEMA))
-        .as_ref()
-        .map_err(|_| ())?;
     let mut snapshots = Map::new();
     snapshots.insert(
         value
@@ -48,12 +26,11 @@ fn limits_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
         value.clone(),
     );
     let wrapped = serde_json::json!({"rateLimitsByAccount": snapshots});
-    Ok(validator.iter_errors(&wrapped).next().map(|error| {
-        (
-            error.instance_path().to_string(),
-            error.kind().keyword().to_owned(),
-        )
-    }))
+    studio_runtime_schema::first_error(
+        "workspace-usage-limits/UsageLimitsWorkspaceEnvelope",
+        &wrapped,
+    )
+    .map_err(|_| ())
 }
 
 #[derive(Clone, Default)]

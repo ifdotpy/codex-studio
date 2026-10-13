@@ -13,7 +13,7 @@ use super::extractors::{ApiHeaders, QueryParams};
 use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
-use studio_runtime_store::{MonitorsRepository, RulesRepository};
+use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository, StoreError};
 
 const LOG_CHUNK_BYTES: u64 = 65_536;
 
@@ -46,28 +46,18 @@ async fn log(
     let prepared = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let monitor = MonitorsRepository::get(&connection, &id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(store_read_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
-        if monitor.id != id {
-            return Err(invalid_monitor(&monitor.id));
-        }
-        let value: Value =
-            serde_json::from_str(&monitor.record).map_err(|_| invalid_monitor(&monitor.id))?;
-        if !value.is_object() || value.get("id").and_then(Value::as_str) != Some(id.as_str()) {
-            return Err(invalid_monitor(&monitor.id));
-        }
+        let monitor_id = monitor.id().as_ref();
+        let value = monitor.value();
         let owner = value
             .get("agent")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(&monitor.id))?;
-        let agent = RulesRepository::agent(&connection, owner)
-            .map_err(|_| ApiError::internal())?
+            .ok_or_else(|| invalid_monitor(monitor_id))?;
+        let agent = AgentRepository::get(&connection, &AgentId::from(owner))
+            .map_err(store_read_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-        let agent_value =
-            serde_json::from_str::<Value>(&agent.record).map_err(|_| invalid_agent(&agent.id))?;
-        if agent.id != owner || agent_value.get("id").and_then(Value::as_str) != Some(owner) {
-            return Err(invalid_agent(&agent.id));
-        }
+        let agent_value = agent.value();
         if agent_value.get("deletedAt").is_some_and(is_truthy) {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -77,18 +67,18 @@ async fn log(
         let path = value
             .get("log")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(&monitor.id))?;
+            .ok_or_else(|| invalid_monitor(monitor_id))?;
         let tail = value
             .get("tail")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(&monitor.id))?
+            .ok_or_else(|| invalid_monitor(monitor_id))?
             .as_bytes()
             .to_vec();
         let bytes = value
             .get("bytes")
             .and_then(Value::as_u64)
-            .ok_or_else(|| invalid_monitor(&monitor.id))?;
-        let (mut source, size) = open_log(&state_dir, path, &monitor.id, tail)?;
+            .ok_or_else(|| invalid_monitor(monitor_id))?;
+        let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
         let truncated = bytes > size;
         let (start, end, status) = match range.as_deref() {
             Some(range) => match byte_range(range, size) {
@@ -286,11 +276,17 @@ fn invalid_monitor(id: &str) -> ApiError {
     )
 }
 
-fn invalid_agent(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object agents/{id}"),
-    )
+fn store_read_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = table.strip_prefix("runtime_").unwrap_or(table);
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
+        _ => ApiError::internal(),
+    }
 }
 
 fn is_truthy(value: &Value) -> bool {

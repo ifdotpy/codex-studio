@@ -106,13 +106,10 @@ pub fn upload(
         }
 
         if let Some(existing) = WorkspaceFilesRepository::asset(transaction, &id)? {
-            let value = serde_json::from_str::<Value>(&existing.record).map_err(|_| {
-                PayloadStoreError::InvalidStoredAsset {
-                    id: existing.id.clone(),
-                }
-            })?;
-            if !valid_asset_record(&value, &existing.id, store.root()) {
-                return Err(PayloadStoreError::InvalidStoredAsset { id: existing.id });
+            let value = existing.value().clone();
+            let existing_id = existing.id().as_ref().to_owned();
+            if !valid_asset_record(&value, &existing_id, store.root()) {
+                return Err(PayloadStoreError::InvalidStoredAsset { id: existing_id });
             }
             let existing_agent = value.get("agent").and_then(Value::as_str);
             let existing_name = value.get("name").and_then(Value::as_str);

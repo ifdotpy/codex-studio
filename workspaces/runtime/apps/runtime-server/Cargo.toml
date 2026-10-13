@@ -12,6 +12,7 @@ getrandom = { workspace = true }
 studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

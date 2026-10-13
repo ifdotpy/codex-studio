@@ -10,7 +10,9 @@ use base64::Engine;
 use serde_json::{Value, json};
 use studio_runtime_services::payload_store::{self, PayloadStoreError};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
-use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, WorkspaceFilesRepository};
+use studio_runtime_store::{
+    AgentId, AgentRepository, RuntimeStore, StoreError, WorkspaceFilesRepository,
+};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -120,20 +122,25 @@ fn read_info(
     if let Some(asset_id) = asset_id {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(map_store_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let (asset_value, owner_id) = validate_asset(&asset.id, &asset.record)?;
+        let asset_value = asset.value();
+        let owner_id = asset_value
+            .get("agent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
+            .to_owned();
         drop(connection);
         validate_agent(store, &owner_id)?;
         let path = asset_value
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?;
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
         let mut info = workspace_files::file_info(path, None).map_err(file_error)?;
         info.mime = asset_value
             .get("mime")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
             .to_owned();
         return Ok(info);
     }
@@ -152,20 +159,25 @@ fn read_content(
     if let Some(asset_id) = asset_id {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(map_store_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let (asset_value, owner_id) = validate_asset(&asset.id, &asset.record)?;
+        let asset_value = asset.value();
+        let owner_id = asset_value
+            .get("agent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
+            .to_owned();
         drop(connection);
         validate_agent(store, &owner_id)?;
         let path = asset_value
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?;
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
         let mut content = workspace_files::file_content(path, None).map_err(file_error)?;
         content.mime = asset_value
             .get("mime")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
             .to_owned();
         return Ok(content);
     }
@@ -188,12 +200,9 @@ fn workspace_context(
 fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceContext, ApiError> {
     let connection = store.read().map_err(|_| ApiError::internal())?;
     let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))
-        .map_err(|_| ApiError::internal())?
+        .map_err(map_store_error)?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-    let record = serde_json::to_value(agent).map_err(|_| ApiError::internal())?;
-    let dto = serde_json::from_value::<crate::generated::AgentRecordResponse>(record)
-        .map_err(|_| invalid_stored("agents", agent_id))?;
-    let record = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
+    let record = agent.value();
     if record.get("deletedAt").is_some_and(json_truthy) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -204,22 +213,6 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
         WorkspaceFilesError::InvalidAgent(id) => invalid_stored("agents", &id),
         other => file_error(other),
     })
-}
-
-fn validate_asset(id: &str, record: &str) -> Result<(Value, String), ApiError> {
-    let value = serde_json::from_str::<Value>(record).map_err(|_| invalid_stored("assets", id))?;
-    let dto = serde_json::from_value::<crate::generated::AssetRecord>(value)
-        .map_err(|_| invalid_stored("assets", id))?;
-    let value = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
-    if value.get("id").and_then(Value::as_str) != Some(id) {
-        return Err(invalid_stored("assets", id));
-    }
-    let owner = value
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("assets", id))?
-        .to_owned();
-    Ok((value, owner))
 }
 
 fn ensure_local_workspace(
@@ -257,6 +250,13 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("Invalid stored object {object}/{id}"),
     )
+}
+
+fn map_store_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
+        _ => ApiError::internal(),
+    }
 }
 
 fn file_error(error: WorkspaceFilesError) -> ApiError {

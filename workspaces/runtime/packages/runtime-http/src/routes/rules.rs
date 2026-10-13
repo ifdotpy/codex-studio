@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Number, Value, json};
 use studio_runtime_services::rules::{self, RulesError};
-use studio_runtime_store::{RulesRepository, StoreError};
+use studio_runtime_store::{RuleRecord, RulesRepository, StoreError};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -35,22 +35,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let (rules, agents) =
-            RulesRepository::list(&connection).map_err(|_| ApiError::internal())?;
-        let rules = rules
-            .into_iter()
-            .map(|mut rule| {
-                let value = serde_json::from_str::<Value>(&rule.record)
-                    .map_err(|_| invalid_rule(&rule.id))?;
-                if !value.is_object()
-                    || value.get("id").and_then(Value::as_str) != Some(rule.id.as_str())
-                {
-                    return Err(invalid_rule(&rule.id));
-                }
-                rule.record = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
-                Ok(rule)
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
+        let (rules, agents) = RulesRepository::list(&connection).map_err(store_api_error)?;
         rules::visible_rules(rules, agents).map_err(rules_error)
     })
     .await
@@ -58,8 +43,8 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
 
     let output = records
         .into_iter()
-        .map(|rule| serde_json::from_str::<Value>(&rule.record).map_err(|_| ApiError::internal()))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|rule| rule.value().clone())
+        .collect::<Vec<_>>();
     let response = json!({"rules": output});
     Ok(Json(super::generated_json::<crate::generated::RuleList>(
         response,
@@ -90,17 +75,13 @@ async fn update(
             let agent = RulesRepository::agent(transaction, &agent_id)
                 .map_err(store_api_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-            let agent_value = serde_json::from_str::<Value>(&agent.record)
-                .map_err(|_| invalid_agent(&agent.id))?;
-            validate_agent(&agent.id, &agent_value)?;
+            let agent_value = agent.value();
+            validate_agent(agent.id().as_ref(), &agent_value)?;
             let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
-            let old_value = old
-                .as_ref()
-                .map(|old| serde_json::from_str::<Value>(&old.record).map_err(|_| invalid_rule(&old.id)))
-                .transpose()?;
+            let old_value = old.as_ref().map(|old| old.value().clone());
             if let (Some(old), Some(value)) = (&old, &old_value) {
-                if string(value, "id") != Some(old.id.as_str()) {
-                    return Err(invalid_rule(&old.id));
+                if string(value, "id") != Some(old.id().as_ref()) {
+                    return Err(invalid_rule(old.id().as_ref()));
                 }
                 if string(value, "agent") != Some(agent_id.as_str()) {
                     return Err(ApiError::new(StatusCode::BAD_REQUEST, "This rule belongs to another agent"));
@@ -114,7 +95,7 @@ async fn update(
             }
             let result = match action.as_str() {
                 "delete" | "pause" | "resume" => {
-                    let (Some(old), Some(mut value)) = (old, old_value) else {
+                    let (Some(_old), Some(mut value)) = (old, old_value) else {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
                     };
                     if action == "delete" {
@@ -165,8 +146,8 @@ async fn update(
                                     object.insert("alerted".into(), Value::Bool(false));
                                 }
                             }
-                            let stored = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
-                            RulesRepository::put(transaction, &old.id, &stored).map_err(store_api_error)?;
+                            let stored = RuleRecord::from_value(value.clone()).map_err(|_| ApiError::internal())?;
+                            RulesRepository::put(transaction, &stored).map_err(store_api_error)?;
                             value
                         }
                     }
@@ -211,7 +192,7 @@ async fn update(
                         "fingerprint": fingerprint,
                         "minimumWorkers": if kind == "low_workers" { body.get("minimumWorkers").cloned().unwrap_or(json!(8)) } else { Value::Null },
                         "durationMinutes": if kind == "low_workers" { body.get("durationMinutes").cloned().unwrap_or(json!(30)) } else { Value::Null },
-                        "lowSince": Value::Null, "alerted": Value::Null,
+                        "lowSince": Value::Null, "alerted": Value::Bool(false),
                     });
                     let value = strip_null_low_worker_fields(value, kind);
                     if let Some(old) = old_record.filter(|old| kind == "low_workers" && low_worker_rule_unchanged(old, &value)) {
@@ -219,8 +200,8 @@ async fn update(
                     } else {
                         let mut value = value;
                         if kind == "low_workers" { value["nextAt"] = json!(now); }
-                        let stored = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
-                        RulesRepository::put(transaction, &rule_id, &stored).map_err(store_api_error)?;
+                        let stored = RuleRecord::from_value(value.clone()).map_err(|_| ApiError::internal())?;
+                        RulesRepository::put(transaction, &stored).map_err(store_api_error)?;
                         value
                     }
                 }
@@ -269,13 +250,22 @@ fn active_check_error() -> ApiError {
         .unwrap_or_else(|_| ApiError::internal())
 }
 
-fn store_api_error(_error: impl std::fmt::Debug) -> ApiError {
-    ApiError::internal()
+fn store_api_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = table.strip_prefix("runtime_").unwrap_or(table);
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
+        _ => ApiError::internal(),
+    }
 }
 
 impl From<StoreError> for ApiError {
-    fn from(_: StoreError) -> Self {
-        Self::internal()
+    fn from(error: StoreError) -> Self {
+        store_api_error(error)
     }
 }
 

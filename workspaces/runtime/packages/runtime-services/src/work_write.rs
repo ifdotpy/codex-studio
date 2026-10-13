@@ -59,7 +59,6 @@ pub fn write(
     request_id: Option<&str>,
     signature: &str,
     command: WorkWrite,
-    validate: impl Fn(&Value) -> bool,
 ) -> Result<WorkWriteResult, Error> {
     let agent = event_write::checked_agent(tx, agent_id)?;
     if let Some(record) = event_write::read_receipt(
@@ -68,7 +67,12 @@ pub fn write(
         signature,
         "runtime_work",
         request_id.unwrap_or(agent_id),
-        &validate,
+        |value| {
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+        },
     )? {
         return Ok(WorkWriteResult {
             record,
@@ -76,8 +80,8 @@ pub fn write(
         });
     }
     match command {
-        WorkWrite::Create(input) => create(tx, &agent, input, request_id, signature, &validate),
-        WorkWrite::Mutate(input) => mutate(tx, &agent, input, request_id, signature, &validate),
+        WorkWrite::Create(input) => create(tx, &agent, input, request_id, signature),
+        WorkWrite::Mutate(input) => mutate(tx, &agent, input, request_id, signature),
     }
 }
 
@@ -87,7 +91,6 @@ fn create(
     input: CreateWork,
     request_id: Option<&str>,
     signature: &str,
-    validate: &impl Fn(&Value) -> bool,
 ) -> Result<WorkWriteResult, Error> {
     let title = text(&input.title, false)?;
     let description = text(&input.description, true)?;
@@ -109,19 +112,18 @@ fn create(
     check_owner(tx, agent, owner)?;
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
-    validate_dependencies(tx, &agent.root_id.0, &id, &dependencies, validate)?;
+    validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
     let work = json!({
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
         "owner": owner, "dependencies": dependencies, "status": status,
         "created": event_write::unix_time()?, "updated": event_write::unix_time()?, "version": 1,
         "results": [], "decisions": [], "createdBy": input.actor_id,
     });
-    if !validate(&work) {
-        return Err(invalid("runtime_work", &id));
-    }
-    let view = single_view(tx, &work, validate)?;
+    let view = single_view(tx, &work)?;
     assignment_needed(agent, owner, true, is_ready(&view))?;
-    WorkItemsRepository::put_work(tx, &id, &work)?;
+    if !WorkItemsRepository::put_work(tx, &id, &work)? {
+        return Err(Error::Conflict("Work item already exists"));
+    }
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,
@@ -135,7 +137,6 @@ fn mutate(
     mutation: WorkMutation,
     request_id: Option<&str>,
     signature: &str,
-    validate: &impl Fn(&Value) -> bool,
 ) -> Result<WorkWriteResult, Error> {
     let (task_id, expected) = match &mutation {
         WorkMutation::Update {
@@ -148,11 +149,9 @@ fn mutate(
             task_id, version, ..
         } => (task_id.clone(), *version),
     };
-    let encoded = WorkItemsRepository::work_record(tx, &task_id)?
+    let mut work = WorkItemsRepository::work_record(tx, &task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
-    let mut work: Value =
-        serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", &task_id))?;
-    if work["id"] != task_id || work["rootId"] != agent.root_id.0 || !validate(&work) {
+    if work["rootId"] != agent.root_id.0 {
         return Err(invalid("runtime_work", &task_id));
     }
     let version = work["version"]
@@ -167,7 +166,7 @@ fn mutate(
         .as_str()
         .ok_or_else(|| invalid("runtime_work", &task_id))?;
     let owner = work["owner"].as_str().map(str::to_owned);
-    let previous_ready = is_ready(&single_view(tx, &work, validate)?);
+    let previous_ready = is_ready(&single_view(tx, &work)?);
     let mut wake = false;
 
     match mutation {
@@ -203,7 +202,7 @@ fn mutate(
             }
             if let Some(dependencies) = dependencies {
                 let dependencies = unique(dependencies);
-                validate_dependencies(tx, &agent.root_id.0, &task_id, &dependencies, validate)?;
+                validate_dependencies(tx, &agent.root_id.0, &task_id, &dependencies)?;
                 work["dependencies"] = json!(dependencies);
             }
             let next_owner = requested_owner.map(|owner| owner.unwrap_or_default());
@@ -217,7 +216,7 @@ fn mutate(
             {
                 event_write::assert_delegation(&root_agent(tx, agent)?)?;
             }
-            let view = single_view(tx, &work, validate)?;
+            let view = single_view(tx, &work)?;
             let current_owner = work["owner"].as_str();
             let changed = current_owner != owner.as_deref();
             let ready = is_ready(&view);
@@ -236,7 +235,7 @@ fn mutate(
         WorkMutation::Cancel { reason, .. } => {
             let reason = text(&reason, false)?;
             if status == "cancelled" {
-                let view = single_view(tx, &work, validate)?;
+                let view = single_view(tx, &work)?;
                 event_write::save_receipt(tx, request_id, signature, &view)?;
                 return Ok(WorkWriteResult {
                     record: view,
@@ -315,11 +314,8 @@ fn mutate(
 
     work["version"] = json!(version + 1);
     work["updated"] = json!(event_write::unix_time()?);
-    if !validate(&work) {
-        return Err(invalid("runtime_work", &task_id));
-    }
     WorkItemsRepository::update_work(tx, &task_id, &work)?;
-    let view = single_view(tx, &work, validate)?;
+    let view = single_view(tx, &work)?;
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,
@@ -336,11 +332,7 @@ fn push_decision(work: &mut Value, decision: Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn single_view(
-    tx: &Transaction<'_>,
-    work: &Value,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, Error> {
+fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
     let mut statuses = BTreeMap::from([(
         work["id"].as_str().unwrap_or_default().to_owned(),
         work["status"].as_str().unwrap_or_default().to_owned(),
@@ -351,18 +343,13 @@ fn single_view(
         .flatten()
         .filter_map(Value::as_str)
     {
-        if let Some(encoded) = WorkItemsRepository::work_record(tx, dependency)? {
-            let value: Value =
-                serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", dependency))?;
-            if value["rootId"] == work["rootId"] {
-                if !validate(&value) {
-                    return Err(invalid("runtime_work", dependency));
-                }
-                statuses.insert(
-                    dependency.to_owned(),
-                    value["status"].as_str().unwrap_or_default().to_owned(),
-                );
-            }
+        if let Some(value) = WorkItemsRepository::work_record(tx, dependency)?
+            && value["rootId"] == work["rootId"]
+        {
+            statuses.insert(
+                dependency.to_owned(),
+                value["status"].as_str().unwrap_or_default().to_owned(),
+            );
         }
     }
     Ok(crate::work_policy::work_item_view(work, &statuses))
@@ -373,24 +360,21 @@ fn validate_dependencies(
     root: &str,
     task: &str,
     deps: &[String],
-    validate: &impl Fn(&Value) -> bool,
 ) -> Result<(), Error> {
     if deps.iter().any(|id| id == task) {
         return Err(Error::InvalidRequest("Task dependencies contain a cycle"));
     }
     for id in deps {
-        let encoded = WorkItemsRepository::work_record(tx, id)?
+        let item = WorkItemsRepository::work_record(tx, id)?
             .ok_or(Error::InvalidRequest("Dependency is outside this team"))?;
-        let item: Value =
-            serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", id))?;
-        if item["rootId"] != root || !validate(&item) {
+        if item["rootId"] != root {
             return Err(Error::InvalidRequest("Dependency is outside this team"));
         }
     }
     let mut active = vec![task.to_owned()];
     let mut visited = BTreeMap::new();
     for id in deps {
-        dependency_visit(tx, root, id, &mut active, &mut visited, validate)?;
+        dependency_visit(tx, root, id, &mut active, &mut visited)?;
     }
     Ok(())
 }
@@ -401,7 +385,6 @@ fn dependency_visit(
     task: &str,
     active: &mut Vec<String>,
     visited: &mut BTreeMap<String, ()>,
-    validate: &impl Fn(&Value) -> bool,
 ) -> Result<(), Error> {
     if active.iter().any(|id| id == task) {
         return Err(Error::InvalidRequest("Task dependencies contain a cycle"));
@@ -409,10 +392,9 @@ fn dependency_visit(
     if visited.contains_key(task) {
         return Ok(());
     }
-    let encoded = WorkItemsRepository::work_record(tx, task)?
+    let item = WorkItemsRepository::work_record(tx, task)?
         .ok_or(Error::InvalidRequest("Dependency is outside this team"))?;
-    let item: Value = serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", task))?;
-    if item["rootId"] != root || !validate(&item) {
+    if item["rootId"] != root {
         return Err(Error::InvalidRequest("Dependency is outside this team"));
     }
     active.push(task.to_owned());
@@ -422,7 +404,7 @@ fn dependency_visit(
         .flatten()
         .filter_map(Value::as_str)
     {
-        dependency_visit(tx, root, dependency, active, visited, validate)?;
+        dependency_visit(tx, root, dependency, active, visited)?;
     }
     active.pop();
     visited.insert(task.to_owned(), ());

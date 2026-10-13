@@ -1,7 +1,8 @@
 //! Durable user terminal records and output history.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 
+use crate::records::{JsonRecord, Table, TerminalRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
@@ -42,7 +43,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalRow {
     pub id: String,
-    pub record: String,
+    pub record: TerminalRecord,
     pub output: String,
     pub offset: i64,
 }
@@ -77,43 +78,62 @@ impl TerminalsRepository {
         ))
     }
 
-    pub fn list(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
-        let mut statement =
-            connection.prepare("SELECT id,record FROM user_terminals ORDER BY rowid")?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+    pub fn list(connection: &Connection) -> StoreResult<Vec<TerminalRecord>> {
+        Table::<TerminalRecord>::new(connection).list()
     }
 
     pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<TerminalRow>> {
-        connection
+        let snapshot = connection
             .query_row(
-                "SELECT id,record,output,offset FROM user_terminals WHERE id=?1",
+                "SELECT record,output,offset FROM user_terminals WHERE id=?1",
                 [id],
                 |row| {
-                    Ok(TerminalRow {
-                        id: row.get(0)?,
-                        record: row.get(1)?,
-                        output: row.get(2)?,
-                        offset: row.get(3)?,
-                    })
+                    Ok((
+                        row.get::<_, rusqlite::types::Value>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
                 },
             )
-            .optional()
-            .map_err(StoreError::from)
+            .optional()?;
+        let Some((record_value, output, offset)) = snapshot else {
+            return Ok(None);
+        };
+        let SqlValue::Text(encoded) = record_value else {
+            return Err(StoreError::InvalidStoredObject {
+                table: TerminalRecord::TABLE,
+                id: id.to_owned(),
+            });
+        };
+        let record = crate::records::decode_record::<TerminalRecord>(id, &encoded)?;
+        Ok(Some(TerminalRow {
+            id: record.id().as_str().to_owned(),
+            record,
+            output,
+            offset,
+        }))
     }
 
     pub fn put(
         transaction: &rusqlite::Transaction<'_>,
         id: &str,
-        record: &str,
+        typed: &TerminalRecord,
         output: &str,
         offset: i64,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO user_terminals(id,record,output,offset) VALUES (?1,?2,?3,?4) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record,output=excluded.output,offset=excluded.offset",
-            params![id, record, output, offset],
+        let table = Table::<TerminalRecord>::new(transaction);
+        table.get(typed.id())?;
+        if typed.id().as_str() != id {
+            return Err(StoreError::SchemaMismatch(
+                "terminal record identity does not match its key".to_owned(),
+            ));
+        }
+        table.put_with_columns(
+            typed,
+            &[
+                ("output", SqlValue::Text(output.to_owned())),
+                ("offset", SqlValue::Integer(offset)),
+            ],
         )?;
         Ok(())
     }
@@ -121,12 +141,17 @@ impl TerminalsRepository {
     pub fn update_record(
         transaction: &rusqlite::Transaction<'_>,
         id: &str,
-        record: &str,
+        record: &TerminalRecord,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "UPDATE user_terminals SET record=?1 WHERE id=?2",
-            params![record, id],
-        )?;
+        if record.id().as_str() != id {
+            return Err(StoreError::SchemaMismatch(
+                "terminal record identity does not match its key".to_owned(),
+            ));
+        }
+        let table = Table::<TerminalRecord>::new(transaction);
+        if table.get(&id.to_owned())?.is_some() {
+            table.update(record)?;
+        }
         Ok(())
     }
 
@@ -282,7 +307,9 @@ impl TerminalsRepository {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use rusqlite::{Connection, functions::FunctionFlags};
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::TerminalsRepository;
 
@@ -303,6 +330,63 @@ mod tests {
             )
             .expect("single packed history row");
         assert_eq!((start, end, text.as_str()), (0, 4, "abcd"));
+    }
+
+    #[test]
+    fn terminal_record_and_output_are_read_from_one_snapshot() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "runtime-terminal-snapshot-{}-{nonce}.sqlite3",
+            std::process::id()
+        ));
+        let database = Connection::open(&path).expect("temporary SQLite database opens");
+        database
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE terminal_backing(id TEXT PRIMARY KEY,record TEXT,output TEXT,offset INTEGER);
+                 CREATE VIEW user_terminals AS SELECT id,record_and_advance(record) AS record,output,offset FROM terminal_backing;",
+            )
+            .expect("WAL-backed fixture creates");
+        let record = json!({"id":"terminal","agent":"a","title":"Terminal","cwd":"/tmp","status":"running","created":1});
+        database
+            .execute(
+                "INSERT INTO terminal_backing VALUES('terminal',?1,'old',0)",
+                [record.to_string()],
+            )
+            .expect("initial terminal is stored");
+        let writer = Connection::open(&path).expect("concurrent writer opens");
+        database
+            .create_scalar_function(
+                "record_and_advance",
+                1,
+                FunctionFlags::SQLITE_UTF8,
+                move |context| {
+                    let old: String = context.get(0)?;
+                    writer.execute(
+                        "UPDATE terminal_backing SET record=json_set(record,'$.status','exited'),output='new',offset=3 WHERE id='terminal'",
+                        [],
+                    )?;
+                    Ok(old)
+                },
+            )
+            .expect("concurrent commit trigger registers");
+
+        let row = TerminalsRepository::get(&database, "terminal")
+            .expect("terminal snapshot reads")
+            .expect("terminal exists");
+        assert_eq!(
+            row.record.get("status").and_then(serde_json::Value::as_str),
+            Some("running")
+        );
+        assert_eq!((row.output.as_str(), row.offset), ("old", 0));
+
+        drop(database);
+        drop(std::fs::remove_file(&path));
+        drop(std::fs::remove_file(path.with_extension("sqlite3-wal")));
+        drop(std::fs::remove_file(path.with_extension("sqlite3-shm")));
     }
 }
 inventory::submit! {

@@ -12,10 +12,12 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from runtime_test_environment import make_runtime
+from pydantic import ValidationError
 
 from codex_accounts import AccountStore
 from codex_runtime import Runtime
 from studio_api.generate_state_schemas import generated_schemas
+from studio_api.persisted_models import PersistedAgentRecord
 from studio_api.state_check import check_state_directory, main as state_check_main
 
 
@@ -25,6 +27,31 @@ class PersistedStateSchemaTests(unittest.TestCase):
             with self.subTest(schema=path.name):
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8")), expected)
                 self.assertNotIn(b'"default"', path.read_bytes())
+
+    def test_persisted_agent_accepts_absent_and_nullable_optional_fields(self) -> None:
+        value = {
+            "id": "agent-1",
+            "rootId": "agent-1",
+            "epoch": 0,
+            "status": "idle",
+        }
+        absent = PersistedAgentRecord.model_validate(value)
+        self.assertNotIn("sandbox", absent.model_fields_set)
+        self.assertNotIn("approvalPolicy", absent.model_fields_set)
+
+        nullable = PersistedAgentRecord.model_validate({
+            **value,
+            "sandbox": None,
+            "approvalPolicy": None,
+        })
+        self.assertIsNone(nullable.sandbox)
+        self.assertIsNone(nullable.approvalPolicy)
+        self.assertEqual(
+            PersistedAgentRecord.model_validate({**value, "approvalPolicy": "never"}).approvalPolicy,
+            "never",
+        )
+        with self.assertRaises(ValidationError):
+            PersistedAgentRecord.model_validate({**value, "sandbox": "workspace-write"})
 
     def test_real_account_and_usage_writers_produce_valid_disposable_state(self) -> None:
         with TemporaryDirectory(prefix="studio-state-schema-") as directory:

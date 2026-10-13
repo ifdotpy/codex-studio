@@ -49,7 +49,12 @@ pub(crate) async fn work(
 
 pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
     read_agent(state, agent_id, |connection, agent, validators| {
-        let records = WorkItemsRepository::work(connection).map_err(|_| ApiError::internal())?;
+        let records = WorkItemsRepository::work(connection).map_err(|error| match error {
+            studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
+                invalid_stored(table, &id)
+            }
+            _ => ApiError::internal(),
+        })?;
         let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
         Ok(work_policy::work_list(&agent.root_id.0, &records))
     })
@@ -61,8 +66,8 @@ pub(crate) async fn queue(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
-    read_agent(state, agent_id, |connection, agent, validators| {
-        let snapshot = super::queue_read::queue_snapshot(connection, agent, validators)
+    read_agent(state, agent_id, |connection, agent, _validators| {
+        let snapshot = super::queue_read::queue_snapshot(connection, agent)
             .map_err(super::queue_read::api_error)?;
         Ok(json!({
             "items": snapshot.items,
@@ -81,7 +86,12 @@ pub(crate) async fn plan(
     let agent_id = query_string(&query, "agent")?;
     read_agent(state, agent_id, |connection, agent, validators| {
         let stored =
-            WorkItemsRepository::plan(connection, &agent.id.0).map_err(|_| ApiError::internal())?;
+            WorkItemsRepository::plan(connection, &agent.id.0).map_err(|error| match error {
+                studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
+                    invalid_stored(table, &id)
+                }
+                _ => ApiError::internal(),
+            })?;
         let record = match stored {
             None => None,
             Some(row) => {
@@ -89,7 +99,7 @@ pub(crate) async fn plan(
                     return Err(invalid_stored("runtime_plans", &row.id));
                 }
                 let value = record_value("runtime_plans", &row)?;
-                if !validators.validate_stored("PlanView", &value) {
+                if !validators.valid_stored_record("PlanView", &row.id, &value) {
                     return Err(invalid_stored("runtime_plans", &row.id));
                 }
                 Some(value)
@@ -118,9 +128,6 @@ where
             .map_err(|_| invalid_stored("runtime_agents", &id))?;
         let agent =
             agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-        if agent.id.0 != id {
-            return Err(invalid_stored("runtime_agents", &id));
-        }
         if !super::queue_read::is_live(&agent) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"));
         }
@@ -163,7 +170,6 @@ fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiEr
     )
     .map_err(|_| invalid_stored(object, &row.id))
 }
-
 fn query_string(query: &QueryParams, name: &str) -> Result<String, ApiError> {
     query
         .typed_value(name)
@@ -204,15 +210,10 @@ pub(crate) async fn save_plan(
         signature,
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let wake = state.event_wake.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let result = store
-            .transaction_with_error(|connection| {
-                event_write::save_plan_validated(connection, input, |record| {
-                    validators.validate_stored("PlanView", record)
-                })
-            })
+            .transaction_with_error(|connection| event_write::save_plan(connection, input))
             .map_err(write_error)?;
         if result.event_inserted {
             wake.notify_one();
@@ -246,15 +247,10 @@ pub(crate) async fn annotation(
         signature,
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let wake = state.event_wake.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let result = store
-            .transaction_with_error(|connection| {
-                event_write::annotate_validated(connection, input, |record| {
-                    validators.validate_stored("AnnotationReceipt", record)
-                })
-            })
+            .transaction_with_error(|connection| event_write::annotate(connection, input))
             .map_err(write_error)?;
         if result.event_inserted {
             wake.notify_one();
@@ -323,6 +319,10 @@ pub(crate) fn write_error(error: EventWriteError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
+        EventWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => invalid_stored(table, &id),
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
     }
 }

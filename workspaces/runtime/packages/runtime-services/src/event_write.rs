@@ -75,14 +75,6 @@ pub fn save_plan(
     connection: &Transaction<'_>,
     input: PlanWrite,
 ) -> Result<WriteResult, EventWriteError> {
-    save_plan_validated(connection, input, |_| true)
-}
-
-pub fn save_plan_validated(
-    connection: &Transaction<'_>,
-    input: PlanWrite,
-    validate: impl Fn(&Value) -> bool,
-) -> Result<WriteResult, EventWriteError> {
     let agent = checked_agent(connection, &input.agent_id)?;
     refuse_remote(&agent)?;
     let text = python_strip(&input.text).to_owned();
@@ -103,9 +95,8 @@ pub fn save_plan_validated(
         }
         let saved: Value = serde_json::from_str(&receipt.result)
             .map_err(|_| invalid_stored("runtime_operation_receipts", &receipt_id))?;
-        if !validate(&saved) {
-            return Err(invalid_stored("runtime_plans", &input.agent_id));
-        }
+        EventWriteRepository::validate_plan(connection, &input.agent_id, &saved)
+            .map_err(|_| invalid_stored("runtime_plans", &input.agent_id))?;
         return Ok(WriteResult {
             record: saved,
             event_inserted: false,
@@ -119,9 +110,7 @@ pub fn save_plan_validated(
     refuse_if_event_rule_applies(connection, &input.agent_id)?;
 
     let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
-        Some(record) => {
-            let value: Value = serde_json::from_str(&record)
-                .map_err(|_| invalid_stored("runtime_plans", &input.agent_id))?;
+        Some(value) => {
             if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
                 return Err(invalid_stored("runtime_plans", &input.agent_id));
             }
@@ -158,13 +147,10 @@ pub fn save_plan_validated(
     plan_object.insert("version".to_owned(), json!(version));
     plan_object.insert("updated".to_owned(), json!(unix_time()?));
     let record = plan;
-    if !validate(&record) {
-        return Err(invalid_stored("runtime_plans", &input.agent_id));
-    }
     let created = unix_time()?;
     let event_text = format!("The user updated the shared plan:\n{text}");
     let record_json = serialize(&record)?;
-    EventWriteRepository::put_plan(connection, &input.agent_id, &record_json)?;
+    EventWriteRepository::put_plan(connection, &input.agent_id, &record)?;
     let event_inserted = enqueue_event(
         connection,
         &agent,
@@ -183,14 +169,6 @@ pub fn save_plan_validated(
 pub fn annotate(
     connection: &Transaction<'_>,
     input: AnnotationWrite,
-) -> Result<WriteResult, EventWriteError> {
-    annotate_validated(connection, input, |_| true)
-}
-
-pub fn annotate_validated(
-    connection: &Transaction<'_>,
-    input: AnnotationWrite,
-    validate: impl Fn(&Value) -> bool,
 ) -> Result<WriteResult, EventWriteError> {
     let agent = checked_agent(connection, &input.agent_id)?;
     refuse_remote(&agent)?;
@@ -218,9 +196,8 @@ pub fn annotate_validated(
                 "This request id has different content",
             ));
         }
-        if !validate(&record) {
-            return Err(invalid_stored("runtime_annotations", &id));
-        }
+        EventWriteRepository::validate_annotation(connection, &id, &record)
+            .map_err(|_| invalid_stored("runtime_annotations", &id))?;
         return Ok(WriteResult {
             record,
             event_inserted: false,
@@ -245,9 +222,6 @@ pub fn annotate_validated(
     if let Some(turn_id) = turn_id {
         record["turnId"] = Value::String(turn_id.to_owned());
     }
-    if !validate(&record) {
-        return Err(invalid_stored("runtime_annotations", &id));
-    }
     let event_text = format!(
         "Review comment at {path}:{}{turn_text}\n{text}",
         input.line,
@@ -256,7 +230,7 @@ pub fn annotate_validated(
             .unwrap_or_default(),
     );
     let record_json = serialize(&record)?;
-    EventWriteRepository::put_annotation(connection, &id, &record_json)?;
+    EventWriteRepository::put_annotation(connection, &id, &record)?;
     let event_inserted = enqueue_event(connection, &agent, event_id, "user", event_text, created)?;
     if has_request_identity {
         EventWriteRepository::put_receipt(connection, &id, &input.signature, &record_json)?;
@@ -273,8 +247,7 @@ fn refuse_if_event_rule_applies(
 ) -> Result<(), EventWriteError> {
     let (rules, _) = RulesRepository::list(connection)?;
     for rule in rules {
-        let record: Value = serde_json::from_str(&rule.record)
-            .map_err(|_| invalid_stored("runtime_rules", &rule.id))?;
+        let record = rule.value();
         if record.get("agent").and_then(Value::as_str) == Some(agent_id)
             && record.get("kind").and_then(Value::as_str) == Some("event")
             && record.get("status").and_then(Value::as_str) == Some("active")
@@ -541,6 +514,7 @@ mod tests {
                  CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+                 CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
@@ -554,10 +528,7 @@ mod tests {
             root_id: AgentId::from("a"),
             epoch: 3,
             status: AgentStatus::Idle,
-            extra: BTreeMap::from([
-                ("autoWake".to_owned(), json!(true)),
-                ("deletedAt".to_owned(), serde_json::Value::Null),
-            ]),
+            extra: BTreeMap::from([("autoWake".to_owned(), json!(true))]),
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");
         connection
@@ -732,23 +703,21 @@ mod tests {
     }
 
     #[test]
-    fn stored_validation_refuses_before_any_write() {
+    fn invalid_typed_receipt_records_refuse_before_any_write() {
         let mut connection = database();
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_operation_receipts VALUES('plan:a:1','s','{}');
+                 INSERT INTO runtime_operation_receipts VALUES('n','sig','{}');",
+            )
+            .expect("invalid receipts insert");
         let before = counts(&connection);
         assert!(matches!(
-            with_transaction(&mut connection, |tx| super::save_plan_validated(
-                tx,
-                plan_input(0, "x", "s"),
-                |_| false
-            )),
+            with_transaction(&mut connection, |tx| save_plan(tx, plan_input(0, "x", "s"))),
             Err(EventWriteError::InvalidStoredObject { .. })
         ));
         assert!(matches!(
-            with_transaction(&mut connection, |tx| super::annotate_validated(
-                tx,
-                annotation("n"),
-                |_| false
-            )),
+            with_transaction(&mut connection, |tx| annotate(tx, annotation("n"))),
             Err(EventWriteError::InvalidStoredObject { .. })
         ));
         assert_eq!(counts(&connection), before);
@@ -773,9 +742,10 @@ mod tests {
         let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
             .expect("agent read")
             .expect("fixture");
-        agent
-            .extra
-            .insert("remoteWorker".into(), json!({"server":"remote"}));
+        agent.extra.insert(
+            "remoteWorker".into(),
+            json!({"server":"remote","link":"remote-link"}),
+        );
         AgentRepository::put(&connection, &agent).expect("remote fixture writes");
         let before = counts(&connection);
         assert!(matches!(

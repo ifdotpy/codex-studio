@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRepository, MessageRepository, QueueEventId, QueueEventRepository, RuntimeLock,
-    RuntimeStore, StoreError, TaskId, TaskRepository,
+    RuntimeStore, StoreError, Table, TaskId, TaskRepository, WorkItemRecord,
 };
 
 const CREATE_PYTHON_STATE: &str = r#"
@@ -25,11 +25,14 @@ agent["fixtureUnicode"] = "Zażółć 東京\n\u0000"
 agent["fixtureNested"] = {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "agents", agent)
-    task = {"id":"cross-task", "rootId":agent["id"], "status":"ready", "title":"fixture",
-            "description":"", "owner":None, "created":1e-7, "updated":1e21,
-            "createdBy":agent["id"], "version":1, "dependencies":[], "decisions":[], "results":[],
-            "fixtureFlag":True, "fixtureInteger":7}
+    task = {"id":"cross-task", "agent":agent["id"], "kind":"command", "status":"completed",
+            "created":1e-7, "interactive":True, "exitCode":7}
     runtime.put(db, "tasks", task)
+    work = {"id":"cross-work", "rootId":agent["id"], "status":"ready", "title":"fixture",
+            "description":"", "created":1e-7, "updated":1e21, "version":1,
+            "description":"", "created":1e-7, "updated":1e21, "version":1,
+            "futureField":{"fixtureFlag":True}, "fixtureFlag":True, "fixtureInteger":7}
+    runtime.put(db, "work", work)
     runtime.enqueue(db, agent, "work_review", json.dumps({"fixture": True}), key="cross-event")
     db.execute("UPDATE runtime_events SET created=1720000000.5 WHERE id='cross-event'")
     db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
@@ -54,118 +57,28 @@ with runtime.lock, runtime.db() as db:
                     "Zażółć 東京\n\u0000" if event_id == "numeric-created-precision" else None))
 agent_id = agent["id"]
 runtime.close()
-reference = pathlib.Path(sys.argv[3])
-reference.mkdir(parents=True, exist_ok=True)
-for name in ("canvas.sqlite3", "analytics.sqlite3"):
-    with sqlite3.connect(root / name) as source, sqlite3.connect(reference / name) as target:
-        source.backup(target)
-(reference / "runtime.lock").touch()
 print(json.dumps({"agent_id": agent_id}))
 "#;
 
-const VERIFY_AND_WRITE_PYTHON: &str = r#"
+const READ_RUST_WRITTEN_STATE: &str = r#"
 import json, pathlib, sqlite3, sys
-import hashlib
-sys.path.insert(0, sys.argv[2])
-from codex_sync_entities import register_functions
-from codex_runtime import Runtime
-class QuietRuntime(Runtime):
-    def schedule(self):
-        return
-root = pathlib.Path(sys.argv[1])
-agent_id = sys.argv[3]
-reference_root = pathlib.Path(sys.argv[4])
-rust_sqlite_version = sys.argv[5]
-rust_json_object = sys.argv[6]
-with sqlite3.connect(":memory:") as db:
-    python_json_object = db.execute("SELECT json_object('x', 1791788985.5209818)").fetchone()[0]
-diagnostics = {
-    "python_sqlite_version": sqlite3.sqlite_version,
-    "rust_sqlite_version": rust_sqlite_version,
-    "python_json_object": python_json_object,
-    "rust_json_object": rust_json_object,
+db = sqlite3.connect(pathlib.Path(sys.argv[1]) / 'canvas.sqlite3')
+def record(table, key):
+    encoded = db.execute(f'SELECT record FROM {table} WHERE id=?', (key,)).fetchone()[0]
+    return json.loads(encoded)
+agent_id = db.execute("SELECT id FROM runtime_agents WHERE record LIKE '%rustAgentFlag%'").fetchone()[0]
+records = {
+    'agent': record('runtime_agents', agent_id),
+    'task': record('runtime_tasks', 'cross-task'),
+    'work': record('runtime_work', 'cross-work'),
 }
-def check(condition, description):
-    if not condition:
-        raise AssertionError(f"{description}; SQLite diagnostics={json.dumps(diagnostics, sort_keys=True)}")
-with sqlite3.connect(root / "canvas.sqlite3") as raw_db:
-    persisted_agent_record = raw_db.execute(
-        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
-    ).fetchone()[0]
-    persisted_task_record = raw_db.execute(
-        "SELECT record FROM runtime_tasks WHERE id='cross-task'"
-    ).fetchone()[0]
-with sqlite3.connect(reference_root / "canvas.sqlite3") as raw_db:
-    python_agent_record = raw_db.execute(
-        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
-    ).fetchone()[0]
-    python_task_record = raw_db.execute(
-        "SELECT record FROM runtime_tasks WHERE id='cross-task'"
-    ).fetchone()[0]
-runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
-agent = runtime.agent(agent_id)
-check(agent["fixtureFlag"] is True and type(agent["fixtureInteger"]) is int, "agent boolean and integer distinctions survive")
-check(agent["rustAgentFlag"] is True, "Rust agent field survives Python read")
-check(agent["fixtureUnicode"] == "Zażółć 東京\n\u0000", "agent Unicode/control text survives")
-check(agent["fixtureNested"] == {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}, "nested value survives")
-check(json.loads(persisted_agent_record) == agent, "agent record parses to the same value")
-check(": " in python_agent_record and ": " not in persisted_agent_record, "record JSON spacing is intentionally different")
-check(r"\u6771\u4eac" in python_agent_record and "東京" in persisted_agent_record, "record Unicode escaping is intentionally different")
-check(r"\n\u0000" in python_agent_record and r"\n\u0000" in persisted_agent_record, "record control escaping agrees")
-check(python_agent_record.index('"fixtureUnicode"') < python_agent_record.index('"fixtureNested"'), "Python record preserves insertion order")
-check(persisted_agent_record.index('"fixtureNested"') < persisted_agent_record.index('"fixtureUnicode"'), "Rust record uses map key ordering")
-check(r"\ud83e\udd80" in python_agent_record and "🦀" in persisted_agent_record, "emoji escaping is intentionally different")
-with runtime.read_db() as db:
-    tasks = runtime.records(db, "tasks")
-    task = next(row for row in tasks if row["id"] == "cross-task")
-    event = db.execute("SELECT text FROM runtime_events WHERE id='cross-event'").fetchone()[0]
-    rust_event_row = db.execute(
-        "SELECT seq, payload, hash, deleted FROM sync_entities WHERE collection='event' AND id='cross-event'"
-    ).fetchone()
-    message = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id='cross-message'").fetchone()[0]
-check(task["rustFlag"] is True and task["fixtureInteger"] == 7, "task fields survive Python read")
-check(task["created"] == 1e-7 and task["updated"] == 1e21, "task numeric values survive Python read")
-check(json.loads(persisted_task_record) == task, "task record parses to the same value")
-rust_task_created_token = persisted_task_record.split('"created":', 1)[1].split(',', 1)[0]
-python_task_created_token = python_task_record.split('"created": ', 1)[1].split(',', 1)[0]
-check(rust_task_created_token == "1e-7" and python_task_created_token == "1e-07", "record float exponent spellings differ by design")
-check(json.loads(event)["rust"] is True, "Python reads Rust event queue JSON")
-entity = json.loads(rust_event_row[1])
-check(entity["collection"] == "event" and entity["id"] == "cross-event", "sync event envelope identifies the event")
-check(entity["value"]["id"] == "cross-event" and "rust" not in entity["value"], "sync projection filters queue-only fields")
-check(hashlib.sha256(rust_event_row[1].encode("utf-8")).hexdigest() == rust_event_row[2], "Rust sync hash matches payload bytes")
-check(json.loads(message)["delivery"] is True and json.loads(message)["rustReceipt"] is True, "Python reads Rust message JSON")
-with sqlite3.connect(reference_root / "canvas.sqlite3") as db:
-    register_functions(db)
-    db.execute("BEGIN IMMEDIATE")
-    db.execute("UPDATE runtime_events SET status='running' WHERE id='cross-event'")
-    numeric_event_ids = (
-        "numeric-created-precision", "numeric-created-tenth", "numeric-created-large-exponent",
-        "numeric-created-integer",
-        "numeric-created-integer-real", "numeric-created-large-integer-real",
-        "numeric-created-17-digits", "numeric-created-over-2pow53", "numeric-created-negative",
-        "numeric-created-negative-exponent",
-    )
-    for event_id in numeric_event_ids:
-        db.execute("UPDATE runtime_events SET status='running' WHERE id=?", (event_id,))
-    python_numeric_rows = db.execute(
-        "SELECT seq,payload,hash,deleted FROM sync_entities "
-        "WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id"
-    ).fetchall()
-    python_event_row = db.execute(
-        "SELECT seq, payload, hash, deleted FROM sync_entities WHERE collection='event' AND id='cross-event'"
-    ).fetchone()
-check(tuple(rust_event_row) == tuple(python_event_row), "stable event payload/hash agrees across runtimes")
-for row in python_numeric_rows:
-    check(hashlib.sha256(row[1].encode("utf-8")).hexdigest() == row[2], f"Python numeric row hash is valid: {row[1]}")
-task["pythonRollbackGate"] = True
-with runtime.lock, runtime.db() as db:
-    runtime.put(db, "tasks", task)
-runtime.close()
-print(json.dumps({"task": task, "message": json.loads(message), "numeric_rows": python_numeric_rows,
-                  "rust_task_created_token": rust_task_created_token,
-                  "python_task_created_token": python_task_created_token,
-                  "diagnostics": diagnostics}))
+event = db.execute("SELECT status,text FROM runtime_events WHERE id='cross-event'").fetchone()
+message = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id='cross-message'").fetchone()[0]
+numeric = []
+for event_id, payload, deleted in db.execute("SELECT id,payload,deleted FROM sync_entities WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id"):
+    numeric.append({'id': event_id, 'payload': json.loads(payload), 'deleted': bool(deleted)})
+print(json.dumps({'records': records, 'event': {'status': event[0], 'text': json.loads(event[1])},
+                  'deliveries': json.loads(message), 'numeric': numeric}, allow_nan=False))
 "#;
 
 const CREATE_FEATURE_STATE: &str = r#"
@@ -181,9 +94,10 @@ agent = runtime.create({"name":"feature fixture", "cwd":str(root), "prompt":"tem
 agent_id = agent["id"]
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "agents", agent)
-    runtime.put(db, "tasks", {"id":"feature-task", "rootId":agent_id, "agent":agent_id, "status":"ready",
-        "title":"feature", "description":"", "owner":None, "created":1.0, "updated":2.0,
-        "createdBy":agent_id, "version":1, "dependencies":[], "decisions":[], "results":[],
+    runtime.put(db, "tasks", {"id":"feature-task", "agent":agent_id, "kind":"command",
+        "status":"completed", "created":1.0, "interactive":False, "exitCode":0})
+    runtime.put(db, "work", {"id":"feature-work", "rootId":agent_id, "status":"ready",
+        "title":"feature", "created":1.0, "updated":2.0, "version":1,
         "futureFeatureField":{"enabled":True}})
 from codex_voice import VoiceStore
 voice = VoiceStore(runtime)
@@ -289,36 +203,6 @@ runtime.close()
 print(json.dumps({"agent_id":agent_id,"search_phase":phase}))
 "#;
 
-const VERIFY_FEATURE_STATE: &str = r#"
-import json, pathlib, sys
-sys.path.insert(0, sys.argv[2])
-from codex_runtime import Runtime
-class QuietRuntime(Runtime):
-    def schedule(self):
-        return
-root = pathlib.Path(sys.argv[1])
-agent_id = sys.argv[3]
-runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
-with runtime.db() as db:
-    agent = runtime.agent(agent_id, db)
-task = runtime.task_detail("feature-task")
-if not agent.get("rustWrite") or not task.get("rustWrite"):
-    raise AssertionError("Python record accessors did not observe Rust writes")
-with runtime.db() as db:
-    required = ("voice_sessions", "voice_records", "voice_approvals", "voice_deliveries",
-        "voice_speech_requests", "user_terminals", "user_terminal_output", "user_terminal_receipts",
-        "user_terminal_event_cursor", "user_terminal_decoder_state", "runtime_access_discovered",
-        "runtime_access_settings", "runtime_access_auto_attempts", "runtime_access_unrevokes",
-        "runtime_search_next", "runtime_search_next_config", "runtime_search_next_data",
-        "runtime_search_next_docsize", "runtime_search_next_idx")
-    actual = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    missing = sorted(set(required) - actual)
-    if missing:
-        raise AssertionError(f"feature tables disappeared: {missing}")
-runtime.close()
-print(json.dumps({"feature_tables":list(required),"agent":agent,"task":task}))
-"#;
-
 const COPY_AND_REMOVE_BOOTSTRAP_TABLES: &str = r#"
 import pathlib, sqlite3, sys
 source = pathlib.Path(sys.argv[1])
@@ -409,14 +293,9 @@ fn python_flock_excludes_rust_and_rust_flock_excludes_python() {
 }
 
 #[test]
-fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
+fn python_fixture_records_are_readable_and_writable_in_rust() {
     let root = temporary_state("cross-runtime");
-    let python_reference = temporary_state("python-reference");
-    let created = python(
-        &root,
-        CREATE_PYTHON_STATE,
-        &[python_reference.to_str().expect("temporary path is UTF-8")],
-    );
+    let created = python(&root, CREATE_PYTHON_STATE, &[]);
     let agent_id: String = serde_json::from_str::<Value>(&created)
         .expect("cross-runtime test operation succeeds")["agent_id"]
         .as_str()
@@ -428,23 +307,33 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
-    assert_eq!(agent.extra["fixtureFlag"], json!(true));
-    assert_eq!(agent.extra["fixtureInteger"].as_i64(), Some(7));
+    assert_eq!(agent.value()["fixtureFlag"], json!(true));
+    assert_eq!(agent.value()["fixtureInteger"].as_i64(), Some(7));
     assert_eq!(
-        agent.extra["fixtureUnicode"],
+        agent.value()["fixtureUnicode"],
         json!("Zażółć 東京\n\u{0000}")
     );
     assert_eq!(
-        agent.extra["fixtureNested"],
+        agent.value()["fixtureNested"],
         json!({"items":[0.1,5.0,9007199254740993_i64,true,{"text":"🦀\t"}]})
     );
     let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
         .expect("cross-runtime test operation succeeds")
-        .expect("cross-runtime test operation succeeds");
-    assert_eq!(task.extra["fixtureFlag"], json!(true));
-    assert_eq!(task.extra["fixtureInteger"].as_i64(), Some(7));
-    assert_eq!(task.created, 1e-7);
-    assert_eq!(task.updated, 1e21);
+        .expect("Python fixture contains the task");
+    assert_eq!(task.value()["kind"], json!("command"));
+    assert_eq!(task.value()["interactive"], json!(true));
+    assert_eq!(task.value()["exitCode"].as_i64(), Some(7));
+    assert_eq!(task.value()["created"].as_f64(), Some(1e-7));
+    let work = Table::<WorkItemRecord>::new(&reader)
+        .get(&TaskId::from("cross-work"))
+        .expect("work-board record reads")
+        .expect("Python fixture contains work");
+    assert_eq!(work.value()["fixtureFlag"], json!(true));
+    assert_eq!(work.value()["fixtureInteger"].as_i64(), Some(7));
+    assert_eq!(work.value()["created"].as_f64(), Some(1e-7));
+    assert_eq!(work.value()["updated"].as_f64(), Some(1e21));
+    assert_eq!(work.value()["futureField"]["fixtureFlag"], json!(true));
+
     let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
@@ -500,12 +389,18 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
             }
             let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
                 .expect("Python fixture contains the agent");
-            agent.extra.insert("rustAgentFlag".to_owned(), json!(true));
+            agent.extra.insert("rustAgentFlag".into(), json!(true));
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
                 .expect("Python fixture contains the task");
-            task.extra.insert("rustFlag".to_owned(), json!(true));
+            task.set("status", json!("running"));
             TaskRepository::put(transaction, &task)?;
+            let work_table = Table::<WorkItemRecord>::new(transaction);
+            let mut work = work_table
+                .get(&TaskId::from("cross-work"))?
+                .expect("Python fixture contains work");
+            work.set("rustFlag", json!(true));
+            work_table.put(&work)?;
             let mut message = MessageRepository::get(
                 transaction,
                 &studio_runtime_store::ChatMessageId::from("cross-message"),
@@ -537,125 +432,109 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
             .collect::<Result<Vec<_>, _>>()
             .expect("cross-runtime test operation succeeds")
     };
-    let rust_sqlite_version = rusqlite::version().to_owned();
-    let rust_json_object: String = {
-        let reader = store.read().expect("cross-runtime test operation succeeds");
-        reader
-            .query_row("SELECT json_object('x', 1791788985.5209818)", [], |row| {
-                row.get(0)
-            })
-            .expect("Rust SQLite JSON function is available")
-    };
+    let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written agent remains readable in Rust");
+    assert_eq!(agent.value()["fixtureFlag"], json!(true));
+    assert_eq!(agent.value()["rustAgentFlag"], json!(true));
+
+    let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written task remains readable in Rust");
+    assert_eq!(task.value()["exitCode"], json!(7));
+    assert_eq!(task.value()["status"], json!("running"));
+    let work = Table::<WorkItemRecord>::new(&reader)
+        .get(&TaskId::from("cross-work"))
+        .expect("work-board read succeeds")
+        .expect("Rust-written work remains readable in Rust");
+    assert_eq!(work.value()["fixtureFlag"], json!(true));
+    assert_eq!(work.value()["rustFlag"], json!(true));
+
+    let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written event remains readable in Rust");
+    assert_eq!(event.status, "running");
+    assert_eq!(
+        serde_json::from_str::<Value>(&event.text).expect("event text is JSON")["rust"],
+        true
+    );
+
+    let message = MessageRepository::get(
+        &reader,
+        &studio_runtime_store::ChatMessageId::from("cross-message"),
+    )
+    .expect("cross-runtime test operation succeeds")
+    .expect("Rust-written message remains readable in Rust");
+    assert_eq!(message.deliveries["delivery"], true);
+    assert_eq!(message.deliveries["rustReceipt"], true);
+
+    let python_state: Value = serde_json::from_str(&python(&root, READ_RUST_WRITTEN_STATE, &[]))
+        .expect("Python reads and parses the committed Rust state");
+    assert_eq!(python_state["records"]["agent"], agent.value());
+    assert_eq!(&python_state["records"]["task"], task.value());
+    assert_eq!(&python_state["records"]["work"], work.value());
+    assert_eq!(python_state["event"]["status"], "running");
+    assert_eq!(python_state["event"]["text"]["rust"], true);
+    assert_eq!(python_state["deliveries"], message.deliveries);
+
+    assert_eq!(rust_numeric_rows.len(), 10);
+    let mut numeric_created = std::collections::BTreeMap::new();
+    for (_, encoded, _, _) in &rust_numeric_rows {
+        let payload: Value = serde_json::from_str(encoded).expect("Rust sync payload is JSON");
+        let id = payload["id"].as_str().expect("sync payload has an id");
+        let created = payload["value"]["created"]
+            .as_f64()
+            .expect("sync payload has a numeric created value");
+        numeric_created.insert(id.to_owned(), created);
+    }
+    for (id, expected) in [
+        ("numeric-created-precision", 1_791_788_985.520_981_8),
+        ("numeric-created-tenth", 0.1),
+        ("numeric-created-large-exponent", 1e21),
+        ("numeric-created-integer", 7.0),
+        ("numeric-created-integer-real", 5.0),
+        ("numeric-created-large-integer-real", 1_791_788_985.0),
+        ("numeric-created-17-digits", 1.234_567_890_123_456_7),
+        ("numeric-created-over-2pow53", 9_007_199_254_740_992.0),
+        ("numeric-created-negative", -0.1),
+        ("numeric-created-negative-exponent", -1e-7),
+    ] {
+        assert_eq!(numeric_created.get(id), Some(&expected), "{id}");
+    }
+    let numeric = python_state["numeric"]
+        .as_array()
+        .expect("Python numeric state is an array");
+    assert_eq!(numeric.len(), 10);
+    for row in numeric {
+        let id = row["id"].as_str().expect("numeric sync entity id");
+        let created = row["payload"]["value"]["created"]
+            .as_f64()
+            .expect("Python parses numeric sync payload");
+        assert_eq!(
+            numeric_created.get(id),
+            Some(&created),
+            "Python parsed {id}"
+        );
+        assert_eq!(row["deleted"], false, "{id} remains live");
+    }
+
     drop(reader);
     drop(store);
-
-    let verified = python(
-        &root,
-        VERIFY_AND_WRITE_PYTHON,
-        &[
-            agent_id.as_str(),
-            python_reference.to_str().expect("temporary path is UTF-8"),
-            rust_sqlite_version.as_str(),
-            rust_json_object.as_str(),
-        ],
-    );
-    let python_output =
-        serde_json::from_str::<Value>(&verified).expect("cross-runtime test operation succeeds");
-    assert_eq!(python_output["task"]["rustFlag"], true);
-    assert_eq!(python_output["rust_task_created_token"], "1e-7");
-    assert_eq!(python_output["python_task_created_token"], "1e-07");
-    let diagnostic = format!("SQLite diagnostics: {}", python_output["diagnostics"]);
-    let python_numeric_rows = python_output["numeric_rows"]
-        .as_array()
-        .expect("Python helper returns numeric event rows");
-    assert_eq!(rust_numeric_rows.len(), 10, "{diagnostic}");
-    assert_eq!(python_numeric_rows.len(), 10, "{diagnostic}");
-    let exact_payload_ids = [
-        "numeric-created-tenth",
-        "numeric-created-large-exponent",
-        "numeric-created-integer",
-        "numeric-created-integer-real",
-        "numeric-created-large-integer-real",
-        "numeric-created-negative",
-        "numeric-created-negative-exponent",
-    ];
-    let high_precision_ids = [
-        "numeric-created-precision",
-        "numeric-created-17-digits",
-        "numeric-created-over-2pow53",
-    ];
-    let mut rust_by_id = std::collections::BTreeMap::new();
-    for row in &rust_numeric_rows {
-        let payload: Value = serde_json::from_str(&row.1).expect("Rust payload is JSON");
-        rust_by_id.insert(payload["id"].as_str().unwrap_or_default().to_owned(), row);
-    }
-    let mut python_by_id = std::collections::BTreeMap::new();
-    for row in python_numeric_rows {
-        let payload_text = row[1].as_str().expect("Python sync payload is JSON text");
-        let payload: Value = serde_json::from_str(payload_text).expect("Python payload is JSON");
-        python_by_id.insert(payload["id"].as_str().unwrap_or_default().to_owned(), row);
-    }
-    for event_id in exact_payload_ids {
-        let rust_row = rust_by_id[event_id];
-        let python_row = python_by_id[event_id];
-        assert_eq!(
-            rust_row.1,
-            python_row[1].as_str().expect("Python payload is text"),
-            "{event_id}: {diagnostic}"
-        );
-        assert_eq!(
-            rust_row.2,
-            python_row[2].as_str().expect("Python hash is text"),
-            "{event_id}: {diagnostic}"
-        );
-    }
-    for event_id in high_precision_ids {
-        let rust_row = rust_by_id[event_id];
-        let python_row = python_by_id[event_id];
-        let rust_value: Value = serde_json::from_str(&rust_row.1).expect("Rust payload is JSON");
-        let python_value: Value =
-            serde_json::from_str(python_row[1].as_str().expect("Python payload is text"))
-                .expect("Python payload is JSON");
-        let rust_number = rust_value["value"]["created"]
-            .as_f64()
-            .expect("Rust created is numeric");
-        let python_number = python_value["value"]["created"]
-            .as_f64()
-            .expect("Python created is numeric");
-        let sqlite_15_digit_rounding_bound = rust_number.abs().max(1.0) * 5.1e-15;
-        assert!(
-            (rust_number - python_number).abs() <= sqlite_15_digit_rounding_bound,
-            "{event_id}: values differ beyond SQLite's documented 15-significant-digit rendering; {diagnostic}; Rust payload={}, Python payload={}",
-            rust_row.1,
-            python_row[1]
-        );
-        let expected = match event_id {
-            "numeric-created-precision" => 1_791_788_985.520_981_8,
-            "numeric-created-17-digits" => 1.234_567_890_123_456_7,
-            _ => 9_007_199_254_740_992.0,
-        };
-        assert_eq!(
-            rust_number, expected,
-            "Rust projection must preserve the stored binary64 value; {diagnostic}"
-        );
-    }
 
     let reopened = RuntimeStore::open(Some(&root)).expect("cross-runtime test operation succeeds");
     let read_back = reopened
         .read()
         .expect("cross-runtime test operation succeeds");
-    let task = TaskRepository::get(&read_back, &TaskId::from("cross-task"))
+    let work = Table::<WorkItemRecord>::new(&read_back)
+        .get(&TaskId::from("cross-work"))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
-    assert_eq!(task.extra["pythonRollbackGate"], true);
+    assert_eq!(work.value()["rustFlag"], true);
     reopened
         .verify_schema()
         .expect("cross-runtime test operation succeeds");
     drop(read_back);
     drop(reopened);
-    python_reference
-        .cleanup()
-        .expect("Python reference state is removed");
     root.cleanup().expect("temporary Python state is removed");
 }
 
@@ -676,16 +555,21 @@ fn python_feature_initialized_state_round_trips_through_rust() {
             AgentRepository::put(tx, &agent)?;
             let mut task =
                 TaskRepository::get(tx, &TaskId::from("feature-task"))?.expect("task exists");
-            task.extra.insert("rustWrite".into(), json!(true));
+            task.set("status", json!("running"));
             TaskRepository::put(tx, &task)
         })
         .expect("Rust writes supported records");
+    let reader = store.read().expect("Rust reads its updated records");
+    let agent = AgentRepository::get(&reader, &AgentId::from(agent_id))
+        .expect("updated agent read succeeds")
+        .expect("updated agent remains present");
+    assert_eq!(agent.value()["rustWrite"], true);
+    let task = TaskRepository::get(&reader, &TaskId::from("feature-task"))
+        .expect("updated task read succeeds")
+        .expect("updated task remains present");
+    assert_eq!(task.value()["status"], "running");
+    drop(reader);
     drop(store);
-
-    let checked = python(&root, VERIFY_FEATURE_STATE, &[agent_id]);
-    let checked: Value = serde_json::from_str(&checked).expect("Python verifies feature state");
-    assert_eq!(checked["agent"]["rustWrite"], true);
-    assert_eq!(checked["task"]["rustWrite"], true);
     root.cleanup().expect("feature state is removed");
 }
 

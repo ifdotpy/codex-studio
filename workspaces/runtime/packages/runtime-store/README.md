@@ -7,25 +7,39 @@
   requirements, prepare the sync schema family, and provide synchronous typed
   reads and writes.
 - **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
-  `RuntimeStore::transaction`; repositories for agents, tasks, queue events,
-  and chat messages.
+  `RuntimeStore::transaction`; `JsonRecord` and `Table<R>`
+  for JSON-record tables; repositories for agents, tasks, queue events, and
+  chat messages.
 - **Boundaries:** No Tokio, Python, general schema migration, or state
   directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
-  The root OpenAPI document owns HTTP DTOs; the Python
-  `codex_records.py` declarations are the current source for persisted record
-  fields until storage DTO generation is introduced.
+  Python persisted models and the OpenAPI document own the schemas.
 - **Invariants:** One exclusive runtime lock, one serialized writer using
   `BEGIN IMMEDIATE`, independent query-only read connections, WAL and FULL
   synchronous writes, and fail-closed checks for required tables, columns,
-  triggers and migration-marker meaning. Optional feature tables are ignored
-  until a Rust repository depends on them.
+  triggers and migration-marker meaning. `Table<R>` validates records against
+  their named schemas on reads and writes, checks declared key modes, and
+  reports invalid records with one table/key error while preserving extension
+  fields. Repositories declare whether each table is required or conditional;
+  bootstrapped feature tables are required after `RuntimeStore::open`.
 - **Configuration owner:** `codex_state.py` currently defines state path
   resolution; this crate mirrors its environment and platform rules. The
-  committed `runtime-state-schema.json` is the only schema snapshot.
+  committed `runtime-state-schema.json` describes SQLite catalog requirements;
+  JSON-record schemas are generated under `runtime-schema/src/schemas`.
 - **Focused check:** with the isolated Python environment prepared, run
   `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
   Python subprocesses create disposable state under the system temporary
   directory (the command sets it to `/var/tmp/cs-rust-store/tests`).
+
+## JSON-record table scope
+
+- Covers only records stored as one `id` key and one JSON `record` value.
+- Validates named schemas and row identity through `Table<R>`; repository
+  contracts declare required and conditional tables and external-key checks.
+- Preserves raw JSON text only for typed readers that depend on original
+  property order.
+- Offers ID access, fixed agent filters and declared deterministic orderings.
+- Keeps composite-cursor paging and response shaping in their repositories and routes.
+- Keeps normalized tables, joins, projections, counts, FTS and sync SQL specialized.
 
 Python connection behavior reproduced in this slice:
 
@@ -157,8 +171,8 @@ transitives (the crate dependency tree contains 36 distinct packages,
 including workspace dependencies). Serde and serde_json are existing workspace
 dependencies; Serde's derive feature is enabled for this crate's records.
 
-Remaining repository work, grouped by table family (exact names from the
-committed snapshot):
+State-directory table inventory, grouped by family (exact names from the
+committed snapshot; it includes both typed-record and specialized SQL tables):
 
 - Access: `runtime_access_alias_requests`, `runtime_access_audit`,
   `runtime_access_clients`, `runtime_access_invites`,
@@ -210,10 +224,10 @@ Stored record fields are currently derived by hand from `codex_records.py`.
 When a stored record is identical to an HTTP API model, generate it from the
 canonical OpenAPI document; otherwise keep the persistence shape local to the
 store. Unknown JSON fields are retained in a flattened map on read and rewrite.
-Each repository is a small type with `get(connection, id)` and
-`put(transaction, record)` methods; JSON-backed families share the private
-`get_json_record`/`put_json_record` helpers, while SQL row families map their
-columns explicitly. Each implementation lives in
+Each repository is a small type that uses `Table<R>` for JSON-record families
+and maps normalized SQL row families explicitly. Repository-specific methods
+retain projections and joins that do not fit the single-record API. Each
+implementation lives in
 `src/repositories/<family>.rs` and exports `REQUIREMENTS: SchemaRequirements`
 beside its SQL methods. The declaration lists every table and column it uses,
 required triggers and connection-local SQL functions its writes need, plus conditional

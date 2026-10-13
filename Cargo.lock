@@ -1890,6 +1890,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2",
+ "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
@@ -1918,12 +1920,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-runtime-schema"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde_json",
+]
+
+[[package]]
 name = "studio-runtime-server"
 version = "0.1.0"
 dependencies = [
  "axum",
  "data-encoding",
  "getrandom 0.3.4",
+ "serde_json",
  "studio-runtime-http",
  "studio-runtime-services",
  "studio-runtime-store",
@@ -1952,6 +1963,7 @@ dependencies = [
  "spki",
  "studio-runtime-process",
  "studio-runtime-providers",
+ "studio-runtime-schema",
  "studio-runtime-store",
  "tempfile",
  "thiserror",
@@ -1966,11 +1978,11 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "inventory",
- "jsonschema",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-schema",
  "tempfile",
  "thiserror",
  "uuid",

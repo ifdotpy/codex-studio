@@ -208,11 +208,6 @@ fn post_managed_message(
 
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
         let metadata = QueueWriteRepository::metadata(transaction, input.id)?
-            .map(|raw| {
-                serde_json::from_str::<Value>(&raw)
-                    .map_err(|_| invalid_stored("runtime_event_meta", input.id))
-            })
-            .transpose()?
             .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
         let old_assets = metadata
             .get("assets")
@@ -615,15 +610,7 @@ fn teams(transaction: &Transaction<'_>) -> Result<AgentDirectory, CoordinationEr
     let mut graph_agents = BTreeSet::new();
     let mut managed_threads = BTreeSet::new();
     let mut invalid_agents = BTreeSet::new();
-    for (id, raw, is_graph) in CoordinationRepository::agents(transaction)? {
-        let Ok(mut value) = serde_json::from_str::<Value>(&raw) else {
-            invalid_agents.insert(id);
-            continue;
-        };
-        if value.get("id").and_then(Value::as_str) != Some(id.as_str()) || !value.is_object() {
-            invalid_agents.insert(id);
-            continue;
-        }
+    for (id, mut value, is_graph) in CoordinationRepository::agents(transaction)? {
         if is_graph {
             graph_agents.insert(id.clone());
             value["source"] = Value::String("registered".to_owned());
@@ -998,7 +985,7 @@ mod tests {
              CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("coordination schema creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"id":id,"rootId":root,"deletedAt":null}).to_string();
+            let record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1220,7 +1207,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"id":"lead","rootId":"lead","threadId":"managed-thread"}).to_string()],
+                [json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
             )
             .expect("managed thread fixture updates");
         connection
@@ -1318,7 +1305,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES('user',?1)",
-                [json!({"id":"user","rootId":"lead"}).to_string()],
+                [json!({"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

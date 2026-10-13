@@ -1,9 +1,13 @@
-//! Read persisted monitor records without requiring the lazy monitor table.
+//! Read persisted monitor records.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
+use crate::StoreResult;
+use crate::records::{MonitorRecord, Table};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult};
+
+/// Compatibility name for callers that used the pre-typed monitor wrapper.
+pub type StoredMonitor = MonitorRecord;
 
 const MONITOR_TABLE: TableRequirement = TableRequirement {
     name: "runtime_monitors",
@@ -24,17 +28,11 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StoredMonitor {
-    pub id: String,
-    pub record: String,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MonitorsRepository;
 
 impl MonitorsRepository {
-    pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<StoredMonitor>> {
+    pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<MonitorRecord>> {
         let has_table: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors')",
             [],
@@ -43,19 +41,7 @@ impl MonitorsRepository {
         if !has_table {
             return Ok(None);
         }
-        connection
-            .query_row(
-                "SELECT id,record FROM runtime_monitors WHERE id=?1",
-                [id],
-                |row| {
-                    Ok(StoredMonitor {
-                        id: row.get(0)?,
-                        record: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(StoreError::from)
+        Table::<MonitorRecord>::new(connection).get(&id.to_owned())
     }
 }
 inventory::submit! {

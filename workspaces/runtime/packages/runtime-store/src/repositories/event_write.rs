@@ -4,60 +4,44 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 use super::sync_documents::{hash_payload, next_sequence};
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::records::{
+    AgentId, AnnotationRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table,
+};
+use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{QueueEvent, StoreError, StoreResult};
 
-const PLAN_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_plans",
-    columns: &["id", "record"],
-}];
-const ANNOTATION_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_annotations",
-    columns: &["id", "record"],
-}];
-const RECEIPT_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_operation_receipts",
-    columns: &["id", "signature", "result"],
-}];
-const EVENT_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_events",
-    columns: &[
-        "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
-    ],
-}];
-const EVENT_META_TABLE: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_event_meta",
-    columns: &["id", "record"],
-}];
+const TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_plans",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_annotations",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_operation_receipts",
+        columns: &["id", "signature", "result"],
+    },
+    TableRequirement {
+        name: "runtime_events",
+        columns: &[
+            "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
+        ],
+    },
+    TableRequirement {
+        name: "runtime_event_meta",
+        columns: &["id", "record"],
+    },
+];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_plans",
-            tables: PLAN_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_annotations",
-            tables: ANNOTATION_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_operation_receipts",
-            tables: RECEIPT_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_events",
-            tables: EVENT_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_event_meta",
-            tables: EVENT_META_TABLE,
-        },
-    ],
+    tables: &[TABLES[3]],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TABLES[0], TABLES[1], TABLES[2], TABLES[4]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -114,31 +98,63 @@ impl EventWriteRepository {
         Ok(Some(true))
     }
 
-    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
-        Ok(connection
-            .query_row(
-                "SELECT record FROM runtime_plans WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?)
+    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        Ok(Table::<PlanRecord>::new(connection)
+            .get(&AgentId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
-    pub fn put_plan(connection: &Connection, id: &str, record: &str) -> StoreResult<()> {
-        connection.execute(
-            "INSERT INTO runtime_plans(id,record) VALUES (?1,?2) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, record],
-        )?;
+    pub fn put_plan(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        if value.get("id").and_then(Value::as_str) != Some(id) {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: PlanRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        let record = PlanRecord::from_value(value.clone())?;
+        Table::<PlanRecord>::new(connection).put_at(&AgentId::from(id), &record)
+    }
+
+    pub fn validate_plan(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        if value.get("id").and_then(Value::as_str) != Some(id) {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: PlanRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        let record = PlanRecord::from_value(value.clone())?;
+        Table::<PlanRecord>::new(connection).validate_at(&AgentId::from(id), &record)
+    }
+
+    pub fn put_annotation(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+        let record = AnnotationRecord::from_value(value.clone())?;
+        if record.id() != id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: AnnotationRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        if !Table::<AnnotationRecord>::new(connection).insert_new(&record)? {
+            return Err(crate::StoreError::RecordContract(
+                "annotation record identity already exists",
+            ));
+        }
         Ok(())
     }
 
-    pub fn put_annotation(connection: &Connection, id: &str, record: &str) -> StoreResult<()> {
-        connection.execute(
-            "INSERT INTO runtime_annotations(id,record) VALUES (?1,?2)",
-            params![id, record],
-        )?;
-        Ok(())
+    pub fn validate_annotation(
+        connection: &Connection,
+        id: &str,
+        value: &Value,
+    ) -> StoreResult<()> {
+        let record = AnnotationRecord::from_value(value.clone())?;
+        if record.id() != id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: AnnotationRecord::TABLE,
+                id: id.to_owned(),
+            });
+        }
+        Table::<AnnotationRecord>::new(connection).validate(&record)
     }
 
     pub fn receipt(connection: &Connection, id: &str) -> StoreResult<Option<EventWriteReceipt>> {
@@ -200,21 +216,33 @@ impl EventWriteRepository {
         id: &str,
         monotonic_ns: u128,
     ) -> StoreResult<()> {
-        let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
-            [], |row| row.get(0),
-        )?;
-        if !exists {
-            return Ok(());
+        let key = QueueEventId::from(id);
+        let table = Table::<EventMetadataRecord>::new(connection);
+        let mut value = table
+            .get(&key)?
+            .map(|record| record.value().clone())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let Some(object) = value.as_object_mut() else {
+            return Err(StoreError::InvalidStoredObject {
+                table: EventMetadataRecord::TABLE,
+                id: id.to_owned(),
+            });
+        };
+        let timing = object
+            .entry("timing".to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+        if timing.is_null() {
+            *timing = serde_json::json!({});
         }
-        let value = serde_json::json!({"timing":{"enqueuedAt":monotonic_ns}});
-        connection.execute(
-            "INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2) \
-             ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.timing.enqueuedAt', \
-             json_extract(excluded.record,'$.timing.enqueuedAt'))",
-            params![id, value.to_string()],
-        )?;
-        Ok(())
+        let Some(timing) = timing.as_object_mut() else {
+            return Err(StoreError::InvalidStoredObject {
+                table: EventMetadataRecord::TABLE,
+                id: id.to_owned(),
+            });
+        };
+        timing.insert("enqueuedAt".to_owned(), serde_json::json!(monotonic_ns));
+        let record = EventMetadataRecord::from_value(value)?;
+        table.put_at(&key, &record)
     }
 
     /// Keep the renderer projection in step with the scheduler's queued state.
@@ -368,6 +396,7 @@ impl EventWriteRepository {
 #[cfg(test)]
 mod tests {
     use super::EventWriteRepository;
+    use crate::StoreError;
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -497,5 +526,28 @@ mod tests {
                 ["enqueuedAt"],
             42
         );
+    }
+
+    #[test]
+    fn enqueue_refuses_scalar_timing_without_panicking_or_mutating_metadata() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 INSERT INTO runtime_event_meta VALUES('e','{\"timing\":true}');",
+            )
+            .expect("corrupt metadata fixture inserts");
+        assert!(matches!(
+            EventWriteRepository::mark_event_enqueued(&connection, "e", 42),
+            Err(StoreError::InvalidStoredObject { table: "runtime_event_meta", id }) if id == "e"
+        ));
+        let stored: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='e'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata remains available");
+        assert_eq!(stored, r#"{"timing":true}"#);
     }
 }

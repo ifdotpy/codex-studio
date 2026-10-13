@@ -10,7 +10,7 @@ from codex_layout import REPOSITORY_ROOT
 from studio_api.persisted_models import STATE_SCHEMA_MODELS, state_schema_document
 
 
-OUTPUT_ROOT = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http"
+OUTPUT_ROOT = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/schemas"
 
 
 def generated_schemas() -> dict[Path, object]:

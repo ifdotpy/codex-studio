@@ -212,6 +212,10 @@ fn coordination_error(error: CoordinationError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         CoordinationError::InvalidStored { object, id } => invalid_stored(object, &id),
+        CoordinationError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => invalid_stored(table, &id),
         CoordinationError::Store(_) => ApiError::internal(),
     }
 }

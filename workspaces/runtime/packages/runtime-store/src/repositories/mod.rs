@@ -48,14 +48,12 @@ pub(crate) fn schema_registrations() -> Vec<&'static SchemaRegistration> {
 mod tests {
     use super::{account_state, agents, events, messages, sync_documents, tasks};
     use crate::records::{
-        AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
-        MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
-        TaskRepository, WorkStatus,
+        AgentId, AgentRecord, AgentRepository, ChatMessage, ChatMessageId, MessageRepository,
+        QueueEvent, QueueEventId, QueueEventRepository, TaskRecord, TaskRepository,
     };
     use rusqlite::Connection;
     use serde_json::Value;
     use serde_json::json;
-    use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
     use sync_documents::SyncDocumentsRepository;
@@ -158,35 +156,21 @@ mod tests {
     #[test]
     fn repository_sql_uses_only_declared_tables() {
         let db = database_with(&agents::REQUIREMENTS);
-        let agent = AgentRecord {
-            id: AgentId::from("a"),
-            root_id: AgentId::from("a"),
-            epoch: 0,
-            status: AgentStatus::Idle,
-            extra: BTreeMap::new(),
-        };
+        let agent = AgentRecord::from_value(json!({
+            "id":"a", "rootId":"a", "epoch":0, "status":"idle"
+        }))
+        .expect("agent JSON has a string id");
         AgentRepository::put(&db, &agent).expect("agent write uses declared objects");
-        AgentRepository::get(&db, &agent.id).expect("agent read uses declared objects");
+        AgentRepository::get(&db, agent.id()).expect("agent read uses declared objects");
 
         let db = database_with(&tasks::REQUIREMENTS);
-        let task = TaskRecord {
-            id: TaskId::from("t"),
-            root_id: AgentId::from("a"),
-            status: WorkStatus::Ready,
-            title: String::new(),
-            description: String::new(),
-            owner: None,
-            created: 0.0,
-            updated: 0.0,
-            created_by: AgentId::from("a"),
-            version: 0,
-            dependencies: vec![],
-            decisions: vec![],
-            results: vec![],
-            extra: BTreeMap::<String, Value>::new(),
-        };
+        let task = TaskRecord::from_value(json!({
+            "id":"t", "agent":"a", "kind":"command", "status":"completed",
+            "created":0, "interactive":false, "exitCode":0
+        }))
+        .expect("task JSON has a string id");
         TaskRepository::put(&db, &task).expect("task write uses declared objects");
-        TaskRepository::get(&db, &task.id).expect("task read uses declared objects");
+        TaskRepository::get(&db, task.id()).expect("task read uses declared objects");
 
         let db = database_with(&events::REQUIREMENTS);
         let event = QueueEvent {

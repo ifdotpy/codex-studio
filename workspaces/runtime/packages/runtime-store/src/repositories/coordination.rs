@@ -4,8 +4,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
 
 use crate::StoreResult;
+use crate::records::{AgentRecord, GraphAgentRecord, Table};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
-use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::schema::{SchemaRequirements, TableRequirement};
 
 const GROUPS: &[TableRequirement] = &[TableRequirement {
     name: "groups",
@@ -19,27 +20,18 @@ const MESSAGES: &[TableRequirement] = &[TableRequirement {
     name: "messages",
     columns: &["id", "room", "author", "text", "at", "deliveries"],
 }];
+const GRAPH_AGENTS: &[TableRequirement] = &[TableRequirement {
+    name: "graph_agents",
+    columns: &["id", "record"],
+}];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "groups",
-            tables: GROUPS,
-        },
-        ConditionalTableRequirement {
-            table_exists: "graph_edges",
-            tables: EDGES,
-        },
-        ConditionalTableRequirement {
-            table_exists: "messages",
-            tables: MESSAGES,
-        },
-    ],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[GROUPS[0], EDGES[0], MESSAGES[0], GRAPH_AGENTS[0]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -109,26 +101,15 @@ impl CoordinationRepository {
         .transpose()
     }
 
-    pub fn agents(connection: &rusqlite::Connection) -> StoreResult<Vec<(String, String, bool)>> {
+    pub fn agents(
+        connection: &rusqlite::Connection,
+    ) -> StoreResult<Vec<(String, serde_json::Value, bool)>> {
         let mut result = Vec::new();
-        let mut statement = connection.prepare("SELECT id,record FROM runtime_agents")?;
-        for item in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, false))
-        })? {
-            result.push(item?);
+        for agent in Table::<AgentRecord>::new(connection).list()? {
+            result.push((agent.id().0.clone(), agent.value(), false));
         }
-        let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_agents')",
-            [],
-            |row| row.get(0),
-        )?;
-        if exists {
-            let mut statement = connection.prepare("SELECT id,record FROM graph_agents")?;
-            for item in statement.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, true))
-            })? {
-                result.push(item?);
-            }
+        for agent in Table::<GraphAgentRecord>::new(connection).list()? {
+            result.push((agent.id().as_str().to_owned(), agent.value().clone(), true));
         }
         Ok(result)
     }

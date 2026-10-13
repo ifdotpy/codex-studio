@@ -5,7 +5,7 @@ pub use operations::*;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
     SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
@@ -32,8 +32,8 @@ pub enum MutationError {
     CurrentAccountExcluded,
     #[error("Wait for this turn to end before changing execution settings")]
     InFlight,
-    #[error("Invalid stored object {object}/{id}")]
-    InvalidStoredObject { object: &'static str, id: String },
+    #[error("invalid stored object {table}/{id}")]
+    InvalidStoredObject { table: &'static str, id: String },
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -153,7 +153,7 @@ fn replay_lead(
     let Some(record) = stored else {
         return if aliased {
             Err(CreateError::InvalidStoredObject {
-                object: "runtime_lead_requests",
+                table: "runtime_lead_requests",
                 id: request_id.to_owned(),
             })
         } else {
@@ -207,7 +207,7 @@ fn load_agent_value(
     load_record(
         connection,
         "runtime_agents",
-        "AgentRecordResponse",
+        "PersistedAgentRecord",
         id,
         validate,
     )
@@ -240,7 +240,7 @@ fn decode_record(
     validate: &impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, MutationError> {
     let invalid = || MutationError::InvalidStoredObject {
-        object: table,
+        table,
         id: id.to_owned(),
     };
     let value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
@@ -257,7 +257,7 @@ fn save_agent(
 ) -> Result<Value, MutationError> {
     if !validate("AgentRecordResponse", record) {
         return Err(MutationError::InvalidStoredObject {
-            object: "runtime_agents",
+            table: "runtime_agents",
             id: record["id"].as_str().unwrap_or_default().to_owned(),
         });
     }
@@ -266,24 +266,12 @@ fn save_agent(
     Ok(publish_agent(transaction, record)?)
 }
 
-fn ensure_project(
-    transaction: &Transaction<'_>,
-    agent: &Value,
-    validate: &impl Fn(&str, &Value) -> bool,
-) -> Result<(), MutationError> {
+fn ensure_project(transaction: &Transaction<'_>, agent: &Value) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("new lead has no project path".to_owned()))?;
-    if load_record(
-        transaction,
-        "runtime_projects",
-        "ProjectMutationRecord",
-        path,
-        validate,
-    )?
-    .is_some()
-    {
+    if load_open_record(transaction, "runtime_projects", path)?.is_some() {
         return Ok(());
     }
     let account = agent
@@ -309,6 +297,33 @@ fn ensure_project(
     Ok(())
 }
 
+fn load_open_record(
+    connection: &Connection,
+    table: &'static str,
+    id: &str,
+) -> Result<Option<Value>, MutationError> {
+    let raw = connection
+        .query_row(
+            &format!("SELECT record FROM {table} WHERE id=?1"),
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    raw.map(|raw| {
+        let invalid = || MutationError::InvalidStoredObject {
+            table,
+            id: id.to_owned(),
+        };
+        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id) {
+            return Err(invalid());
+        }
+        Ok(record)
+    })
+    .transpose()
+}
+
 /// Persist a lead and its first pending message atomically. The caller supplies
 /// the fully validated, product-shaped record and controls account admission.
 fn create_agent(
@@ -321,13 +336,13 @@ fn create_agent(
 ) -> Result<Value, CreateError> {
     if !validate("AgentRecordResponse", &record) {
         return Err(CreateError::InvalidStoredObject {
-            object: "runtime_agents",
+            table: "runtime_agents",
             id: id.to_owned(),
         });
     }
     let agent: AgentRecord =
         serde_json::from_value(record.clone()).map_err(|_| CreateError::InvalidStoredObject {
-            object: "runtime_agents",
+            table: "runtime_agents",
             id: id.to_owned(),
         })?;
     let draft = record.get("needsTitle").and_then(Value::as_bool) == Some(true);
@@ -338,12 +353,12 @@ fn create_agent(
     };
     if agent.id.0 != id || agent.root_id.0 != id || agent.status != expected_status {
         return Err(CreateError::InvalidStoredObject {
-            object: "runtime_agents",
+            table: "runtime_agents",
             id: id.to_owned(),
         });
     }
     if record.get("isLead").and_then(Value::as_bool) == Some(true) {
-        ensure_project(transaction, &record, &validate)?;
+        ensure_project(transaction, &record)?;
     }
     AgentRepository::put(transaction, &agent)?;
     let projection = publish_agent(transaction, &record)?;
@@ -451,7 +466,7 @@ fn configure_limits(
     for (agent_id, raw) in records {
         let mut record = decode_record(
             "runtime_agents",
-            "AgentRecordResponse",
+            "PersistedAgentRecord",
             &agent_id,
             &raw,
             &validate,
@@ -474,7 +489,7 @@ fn configure_limits(
             record
                 .as_object_mut()
                 .ok_or(SettingsError::InvalidStoredObject {
-                    object: "runtime_agents",
+                    table: "runtime_agents",
                     id: agent_id.clone(),
                 })?
                 .remove("concurrency");
@@ -516,14 +531,23 @@ fn rename(
         }
         let result: Value = serde_json::from_str(&receipt.result).map_err(|_| {
             RenameError::InvalidStoredObject {
-                object: "runtime_operation_receipts",
+                table: "runtime_operation_receipts",
                 id: request_id.to_owned(),
             }
         })?;
         return Ok(result);
     }
 
-    if crate::event_write::truthy(record.get("deletedAt")) {
+    let Some(agent) = AgentRepository::get(transaction, &AgentId::from(id))? else {
+        return Err(RenameError::UnknownAgent);
+    };
+    if agent.id.0 != id {
+        return Err(RenameError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: id.to_owned(),
+        });
+    }
+    if crate::event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(RenameError::Deleted);
     }
     let Some(name) = name else {
@@ -647,7 +671,7 @@ mod tests {
         assert!(matches!(
             super::replay_lead(&connection, "alias", "{}", |_, _| true),
             Err(super::CreateError::InvalidStoredObject {
-                object: "runtime_lead_requests",
+                table: "runtime_lead_requests",
                 ..
             })
         ));

@@ -4,16 +4,14 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use studio_runtime_services::queue_write::{QueueSnapshot, QueueWriteError};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, StoredRecord, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, WorkItemsRepository,
 };
 
 use crate::error::ApiError;
-use crate::validation::Registry;
 
 pub(super) fn queue_snapshot(
     connection: &Connection,
     agent: &AgentRecord,
-    validators: &Registry,
 ) -> Result<QueueSnapshot, QueueWriteError> {
     let prepared = studio_runtime_services::work_policy::prepare_queue(WorkItemsRepository::queue(
         connection,
@@ -29,15 +27,11 @@ pub(super) fn queue_snapshot(
     let assets = WorkItemsRepository::assets(connection, &prepared.asset_ids)?;
     let assets = assets
         .into_iter()
-        .map(|row| {
-            let mut value = stored_record("runtime_assets", &row)?;
+        .map(|mut value| {
             value
                 .as_object_mut()
                 .expect("stored asset is an object")
                 .remove("path");
-            if !validators.validate_stored("TranscriptAsset", &value) {
-                return Err(invalid_stored("runtime_assets", &row.id));
-            }
             Ok(value)
         })
         .collect::<Result<Vec<_>, QueueWriteError>>()?;
@@ -56,7 +50,7 @@ pub(super) fn queue_snapshot(
         let Some(record) = record else {
             return Err(invalid_stored("runtime_agents", owner));
         };
-        if record.id.0 != owner || !is_live(&record) {
+        if !is_live(&record) {
             return Err(invalid_stored("runtime_agents", owner));
         }
     }
@@ -71,7 +65,7 @@ pub(super) fn queue_snapshot(
         })?;
     for item in &items {
         let id = item.get("id").and_then(Value::as_str).unwrap_or("<event>");
-        if !validators.validate_stored("QueueItem", item) {
+        if super::generated_json::<crate::generated::QueueItem>(item.clone()).is_err() {
             return Err(invalid_stored("runtime_events", id));
         }
     }
@@ -104,19 +98,6 @@ pub(super) fn is_live(agent: &AgentRecord) -> bool {
         })
 }
 
-fn stored_record(object: &'static str, row: &StoredRecord) -> Result<Value, QueueWriteError> {
-    let value: Value = serde_json::from_str(
-        row.record
-            .as_deref()
-            .ok_or_else(|| invalid_stored(object, &row.id))?,
-    )
-    .map_err(|_| invalid_stored(object, &row.id))?;
-    if value.get("id").and_then(Value::as_str) != Some(row.id.as_str()) {
-        return Err(invalid_stored(object, &row.id));
-    }
-    Ok(value)
-}
-
 fn invalid_stored(object: &'static str, id: &str) -> QueueWriteError {
     QueueWriteError::InvalidStoredObject {
         object,
@@ -136,6 +117,13 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
+        ),
+        QueueWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid stored object {table}/{id}"),
         ),
         QueueWriteError::Store(_) | QueueWriteError::Json(_) => ApiError::internal(),
     }

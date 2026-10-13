@@ -7,7 +7,7 @@ from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat,
 from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
-from studio_api.models import ContractModel, JsonValue, SafeInt
+from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 
 
 def _unicode_scalar(value: str) -> str:
@@ -34,6 +34,163 @@ class ClaudeOptionsRecord(ContractModel):
     customModels: list[ClaudeCustomModelRecord] | None = None
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class PersistedTranscriptAsset(ContractModel):
+    """Full attachment row; unlike the HTTP projection this retains its path."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    agent: StrictStr
+    name: StrictStr
+    path: StrictStr
+    mime: StrictStr
+    image: StrictBool
+    size: SafeInt
+    hash: StrictStr
+    created: float
+
+
+class PersistedAgentRecord(ContractModel):
+    """Persisted agent identity plus the extensible state written by the runtime."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    rootId: StrictStr
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    status: StrictStr
+    sandbox: dict[StrictStr, JsonValue] | None = None
+    approvalPolicy: StrictStr | None = None
+
+
+class _OpenPersistedRecord(ContractModel):
+    """A storage projection that validates only fields used by Rust readers."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+
+
+class PersistedTaskRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    status: StrictStr | None = None
+
+
+class PersistedPlanRecord(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    agent: StrictStr | None = None
+
+
+class PersistedAnnotationRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    path: StrictStr | None = None
+    line: SafeInt | None = None
+    text: StrictStr | None = None
+    created: StrictFloat | StrictInt | None = None
+
+
+class PersistedRequestRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    connectionId: StrictStr | None = None
+    status: StrictStr | None = None
+
+
+class PersistedComplaintRecord(_OpenPersistedRecord):
+    leadId: StrictStr | None = None
+    author: StrictStr | None = None
+    text: StrictStr | None = None
+    status: StrictStr | None = None
+
+
+class PersistedCheckpointRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    created: StrictFloat | StrictInt | None = None
+
+
+class PersistedMonitorRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    ruleId: StrictStr | None = None
+    status: StrictStr | None = None
+    lastExitCode: StrictInt | None = None
+
+
+class PersistedTerminalRecord(_OpenPersistedRecord):
+    agent: StrictStr | None = None
+    status: StrictStr | None = None
+    exitCode: StrictInt | None = None
+
+
+class PersistedUsageResumeRecord(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    status: StrictStr | None = None
+    cause: StrictStr | None = None
+    failedAt: StrictFloat | StrictInt | None = None
+
+
+class PersistedWorkItemRecord(_OpenPersistedRecord):
+    status: StrictStr | None = None
+    title: StrictStr | None = None
+
+
+class PersistedRuleRecord(_OpenPersistedRecord):
+    kind: StrictStr | None = None
+    agent: StrictStr | None = None
+    restartCheck: dict[StrictStr, JsonValue] | None = None
+    alerted: StrictBool | None = None
+    lowSince: StrictFloat | StrictInt | None = None
+
+
+class PersistedTranscriptInput(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    kind: StrictStr | None = None
+    text: StrictStr | None = None
+    truncated: StrictBool | None = None
+
+
+class PersistedTranscriptRecord(_OpenPersistedRecord):
+    """Legacy parent text is hydrated from fulltext before response validation."""
+
+    text: StrictStr | None = None
+    inputs: list[PersistedTranscriptInput] | None = None
+
+
+class RuntimeEventMetadataRecord(ContractModel):
+    """Optional event metadata row, keyed by runtime_events.id, not JSON id."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    assets: list[JsonValue] = Field(default_factory=list)
+    timing: dict[StrictStr, JsonValue] | None = None
+
+
+class PersistedGraphAgentRecord(_OpenPersistedRecord):
+    pass
+
+
+class PersistedProfileRecord(ContractModel):
+    """Stored profile contract; unknown future fields remain readable."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    name: StrictStr
+    role: Literal["reviewer", "implementer"]
+    model: StrictStr
+    effort: Literal["low", "medium", "high", "xhigh", "max", "ultra"] | None
+    instructions: StrictStr
 
 
 class AccountRecord(ContractModel):
@@ -105,6 +262,23 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-agent-record.schema.json": PersistedAgentRecord,
+    "persisted-task-record.schema.json": PersistedTaskRecord,
+    "persisted-plan-record.schema.json": PersistedPlanRecord,
+    "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
+    "persisted-request-record.schema.json": PersistedRequestRecord,
+    "persisted-complaint-record.schema.json": PersistedComplaintRecord,
+    "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
+    "persisted-monitor-record.schema.json": PersistedMonitorRecord,
+    "persisted-terminal-record.schema.json": PersistedTerminalRecord,
+    "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
+    "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
+    "persisted-rule-record.schema.json": PersistedRuleRecord,
+    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
+    "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
+    "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
+    "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
 }
 

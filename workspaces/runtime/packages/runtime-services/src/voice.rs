@@ -200,11 +200,12 @@ pub fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceErr
     })?;
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
-    for row in rows {
+    for (row, raw) in rows {
+        let row_id = row.id().to_string();
         let value: Value =
-            serde_json::from_str(&row.record).map_err(|_| invalid("runtime_requests", &row.id))?;
+            serde_json::from_str(&raw).map_err(|_| invalid("runtime_requests", &row_id))?;
         if !value.is_object() || value.get("id").and_then(Value::as_str).is_none() {
-            return Err(invalid("runtime_requests", &row.id));
+            return Err(invalid("runtime_requests", &row_id));
         }
         if value.get("agent").and_then(Value::as_str) == Some(agent_id)
             && value.get("status").and_then(Value::as_str) == Some("pending")
