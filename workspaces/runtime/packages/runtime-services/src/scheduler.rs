@@ -2,7 +2,8 @@
 
 use serde_json::Value;
 use studio_runtime_store::{
-    AgentStatus, RuntimeStore, SchedulerRepository, StoreError, TurnAttemptIdentity,
+    AgentId, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
+    SchedulerRepository, StoreError, TurnAttemptIdentity,
 };
 use thiserror::Error;
 
@@ -114,14 +115,36 @@ pub fn settle_terminal_attempt(
     let Some(turn_id) = params["turn"]["id"].as_str() else {
         return Ok(false);
     };
-    let Some((native_status, status, error)) = terminal_outcome(&params["turn"]) else {
-        return Ok(false);
-    };
     Ok(store.transaction(|transaction| {
+        let input =
+            serde_json::json!({"agent":identity.agent_id,"epoch":identity.epoch,"params":params});
+        if let Some(saved) = ExecutionHistoryRepository::replay(
+            transaction,
+            &identity.attempt_id,
+            "terminalInput",
+            &input,
+        )? {
+            return saved
+                .as_bool()
+                .ok_or_else(|| StoreError::InvalidSyncObject {
+                    scope: "runtime_execution_attempts".into(),
+                    id: identity.attempt_id.clone(),
+                });
+        }
+        let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
+            .map_err(|_| StoreError::InvalidSyncObject {
+            scope: "runtime_agents".into(),
+            id: identity.agent_id.clone(),
+        })?;
+        let saved_error = agent.as_ref().and_then(|a| a.extra.get("nativeTurnError"));
+        let Some((native_status, status, error)) = terminal_outcome(&params["turn"], saved_error)
+        else {
+            return Ok(false);
+        };
         // NOTIFICATION-DISPATCH INTEGRATION: invoke dispatch(transaction, identity, params)
         // here. Until its history writes are available, successful native turns use the
         // named HISTORY_UNAVAILABLE failure; acknowledgment follows this transaction.
-        SchedulerRepository::settle_terminal(
+        let result = SchedulerRepository::settle_terminal(
             transaction,
             &identity.agent_id,
             identity.epoch,
@@ -131,12 +154,25 @@ pub fn settle_terminal_attempt(
             error,
             native_status,
             params["turn"].get("error"),
-        )
+        )?;
+        if result {
+            ExecutionHistoryRepository::save_receipt(
+                transaction,
+                &identity.attempt_id,
+                "terminalInput",
+                input,
+                serde_json::json!(result),
+            )?;
+        }
+        Ok(result)
     })?)
 }
 
 // Pure native/visible classification is shared with the future asynchronous worker.
-fn terminal_outcome(turn: &Value) -> Option<(&str, AgentStatus, Option<Value>)> {
+fn terminal_outcome<'a>(
+    turn: &'a Value,
+    previous: Option<&Value>,
+) -> Option<(&'a str, AgentStatus, Option<Value>)> {
     let mut native = turn["status"].as_str()?;
     let error = turn.get("error").filter(|v| !v.is_null());
     let info = &turn["error"]["codexErrorInfo"];
@@ -144,14 +180,26 @@ fn terminal_outcome(turn: &Value) -> Option<(&str, AgentStatus, Option<Value>)> 
     {
         native = "failed";
     }
-    let (status, error) = match native {
+    let saved = previous
+        .filter(|p| p["turnId"] == turn["id"])
+        .and_then(|p| p.get("error"));
+    let visible_error = error.or(saved).filter(|v| !v.is_null());
+    let kind = visible_error.and_then(|e| e.get("codexErrorInfo"));
+    let refusal = kind.is_some_and(|k| {
+        k == "cyberPolicy"
+            || k == "misalignmentPolicyViolation"
+            || k.get("cyberPolicy").is_some()
+            || k.get("misalignmentPolicyViolation").is_some()
+    });
+    let visible = if refusal { "failed" } else { native };
+    let (status, error) = match visible {
         "completed" => (
             AgentStatus::Failed,
             Some(serde_json::json!({"message":HISTORY_UNAVAILABLE})),
         ),
         "failed" => (
             AgentStatus::Failed,
-            Some(error.cloned().unwrap_or_else(
+            Some(visible_error.cloned().unwrap_or_else(
                 || serde_json::json!({"message":"Codex ended this turn with an error."}),
             )),
         ),
@@ -159,6 +207,33 @@ fn terminal_outcome(turn: &Value) -> Option<(&str, AgentStatus, Option<Value>)> 
         _ => return None,
     };
     Some((native, status, error))
+}
+
+/// The durable result can replay true; only the first successful application authorizes transport.
+pub fn authorize_submission(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    request_id: &str,
+    generation: u64,
+) -> Result<bool, SchedulerError> {
+    let Some(thread) = intent.thread_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(store.transaction(|tx| {
+        let replay = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
+            .is_some_and(|a| a["receipts"]["submission"].is_object());
+        let result = SchedulerRepository::mark_submitted_identity(
+            tx,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+            request_id,
+            &intent.account_key,
+            generation,
+            thread,
+        )?;
+        Ok(result && !replay)
+    })?)
 }
 
 pub fn mark_submitted_for_provider(
@@ -280,15 +355,15 @@ mod terminal_policy_tests {
     fn native_denials_fail_both_outcomes_without_fabricating_other_interrupts() {
         for info in [json!("tooManyDenials"), json!({"tooManyDenials":{}})] {
             let turn = json!({"status":"interrupted","error":{"codexErrorInfo":info}});
-            let (native, visible, error) = terminal_outcome(&turn).expect("terminal outcome");
+            let (native, visible, error) = terminal_outcome(&turn, None).expect("terminal outcome");
             assert_eq!(native, "failed");
             assert_eq!(visible, AgentStatus::Failed);
             assert_eq!(error, Some(turn["error"].clone()));
         }
         assert_eq!(
-            terminal_outcome(&json!({"status":"interrupted"})),
+            terminal_outcome(&json!({"status":"interrupted"}), None),
             Some(("interrupted", AgentStatus::Interrupted, None))
         );
-        assert!(terminal_outcome(&json!({"status":"inProgress"})).is_none());
+        assert!(terminal_outcome(&json!({"status":"inProgress"}), None).is_none());
     }
 }

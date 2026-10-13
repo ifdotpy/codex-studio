@@ -1,6 +1,7 @@
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use crate::scheduler::HISTORY_UNAVAILABLE;
+use crate::scheduler::mark_submitted_for_provider;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

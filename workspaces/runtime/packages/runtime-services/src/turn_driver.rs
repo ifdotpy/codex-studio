@@ -5,9 +5,9 @@ use crate::provider_session::{
     ProviderSessionInput,
 };
 use crate::scheduler::{
-    SchedulerError, TurnIntent, TurnStart, claim_intent, mark_submitted_for_provider,
-    recover_on_startup, settle_start_outcome, settle_start_rejected_provider,
-    settle_started_provider, settle_terminal_attempt,
+    SchedulerError, TurnIntent, TurnStart, authorize_submission, claim_intent, recover_on_startup,
+    settle_start_outcome, settle_start_rejected_provider, settle_started_provider,
+    settle_terminal_attempt,
 };
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -691,12 +691,7 @@ impl AccountWorker {
             )?;
             return Ok(());
         }
-        if !mark_submitted_for_provider(
-            &self.store,
-            &intent,
-            &id_string(&id),
-            session.generation(),
-        )? {
+        if !authorize_submission(&self.store, &intent, &id_string(&id), session.generation())? {
             settle_start_outcome(&self.store, &intent, TurnStart::NotSubmitted)?;
             return Ok(());
         }

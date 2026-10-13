@@ -35,6 +35,41 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 pub struct ExecutionHistoryRepository;
 impl ExecutionHistoryRepository {
+    /// Immutable lifecycle results live with the attempt whose identity they settle.
+    pub fn replay(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: &str,
+        input: &Value,
+    ) -> StoreResult<Option<Value>> {
+        let Some(saved) = Self::attempt(tx, id)? else {
+            return Ok(None);
+        };
+        let Some(receipt) = saved.get("receipts").and_then(|r| r.get(kind)) else {
+            return Ok(None);
+        };
+        if receipt.get("input") != Some(input) || receipt.get("result").is_none() {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        Ok(receipt.get("result").cloned())
+    }
+    pub fn save_receipt(
+        tx: &Transaction<'_>,
+        id: &str,
+        kind: &str,
+        input: Value,
+        result: Value,
+    ) -> StoreResult<()> {
+        let path = format!("$.receipts.{kind}");
+        let changed = tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,?1,json(?2)) WHERE id=?3",
+            params![path, json!({"input":input,"result":result}).to_string(), id],
+        )?;
+        if changed != 1 {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        Ok(())
+    }
     pub fn attempt(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
         tx.query_row(
             "SELECT record FROM runtime_execution_attempts WHERE id=?1",
@@ -80,14 +115,10 @@ impl ExecutionHistoryRepository {
             .or_else(|| agent.extra.get("threadId"))
             .cloned()
             .unwrap_or(Value::Null);
-        let mut run: Option<Value> = tx.query_row(
-            "SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_execution_attempts a ON a.run=r.id WHERE a.id=?1",
-            [id], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
-        if run.is_none() && attempt["events"][0].is_string() {
-            run = tx.query_row(
-                "SELECT r.id,r.record FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run WHERE i.event=?1 AND r.agent=?2 AND r.account=?3 AND r.epoch=?4 AND r.turn IS NULL ORDER BY r.created DESC LIMIT 1",
-                params![attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
-        }
+        let run: Option<Value> = tx.query_row(
+            "SELECT r.id,r.record FROM runtime_execution_runs r WHERE r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (r.id IN (SELECT run FROM runtime_execution_inputs WHERE event=?2) AND r.agent=?3 AND r.account=?4 AND r.epoch=?5 AND r.turn IS NULL) ORDER BY (r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1)) DESC, r.created DESC LIMIT 1",
+            params![id,attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()],
+            |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         let mut run = run.unwrap_or_else(||json!({"id":format!("run:{id}"),"agent":agent.id.0,"accountKey":account,
             "epoch":attempt["epoch"],"threadId":thread,"turnId":null,"created":attempt.get("created").cloned().unwrap_or_else(||json!(now())),
             "status":"pending","firstAttemptId":null,"rootAttemptId":null,"latestAttemptId":null}));
@@ -144,7 +175,7 @@ impl ExecutionHistoryRepository {
         }
         let mut saved = attempt.clone();
         if let Some(previous) = Self::attempt(tx, id)? {
-            for key in ["inputIdentity", "claimResult"] {
+            for key in ["inputIdentity", "claimResult", "receipts"] {
                 if let Some(value) = previous.get(key) {
                     saved[key] = value.clone();
                 }
@@ -189,9 +220,20 @@ impl ExecutionHistoryRepository {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let [(id, raw)] = rows.as_slice() else {
-            return Err(invalid(agent_id));
+            return Err(Self::invalid(
+                "runtime_execution_runs",
+                rows.first().map_or(agent_id, |r| r.0.as_str()),
+            ));
         };
         let mut run = decode("runtime_execution_runs", id, raw)?;
+        if terminal(&run["status"]) {
+            if run["status"] != status
+                || run.get("error").unwrap_or(&Value::Null) != error.unwrap_or(&Value::Null)
+            {
+                return Err(Self::invalid("runtime_execution_runs", id));
+            }
+            return Ok(());
+        }
         run["status"] = json!(status);
         run["finished"] = json!(now());
         run["result"] = json!("");

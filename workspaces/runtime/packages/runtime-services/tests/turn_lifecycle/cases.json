@@ -1,0 +1,408 @@
+[
+  {
+    "id": "accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A10"
+    ]
+  },
+  {
+    "id": "unknown",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A11"
+    ],
+    "message": "turn/start response timed out; outcome unknown"
+  },
+  {
+    "id": "rejected",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A11"
+    ]
+  },
+  {
+    "id": "not_sent",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "queued_pending",
+    "findings": [
+      "A11"
+    ],
+    "message": "Provider did not send turn/start"
+  },
+  {
+    "id": "interrupted",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "B1"
+    ]
+  },
+  {
+    "id": "completed",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "B2"
+    ]
+  },
+  {
+    "id": "failed",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "B1"
+    ]
+  },
+  {
+    "id": "denials",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "tooManyDenials"
+      }
+    },
+    "findings": [
+      "A8"
+    ]
+  },
+  {
+    "id": "policy_interrupted",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "refused",
+        "codexErrorInfo": "cyberPolicy"
+      }
+    },
+    "findings": [
+      "A8"
+    ]
+  },
+  {
+    "id": "saved_error",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "agent": {
+      "nativeTurnError": {
+        "turnId": "turn",
+        "error": {
+          "message": "original error"
+        }
+      }
+    },
+    "findings": [
+      "A8"
+    ]
+  },
+  {
+    "id": "paused_failed",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": [
+      "A9"
+    ]
+  },
+  {
+    "id": "deleted_accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "deleted",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user",
+      "deletedAt": 1.0
+    },
+    "findings": [
+      "A4"
+    ]
+  },
+  {
+    "id": "scope_accepted",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "account_transfer",
+    "agent": {
+      "threadId": "changed-thread"
+    },
+    "findings": [
+      "A4"
+    ]
+  },
+  {
+    "id": "startup_unknown",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "python_unknown",
+    "findings": [
+      "A5",
+      "B3"
+    ]
+  },
+  {
+    "id": "startup_paused_unknown",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": [
+      "A5",
+      "B3"
+    ]
+  },
+  {
+    "id": "startup_noattempt",
+    "transition": "restart",
+    "phase": "submitted",
+    "state": "running",
+    "agent": {
+      "status": "running",
+      "turnId": "native-turn"
+    },
+    "remove": [
+      "startAttempt"
+    ],
+    "findings": [
+      "A5"
+    ]
+  },
+  {
+    "id": "disconnected",
+    "transition": "disconnect",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "B3"
+    ]
+  },
+  {
+    "id": "generation_change",
+    "transition": "generation_change",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "B3"
+    ]
+  },
+  {
+    "id": "interrupted_answer",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "last_answer",
+    "agent": {
+      "lastAnswer": "Python saved answer"
+    },
+    "findings": [
+      "A10"
+    ]
+  },
+  {
+    "id": "claim_queued",
+    "transition": "claim",
+    "phase": "queued",
+    "state": "queued_pending",
+    "findings": [
+      "B1"
+    ]
+  },
+  {
+    "id": "submit_python_claim",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": [
+      "A1"
+    ]
+  },
+  {
+    "id": "started_notice",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "running",
+    "findings": [
+      "A10",
+      "B6"
+    ]
+  },
+  {
+    "id": "accepted_replay",
+    "transition": "accepted",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "unknown_replay",
+    "transition": "unknown",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A3"
+    ],
+    "message": "turn/start response timed out; outcome unknown",
+    "replay": true
+  },
+  {
+    "id": "rejected_replay",
+    "transition": "rejected",
+    "phase": "submitted",
+    "state": "queued_pending",
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "not_sent_replay",
+    "transition": "not_sent",
+    "phase": "claimed",
+    "state": "queued_pending",
+    "findings": [
+      "A3"
+    ],
+    "message": "Provider did not send turn/start",
+    "replay": true
+  },
+  {
+    "id": "interrupted_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "completed_replay",
+    "transition": "completed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "failed_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "denials_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "tooManyDenials"
+      }
+    },
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "policy_interrupted_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "refused",
+        "codexErrorInfo": "cyberPolicy"
+      }
+    },
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "saved_error_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "agent": {
+      "nativeTurnError": {
+        "turnId": "turn",
+        "error": {
+          "message": "original error"
+        }
+      }
+    },
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "paused_failed_replay",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "paused",
+    "agent": {
+      "status": "paused",
+      "epoch": 1,
+      "autoWake": false,
+      "error": "Stopped by user"
+    },
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  },
+  {
+    "id": "interrupted_answer_replay",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "last_answer",
+    "agent": {
+      "lastAnswer": "Python saved answer"
+    },
+    "findings": [
+      "A3"
+    ],
+    "replay": true
+  }
+]
