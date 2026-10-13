@@ -111,8 +111,8 @@ class Fixture(UsageResumeMixin, CapacityRetryMixin):
     def permanent_worker_hold(self,db,a,operation,transition,reason): self.holds.append([operation,transition,reason])
     def enqueue(self,db,a,kind,text,identity):
         db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",(identity,a["id"],kind,text,"pending",NOW,a["epoch"],None,None))
-    def output(self,data,batch=None):
-        table="capacity_retries" if data["record"] and "maxAttempts" in data["record"] else "usage_resumes"
+    def output(self,data,batch=None,capacity=False):
+        table="capacity_retries" if capacity or data["record"] and "maxAttempts" in data["record"] else "usage_resumes"
         row=self.connection.execute(f"SELECT record FROM runtime_{table} ORDER BY id LIMIT 1").fetchone()
         return dict(agent=self.agent("a"),record=json.loads(row[0]) if row else None,
                     events=[dict(r) for r in self.connection.execute("SELECT * FROM runtime_events ORDER BY created,rowid")],
@@ -134,6 +134,9 @@ def corpus():
                 f.put(f.connection,"agents",a)
             elif family=="limits":f.usage_resume_limits_changed("default",f.observation)
             elif family=="enable":f.usage_resume_action("a",r["id"],args["enabled"])
+            elif family=="capacity-create":
+                f.capacity_completed(f.connection,a,args["turn"],True)
+                f.put(f.connection,"agents",a)
             elif family=="capacity":
                 action=args["action"]
                 if action=="restart":f.capacity_restart(f.connection,a)
@@ -150,12 +153,12 @@ def corpus():
                 with patch.object(codex_claude,"auth_metadata",return_value=args["result"]):
                     auth._probe(f,"default",auth._account_pin(f.pin),token)
             else:raise AssertionError(family)
-            expected=f.output(data,batch)
+            expected=f.output(data,batch,capacity=family=="capacity-create")
         cases.append(dict(name=name,family=family,input=data,args=args,expected=expected))
         f.connection.close()
     inputs=json.loads((Path(__file__).parent.parent/"continuation/cases.json").read_text())
-    witnesses={"create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False","claude-proof-readyaccount","claude-proof-readyforeign","claude-input-text","claude-account-pin-changed","claude-wrong-credential"}
-    if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL")!="1":inputs=[case for case in inputs if case["name"] in witnesses]
+    witnesses={"usage-observation-stale-True","create-usageLimitExceeded","create-authExpired","usage-percent-100","usage-percent-99.9","usage-observation-at-994.9","usage-observation-at-995.0","usage-observation-accountKey-foreign","auth-marker-old","auth-marker-new","auth-backoff-0","auth-backoff-50","usage-task-changed","usage-identity-epoch","usage-embedded-already-started","limits-floor-990.0","disable-scheduled","capacity-restart-unknown-True","capacity-restart-starting-False","capacity-reset-starting-True","capacity-wait-20","capacity-accepted-None","progress-(1, 2)","progress-(2, 2)","reconcile-resolved-a","review-submitted-True","review-submitted-False","claude-proof-readyaccount","claude-proof-readyforeign","claude-input-text","claude-account-pin-changed","claude-wrong-credential"}
+    if os.environ.get("STUDIO_RUNTIME_CORPUS_FULL")!="1":inputs=[case for case in inputs if case["name"] in witnesses or case["name"] in {"capacity-create-server-0","capacity-create-network-7"}]
     for case in inputs:add(case["name"],case["family"],case["input"],**case["args"])
     return cases
 

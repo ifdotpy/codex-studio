@@ -62,6 +62,14 @@ fn decision(case: &Value, s: &Snapshot) -> Decision {
             usage_resume::set_enabled(s, args["enabled"].as_bool().expect("enabled"), 1000.0)
                 .expect("toggle")
         }
+        "capacity-create" => {
+            let kind = if args["turn"]["error"]["codexErrorInfo"] == "serverOverloaded" {
+                capacity_retry::Failure::ServerOverloaded
+            } else {
+                capacity_retry::Failure::HttpConnectionFailed
+            };
+            capacity_retry::failed(s, kind, "turn", &json!({}), 1000.0).expect("failure")
+        }
         "capacity" => {
             let action = match args["action"].as_str().expect("action") {
                 "restart" => capacity_retry::Action::Restart,
@@ -133,12 +141,11 @@ fn apply(input: &Value, d: Decision) -> Value {
 fn normalize_projection(value: &mut Value) {
     // Only pending_batch's newly compiled projection has JSON object key-order freedom.
     for e in value["batch"].as_array_mut().expect("batch") {
-        if let Some(text) = e["text"].as_str() {
-            if let Ok(payload) = serde_json::from_str::<Value>(text) {
-                if payload.get("earlierProgressUpdates").is_some() {
-                    e["text"] = payload;
-                }
-            }
+        if let Some(text) = e["text"].as_str()
+            && let Ok(payload) = serde_json::from_str::<Value>(text)
+            && payload.get("earlierProgressUpdates").is_some()
+        {
+            e["text"] = payload;
         }
     }
 }
@@ -218,6 +225,21 @@ fn unknown_capacity_and_stale_auth_ticket_never_resume() {
         .find(|c| c["name"] == "capacity-restart-unknown-True")
         .expect("unknown fixture");
     let s = Snapshot::from_records(case["input"].clone()).expect("snapshot");
+    let foreign = json!({"id":"foreign","action":"capacity","capacityRetryId":"retry","epoch":1,"accountKey":"default"});
+    assert!(
+        capacity_retry::transition(
+            &s,
+            capacity_retry::Action::Error {
+                attempt: &foreign,
+                reason: "foreign receipt",
+                unknown: false
+            },
+            1000.0
+        )
+        .expect("stale error")
+        .record
+        .is_none()
+    );
     assert!(
         capacity_retry::transition(
             &s,

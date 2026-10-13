@@ -32,7 +32,7 @@ pub struct LimitsObservation {
 impl LimitsObservation {
     pub fn from_record(raw: Value, marker: Option<String>) -> Result<Self> {
         if let Some((path, _)) =
-            studio_runtime_schema::first_error("workspace-usage-limits/UsageLimitsResponse", &raw)
+            studio_runtime_schema::first_error("continuation/ContinuationLimitsObservation", &raw)
                 .map_err(|_| ContinuationError::Invalid("/limits/schema".into()))?
         {
             return Err(ContinuationError::Invalid(format!("/limits{path}")));
