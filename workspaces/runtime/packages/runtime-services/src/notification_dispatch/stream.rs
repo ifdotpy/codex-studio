@@ -1,4 +1,8 @@
 //! Pure, bounded connection stream state. SQLite commit controls when updates apply.
+use super::{
+    NotificationDispatchError, NotificationHourMetrics, NotificationObservation,
+    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -46,6 +50,20 @@ struct Entry {
 pub struct NotificationStreamBuffer {
     entries: Vec<Entry>,
     closed: Vec<StreamKey>,
+    #[serde(default)]
+    analytics: Vec<(
+        StreamKey,
+        NotificationObservation,
+        NotificationStreamMetrics,
+    )>,
+    #[serde(default)]
+    post_commit: Vec<NotificationPostCommit>,
+    #[serde(default)]
+    publication_sequence: u64,
+    #[serde(default)]
+    analytics_overflow: u64,
+    #[serde(default)]
+    analytics_skipped: Vec<StreamKey>,
 }
 
 pub(super) enum EnqueueResult {
@@ -56,8 +74,176 @@ pub(super) enum EnqueueResult {
 }
 
 impl NotificationStreamBuffer {
+    /// Take staged timer-flush effects from the returned buffer copy. Journal
+    /// them with that buffer in the same transaction; publish only after commit.
+    /// Discard both the returned buffer and these values on rollback.
+    pub fn take_post_commit(
+        &mut self,
+    ) -> Result<NotificationPublicationBatch, NotificationDispatchError> {
+        if self.post_commit.is_empty() && self.analytics_overflow == 0 {
+            return Ok(NotificationPublicationBatch::default());
+        }
+        self.publication_sequence = self
+            .publication_sequence
+            .checked_add(1)
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        Ok(NotificationPublicationBatch {
+            sequence: self.publication_sequence,
+            effects: std::mem::take(&mut self.post_commit),
+            analytics_overflow: std::mem::take(&mut self.analytics_overflow),
+        })
+    }
+    pub(super) fn queue_effect(&mut self, effect: NotificationPostCommit) {
+        // As in Python, excess analytics captures are dropped, counted and never
+        // allowed to refuse a notification, lose a receipt or cancel a session.
+        // Counts match Python's 64-capture queue. Rust measures retained JSON
+        // bytes (8 MiB), rather than CPython heap object sizes.
+        if matches!(
+            effect,
+            NotificationPostCommit::Analytics { .. }
+                | NotificationPostCommit::AnalyticsStream { .. }
+        ) {
+            let count = self
+                .post_commit
+                .iter()
+                .filter(|effect| {
+                    matches!(
+                        effect,
+                        NotificationPostCommit::Analytics { .. }
+                            | NotificationPostCommit::AnalyticsStream { .. }
+                    )
+                })
+                .count();
+            let bytes: usize = self
+                .post_commit
+                .iter()
+                .filter(|effect| {
+                    matches!(
+                        effect,
+                        NotificationPostCommit::Analytics { .. }
+                            | NotificationPostCommit::AnalyticsStream { .. }
+                    )
+                })
+                .map(|effect| serde_json::to_vec(effect).map_or(usize::MAX, |bytes| bytes.len()))
+                .fold(0, usize::saturating_add);
+            let size = serde_json::to_vec(&effect).map_or(usize::MAX, |bytes| bytes.len());
+            if count >= 64 || bytes.saturating_add(size) > 8 * 1024 * 1024 {
+                self.analytics_overflow = self.analytics_overflow.saturating_add(1);
+                return;
+            }
+        }
+        self.post_commit.push(effect);
+    }
+    pub(super) fn stage_analytics(
+        &mut self,
+        key: StreamKey,
+        mut observation: NotificationObservation,
+    ) -> Result<(), NotificationDispatchError> {
+        if self.closed.contains(&key) || self.analytics_skipped.contains(&key) {
+            return Ok(());
+        }
+        let delta = observation.params["delta"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let encoded_bytes =
+            studio_runtime_store::python_json_compact(&observation.params).len() as u64;
+        let hour = ((observation.observed_at / 3600.0).floor() * 3600.0) as u64;
+        observation.agent = None;
+        if let Some((_, saved, metrics)) = self.analytics.iter_mut().find(|(old, _, _)| old == &key)
+        {
+            let mut text = saved.params["delta"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            text.push_str(&delta);
+            saved.params["delta"] =
+                Value::String(if key.method == "item/commandExecution/outputDelta" {
+                    super::suffix(&text, 12_000)
+                } else {
+                    text
+                });
+            metrics.bytes = metrics.bytes.saturating_add(delta.len() as u64);
+            metrics.characters = metrics
+                .characters
+                .saturating_add(delta.chars().count() as u64);
+            metrics.lines = metrics
+                .lines
+                .saturating_add(delta.bytes().filter(|byte| *byte == b'\n').count() as u64);
+            if let Some(bucket) = metrics.hours.iter_mut().find(|bucket| bucket.hour == hour) {
+                bucket.count = bucket.count.saturating_add(1);
+                bucket.encoded_bytes = bucket.encoded_bytes.saturating_add(encoded_bytes);
+            } else {
+                metrics.hours.push(NotificationHourMetrics {
+                    hour,
+                    count: 1,
+                    encoded_bytes,
+                });
+            }
+        } else {
+            if key.method == "item/commandExecution/outputDelta" {
+                observation.params["delta"] = Value::String(super::suffix(&delta, 12_000));
+            }
+            self.analytics.push((
+                key.clone(),
+                observation,
+                NotificationStreamMetrics {
+                    hours: vec![NotificationHourMetrics {
+                        hour,
+                        count: 1,
+                        encoded_bytes,
+                    }],
+                    bytes: delta.len() as u64,
+                    characters: delta.chars().count() as u64,
+                    lines: delta.bytes().filter(|byte| *byte == b'\n').count() as u64,
+                },
+            ));
+        }
+        let retained_bytes = self
+            .analytics
+            .iter()
+            .map(|(_, observation, metrics)| {
+                observation.params.to_string().len().saturating_add(
+                    metrics
+                        .hours
+                        .len()
+                        .saturating_mul(std::mem::size_of::<NotificationHourMetrics>()),
+                )
+            })
+            .fold(0usize, usize::saturating_add);
+        if retained_bytes > 8 * 1024 * 1024 {
+            // Drop this whole analytics capture, never its transcript or receipt.
+            // Suppress its later samples until flush instead of counting each as
+            // a separate overflowed capture.
+            self.analytics
+                .retain(|(sample_key, _, _)| sample_key != &key);
+            self.analytics_skipped.push(key);
+            self.analytics_overflow = self.analytics_overflow.saturating_add(1);
+        }
+        Ok(())
+    }
+    pub(super) fn flush_analytics(&mut self, key: &StreamKey, agent: &Value) {
+        self.analytics_skipped
+            .retain(|sample_key| sample_key != key);
+        let mut pending = Vec::new();
+        for (sample_key, mut observation, metrics) in std::mem::take(&mut self.analytics) {
+            if &sample_key == key {
+                observation.agent = Some(agent.clone());
+                self.queue_effect(NotificationPostCommit::AnalyticsStream {
+                    observation,
+                    metrics,
+                });
+            } else {
+                pending.push((sample_key, observation, metrics));
+            }
+        }
+        self.analytics = pending;
+    }
     pub(crate) fn pending_bytes(&self) -> usize {
-        self.entries.iter().map(|entry| entry.pending.len()).sum()
+        self.entries
+            .iter()
+            .map(|entry| entry.pending.len().max(usize::from(entry.count > 0)))
+            .sum()
     }
     pub(crate) fn threads(&self) -> Vec<(String, u64, String)> {
         self.entries
@@ -209,6 +395,10 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn close(&mut self, key: &StreamKey) {
+        self.analytics
+            .retain(|(sample_key, _, _)| sample_key != key);
+        self.analytics_skipped
+            .retain(|sample_key| sample_key != key);
         self.entries.retain(|entry| &entry.key != key);
         if !self.closed.contains(key) {
             self.closed.push(key.clone());
@@ -219,6 +409,10 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn discard(&mut self, key: &StreamKey) {
+        self.analytics
+            .retain(|(sample_key, _, _)| sample_key != key);
+        self.analytics_skipped
+            .retain(|sample_key| sample_key != key);
         self.entries.retain(|entry| &entry.key != key);
     }
 }

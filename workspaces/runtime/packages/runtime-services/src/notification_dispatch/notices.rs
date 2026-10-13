@@ -4,6 +4,8 @@ use studio_runtime_store::sha256_hex;
 
 use super::{NotificationDispatchError, format_utc};
 
+const ACCOUNT_NOTICE_LIMIT: i64 = 50;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NoticeKind {
     Warning,
@@ -24,6 +26,21 @@ pub(super) enum NoticeKind {
     AuthCompleted,
 }
 impl NoticeKind {
+    pub(super) fn is_account_notice(self) -> bool {
+        matches!(
+            self,
+            Self::Warning
+                | Self::Guardian
+                | Self::Config
+                | Self::Deprecation
+                | Self::McpStartup
+                | Self::McpLogin
+                | Self::StrictReview
+                | Self::AuthStarted
+                | Self::AuthCompleted
+        )
+    }
+
     pub(super) fn parse(method: &str) -> Option<Self> {
         Some(match method {
             "warning" => Self::Warning,
@@ -124,20 +141,7 @@ pub(super) fn decide(
         }
         return Ok(decision);
     }
-    if turn.as_str().is_some_and(|s| !s.is_empty())
-        && (turn != &original["turnId"] || original["inFlight"] != true)
-    {
-        return Ok(decision);
-    }
-    if matches!(
-        kind,
-        NoticeKind::Safety
-            | NoticeKind::Verification
-            | NoticeKind::ReviewStarted
-            | NoticeKind::ReviewCompleted
-    ) && (params["threadId"].as_str().is_none_or(str::is_empty)
-        || turn.as_str().is_none_or(str::is_empty))
-    {
+    if !captures_analytics(original, method, params) {
         return Ok(decision);
     }
     let mut agent = original.clone();
@@ -413,8 +417,36 @@ fn error_kind(error: &Value) -> &str {
         })
         .unwrap_or("")
 }
+const ERROR_MESSAGES: &[(&str, &str)] = &[
+    (
+        "cyberPolicy",
+        "Codex refused this turn under its cybersecurity policy.",
+    ),
+    (
+        "misalignmentPolicyViolation",
+        "Codex refused this turn under its safety policy.",
+    ),
+    (
+        "tooManyDenials",
+        "Codex stopped this turn after too many denied actions. Review the request and approval settings before trying again.",
+    ),
+    (
+        "flexUnavailable",
+        "The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
+    ),
+    ("default", "Codex reported an error."),
+];
 pub(crate) fn error_message(error: &Value) -> String {
-    crate::account_worker::history::message(error)
+    let kind = error_kind(error);
+    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
+        return (*message).into();
+    }
+    error["message"]
+        .as_str()
+        .or_else(|| error.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(ERROR_MESSAGES[4].1)
+        .into()
 }
 
 pub(super) use studio_runtime_store::python_json_utf8 as json_text;
@@ -471,4 +503,119 @@ pub(super) fn object_keys(text: &str) -> Option<Vec<String>> {
     serde_json::Deserializer::from_str(text)
         .deserialize_map(Keys)
         .ok()
+}
+
+pub(crate) fn is_notice(method: &str) -> bool {
+    NoticeKind::parse(method).is_some()
+}
+
+pub(crate) fn captures_analytics(agent: &Value, method: &str, params: &Value) -> bool {
+    let Some(kind) = NoticeKind::parse(method) else {
+        return false;
+    };
+    let thread = params["threadId"].as_str().filter(|s| !s.is_empty());
+    let turn = params["turnId"].as_str().filter(|s| !s.is_empty());
+    !matches!(kind, NoticeKind::HookStarted | NoticeKind::HookCompleted)
+        && !(thread.is_none() && kind.is_account_notice())
+        && !turn.is_some_and(|turn| agent["turnId"] != turn || agent["inFlight"] != true)
+        && !(matches!(
+            kind,
+            NoticeKind::Safety
+                | NoticeKind::Verification
+                | NoticeKind::ReviewStarted
+                | NoticeKind::ReviewCompleted
+        ) && (thread.is_none() || turn.is_none()))
+}
+
+/// Account notices can arrive before the first thread/agent exists. The caller
+/// has already checked the current account connection and owns its receipt.
+pub(crate) fn account_notice(
+    tx: &studio_runtime_store::Transaction<'_>,
+    method: &str,
+    params: &Value,
+    identity: &super::ProviderDeliveryIdentity,
+    at: f64,
+) -> Result<(), NotificationDispatchError> {
+    use rusqlite::{OptionalExtension, params};
+    use studio_runtime_store::{StoreError, SyncDocumentsRepository};
+    let account = identity
+        .provider_handle
+        .strip_prefix("account:")
+        .filter(|s| !s.is_empty())
+        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let kind = NoticeKind::parse(method)
+        .filter(|kind| kind.is_account_notice())
+        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let connection = format!("connection-{}", identity.generation);
+    let text = warning_text(kind, params);
+    let key = sha256_hex(
+        studio_runtime_store::python_json(&json!([
+            account,
+            connection,
+            method,
+            if method.starts_with("mcpServer/") {
+                params["name"].clone()
+            } else {
+                json!(text)
+            }
+        ]))
+        .as_bytes(),
+    );
+    if text.is_empty() {
+        tx.execute("DELETE FROM runtime_native_notices WHERE id=?1", [&key])
+            .map_err(StoreError::from)?;
+    } else {
+        let record = json!({"id":key,"accountKey":account,"connectionId":connection,"message":text,"details":params["details"],"at":at});
+        tx.execute("INSERT INTO runtime_native_notices(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            params![key,serde_json::to_string(&record)?]).map_err(StoreError::from)?;
+        tx.execute("DELETE FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND id NOT IN (SELECT id FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 ORDER BY json_extract(record,'$.at') DESC LIMIT ?2)", params![account, ACCOUNT_NOTICE_LIMIT]).map_err(StoreError::from)?;
+    }
+    // Preserve unrelated volatile sources and other accounts' notices. Replace
+    // only this connection owner's portion of the existing renderer projection.
+    let workspace: Option<String> = tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [], |row| row.get(0)).optional().map_err(StoreError::from)?;
+    if let Some(raw) = workspace {
+        let workspace: Value = serde_json::from_str(&raw)
+            .map_err(|_| super::stored("sync_entities", "workspace:current"))?;
+        let mut notices = match &workspace["value"]["nativeNotices"] {
+            Value::Null => Vec::new(),
+            Value::Array(notices) => notices.clone(),
+            _ => return Err(super::stored("sync_entities", "workspace:current")),
+        };
+        let version_warnings: Vec<_> = notices
+            .iter()
+            .filter(|notice| notice.get("connectionId").is_none())
+            .cloned()
+            .collect();
+        notices.retain(|notice| {
+            notice.get("connectionId").is_some() && notice["accountKey"] != account
+        });
+        let mut stmt = tx.prepare("SELECT id,record FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.connectionId')=?2 ORDER BY rowid").map_err(StoreError::from)?;
+        for row in stmt
+            .query_map(params![account, connection], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(StoreError::from)?
+        {
+            let (id, raw) = row.map_err(StoreError::from)?;
+            let record: Value = serde_json::from_str(&raw)
+                .map_err(|_| super::stored("runtime_native_notices", &id))?;
+            if record["id"] != id
+                || !record["message"].is_string()
+                || record["at"]
+                    .as_f64()
+                    .is_none_or(|at| !at.is_finite() || at < 0.0)
+            {
+                return Err(super::stored("runtime_native_notices", &id));
+            }
+            notices.push(record);
+        }
+        notices.extend(version_warnings);
+        SyncDocumentsRepository::patch_entity(
+            tx,
+            "workspace",
+            "current",
+            json!({"nativeNotices":notices}),
+        )?;
+    }
+    Ok(())
 }

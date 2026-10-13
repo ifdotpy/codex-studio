@@ -31,22 +31,6 @@ pub(super) fn apply(
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
     if let Some(kind) = notices::NoticeKind::parse(method) {
-        if p["threadId"].as_str().is_none_or(str::is_empty)
-            && matches!(
-                kind,
-                notices::NoticeKind::Warning
-                    | notices::NoticeKind::Guardian
-                    | notices::NoticeKind::Config
-                    | notices::NoticeKind::Deprecation
-                    | notices::NoticeKind::McpStartup
-                    | notices::NoticeKind::McpLogin
-                    | notices::NoticeKind::StrictReview
-                    | notices::NoticeKind::AuthStarted
-                    | notices::NoticeKind::AuthCompleted
-            )
-        {
-            return Ok(Some(required(NotificationDependency::AccountNotice)));
-        }
         let item_id = format!(
             "{id}:native-notice:hook:{}",
             p["run"]["id"].as_str().unwrap_or_default()
@@ -82,7 +66,6 @@ pub(super) fn apply(
         "account/login/completed" => Some(NotificationDependency::AccountLogin),
         "account/updated" => Some(NotificationDependency::AccountRefresh),
         "account/rateLimits/updated" => Some(NotificationDependency::RateLimits),
-        "provider/generationStarted" => Some(NotificationDependency::TokenRate),
         "command/exec/outputDelta" => Some(NotificationDependency::MonitorOutput),
         "turn/started" | "turn/completed" => Some(NotificationDependency::TurnLifecycle),
         kind if kind.starts_with("thread/realtime/") => Some(NotificationDependency::Realtime),
@@ -287,7 +270,10 @@ fn turn(agent: &Value, params: &Value) -> Value {
 fn required(service: NotificationDependency) -> DispatchOutcome {
     DispatchOutcome::RequiresService { service }
 }
-fn put_task(tx: &Transaction<'_>, task: &Value) -> Result<(), NotificationDispatchError> {
+pub(super) fn put_task(
+    tx: &Transaction<'_>,
+    task: &Value,
+) -> Result<(), NotificationDispatchError> {
     checked("runtime_tasks", task)?;
     Table::<TaskRecord>::new(tx).put(&TaskRecord::from_value(task.clone())?)?;
     let migrated: bool = tx
@@ -353,6 +339,7 @@ pub(super) fn flush_command(
         .turn
         .as_deref()
         .is_some_and(|turn| agent["turnId"] != turn);
+    streams.flush_analytics(key, agent);
     if stale
         && !task
             .as_ref()
@@ -451,7 +438,7 @@ fn command_base(saved: Option<&Value>, task: Option<&Value>) -> String {
     super::suffix(text, items::TOOL_OUTPUT_CHARS)
 }
 
-fn write_historical_item(
+pub(super) fn write_historical_item(
     tx: &Transaction<'_>,
     agent: &str,
     p: &Value,

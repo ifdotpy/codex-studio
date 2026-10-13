@@ -86,14 +86,12 @@ impl studio_runtime_services::notification_dispatch::NotificationEffects for Cap
     }
 }
 fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
-    let publication =
-        studio_runtime_services::notification_dispatch::PublicationContext::load(store.root())
-            .map_err(|e| e.to_string())?;
     use studio_runtime_providers::LineDecoder;
     use studio_runtime_services::notification_dispatch::{
-        NotificationStreamBuffer, ProviderDeliveryIdentity,
+        NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext,
         dispatch_notification_with_effects as dispatch_notification,
     };
+    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
     if case["submission"] == true {
         use studio_runtime_services::notification_dispatch::{
             PreparedSubmission, SubmittedInput, record_user_submission,
@@ -141,7 +139,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             Ok::<_,studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         }).map_err(|e|e.to_string())?;
         let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',99.0) WHERE id='agent'", []).expect("delete fixture agent");
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1234.5) WHERE id='agent'", []).map_err(studio_runtime_store::StoreError::from)?;
             let before = tx.total_changes();
             assert_eq!(record_user_submission(tx,"agent",&submission)?,result);
             assert_eq!(before, tx.total_changes(), "saved replay depends on mutable agent");
@@ -150,11 +148,57 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         assert!(deleted_replay.is_err());
         return Ok(json!([result]));
     }
-    let effects = CapturedEffects(prepared);
+    let captured_effects = CapturedEffects(prepared);
+    let runtime_effects =
+        studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
+    let effects: &dyn studio_runtime_services::notification_dispatch::NotificationEffects =
+        if case["runtime_effects"] == true {
+            &runtime_effects
+        } else {
+            &captured_effects
+        };
+    let mut handoff = Vec::new();
+    let mut analytics_overflow = 0u64;
     let mut results = Vec::new();
     let mut streams = NotificationStreamBuffer::default();
     for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
         let agent_id = step["agent"].as_str().unwrap_or("agent");
+        if step["recover_task"] == true {
+            use studio_runtime_services::notification_dispatch::{
+                NotificationDispatchError, recover_task_in_transaction,
+            };
+            use studio_runtime_store::NotificationDispatchRepository;
+            let recover = |tx:&studio_runtime_store::Transaction<'_>| -> Result<(),NotificationDispatchError> {
+                let agent=NotificationDispatchRepository::agent_record(tx,"agent")?.expect("agent");
+                let raw:String=tx.query_row("SELECT record FROM runtime_tasks WHERE id='agent:tool'",[],|r|r.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+                let previous:Value=serde_json::from_str(&raw)?;
+                let before=raw_rows(tx);
+                let mut stale=previous.clone(); stale["name"]=json!("stale snapshot");
+                assert!(recover_task_in_transaction(tx,&agent,&stale,&step["frame"]["params"]["item"],1234.5).is_err());
+                assert_eq!(before,raw_rows(tx),"stale recovery snapshot wrote rows");
+                recover_task_in_transaction(tx,&agent,&previous,&step["frame"]["params"]["item"],1234.5)
+            };
+            let before = store
+                .transaction(|tx| Ok(raw_rows(tx)))
+                .map_err(|e| e.to_string())?;
+            let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
+                recover(tx)?;
+                Err(NotificationDispatchError::InvalidNotification)
+            });
+            assert!(rollback.is_err());
+            assert_eq!(
+                before,
+                store
+                    .transaction(|tx| Ok(raw_rows(tx)))
+                    .map_err(|e| e.to_string())?,
+                "recovery rollback leaked task/transcript"
+            );
+            write_failpoints(store, |tx| recover(tx))?;
+            store.transaction_with(recover).map_err(|e| e.to_string())?;
+            results.push(json!({"status":"written"}));
+            continue;
+        }
+
         let mut bytes = serde_json::to_vec(&step["frame"]).expect("frame JSON");
         bytes.push(b'\n');
         let frame = LineDecoder::new().push(&bytes).expect("frame").remove(0);
@@ -172,7 +216,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             return store.transaction_with(|tx| {
                 let before = raw_rows(tx);
                 let error = dispatch_notification(
-                    tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects,
+                    tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects,
                 ).expect_err("missing service must refuse before acknowledgement");
                 assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
@@ -184,7 +228,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             let refusal = store.transaction_with(|tx| {
                 tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
                 let before = raw_rows(tx);
-                let refusal = dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects).expect_err("late failure must reach the service caller");
+                let refusal = dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects).expect_err("late failure must reach the service caller");
                 assert_eq!(before, raw_rows(tx), "service leaked rows after caller caught its error");
                 assert_eq!(streams, original_streams, "service leaked stream state");
                 tx.execute_batch("DROP TRIGGER corpus_late_failure; INSERT INTO corpus_caller VALUES ('caller committed');")?;
@@ -202,6 +246,10 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 .expect("unrelated caller work committed");
             return Err(refusal);
         }
+        if case["effect_matrix"] == true && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none()
+        {
+            effect_failpoints(store, &identity, &frame)?;
+        }
         if full_failpoints(case) {
             write_failpoints(store, |tx| {
                 dispatch_notification(
@@ -212,14 +260,14 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     &identity,
                     &frame,
                     1234.5,
-                    &effects,
+                    effects,
                 )
                 .map(|_| ())
             })?;
         }
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            rolled = Some(dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects)?);
+            rolled = Some(dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects)?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         });
         assert!(rollback.is_err());
@@ -236,7 +284,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     &identity,
                     &frame,
                     1234.5,
-                    &effects,
+                    effects,
                 )
             })
             .map_err(|e| e.to_string())?;
@@ -256,10 +304,14 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     &identity,
                     &frame,
                     9876.0,
-                    &effects,
+                    effects,
                 )?;
                 assert_eq!(before, tx.total_changes(), "replay wrote SQLite");
                 assert!(replay.stream_update.is_none(), "replay changed buffer");
+                assert!(
+                    replay.post_commit.is_empty(),
+                    "replay repeated external effect"
+                );
                 Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(
                     replay,
                 )
@@ -279,13 +331,25 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .remove(0);
         store.transaction_with(|tx| {
             let before = tx.total_changes();
-            assert!(matches!(dispatch_notification(tx,agent_id,&publication,&streams,&identity,&conflict,1234.5,&effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
+            assert!(matches!(dispatch_notification(tx,agent_id,&publication,&streams,&identity,&conflict,1234.5,effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
             assert_eq!(before,tx.total_changes());
             Ok::<_,studio_runtime_store::StoreError>(())
         }).map_err(|e|e.to_string())?;
+        analytics_overflow += result.post_commit.analytics_overflow;
+        for effect in &result.post_commit.effects {
+            use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
+            let sink = CommittedSink { store };
+            sink.publish(effect).map_err(|e| e.to_string())?;
+            handoff.push(post_commit_value(effect));
+        }
         results.push(json!(result.outcome));
         if let Some(update) = result.stream_update {
-            streams = update;
+            // The worker persists this buffer with the receipt. Exercise the
+            // restart representation, including pending analytic identities.
+            streams =
+                serde_json::from_slice(&serde_json::to_vec(&update).expect("durable stream JSON"))
+                    .expect("restore stream buffer");
+            assert_eq!(streams, update);
         }
         if let Some(bytes) = step["expected_pending_bytes"].as_u64() {
             let buffered = serde_json::to_value(&streams).expect("stream state");
@@ -308,7 +372,26 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         }
         if step["tick"] == true {
             flush_agents(store, case, &mut streams)?;
+            let batch = streams.take_post_commit().map_err(|e| e.to_string())?;
+            analytics_overflow += batch.analytics_overflow;
+            for effect in batch.effects {
+                use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
+                CommittedSink { store }
+                    .publish(&effect)
+                    .map_err(|error| error.to_string())?;
+                handoff.push(post_commit_value(&effect));
+            }
         }
+    }
+    if case["advance_before_flush"] == true {
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.turnId','replay-turn-2') WHERE id='agent'",[])?;
+            // Keep the canonical projection in step with Python.put.
+            let raw:String=tx.query_row("SELECT record FROM runtime_agents WHERE id='agent'",[],|r|r.get(0))?;
+            let agent:Value=serde_json::from_str(&raw)?;
+            studio_runtime_store::SyncDocumentsRepository::patch_entity(tx,"agent","agent",json!({"turnId":agent["turnId"]}))?;
+            Ok(())
+        }).map_err(|e|e.to_string())?;
     }
     if full_failpoints(case) {
         write_failpoints(store, |tx| {
@@ -323,7 +406,198 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         })?;
     }
     flush_agents(store, case, &mut streams)?;
-    Ok(json!(results))
+    let batch = streams.take_post_commit().map_err(|e| e.to_string())?;
+    analytics_overflow += batch.analytics_overflow;
+    for effect in batch.effects {
+        use studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink;
+        CommittedSink { store }
+            .publish(&effect)
+            .map_err(|error| error.to_string())?;
+        handoff.push(post_commit_value(&effect));
+    }
+    if case["runtime_effects"] == true && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none() {
+        let expected = prepared["post_commit"]
+            .as_array()
+            .expect("Python post-commit captures");
+        let selected: Vec<_> = handoff
+            .iter()
+            .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
+            .cloned()
+            .collect();
+        let mut diff = vec![];
+        differences(
+            Some(&json!(expected)),
+            Some(&json!(selected)),
+            "/handoff",
+            &mut diff,
+        );
+        if !diff.is_empty() {
+            return Err(format!(
+                "{}: handoff differences: {}",
+                case["id"],
+                json!(diff)
+            ));
+        }
+    }
+    if case["runtime_effects"] == true && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none() {
+        assert_eq!(
+            json!(analytics_overflow),
+            prepared["analytics_overflow"],
+            "analytics overflow parity"
+        );
+    }
+    if case["analytics_semantics"] == true {
+        Ok(json!({"outcomes":results,"handoff":handoff,"analytics_overflow":analytics_overflow}))
+    } else {
+        Ok(json!(results))
+    }
+}
+
+struct CommittedSink<'a> {
+    store: &'a RuntimeStore,
+}
+impl studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink
+    for CommittedSink<'_>
+{
+    fn publish(
+        &self,
+        effect: &studio_runtime_services::notification_dispatch::NotificationPostCommit,
+    ) -> Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> {
+        use studio_runtime_services::notification_dispatch::NotificationPostCommit;
+        let observation = match effect {
+            NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::AnalyticsStream { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+        };
+        let identity = &observation.delivery;
+        let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
+        let receipt = format!(
+            "provider-notification:{}",
+            studio_runtime_store::sha256_hex(&signature)
+        );
+        let read = self.store.read()?;
+        assert!(read.is_autocommit());
+        assert_eq!(
+            read.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id=?1",
+                [receipt],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("receipt"),
+            1,
+            "publish preceded receipt commit"
+        );
+        if let NotificationPostCommit::Analytics {
+            budget_capture_value: Some(tokens),
+            ..
+        } = effect
+        {
+            let agent = observation.agent.as_ref().expect("budget owner")["id"]
+                .as_str()
+                .expect("agent");
+            assert_eq!(
+                read.query_row(
+                    "SELECT json_extract(record,'$.tokensUsed') FROM runtime_agents WHERE id=?1",
+                    [agent],
+                    |r| r.get::<_, i64>(0)
+                )
+                .expect("committed budget"),
+                i64::try_from(*tokens).expect("bounded token count")
+            );
+        }
+        Ok(())
+    }
+}
+
+fn post_commit_value(
+    effect: &studio_runtime_services::notification_dispatch::NotificationPostCommit,
+) -> Value {
+    use studio_runtime_services::notification_dispatch::NotificationPostCommit;
+    let (kind, observation, captured) = match effect {
+        NotificationPostCommit::Analytics {
+            observation,
+            budget_capture_value,
+        } => ("analytics", observation, *budget_capture_value),
+        NotificationPostCommit::AnalyticsStream { observation, .. } => {
+            ("analytics", observation, None)
+        }
+        NotificationPostCommit::TokenRateStream(observation) => ("stream", observation, None),
+        NotificationPostCommit::TokenRateAssociation(observation) => {
+            ("association", observation, None)
+        }
+    };
+    let mut value = json!({"kind":kind, "agent":observation.agent, "method":observation.method, "params":observation.params,
+        "account":observation.delivery.provider_handle.strip_prefix("account:"),
+        "connection":format!("connection-{}", observation.delivery.generation),
+        "at":if kind=="analytics" { observation.observed_at } else { observation.provider_at },
+        "budget_capture_value":captured});
+    if let NotificationPostCommit::AnalyticsStream { metrics, .. } = effect {
+        value["stream_metrics"] = serde_json::to_value(metrics).expect("metrics");
+    }
+    value
+}
+
+/// Fail immediately before and after each transactional effect, then let the
+/// ordinary corpus call commit and replay the same provider delivery.
+fn effect_failpoints(
+    store: &RuntimeStore,
+    identity: &studio_runtime_services::notification_dispatch::ProviderDeliveryIdentity,
+    frame: &studio_runtime_providers::Frame,
+) -> Result<(), String> {
+    use studio_runtime_services::notification_dispatch::{
+        NotificationDispatchError as Error, NotificationEffects, NotificationStreamBuffer,
+        PublicationContext, dispatch_notification_with_effects,
+    };
+    use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
+    use studio_runtime_store::{StoreError, Transaction};
+    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    struct Failure(u8);
+    impl NotificationEffects for Failure {
+        fn capture_usage(
+            &self,
+            tx: &Transaction<'_>,
+            agent: &mut Value,
+            params: &Value,
+            at: f64,
+        ) -> Result<(), Error> {
+            if self.0 == 0 {
+                return Err(Error::InvalidNotification);
+            }
+            RuntimeNotificationEffects.capture_usage(tx, agent, params, at)?;
+            if self.0 == 1 {
+                return Err(Error::InvalidNotification);
+            }
+            Ok(())
+        }
+        fn capture_move_cache(
+            &self,
+            tx: &Transaction<'_>,
+            agent: &Value,
+            params: &Value,
+            at: f64,
+        ) -> Result<(), Error> {
+            if self.0 == 2 {
+                return Err(Error::InvalidNotification);
+            }
+            RuntimeNotificationEffects.capture_move_cache(tx, agent, params, at)?;
+            Err(Error::InvalidNotification)
+        }
+    }
+    for phase in 0..=3 {
+        let result: Result<(), Error> = store.transaction_with(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.movedFrom',json('{\"server\":\"remote\"}')) WHERE id='agent'", []).map_err(StoreError::from)?;
+            let before = raw_rows(tx);
+            let failure = Failure(phase);
+            let effects: &dyn NotificationEffects = &failure;
+            let result = dispatch_notification_with_effects(tx, "agent", &publication, &NotificationStreamBuffer::default(), identity, frame, 1234.5, effects);
+            assert!(result.is_err(), "effect boundary {phase} must fail");
+            assert_eq!(before, raw_rows(tx), "effect boundary {phase} leaked rows/receipt");
+            Err(Error::InvalidNotification)
+        });
+        assert!(result.is_err());
+    }
+    Ok(())
 }
 
 static WRITE_FAILURE_POINTS: std::sync::atomic::AtomicUsize =
@@ -414,6 +688,9 @@ fn flush_agents(
     case: &Value,
     streams: &mut studio_runtime_services::notification_dispatch::NotificationStreamBuffer,
 ) -> Result<(), String> {
+    if case["account_only"] == true {
+        return Ok(());
+    }
     if let Some(agents) = case["flush_agents"].as_array() {
         for agent in agents {
             flush(store, agent.as_str().expect("agent"), streams)?;
@@ -430,11 +707,9 @@ fn flush(
     streams: &mut studio_runtime_services::notification_dispatch::NotificationStreamBuffer,
 ) -> Result<(), String> {
     use studio_runtime_services::notification_dispatch::{
-        NotificationDispatchError, flush_notification_streams,
+        NotificationDispatchError, PublicationContext, flush_notification_streams,
     };
-    let publication =
-        studio_runtime_services::notification_dispatch::PublicationContext::load(store.root())
-            .map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
     let mut rolled = None;
     let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
         rolled = Some(flush_notification_streams(
@@ -449,7 +724,13 @@ fn flush(
     assert!(rollback.is_err());
     let result = store
         .transaction_with(|tx| {
-            flush_notification_streams(tx, agent_id, &publication, streams, 1234.5)
+            flush_notification_streams(
+                tx,
+                agent_id,
+                &publication,
+                streams,
+                1234.5,
+            )
         })
         .map_err(|e| e.to_string())?;
     assert_eq!(
@@ -473,6 +754,9 @@ fn differences(python: Option<&Value>, rust: Option<&Value>, path: &str, out: &m
             for i in 0..a.len().max(b.len()) { differences(a.get(i),b.get(i),&format!("{path}/{i}"),out); }
         },
         _ if python==rust=>{},
+        // JSON has one numeric domain. Treat 0 and 0.0 equally, without
+        // rounding integers outside the exactly representable f64 range.
+        (Some(Value::Number(a)), Some(Value::Number(b))) if (a.is_f64() || b.is_f64()) && a.as_f64().zip(b.as_f64()).is_some_and(|(a,b)| a == b && a.abs() <= 9_007_199_254_740_992.0) => {},
         _=>out.push(json!({"path":path,"python":python,"rust":rust,"pythonPresent":python.is_some(),"rustPresent":rust.is_some()})),
     }
 }
@@ -565,48 +849,78 @@ fn python_written_notification_corpus() {
             .expect("replay after lost acknowledgement");
         return;
     }
-    corpus(std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some());
+    corpus(
+        std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some(),
+        false,
+    );
 }
 
-fn corpus(full: bool) {
-    let corpus_started = std::time::Instant::now();
-    let cases: Vec<Value> =
-        serde_json::from_str(include_str!("turn_lifecycle/notification_cases.json"))
-            .expect("corpus data");
-    let coverage: Value =
-        serde_json::from_str(include_str!("turn_lifecycle/notification_coverage.json"))
-            .expect("coverage manifest");
-    assert_eq!(
-        coverage["counts"]["total"].as_u64(),
-        Some(cases.len() as u64)
+#[test]
+fn wave7_p06_runtime_notification_corpus() {
+    corpus(
+        std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some(),
+        true,
     );
-    for finding in coverage["review_findings"].as_array().expect("findings") {
-        for id in finding["cases"].as_array().expect("witnesses") {
-            assert!(
-                cases
-                    .iter()
-                    .any(|case| case["id"] == *id && case["tier"] == "fast"),
-                "review witness missing from fast tier: {id}"
-            );
+}
+
+fn corpus(full: bool, runtime_effects: bool) {
+    let corpus_started = std::time::Instant::now();
+    let mut cases: Vec<Value> = serde_json::from_str(if runtime_effects {
+        include_str!("wave7_p06_notification_cases.json")
+    } else {
+        include_str!("turn_lifecycle/notification_cases.json")
+    })
+    .expect("corpus data");
+    for case in &mut cases {
+        if let Some(count) = case["empty_deltas"].as_u64() {
+            case["steps"] = json!(vec![case["steps"][0].clone(); count as usize]);
+            case["return"] = json!(vec![json!({"status":"written"}); count as usize]);
+        }
+        if let Some(count) = case["many_streams"].as_u64() {
+            case["steps"] = json!((0..count).map(|i|json!({"frame":{"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"replay-turn-1","itemId":format!("stream-{i}"),"delta":"x"}}})).collect::<Vec<_>>());
+            case["return"] = json!(vec![json!({"status":"written"}); count as usize]);
         }
     }
-    let kinds = |fast: bool| -> std::collections::BTreeSet<String> {
-        cases
-            .iter()
-            .filter(|case| !fast || case["tier"] == "fast")
-            .flat_map(|case| case["steps"].as_array().into_iter().flatten())
-            .map(|step| step["frame"]["method"].as_str().expect("method").to_owned())
-            .collect()
-    };
-    assert_eq!(
-        kinds(true),
-        kinds(false),
-        "default must exercise every method"
-    );
+    if !runtime_effects {
+        let coverage: Value =
+            serde_json::from_str(include_str!("turn_lifecycle/notification_coverage.json"))
+                .expect("coverage manifest");
+        assert_eq!(
+            coverage["counts"]["total"].as_u64(),
+            Some(cases.len() as u64)
+        );
+        for finding in coverage["review_findings"].as_array().expect("findings") {
+            for id in finding["cases"].as_array().expect("witnesses") {
+                assert!(
+                    cases
+                        .iter()
+                        .any(|case| case["id"] == *id && case["tier"] == "fast"),
+                    "review witness missing from fast tier: {id}"
+                );
+            }
+        }
+        let kinds = |fast: bool| -> std::collections::BTreeSet<String> {
+            cases
+                .iter()
+                .filter(|case| !fast || case["tier"] == "fast")
+                .flat_map(|case| case["steps"].as_array().into_iter().flatten())
+                .map(|step| step["frame"]["method"].as_str().expect("method").to_owned())
+                .collect()
+        };
+        assert_eq!(
+            kinds(true),
+            kinds(false),
+            "default must exercise every method"
+        );
+    }
     let scratch = std::env::var_os("NOTIFICATION_CORPUS_STATE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let root = State(scratch.join(format!("notification-corpus-{}", std::process::id())));
+    let root = State(scratch.join(format!(
+        "notification-corpus-{}-{}",
+        std::process::id(),
+        runtime_effects
+    )));
     fs::create_dir(&root.0).expect("unique corpus state");
     let mut oracle = Oracle::new(&root.0);
     let mut report = vec![];
@@ -668,7 +982,9 @@ fn corpus(full: bool) {
                 continue;
             }
         };
-        let prepared = if case["submission"] == true {
+        let prepared = if runtime_effects {
+            &expected
+        } else if case["submission"] == true {
             &expected["before"]["prepared"]
         } else {
             &expected["captures"]
@@ -676,7 +992,11 @@ fn corpus(full: bool) {
         let first = apply(&store, case, prepared);
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
-            assert_eq!(value, &case["return"], "{id}: entry-point result");
+            assert_eq!(
+                value.get("outcomes").unwrap_or(value),
+                &case["return"],
+                "{id}: entry-point result"
+            );
         }
         drop(store);
         if case["crash_replay"] == true {
@@ -727,6 +1047,17 @@ fn corpus(full: bool) {
             continue;
         }
         let mut diff = vec![];
+        if case["analytics_semantics"] == true
+            && let Ok(result) = &first
+        {
+            let analytics = oracle.call(json!({"command":"post_commit","module":"notification_dispatch","root":rust,"effects":result["handoff"]}));
+            differences(
+                Some(&expected["analytics"]),
+                Some(&analytics),
+                "/analytics",
+                &mut diff,
+            );
+        }
         let expected_after = expected_with_deviations(expected["after"].clone(), case);
         differences(Some(&expected_after), Some(&actual), "", &mut diff);
         let expected_error = case["expect_refusal"].as_str().map(|e| {
@@ -754,6 +1085,11 @@ fn corpus(full: bool) {
     let report_path = std::env::var_os("NOTIFICATION_CORPUS_REPORT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("notification-corpus-report.json"));
+    let report_path = if runtime_effects {
+        report_path.with_extension("runtime-effects.json")
+    } else {
+        report_path
+    };
     fs::write(
         &report_path,
         serde_json::to_vec_pretty(&report).expect("report JSON"),
@@ -792,3 +1128,6 @@ fn corpus(full: bool) {
         report_path.display()
     );
 }
+
+#[path = "wave7_p06/publication.rs"]
+mod publication;

@@ -1,0 +1,2209 @@
+[
+  {
+    "id": "p06-budget-live",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-duplicate-notice",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-counter-growth",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 90
+              },
+              "last": {
+                "totalTokens": 48
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-counter-reset",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 3
+              },
+              "last": {
+                "totalTokens": 3
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-exact-response",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            },
+            "responseId": "response-a",
+            "rawTokenUsageRecord": {
+              "response_id": "response-a"
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-exact-response-duplicate",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            },
+            "responseId": "response-a",
+            "rawTokenUsageRecord": {
+              "response_id": "response-a"
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            },
+            "responseId": "response-a",
+            "rawTokenUsageRecord": {
+              "response_id": "response-a"
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-inherited-total",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "agent": {
+      "tokensUsed": 100
+    },
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-budget-lost-ack-reopen",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42
+              },
+              "modelContextWindow": 1024
+            },
+            "responseId": "response-b",
+            "rawTokenUsageRecord": {
+              "response_id": "response-b"
+            }
+          }
+        }
+      }
+    ],
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-account-startup-warning",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "startup diagnostic",
+            "details": "before any thread"
+          }
+        },
+        "agent": ""
+      }
+    ],
+    "account_only": true,
+    "fault_matrix": false,
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-account-mcp-clear",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "failed",
+            "error": "unavailable"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "ready"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-account-empty-warning",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": ""
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-account-guardian-quiet",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "guardianWarning",
+          "params": {
+            "message": "Automatic approval review approved (safe)"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-account-auth-notice",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryStarted",
+          "params": {
+            "message": "Signing in"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryCompleted",
+          "params": {
+            "message": "Signed in"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-generation-time",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "provider/generationStarted",
+          "params": {
+            "threadId": "thread",
+            "timestamp": 1230.0
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-native-notice-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "details": "Details",
+            "message": "A warning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "guardianWarning",
+          "params": {
+            "message": "Automatic approval review approved (safe)",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "configWarning",
+          "params": {
+            "summary": "Configuration warning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "deprecationNotice",
+          "params": {
+            "message": "Deprecated option",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "error": "Stopped",
+            "name": "Tool",
+            "status": "failed",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/oauthLogin/completed",
+          "params": {
+            "error": "Login failed",
+            "name": "Tool",
+            "success": false,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "autoApprovalReview/strictReviewRequired",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryStarted",
+          "params": {
+            "message": "Restoring sign-in",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryCompleted",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/safetyBuffering/updated",
+          "params": {
+            "showBufferingUi": true,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/safetyBuffering/updated",
+          "params": {
+            "showBufferingUi": false,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/verification",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "verifications": ["trustedAccessForCyber"]
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/started",
+          "params": {
+            "review": {
+              "status": "inProgress"
+            },
+            "reviewId": "review",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/completed",
+          "params": {
+            "review": {
+              "status": "approved"
+            },
+            "reviewId": "review",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/completed",
+          "params": {
+            "review": {
+              "rationale": "Review needed",
+              "status": "denied"
+            },
+            "reviewId": "denied",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/started",
+          "params": {
+            "run": {
+              "entries": [
+                {
+                  "kind": "context",
+                  "text": "hidden"
+                },
+                {
+                  "kind": "warning",
+                  "text": "one"
+                },
+                {
+                  "kind": "warning",
+                  "text": "hidden two"
+                }
+              ],
+              "eventName": "beforeTool",
+              "id": "hook"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/completed",
+          "params": {
+            "run": {
+              "entries": [],
+              "id": "hook",
+              "status": "completed"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/started",
+          "params": {
+            "run": {
+              "id": "hook"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/completed",
+          "params": {
+            "run": {
+              "entries": [],
+              "id": "failed-hook",
+              "status": "failed",
+              "statusMessage": "Blocked"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "message": "Retry"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "willRetry": true
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/reasoning/textDelta",
+          "params": {
+            "delta": "reasoning",
+            "itemId": "reasoning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "codexErrorInfo": "activeTurnNotSteerable",
+              "message": "Cannot steer"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "codexErrorInfo": "misalignmentPolicyViolation",
+              "message": "Policy"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "willRetry": true
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "runtime_effects": true
+  },
+  {
+    "id": "p06-failed-tool-completion",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "startedAtMs": 100,
+            "completedAtMs": null,
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "tool": "read_file",
+              "status": "running",
+              "error": null
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "startedAtMs": 100,
+            "completedAtMs": 175,
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "tool": "read_file",
+              "status": "failed",
+              "error": {
+                "message": "Unavailable"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "runtime_effects": true
+  },
+  {
+    "id": "p06-deviation-questions",
+    "module": "notification_dispatch",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": "Choose",
+              "questions": [
+                {
+                  "title": "Choice?",
+                  "options": ["A", "B"]
+                }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "runtime_effects": true
+  },
+  {
+    "id": "p06-long-completion",
+    "module": "notification_dispatch",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          }
+        }
+      }
+    ],
+    "tier": "fast",
+    "agent": {
+      "startAttempt": {
+        "id": "private-attempt",
+        "submitted": true,
+        "responseError": "allowed"
+      },
+      "restartRecovery": {
+        "stage": "held"
+      }
+    },
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "runtime_effects": true
+  },
+  {
+    "id": "p06-stale-turn-D",
+    "module": "notification_dispatch",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "text"
+          }
+        }
+      }
+    ],
+    "agent": {
+      "turnId": "new-turn"
+    },
+    "tier": "fast",
+    "return": [
+      {
+        "reason": "stale-turn-item",
+        "status": "ignored"
+      }
+    ],
+    "runtime_effects": true,
+    "analytics_semantics": true
+  },
+  {
+    "id": "p06-account-existing-workspace",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "startup diagnostic",
+            "details": "before any thread"
+          }
+        },
+        "agent": ""
+      }
+    ],
+    "account_only": true,
+    "fault_matrix": false,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "workspace": true
+  },
+  {
+    "id": "p06-account-diagnostic-bound",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-0"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-2"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-3"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-4"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-5"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-6"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-7"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-8"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-9"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-10"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-11"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-12"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-13"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-14"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-15"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-16"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-17"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-18"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-19"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-20"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-21"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-22"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-23"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-24"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-25"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-26"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-27"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-28"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-29"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-30"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-31"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-32"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-33"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-34"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-35"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-36"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-37"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-38"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-39"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-40"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-41"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-42"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-43"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-44"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-45"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-46"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-47"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-48"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-49"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "warning-50"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "workspace": true,
+    "fault_matrix": false
+  },
+  {
+    "id": "p06-DSC-ticks0",
+    "module": "notification_dispatch",
+    "source": "review-3/stream-DSC-ticks0",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "before"
+          }
+        },
+        "tick": false
+      },
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": "snapshot"
+            }
+          }
+        },
+        "tick": false
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "answer",
+              "type": "agentMessage",
+              "text": ""
+            }
+          }
+        },
+        "tick": false
+      }
+    ],
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "runtime_effects": true,
+    "analytics_semantics": true
+  },
+  {
+    "id": "p06-command-output-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "hello",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": " world",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "exitCode": 0,
+              "id": "command",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "late",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "ignored",
+        "reason": "closed-stream"
+      }
+    ],
+    "runtime_effects": true,
+    "analytics_semantics": true
+  },
+  {
+    "id": "p06-command-output-character-bound",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "\u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c \u754c",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        },
+        "tick": true
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": " world",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "exitCode": 0,
+              "id": "command",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "late",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "ignored",
+        "reason": "closed-stream"
+      }
+    ],
+    "runtime_effects": true,
+    "analytics_semantics": true
+  },
+  {
+    "id": "p06-move-first-cache",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 4,
+                "inputTokens": 30
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "effect_matrix": true,
+    "move": true
+  },
+  {
+    "id": "p06-move-cache-first-observation-wins",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 3,
+                "cacheWriteInputTokens": 4,
+                "inputTokens": 30
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "tokenUsage": {
+              "total": {
+                "totalTokens": 42
+              },
+              "last": {
+                "totalTokens": 42,
+                "cachedInputTokens": 91
+              },
+              "modelContextWindow": 1024
+            }
+          }
+        }
+      }
+    ],
+    "fault_matrix": true,
+    "crash_replay": false,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "effect_matrix": false,
+    "move": true
+  },
+  {
+    "id": "p06-preserve-provider-warning",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "startup diagnostic",
+            "details": "before any thread"
+          }
+        },
+        "agent": ""
+      }
+    ],
+    "account_only": true,
+    "fault_matrix": false,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "workspace": true,
+    "provider_warning": true
+  },
+  {
+    "id": "p06-stale-buffered-text-analytics",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A4",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "advance_before_flush": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "late"
+          }
+        },
+        "tick": false
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-overflow-65-streams",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A3",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "advance_before_flush": false,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "late"
+          }
+        },
+        "tick": false
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "many_streams": 65
+  },
+  {
+    "id": "p06-recover-commandExecution",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A1-B1",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "commandExecution",
+              "command": "printf done",
+              "tool": "read_file"
+            }
+          }
+        }
+      },
+      {
+        "recover_task": true,
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "commandExecution",
+              "command": "printf done",
+              "tool": "read_file",
+              "status": "completed",
+              "exitCode": 0,
+              "aggregatedOutput": "recovered output"
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-recover-mcpToolCall",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A1-B1",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "command": "printf done",
+              "tool": "read_file"
+            }
+          }
+        }
+      },
+      {
+        "recover_task": true,
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "command": "printf done",
+              "tool": "read_file",
+              "status": "completed",
+              "exitCode": 0,
+              "aggregatedOutput": "recovered output"
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-preserve-version-on-native-clear",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "failed",
+            "error": "unavailable"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "ready"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false,
+    "provider_warning": true,
+    "workspace": true
+  }
+]

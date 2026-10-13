@@ -65,6 +65,7 @@ pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
 pub mod notification_dispatch;
+pub mod notification_runtime_effects;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;

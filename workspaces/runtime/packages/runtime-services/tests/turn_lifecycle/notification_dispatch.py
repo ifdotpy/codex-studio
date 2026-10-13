@@ -30,7 +30,8 @@ class ManualTimer:
 
 def snapshot(root):
     import __main__ as oracle
-    result = oracle.snapshot(root, tables=TABLES)
+    tables = TABLES + ('runtime_budget', 'runtime_budget_usage', 'runtime_agent_moves') if _real_effects else TABLES
+    result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
         # Rust durably stores only a base obscured by a later item/started.
         # Compare it to Python's live buffer before removing this exact internal
@@ -99,6 +100,12 @@ def seed(runtime, case):
         if case.get('submission'):
             agent['startAttempt']['events'] = ['input-' + str(i) for i in range(len(case.get('events', [{'kind':'user','text':'hello'}])))]
         agent.update(case.get('agent', {}))
+        if case.get('move'):
+            from codex_agent_move import AgentMoves, identity
+            agent['movedFrom'] = {'move': 'fixture-move', 'server':'peer'}
+            moves = AgentMoves.__new__(AgentMoves)
+            moves._save(db, dict(id=identity('fixture-move','target'), move='fixture-move', side='target', principal='peer', phase='active', created=700.0, deadline=900.0,
+                descriptor={'agent':copy.deepcopy(agent), 'acceptedResult':{'status':'accepted','requestId':'fixture-move'}}))
         if case.get('expect_refusal'):
             agent['corpusPrivate'] = 'SECRET_STORED_SENTINEL'
         for key in case.get('remove', []):
@@ -127,6 +134,19 @@ def seed(runtime, case):
                 elif event.get('no_metadata'):
                     db.execute('DELETE FROM runtime_event_meta WHERE id=?', (event_id,))
             db.execute("UPDATE runtime_events SET status='dispatching' WHERE agent='agent'")
+        if case.get('account_only'):
+            db.execute("DELETE FROM runtime_agents")
+            db.execute("DELETE FROM sync_entities WHERE collection='agent'")
+        if case.get('provider_warning'):
+            from codex_provider_versions import monitor
+            warning = dict(id='provider-version:default',accountKey='default',provider='codex',version='1.0',baseline='2.0',message='Upgrade provider',at=1234.5)
+            monitor(runtime).status = lambda: {'warnings':[warning]}
+        else:
+            from codex_provider_versions import monitor
+            monitor(runtime).status = lambda: {'warnings':[]}
+        if case.get('workspace'):
+            from codex_sync_entities import put as put_entity
+            put_entity(db, 'workspace', 'current', runtime.workspace_entity_view(db))
         if 'search_phase' in case:
             db.execute('UPDATE runtime_search_rollout SET phase=?', (case['search_phase'],))
     runtime._stream_buffer = codex_streaming.StreamBuffer(runtime)
@@ -226,6 +246,10 @@ def transition(runtime, case):
     with patch.object(codex_streaming.threading, 'Timer', ManualTimer), patch.object(time, 'time', lambda:1234.5):
         for index, step in enumerate(case['steps']):
             if step.get('rollback'): continue  # Discarded Rust caller transaction has no committed Python equivalent.
+            if step.get('recover_task'):
+                with runtime.db() as db:
+                    runtime.record_task(db,runtime.agent('agent',db),'item/completed',step['frame']['params'],True)
+                continue
             agent_id = step.get('agent', 'agent')
             frame = copy.deepcopy(step['frame'])
             signature = digest({'agent':agent_id, 'notification':frame})
@@ -233,7 +257,7 @@ def transition(runtime, case):
             params = frame.get('params', {})
             key = ('default', 'connection-' + str(generation), params.get('threadId'), params.get('turnId'), params.get('itemId'), frame['method'])
             outcome = {'status': 'ignored', 'reason': 'closed-stream'} if key in runtime._stream_buffer.closed else {'status': 'written'}
-            agent = runtime.agent(agent_id)
+            agent = runtime.agent(agent_id) if not case.get("account_only") else {}
             if agent.get('deletedAt'):
                 outcome = {'status':'ignored','reason':'deleted-agent'}
             elif (frame['method'] in {'item/started', 'item/completed', 'item/agentMessage/delta',
@@ -254,6 +278,10 @@ def transition(runtime, case):
             if step.get('tick'):
                 runtime._stream_buffer._tick()
         with runtime.db() as db:
+            if case.get('advance_before_flush'):
+                agent = runtime.agent('agent',db)
+                agent['turnId'] = 'replay-turn-2'
+                runtime.put(db,'agents',agent)
             runtime._stream_buffer.flush_locked(db, force=True)
 
 def digest(value):
@@ -264,6 +292,7 @@ def digest(value):
 # One Runtime holds the disposable root; each case receives an independent SQLite
 # backup, fresh stream buffer, and empty decoded-record cache.
 _runtime = None
+_real_effects = False
 _pristine = None
 _seeds = {}
 
@@ -274,13 +303,54 @@ def backup(source):
     return target
 
 
+def consume_stream_capture(db, effect):
+    """Reconstruct Python's real StreamBuffer closure from the aggregate port.
+
+    The scratch writer is inert: this exercises the unchanged analytics closure,
+    never the Rust transcript writer or a copy of the analytics correction SQL.
+    """
+    from types import SimpleNamespace
+    metrics, params = effect['stream_metrics'], effect['params']
+    rt = SimpleNamespace(closed=False, connection_current=lambda *_:True,
+        item=lambda *_a,**_k:None, put=lambda *_a,**_k:None, analytics_event=_runtime.analytics_event)
+    stream = codex_streaming.StreamBuffer(rt)
+    key = (effect['account'],effect['connection'],params['threadId'],params.get('turnId'),params['itemId'],effect['method'])
+    batches = []
+    for index, bucket in enumerate(metrics['hours']):
+        first = index == 0
+        batches.append((params['delta'] if first else '',bucket['count'],bucket['encoded_bytes'],
+            effect['at'] if first else bucket['hour'],params,
+            metrics['bytes'] if first else 0,metrics['characters'] if first else 0,metrics['lines'] if first else 0,None))
+    stream.entries[key] = {'base':'','batches':batches}
+    captures = []
+    with sqlite3.connect(':memory:') as scratch:
+        scratch.executescript('CREATE TABLE runtime_agents(id TEXT, record TEXT); CREATE TABLE runtime_items(id TEXT, record TEXT); CREATE TABLE runtime_tasks(id TEXT, record TEXT);')
+        scratch.execute('INSERT INTO runtime_agents VALUES (?,?)',(effect['agent']['id'],json.dumps(effect['agent'])))
+        scratch.execute('INSERT INTO runtime_items VALUES (?,?)',(effect['agent']['id']+':'+params['itemId'],json.dumps({'text':'{}'})))
+        stream.flush_locked(scratch,force=True,analytics_captures=captures)
+    assert len(captures) == 1
+    captures[0](db)
+
+
 def run_case(command, template, runtime_type):
+    global _runtime, _pristine, _real_effects
+    if command['command'] == 'post_commit':
+        with sqlite3.connect(pathlib.Path(command['root']) / 'analytics.sqlite3') as db, patch.object(time, 'time', lambda:1234.5):
+            db.row_factory = sqlite3.Row
+            for effect in command['effects']:
+                if effect['kind'] == 'analytics':
+                    if 'stream_metrics' in effect:
+                        consume_stream_capture(db, effect)
+                    else:
+                        _runtime.analytics_event(db, effect['agent'], effect['method'], effect['params'],
+                            at=effect['at'], budget_capture_value=effect['budget_capture_value'])
+        return analytics_snapshot(pathlib.Path(command['root']) / 'analytics.sqlite3')
     if command['command'] == 'metrics':
         import resource
         import os
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return {'userSeconds':usage.ru_utime,'systemSeconds':usage.ru_stime,'clockTicks':os.sysconf('SC_CLK_TCK')}
-    global _runtime, _pristine
+    _real_effects = command["case"].get("runtime_effects", False)
     if _runtime is None:
         root = pathlib.Path(command['root'])
         shutil.copytree(template, root)
@@ -288,7 +358,20 @@ def run_case(command, template, runtime_type):
         with _runtime.read_db() as db:
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
-    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets') if k in case}, sort_keys=True)
+    case = copy.deepcopy(case)
+    if case.get('empty_deltas'):
+        case['steps'] = [copy.deepcopy(case['steps'][0]) for _ in range(case['empty_deltas'])]
+    if case.get('many_streams'):
+        case['steps'] = [dict(frame={'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'replay-turn-1','itemId':f'stream-{i}','delta':'x'}}) for i in range(case['many_streams'])]
+
+    runtime.connection_ids = {'default': 'connection-7'}
+    from codex_provider_versions import monitor
+    warnings = [dict(id='provider-version:default',accountKey='default',provider='codex',version='1.0',baseline='2.0',message='Upgrade provider',at=1234.5)] if case.get('provider_warning') else []
+    monitor(runtime).status = lambda: {'warnings':warnings}
+    if case.get('analytics_semantics'):
+        with sqlite3.connect(template / 'analytics.sqlite3') as source, sqlite3.connect(runtime.analytics_db_path) as target:
+            source.backup(target)
+    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace','move','account_only','provider_warning') if k in case}, sort_keys=True)
     runtime.close_notification_database()
     runtime.__dict__.pop('_agent_records_cache', None)
     prepared_path = runtime.root.parent / 'prepared.json'
@@ -325,9 +408,42 @@ def run_case(command, template, runtime_type):
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
     runtime.corpus_captures = []
+    runtime.corpus_post_commit = []
+    runtime.corpus_analytics_overflow = 0
+    if _real_effects:
+        from codex_token_rate import token_rates
+        def scheduled(captures, *, overflow=0):
+            runtime.corpus_analytics_overflow += overflow
+            for operation, args, kwargs, size in captures:
+                if case.get('analytics_semantics'):
+                    with sqlite3.connect(runtime.analytics_db_path) as db:
+                        db.row_factory = sqlite3.Row
+                        operation(db, *args, **kwargs)
+                    continue
+                assert operation == runtime.analytics_event, 'unexpected analytics operation'
+                agent, method, params = args
+                runtime.corpus_post_commit.append(dict(kind='analytics', agent=copy.deepcopy(agent), method=method,
+                    params=copy.deepcopy(params), account=agent.get('accountKey', 'default'), connection='connection-7',
+                    at=kwargs['at'], budget_capture_value=kwargs.get('budget_capture_value')))
+        def association(observation):
+            runtime.corpus_post_commit.append(dict(kind='association', agent=observation.agent, method=observation.method,
+                params=observation.params, account=observation.account_key, connection=observation.connection_id,
+                at=observation.observed_at, budget_capture_value=None))
+        def stream(method, params, account, connection, at=None):
+            runtime.corpus_post_commit.append(dict(kind='stream', agent=None, method=method, params=copy.deepcopy(params),
+                account=account, connection=connection, at=at, budget_capture_value=None))
+        runtime.analytics_safe = Runtime.analytics_safe.__get__(runtime)
+        runtime.schedule_analytics_captures = scheduled
+        runtime._dispatch_token_rate_observation = association
+        token_rates(runtime).stream = stream
+    else:
+        runtime.analytics_safe = lambda *a, **k: None
+        runtime._dispatch_token_rate_observation = lambda *a, **k: None
     runtime.corpus_before_refusal = None
-    transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'beforeRefusal': runtime.corpus_before_refusal}
+    gmtime = time.gmtime
+    with patch.object(time, 'gmtime', lambda seconds=None: gmtime(1234.5 if seconds is None else seconds)):
+        transition(runtime, case)
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'post_commit': runtime.corpus_post_commit, 'analytics_overflow':runtime.corpus_analytics_overflow, 'analytics': analytics_snapshot(runtime.analytics_db_path) if case.get('analytics_semantics') else None, 'beforeRefusal': runtime.corpus_before_refusal}
 
 
 def close():
@@ -336,3 +452,20 @@ def close():
         _pristine.close()
     for saved, _, _ in _seeds.values():
         saved.close()
+
+
+def analytics_snapshot(path):
+    import __main__ as oracle
+    with sqlite3.connect(path) as db:
+        db.row_factory = sqlite3.Row
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'analytics_%' ORDER BY name")]
+        result = {}
+        for table in tables:
+            rows = []
+            for row in db.execute('SELECT * FROM "' + table + '"'):
+                record = dict(row)
+                if 'record' in record:
+                    record['record'] = json.loads(record['record'])
+                rows.append(oracle.normalize(record))
+            result[table] = sorted(rows, key=lambda row:json.dumps(row, sort_keys=True))
+        return result
