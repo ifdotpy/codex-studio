@@ -110,6 +110,9 @@ def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_
         params.update(operationId=operation, afterSeq=args.get("after_seq", 0))
         timeout = 15
     remote: GuestClient = client(runtime)
+    # The Mac service may have stopped since the VM started (only a VM start ensured it before);
+    # a check costs one local request.
+    ensure_service(remote.state_dir)
     output: list[str] = []
     length = 0
     result: dict[str, Any] | None = None
