@@ -822,3 +822,220 @@ pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError>
     }
     Err(RepairError::RewriteUnavailable)
 }
+
+/// The existing efficiency compiler supplies summaries. No user text is passed
+/// to it: only stored, turn-scoped Studio event records may be shortened.
+pub trait RepairEventSummary {
+    fn summarize(&self, event: &Value) -> Result<String, RepairError>;
+}
+
+/// Immutable rollout-copy decision. Filesystem identity, ancestry and fsync are
+/// the history owner's responsibility; this core never modifies a source file.
+pub struct HistoryRewrite {
+    records: Vec<Value>,
+    events: Vec<Value>,
+    thread: String,
+    terminal: String,
+}
+impl HistoryRewrite {
+    pub fn from_records(
+        records: Vec<Value>,
+        events: Vec<Value>,
+        thread: String,
+        terminal: String,
+    ) -> Result<Self, RepairError> {
+        if records.len() > MAX_TURNS
+            || events.len() > MAX_INPUTS
+            || serde_json::to_vec(&(&records, &events))
+                .map_err(|_| RepairError::Invalid("rewrite"))?
+                .len()
+                > MAX_CAPTURE_BYTES
+            || thread.is_empty()
+            || terminal.is_empty()
+        {
+            return Err(RepairError::Invalid("rewrite.bounds"));
+        }
+        let first = records
+            .first()
+            .ok_or(RepairError::Invalid("rewrite.records"))?;
+        if first["type"] != "session_meta" || first["payload"]["id"] != thread {
+            return Err(RepairError::Invalid("rewrite.thread"));
+        }
+        // Flattened ancestry and role versions need the shared history compiler.
+        if studio_runtime_store::truthy(first["payload"].get("history_base")) {
+            return Err(RepairError::RewriteUnavailable);
+        }
+        for event in &events {
+            if !matches!(
+                event["kind"].as_str(),
+                Some("monitor_exit" | "agent_message" | "work_review" | "work_decision")
+            ) {
+                return Err(RepairError::RewriteUnavailable);
+            }
+            for key in ["id", "turn_id", "text"] {
+                if !event[key].is_string() || (key != "text" && event[key] == "") {
+                    return Err(RepairError::Invalid("rewrite.event"));
+                }
+            }
+        }
+        Ok(Self {
+            records,
+            events,
+            thread,
+            terminal,
+        })
+    }
+    /// Return the full copy and exact matched event IDs. Missing, quoted,
+    /// ambiguous or differently scoped prefixes cannot authorize replacement.
+    pub fn rewrite(
+        &self,
+        import_thread: &str,
+        summaries: &impl RepairEventSummary,
+    ) -> Result<(Vec<Value>, Vec<String>), RepairError> {
+        if import_thread.is_empty() || import_thread == self.thread {
+            return Err(RepairError::Invalid("rewrite.importThread"));
+        }
+        let mut records = self.records.clone();
+        let mut matched: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        let mut turn = None;
+        let mut started = None;
+        let mut terminal = None;
+        for (index, record) in records.iter_mut().enumerate() {
+            if index == 0 {
+                record["payload"]["id"] = json!(import_thread);
+                continue;
+            }
+            match record["type"].as_str() {
+                Some("turn_context") => {
+                    turn = record["payload"]["turn_id"].as_str().map(str::to_owned);
+                    started = turn.clone();
+                }
+                Some("event_msg") => match record["payload"]["type"].as_str() {
+                    Some("task_started") => {
+                        started = record["payload"]["turn_id"].as_str().map(str::to_owned)
+                    }
+                    Some("task_complete" | "turn_aborted") => {
+                        terminal = record["payload"]["turn_id"].as_str().map(str::to_owned)
+                    }
+                    _ => {}
+                },
+                Some("response_item") => {
+                    if let Some(payload) = record.get_mut("payload") {
+                        self.rewrite_item(payload, turn.as_deref(), summaries, &mut matched)?;
+                    }
+                }
+                Some("compacted") => {
+                    if let Some(items) = record
+                        .get_mut("payload")
+                        .and_then(|p| p.get_mut("replacement_history"))
+                        .and_then(Value::as_array_mut)
+                    {
+                        for item in items {
+                            self.rewrite_item(item, None, summaries, &mut matched)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if started.as_deref() != Some(&self.terminal) || terminal != started {
+            return Err(RepairError::ReceiptHold);
+        }
+        if matched.values().any(|ids| ids.len() > 1) {
+            return Err(RepairError::Invalid("rewrite.ambiguousEvent"));
+        }
+        let ids = matched
+            .into_keys()
+            .map(|(_, id)| id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok((records, ids))
+    }
+    fn rewrite_item(
+        &self,
+        item: &mut Value,
+        turn: Option<&str>,
+        summaries: &impl RepairEventSummary,
+        matched: &mut BTreeMap<(String, String), BTreeSet<String>>,
+    ) -> Result<(), RepairError> {
+        if item["type"] != "message" || item["role"] != "user" {
+            return Ok(());
+        }
+        let Some(id) = item["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+        else {
+            return Ok(());
+        };
+        let turn = item["internal_chat_message_metadata_passthrough"]["turn_id"]
+            .as_str()
+            .or(turn)
+            .map(str::to_owned);
+        let Some(turn) = turn else {
+            return Ok(());
+        };
+        let Some(contents) = item["content"].as_array_mut() else {
+            return Ok(());
+        };
+        for content in contents {
+            if content["type"] != "input_text" {
+                continue;
+            }
+            let Some(text) = content["text"].as_str() else {
+                continue;
+            };
+            let mut rest = text;
+            let mut replacement = String::new();
+            while !rest.is_empty() {
+                let candidates = self
+                    .events
+                    .iter()
+                    .filter(|e| e["turn_id"] == turn)
+                    .filter_map(|event| {
+                        let prefix = format!(
+                            "[Orchestration event: {}]\n{}",
+                            event["kind"].as_str()?,
+                            event["text"].as_str()?
+                        );
+                        rest.strip_prefix(&prefix)
+                            .filter(|tail| tail.is_empty() || tail.starts_with("\n\n"))
+                            .map(|tail| (event, tail))
+                    })
+                    .collect::<Vec<_>>();
+                if candidates.len() != 1 {
+                    break;
+                }
+                let (event, tail) = candidates[0];
+                let event_id = event["id"]
+                    .as_str()
+                    .ok_or(RepairError::Invalid("rewrite.event.id"))?;
+                matched
+                    .entry((turn.clone(), event_id.to_owned()))
+                    .or_default()
+                    .insert(id.clone());
+                let summary = summaries.summarize(event)?;
+                if summary.len() > 3000 {
+                    return Err(RepairError::Invalid("rewrite.summary.bounds"));
+                }
+                replacement.push_str(&format!(
+                    "[Orchestration event: {}]\n{summary}",
+                    event["kind"]
+                        .as_str()
+                        .ok_or(RepairError::Invalid("rewrite.kind"))?
+                ));
+                rest = tail;
+                if let Some(tail) = rest.strip_prefix("\n\n") {
+                    replacement.push_str("\n\n");
+                    rest = tail;
+                }
+            }
+            if !replacement.is_empty() {
+                replacement.push_str(rest);
+                content["text"] = json!(replacement);
+            }
+        }
+        Ok(())
+    }
+}
