@@ -8,21 +8,18 @@ use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[
-        TableRequirement {
-            name: "runtime_rules",
-            columns: &["id", "record"],
-        },
-        TableRequirement {
-            name: "runtime_agents",
-            columns: &["id", "record"],
-        },
-    ],
+    tables: &[TableRequirement {
+        name: "runtime_agents",
+        columns: &["id", "record"],
+    }],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TableRequirement {
+        name: "runtime_rules",
+        columns: &["id", "record"],
+    }],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -202,7 +199,7 @@ mod tests {
         assert_eq!(agents[0].id, "a1");
         assert!(
             REQUIREMENTS
-                .tables
+                .bootstrap_tables
                 .iter()
                 .any(|table| table.name == "runtime_rules")
         );
