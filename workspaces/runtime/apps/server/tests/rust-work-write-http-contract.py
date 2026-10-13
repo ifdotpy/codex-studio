@@ -343,6 +343,40 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def post_as(self, agent_id, body):
         return self.backend.request("POST", "/api/work", body={"agent": agent_id, **body}, headers=self.headers())
 
+    def organization(self, body):
+        return self.backend.request("POST", "/api/organization", body=body, headers=self.headers())
+
+    def test_organization_effects_and_refusals(self):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            original = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()[0]
+        self.addCleanup(self.restore_agent_record, original)
+        organized = self.organization({"id": self.agent_id, "pinned": True, "project": "P16"})
+        self.assertEqual(organized.status, 200, organized.body[:1000])
+        self.assertTrue(organized.json()["pinned"])
+        self.assertEqual(organized.json()["project"], "P16")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+            agent = json.loads(row[0])
+            agent.update(threadId="thread-p16", lastCompletedTurn="turn-p16", lastCompletedTurnStatus="completed")
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+        state = {"thread_id": "thread-p16", "turn_id": "turn-p16", "read": True, "expected_revision": 0}
+        read = self.organization({"id": self.agent_id, "read_state": state})
+        self.assertEqual(read.status, 200, read.body[:1000])
+        self.assertEqual(read.json()["readState"], {"threadId": "thread-p16", "turnId": "turn-p16", "read": True, "revision": 1})
+        self.assertEqual(self.organization({"id": self.agent_id, "read_state": state}).status, 200)
+        stale = self.organization({"id": self.agent_id, "read_state": {**state, "read": False}})
+        self.assertEqual(stale.status, 400, stale.body[:1000])
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+            agent = json.loads(row[0]); agent["inFlight"] = True
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+        archive = self.organization({"id": self.agent_id, "archived": True})
+        self.assertEqual(archive.status, 400, archive.body[:1000])
+
+    def restore_agent_record(self, record):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (record, self.agent_id))
+
     def assert_matches_python(self, body):
         return self.assert_matches_python_as(self.agent_id, body)
 
@@ -877,7 +911,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         single = self.post({"action": "create", "title": "Blocked worker", "owner": self.worker_id, "status": "blocked", "id": "single-agent-delegation"})
         self.assertEqual(single.status, 400, single.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
-        with fixture_connection(self.backend.state / "canvas.sqlite3") as database:
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
             agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
