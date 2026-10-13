@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
+    "workspaces/runtime/apps/process-supervisor",
     "workspaces/runtime/apps/runtime-server",
     "workspaces/runtime/packages/operations",
     "workspaces/runtime/packages/operations-python",
@@ -45,7 +46,7 @@ serde_path_to_error = "=0.1.20"
 jsonschema = { version = "=0.49.9", default-features = false }
 mime_guess = "=2.0.5"
 notify = { version = "=8.2.0", default-features = false, features = ["macos_kqueue"] }
-rustix = { version = "=1.1.5", default-features = false, features = ["std", "process"] }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "process", "fs"] }
 process-wrap = { version = "=10.0.1", default-features = false, features = ["process-group", "std", "tokio1"] }
 tempfile = "=3.27.0"
 futures-util = "=0.3.34"

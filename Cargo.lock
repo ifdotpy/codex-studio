@@ -1951,6 +1951,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-process-supervisor"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "studio-runtime-process",
+ "tempfile",
+]
+
+[[package]]
 name = "studio-runtime-http"
 version = "0.1.0"
 dependencies = [
@@ -1979,12 +1988,15 @@ dependencies = [
 name = "studio-runtime-process"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "command-fds",
  "process-wrap",
+ "rustix",
  "serde",
  "serde_json",
  "strum",
  "studio-runtime-providers",
+ "studio-runtime-store",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2065,6 +2077,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-providers",
  "studio-runtime-schema",
  "tempfile",
  "thiserror",

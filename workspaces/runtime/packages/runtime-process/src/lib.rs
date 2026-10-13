@@ -12,6 +12,12 @@ pub mod provider_stdio;
 pub mod provider_task;
 #[cfg(unix)]
 pub mod stream_child;
+#[cfg(unix)]
+mod supervisor_child;
+#[cfg(unix)]
+pub mod supervisor_daemon;
+#[cfg(unix)]
+mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;

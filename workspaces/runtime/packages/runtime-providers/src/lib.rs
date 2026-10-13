@@ -5,6 +5,7 @@
 mod codec;
 mod connection;
 mod session;
+pub mod supervisor_v1;
 
 pub use codec::{
     CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES,
