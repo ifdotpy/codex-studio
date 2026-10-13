@@ -69,8 +69,11 @@ def run_forward(case):
             for raw in requests:
                 client = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
                 client.settimeout(2)
-                client.sendall(raw)
-                if b"\r\n\r\n" not in raw:
+                chunks_to_send = raw if isinstance(raw, list) else [raw]
+                for chunk in chunks_to_send:
+                    client.sendall(chunk)
+                wire = b"".join(chunks_to_send)
+                if b"\r\n\r\n" not in wire:
                     client.shutdown(socket.SHUT_WR)
                 chunks = []
                 while True:
@@ -137,7 +140,12 @@ def config_corpus(root):
         target_config = target_bits
         if name == "account-node":
             target_config = {"mcp_servers": {"node_repl": {
-                "command": str(node_path), "env": {"ACCOUNT_SETTING": "keep"}}}}
+                "command": str(node_path), "env": {
+                    "ACCOUNT_SETTING": "keep",
+                    "NODE_REPL_TRUSTED_CODE_PATHS": os.pathsep.join(
+                        ["", str(home), str(shared_home), str(home), ""]
+                    ),
+                }}}}
             target_bits = target_config
         if "node_repl" in target_bits.get("mcp_servers", {}) and target_bits["mcp_servers"]["node_repl"].get("command") == "/different/node":
             shared_config["mcp_servers"]["node_repl"]["command"] = str(node_path)
@@ -212,6 +220,71 @@ def paired_exchange_cases():
     return {"results": results, "calls": calls}
 
 
+def listener_lifecycle_witnesses():
+    redirect = {"host": "127.0.0.1", "port": 43210, "path": "/oauth/callback"}
+    expired_event = threading.Event()
+    expired = bridge.Forward("expiry", redirect, lambda *_: {},
+                             lambda *_: expired_event.set(), seconds=-1, listen_port=0)
+    expired.bind()
+    expired.start()
+    expired_closed = expired_event.wait(2)
+
+    runtime = SimpleNamespace(lock=threading.RLock())
+    data = {"server": "peer", "bridgeId": "2123456789abcdef0123456789abcdef",
+            "token": "0123456789abcdef", **redirect, "expiresAt": 2000.0}
+    accepted = threading.Barrier(9)
+    original_connection = bridge.Forward.connection
+
+    def barrier_connection(forward, connection):
+        accepted.wait(2)
+        return original_connection(forward, connection)
+
+    with patch.object(bridge.Forward, "connection", barrier_connection), \
+            patch.object(bridge.time, "time", return_value=1000.0):
+        bridge.open_remote_forward(runtime, data, lambda *_: {}, listen_port=0)
+        forward = runtime.__dict__["_browser_remote_forwards"][data["bridgeId"]]
+        clients = [socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+                   for _ in range(8)]
+        accepted.wait(2)
+        ninth = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+        ninth.settimeout(2)
+        ninth_closed = ninth.recv(1) == b""
+        ninth.close()
+        forward.close("oracle-cleanup")
+        for client in clients:
+            client.close()
+
+    entered, release = threading.Event(), threading.Event()
+    runtime = SimpleNamespace(lock=threading.RLock())
+    data["bridgeId"] = "3123456789abcdef0123456789abcdef"
+
+    def held_exchange(*_):
+        entered.set()
+        release.wait(2)
+        return {"status": 200, "body": base64.b64encode(b"ok").decode(), "done": False}
+
+    with patch.object(bridge.time, "time", return_value=1000.0):
+        bridge.open_remote_forward(runtime, data, held_exchange, listen_port=0)
+        forward = runtime.__dict__["_browser_remote_forwards"][data["bridgeId"]]
+        result = []
+
+        def client_call():
+            client = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+            client.sendall(b"GET /oauth/callback?code=x HTTP/1.1\r\n\r\n")
+            result.append(response_record(client.recv(4096)))
+            client.close()
+
+        client_thread = threading.Thread(target=client_call)
+        client_thread.start()
+        exchange_entered = entered.wait(2)
+        forward.close("oracle-close")
+        release.set()
+        client_thread.join(2)
+    return {"expiredClosed": expired_closed, "eightAdmitted": len(clients),
+            "ninthClosed": ninth_closed, "exchangeEntered": exchange_entered,
+            "responseAfterClose": bool(result and result[0] and result[0]["status"] == 200)}
+
+
 def main():
     cases = [
         {"name": "allowed-headers", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\nCookie: secret-cookie\r\nAuthorization: secret-auth\r\n\r\n"},
@@ -238,6 +311,17 @@ def main():
          "replies": [{"status": 200, "body": base64.b64encode(b"first").decode(), "done": False},
                      {"status": 200, "body": base64.b64encode(b"second").decode(), "done": True}]},
         {"name": "redirect-done", "reply": {"status": 302, "done": True}},
+        {"name": "fragmented-complete-head", "request": [
+            b"GET /oauth/callback?code=fragmented HTTP/1.1\r\nUser-Agent: frag",
+            b"mented-agent\r\nAccept: text/html\r\n\r\n"]},
+        {"name": "duplicate-content-length", "request":
+            b"GET /oauth/callback?code=duplicate HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n"},
+        {"name": "get-body", "request":
+            b"GET /oauth/callback?code=body HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc"},
+        {"name": "fifth-relay", "requests": [
+            b"GET /oauth/callback?code=relay HTTP/1.1\r\n\r\n" for _ in range(5)],
+         "replies": [{"status": 200, "body": base64.b64encode(b"ok").decode(), "done": False}
+                     for _ in range(5)]},
     ]
     forward = [{"name": case["name"], "python": run_forward(case)} for case in cases]
     # Expiry is a pre-bind refusal and must not create an active forward.
@@ -269,6 +353,7 @@ def main():
     root = Path(tempfile.mkdtemp(prefix="browser-oracle-"))
     output = {"forward": forward, "expired": expiry, "replay": replay,
               "conflict": conflicts, "pairedExchange": paired_exchange_cases(),
+              "lifecycle": listener_lifecycle_witnesses(),
               "config": config_corpus(root), "fixtureRoot": str(root)}
     print(json.dumps(output, sort_keys=True, separators=(",", ":")))
 

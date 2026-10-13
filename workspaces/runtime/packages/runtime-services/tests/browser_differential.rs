@@ -1,14 +1,17 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Value, json};
+use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use studio_runtime_services::browser::{
     BrowserConfigSnapshot, BrowserError, BrowserForwarder, ExchangeOutcome, ForwardInput,
     PairedExchange, prepare_browser_config,
 };
+use tokio::time::Instant;
 
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
@@ -22,33 +25,30 @@ struct Exchange {
 }
 
 impl PairedExchange for Exchange {
-    fn exchange(
-        &self,
-        server: &str,
-        action: &str,
-        payload: &Value,
-        request_id: &str,
+    fn exchange<'a>(
+        &'a self,
+        server: &'a str,
+        action: &'a str,
+        payload: &'a Value,
+        request_id: &'a str,
         now: i64,
-    ) -> Result<ExchangeOutcome, BrowserError> {
-        self.calls
-            .lock()
-            .expect("valid browser differential fixture")
-            .push((
+        _deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.calls.lock().expect("browser fixture").push((
                 server.into(),
                 action.into(),
                 payload.clone(),
                 request_id.into(),
                 now,
             ));
-        let mut outcomes = self
-            .outcomes
-            .lock()
-            .expect("valid browser differential fixture");
-        if outcomes.is_empty() {
-            Err(BrowserError::Exchange)
-        } else {
-            Ok(outcomes.remove(0))
-        }
+            let mut outcomes = self.outcomes.lock().expect("browser fixture");
+            if outcomes.is_empty() {
+                Err(BrowserError::Exchange)
+            } else {
+                Ok(outcomes.remove(0))
+            }
+        })
     }
 }
 
@@ -105,6 +105,19 @@ fn local_raw_request(port: u16, raw: &[u8]) -> String {
     response
 }
 
+fn local_chunked_request(port: u16, chunks: &[&[u8]]) -> String {
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
+    stream.set_nodelay(true).expect("disable Nagle for chunks");
+    for chunk in chunks {
+        stream.write_all(chunk).expect("write request fragment");
+    }
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read callback response");
+    response
+}
+
 fn response_value(response: &str) -> Value {
     if response.is_empty() {
         return Value::Null;
@@ -128,21 +141,18 @@ fn response_value(response: &str) -> Value {
     json!({"status":status,"headers":headers,"body":body})
 }
 
-fn loopback_listener_closed(port: u16) -> bool {
-    for _ in 0..20 {
-        match TcpStream::connect_timeout(
-            &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-            std::time::Duration::from_millis(20),
-        ) {
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return true,
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
-            Ok(stream) => {
-                drop(stream);
-                std::thread::sleep(std::time::Duration::from_millis(5));
+fn loopback_listener_closed(runtime: &tokio::runtime::Runtime, port: u16) -> bool {
+    runtime.block_on(async {
+        for _ in 0..64 {
+            match TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return true,
+                Err(_) => {}
+                Ok(stream) => drop(stream),
             }
+            tokio::task::yield_now().await;
         }
-    }
-    false
+        false
+    })
 }
 
 fn differing_paths(left: &Value, right: &Value, prefix: &str, out: &mut Vec<String>) {
@@ -175,6 +185,12 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let result = match name {
         "redirect-response" => json!({"status":302,"location":"https://private.invalid/"}),
         "redirect-done" => json!({"status":302,"done":true}),
+        "fragmented-complete-head" => {
+            json!({"status":200,"contentType":"text/plain; charset=iso-8859-1","body":"YWNjZXB0ZWQ=","done":true})
+        }
+        "duplicate-content-length" | "get-body" => {
+            json!({"status":200,"contentType":"text/plain; charset=iso-8859-1","body":"YWNjZXB0ZWQ=","done":true})
+        }
         "body-type-refusal" => json!({"status":200,"body":{}}),
         "charset-contenttype" => json!({
             "status":200,
@@ -196,13 +212,26 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
             ExchangeOutcome::Applied(json!({"status":200,"body":"Zmlyc3Q=","done":false})),
             ExchangeOutcome::Applied(json!({"status":200,"body":"c2Vjb25k","done":true})),
         ]
+    } else if name == "fifth-relay" {
+        (0..5)
+            .map(|index| {
+                ExchangeOutcome::Applied(json!({
+                    "status":200,"body":"b2s=","done":false,"ordinal":index
+                }))
+            })
+            .collect()
     } else {
         vec![ExchangeOutcome::Applied(result)]
     };
     *exchange.outcomes.lock().expect("browser outcomes") = outcomes;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("test runtime");
     let forwarder = BrowserForwarder::new(exchange.clone());
-    let receipt = forwarder
-        .open(input(), 1000.0, Some(0))
+    let receipt = runtime
+        .block_on(forwarder.open(input(), 1000.0, Some(0)))
         .expect("open test loopback forward");
     let responses = if name == "incomplete-then-valid" {
         vec![
@@ -217,6 +246,10 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
             local_request(receipt.port, "GET", "/oauth/callback?code=first", ""),
             local_request(receipt.port, "GET", "/oauth/callback?code=second", ""),
         ]
+    } else if name == "fifth-relay" {
+        (0..5)
+            .map(|_| local_request(receipt.port, "GET", "/oauth/callback?code=relay", ""))
+            .collect()
     } else {
         let response = match name {
             "duplicate-user-agent" => local_raw_request(
@@ -234,6 +267,21 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
                 "GET",
                 "/wrong?code=do-not-forward",
                 "User-Agent: test\r\n",
+            ),
+            "fragmented-complete-head" => local_chunked_request(
+                receipt.port,
+                &[
+                    b"GET /oauth/callback?code=fragmented HTTP/1.1\r\nUser-Agent: frag",
+                    b"mented-agent\r\nAccept: text/html\r\n\r\n",
+                ],
+            ),
+            "duplicate-content-length" => local_raw_request(
+                receipt.port,
+                b"GET /oauth/callback?code=duplicate HTTP/1.1\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n",
+            ),
+            "get-body" => local_raw_request(
+                receipt.port,
+                b"GET /oauth/callback?code=body HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc",
             ),
             "method-refusal" => local_request(
                 receipt.port,
@@ -265,9 +313,9 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let calls = exchange.calls.lock().expect("valid browser differential fixture").iter().map(|(server, action, payload, request_id, now)| {
         json!({"server":server,"action":action,"payload":payload,"requestId":request_id,"now":now})
     }).collect::<Vec<_>>();
-    let closed = loopback_listener_closed(receipt.port);
-    forwarder
-        .close(&input().bridge_id)
+    let closed = loopback_listener_closed(&runtime, receipt.port);
+    runtime
+        .block_on(forwarder.close(&input().bridge_id))
         .expect("close browser differential listener");
     (
         json!({"responses":responses.iter().map(|response| response_value(response)).collect::<Vec<_>>(),"closed":closed}),
@@ -278,6 +326,11 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
 #[test]
 fn python_browser_corpus_matches_rust_and_config_decisions() {
     let oracle = python_corpus();
+    assert_eq!(oracle["lifecycle"]["expiredClosed"], true);
+    assert_eq!(oracle["lifecycle"]["eightAdmitted"], 8);
+    assert_eq!(oracle["lifecycle"]["ninthClosed"], true);
+    assert_eq!(oracle["lifecycle"]["exchangeEntered"], true);
+    assert_eq!(oracle["lifecycle"]["responseAfterClose"], true);
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let forward_cases = oracle["forward"]
         .as_array()
@@ -302,6 +355,10 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                         | "body-type-refusal"
                         | "charset-contenttype"
                         | "user-agent-latin1-bound"
+                        | "fragmented-complete-head"
+                        | "duplicate-content-length"
+                        | "get-body"
+                        | "fifth-relay"
                 )
             )
         })
@@ -317,13 +374,14 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(forward_cases.len(), if full { 16 } else { 15 });
+    assert_eq!(forward_cases.len(), if full { 20 } else { 19 });
     assert_eq!(config_cases.len(), if full { 10 } else { 4 });
     for case in forward_cases {
         let (actual, rust_calls) = rust_response(case);
-        assert!(
-            actual["responses"] == case["python"]["responses"],
-            "browser forward responses differ"
+        assert_eq!(
+            actual["responses"], case["python"]["responses"],
+            "browser forward responses differ for {}",
+            case["name"]
         );
         assert!(
             actual["closed"] == case["python"]["closed"],
@@ -341,14 +399,15 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             calls.len(),
             "paired exchange count differs"
         );
-        if let Some(expected) = calls.first() {
-            assert_eq!(rust_calls[0]["server"], expected["server"]);
-            assert_eq!(rust_calls[0]["action"], expected["action"]);
-            assert!(
-                rust_calls[0]["payload"] == expected["payload"],
-                "callback payload differs"
+        let mut identities = std::collections::HashSet::new();
+        for (actual, expected) in rust_calls.iter().zip(calls) {
+            assert_eq!(actual["server"], expected["server"]);
+            assert_eq!(actual["action"], expected["action"]);
+            assert_eq!(
+                actual["payload"], expected["payload"],
+                "complete callback payload differs"
             );
-            let identity = rust_calls[0]["requestId"]
+            let identity = actual["requestId"]
                 .as_str()
                 .expect("valid browser differential fixture");
             let random = identity
@@ -360,6 +419,10 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                         .bytes()
                         .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
                 "callback identity format differs"
+            );
+            assert!(
+                identities.insert(identity),
+                "each relay has a fresh request identity"
             );
         }
     }
@@ -430,22 +493,33 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         1
     );
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("test runtime");
     let forwarder = BrowserForwarder::new(Arc::new(Exchange::default()));
     let mut expired = input();
     expired.expires_at = 999.0;
     assert!(matches!(
-        forwarder.open(expired, 1000.0, Some(0)),
+        runtime.block_on(forwarder.open(expired, 1000.0, Some(0))),
         Err(BrowserError::Expired)
     ));
-    let first = forwarder.open(input(), 1000.0, Some(0)).expect("open");
-    let replay = forwarder.open(input(), 1000.0, Some(0)).expect("replay");
+    let first = runtime
+        .block_on(forwarder.open(input(), 1000.0, Some(0)))
+        .expect("open");
+    let replay = runtime
+        .block_on(forwarder.open(input(), 1000.0, Some(0)))
+        .expect("replay");
     assert!(replay.replayed);
     assert_eq!(replay.port, first.port);
     let mut conflict = input();
     conflict.bridge_id = "1123456789abcdef0123456789abcdef".into();
     assert!(matches!(
-        forwarder.open(conflict, 1000.0, Some(0)),
+        runtime.block_on(forwarder.open(conflict, 1000.0, Some(0))),
         Err(BrowserError::PortInUse(43210))
     ));
-    forwarder.close(&input().bridge_id).expect("close listener");
+    runtime
+        .block_on(forwarder.close(&input().bridge_id))
+        .expect("close listener");
 }

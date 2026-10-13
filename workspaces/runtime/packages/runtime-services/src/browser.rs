@@ -2,21 +2,34 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue};
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpListener as TokioTcpListener;
+use tokio::sync::{Semaphore, watch};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio::time::Instant;
 
 const FORWARD_SECONDS: u64 = 600;
 const MAX_RELAYS: usize = 5;
 const MAX_CONNECTIONS: usize = 8;
-const MAX_ACTIVE_EXCHANGES: usize = 16;
 const CONNECTION_SECONDS: u64 = 10;
+const RESPONSE_RESERVE: Duration = Duration::from_secs(1);
 const HEAD_LIMIT: usize = 16 * 1024;
 const BODY_LIMIT: usize = 256 * 1024;
 const BODY_BASE64_LIMIT: usize = BODY_LIMIT.div_ceil(3) * 4;
@@ -35,19 +48,10 @@ const NODE_REPL_ENV_KEYS: [&str; 9] = [
     "BROWSER_USE_TINYSKY_ENABLED",
     "CODEX_CLI_PATH",
 ];
-static ACTIVE_EXCHANGES: AtomicUsize = AtomicUsize::new(0);
-
-struct ActiveExchangePermit;
-
-impl Drop for ActiveExchangePermit {
-    fn drop(&mut self) {
-        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 
 pub const BROWSER_GUIDANCE: &str = "For browser interaction, use the installed control-chrome skill and its browser-client through node_repl by default. Honor an explicitly requested different browser or tool. Read the native skill before use; it owns setup, permissions, tab lifecycle, and recovery. Report connection failures instead of silently changing the browser-control method. If native Chrome discovery reports no browser, finish the turn after reporting the error; Studio can refresh the connection at an idle boundary. Do not repeat any browser action with an unknown outcome. Dedicated connectors and web search remain appropriate for tasks that do not need browser interaction.";
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum BrowserError {
     #[error("the sign-in forward is invalid")]
     InvalidForward,
@@ -56,7 +60,7 @@ pub enum BrowserError {
     #[error("another sign-in uses port {0} on this Mac. Wait until it ends, then approve again.")]
     PortInUse(u16),
     #[error("the sign-in forward cannot start")]
-    Listener(#[from] std::io::Error),
+    Listener(std::io::ErrorKind),
     #[error("the paired server refused the sign-in redirect")]
     Refused,
     #[error("a different sign-in request already uses this bridge identity")]
@@ -71,6 +75,12 @@ pub enum BrowserError {
     WorkerPanicked,
 }
 
+impl std::fmt::Debug for BrowserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BrowserError(<redacted>)")
+    }
+}
+
 #[derive(PartialEq)]
 pub enum ExchangeOutcome {
     Applied(Value),
@@ -78,16 +88,17 @@ pub enum ExchangeOutcome {
     Unknown,
 }
 
-/// One remote exchange; the implementation queues and delivers the exact fresh identity once.
+/// A cancellable remote exchange. Implementations must stop work when its deadline elapses.
 pub trait PairedExchange: Send + Sync {
-    fn exchange(
-        &self,
-        server: &str,
-        action: &str,
-        payload: &Value,
-        request_id: &str,
+    fn exchange<'a>(
+        &'a self,
+        server: &'a str,
+        action: &'a str,
+        payload: &'a Value,
+        request_id: &'a str,
         now: i64,
-    ) -> Result<ExchangeOutcome, BrowserError>;
+        deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>;
 }
 
 #[derive(Clone, PartialEq)]
@@ -110,32 +121,14 @@ pub struct ForwardReceipt {
 struct ActiveForward {
     input: ForwardInput,
     port: u16,
-    address: SocketAddr,
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
 }
 
 impl ActiveForward {
-    fn close(&mut self) -> Result<(), BrowserError> {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            if !thread.is_finished() {
-                if TcpStream::connect(self.address).is_err() {
-                    // The accept loop is nonblocking and checks its stop flag every 20 ms.
-                }
-                thread.thread().unpark();
-            }
-            thread.join().map_err(|_| BrowserError::WorkerPanicked)?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for ActiveForward {
-    fn drop(&mut self) {
-        if let Err(_error) = self.close() {
-            // Drop cannot return the worker failure; explicit close reports it to its caller.
-        }
+    async fn close(self) -> Result<(), BrowserError> {
+        self.stop.send_replace(true);
+        self.task.await.map_err(|_| BrowserError::WorkerPanicked)
     }
 }
 
@@ -153,7 +146,7 @@ impl BrowserForwarder {
         }
     }
 
-    pub fn open(
+    pub async fn open(
         &self,
         input: ForwardInput,
         now: f64,
@@ -161,26 +154,22 @@ impl BrowserForwarder {
     ) -> Result<ForwardReceipt, BrowserError> {
         validate_forward(&input)?;
         let remaining = (input.expires_at - now).min(FORWARD_SECONDS as f64);
-        if remaining <= 0.0 {
-            return Err(BrowserError::Expired);
-        }
         if !now.is_finite() {
             return Err(BrowserError::InvalidForward);
         }
+        if remaining <= 0.0 {
+            return Err(BrowserError::Expired);
+        }
+        let deadline = Instant::now() + Duration::from_secs_f64(remaining);
         let mut forwards = self.forwards.lock().map_err(|_| BrowserError::Exchange)?;
-        forwards.retain(|_, forward| {
-            forward
-                .thread
-                .as_ref()
-                .is_some_and(|thread| !thread.is_finished())
-        });
-        if let Some(existing) = forwards.get(&input.bridge_id)
-            && !existing.stop.load(Ordering::Acquire)
-            && existing
-                .thread
-                .as_ref()
-                .is_some_and(|thread| !thread.is_finished())
-        {
+        let expired = forwards
+            .iter()
+            .filter_map(|(id, f)| f.task.is_finished().then_some(id.clone()))
+            .collect::<Vec<_>>();
+        for id in expired {
+            forwards.remove(&id);
+        }
+        if let Some(existing) = forwards.get(&input.bridge_id) {
             if existing.input != input {
                 return Err(BrowserError::Conflict);
             }
@@ -189,49 +178,40 @@ impl BrowserForwarder {
                 port: existing.port,
             });
         }
-        if forwards.values().any(|f| {
-            f.input.port == input.port
-                && f.thread
-                    .as_ref()
-                    .is_some_and(|thread| !thread.is_finished())
-        }) {
+        if forwards.values().any(|f| f.input.port == input.port) {
             return Err(BrowserError::PortInUse(input.port));
         }
-        let (listeners, address) =
-            bind_loopback(&input.host, listen_port.unwrap_or(input.port), input.port)?;
-        let port = address.port();
-        for listener in &listeners {
-            listener.set_nonblocking(true)?;
+        let listeners = bind_loopback(&input.host, listen_port.unwrap_or(input.port), input.port)?;
+        let mut async_listeners = Vec::with_capacity(listeners.len());
+        let mut port = 0;
+        for listener in listeners {
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| BrowserError::Listener(e.kind()))?;
+            if port == 0 {
+                port = listener
+                    .local_addr()
+                    .map_err(|e| BrowserError::Listener(e.kind()))?
+                    .port();
+            }
+            async_listeners.push(
+                TokioTcpListener::from_std(listener)
+                    .map_err(|e| BrowserError::Listener(e.kind()))?,
+            );
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let relays = Arc::new(AtomicUsize::new(0));
-        let connections = Arc::new(AtomicUsize::new(0));
-        let thread_input = input.clone();
-        let thread_exchange = Arc::clone(&self.exchange);
-        let thread_stop = Arc::clone(&stop);
-        let thread_relays = Arc::clone(&relays);
-        let thread_connections = Arc::clone(&connections);
-        let thread = thread::Builder::new()
-            .name("studio-browser-forward".into())
-            .spawn(move || {
-                serve_forward(
-                    listeners,
-                    thread_input,
-                    thread_exchange,
-                    thread_stop,
-                    thread_relays,
-                    thread_connections,
-                    remaining,
-                )
-            })?;
+        let (stop, stop_rx) = watch::channel(false);
+        let exchange = Arc::clone(&self.exchange);
+        let task_input = input.clone();
+        let task = tokio::spawn(async move {
+            run_forward(async_listeners, task_input, exchange, stop_rx, deadline).await
+        });
         forwards.insert(
             input.bridge_id.clone(),
             ActiveForward {
                 input,
                 port,
-                address,
                 stop,
-                thread: Some(thread),
+                task,
             },
         );
         Ok(ForwardReceipt {
@@ -240,14 +220,14 @@ impl BrowserForwarder {
         })
     }
 
-    pub fn close(&self, bridge_id: &str) -> Result<bool, BrowserError> {
+    pub async fn close(&self, bridge_id: &str) -> Result<bool, BrowserError> {
         let forward = self
             .forwards
             .lock()
             .map_err(|_| BrowserError::Exchange)?
             .remove(bridge_id);
-        if let Some(mut forward) = forward {
-            forward.close()?;
+        if let Some(forward) = forward {
+            forward.close().await?;
             return Ok(true);
         }
         Ok(false)
@@ -282,7 +262,7 @@ fn bind_loopback(
     host: &str,
     port: u16,
     redirect_port: u16,
-) -> Result<(Vec<TcpListener>, SocketAddr), BrowserError> {
+) -> Result<Vec<TcpListener>, BrowserError> {
     let addresses = match host {
         "localhost" => vec![
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
@@ -293,15 +273,15 @@ fn bind_loopback(
     };
     let mut listeners = Vec::new();
     let mut bound_port = port;
-    let mut primary = None;
     for address in addresses {
         let address = SocketAddr::new(address.ip(), bound_port);
         match TcpListener::bind(address) {
             Ok(listener) => {
-                let local = listener.local_addr()?;
-                if primary.is_none() {
-                    bound_port = local.port();
-                    primary = Some(local);
+                if bound_port == 0 {
+                    bound_port = listener
+                        .local_addr()
+                        .map_err(|e| BrowserError::Listener(e.kind()))?
+                        .port();
                 }
                 listeners.push(listener);
             }
@@ -315,162 +295,252 @@ fn bind_loopback(
             Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
                 return Err(BrowserError::PortInUse(redirect_port));
             }
-            Err(error) => return Err(BrowserError::Listener(error)),
+            Err(error) => return Err(BrowserError::Listener(error.kind())),
         }
     }
-    Ok((
-        listeners,
-        primary.ok_or(BrowserError::PortInUse(redirect_port))?,
-    ))
+    Ok(listeners)
 }
 
-fn serve_forward(
-    listeners: Vec<TcpListener>,
+async fn run_forward(
+    listeners: Vec<TokioTcpListener>,
     input: ForwardInput,
     exchange: Arc<dyn PairedExchange>,
-    stop: Arc<AtomicBool>,
-    relays: Arc<AtomicUsize>,
-    connections: Arc<AtomicUsize>,
-    remaining_seconds: f64,
+    mut stop: watch::Receiver<bool>,
+    deadline: Instant,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs_f64(remaining_seconds);
-    while !stop.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        if relays.load(Ordering::Acquire) >= MAX_RELAYS {
-            stop.store(true, Ordering::Release);
-            break;
-        }
-        let mut accepted = None;
-        for listener in &listeners {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    accepted = Some(stream);
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(_) => return,
+    let relays = Arc::new(AtomicUsize::new(0));
+    let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut tasks = JoinSet::new();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            changed = stop.changed() => if changed.is_err() || *stop.borrow() { break; },
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                if matches!(result, Some(Ok(true))) { break; }
             }
-        }
-        if let Some(mut stream) = accepted {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            if relays.load(Ordering::Acquire) >= MAX_RELAYS {
-                if !respond_best_effort(
-                    &mut stream,
-                    410,
-                    page("This sign-in forward is closed. Return to Studio."),
-                    "text/html; charset=utf-8",
-                ) {
-                    break;
-                }
-                continue;
-            }
-            let active = connections.fetch_add(1, Ordering::AcqRel);
-            if active >= MAX_CONNECTIONS {
-                connections.fetch_sub(1, Ordering::AcqRel);
-                drop(stream);
-                continue;
-            }
-            let worker_input = input.clone();
-            let worker_exchange = Arc::clone(&exchange);
-            let worker_stop = Arc::clone(&stop);
-            let worker_relays = Arc::clone(&relays);
-            let worker_connections = Arc::clone(&connections);
-            let worker_deadline =
-                deadline.min(std::time::Instant::now() + Duration::from_secs(CONNECTION_SECONDS));
-            let spawned = thread::Builder::new()
-                .name("studio-browser-callback".into())
-                .spawn(move || {
-                    let result = handle_connection(
-                        &mut stream,
-                        &worker_input,
-                        Arc::clone(&worker_exchange),
-                        &worker_relays,
-                        worker_deadline,
-                        &worker_stop,
-                    );
-                    if matches!(result, Ok(true)) {
-                        worker_stop.store(true, Ordering::Release);
-                    }
-                    worker_connections.fetch_sub(1, Ordering::AcqRel);
+            accepted = accept_any(&listeners) => {
+                let Ok((stream, _)) = accepted else { break; };
+                if relays.load(Ordering::Acquire) >= MAX_RELAYS { drop(stream); continue; }
+                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else { drop(stream); continue; };
+                let connection_deadline = std::cmp::min(deadline, Instant::now() + Duration::from_secs(CONNECTION_SECONDS));
+                let input = input.clone();
+                let exchange = Arc::clone(&exchange);
+                let relays = Arc::clone(&relays);
+                let close_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let task_close_requested = Arc::clone(&close_requested);
+                let exchange_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let task_exchange_pending = Arc::clone(&exchange_pending);
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let result = tokio::time::timeout_at(
+                        connection_deadline,
+                        serve_connection(stream, input, exchange, relays, connection_deadline, task_close_requested, task_exchange_pending),
+                    ).await;
+                    matches!(result, Ok(Ok(true)))
+                        || close_requested.load(Ordering::Acquire)
+                        || exchange_pending.load(Ordering::Acquire)
                 });
-            if spawned.is_err() {
-                connections.fetch_sub(1, Ordering::AcqRel);
             }
-        } else {
-            thread::park_timeout(Duration::from_millis(20));
         }
     }
-    stop.store(true, Ordering::Release);
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
 }
 
-fn handle_connection(
-    stream: &mut TcpStream,
-    input: &ForwardInput,
+async fn accept_any(
+    listeners: &[TokioTcpListener],
+) -> std::io::Result<(tokio::net::TcpStream, SocketAddr)> {
+    if listeners.len() == 2 {
+        tokio::select! {
+            result = listeners[0].accept() => result,
+            result = listeners[1].accept() => result,
+        }
+    } else {
+        listeners[0].accept().await
+    }
+}
+
+/// Bounds the raw HTTP head without parsing it; Hyper remains the HTTP parser.
+struct BoundedHeadIo {
+    stream: tokio::net::TcpStream,
+    head_bytes: usize,
+    suffix: [u8; 3],
+    suffix_len: usize,
+    head_complete: bool,
+}
+
+impl BoundedHeadIo {
+    fn new(stream: tokio::net::TcpStream) -> Self {
+        Self {
+            stream,
+            head_bytes: 0,
+            suffix: [0; 3],
+            suffix_len: 0,
+            head_complete: false,
+        }
+    }
+}
+
+impl AsyncRead for BoundedHeadIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        destination: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.head_complete {
+            return Pin::new(&mut self.stream).poll_read(context, destination);
+        }
+        let read_size = destination.remaining().min(4096);
+        if read_size == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let mut bytes = vec![0; read_size];
+        let mut read_buffer = ReadBuf::new(&mut bytes);
+        match Pin::new(&mut self.stream).poll_read(context, &mut read_buffer) {
+            Poll::Ready(Ok(())) => {
+                let filled = read_buffer.filled();
+                if filled.is_empty() {
+                    return Poll::Ready(Ok(()));
+                }
+                let mut combined = Vec::with_capacity(self.suffix_len + filled.len());
+                combined.extend_from_slice(&self.suffix[..self.suffix_len]);
+                combined.extend_from_slice(filled);
+                if let Some(end) = combined.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let current_head_bytes = (end + 4).saturating_sub(self.suffix_len);
+                    if self.head_bytes + current_head_bytes > HEAD_LIMIT {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "request head exceeds limit",
+                        )));
+                    }
+                    self.head_complete = true;
+                } else {
+                    if self.head_bytes + filled.len() > HEAD_LIMIT {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "request head exceeds limit",
+                        )));
+                    }
+                    self.head_bytes += filled.len();
+                    let keep = combined.len().min(self.suffix.len());
+                    self.suffix[..keep].copy_from_slice(&combined[combined.len() - keep..]);
+                    self.suffix_len = keep;
+                }
+                destination.put_slice(filled);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncWrite for BoundedHeadIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(context)
+    }
+}
+
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    input: ForwardInput,
     exchange: Arc<dyn PairedExchange>,
-    relays: &AtomicUsize,
-    deadline: std::time::Instant,
-    stop: &AtomicBool,
+    relays: Arc<AtomicUsize>,
+    deadline: Instant,
+    close_after: Arc<std::sync::atomic::AtomicBool>,
+    exchange_pending: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<bool, BrowserError> {
-    let head = match read_head(stream, deadline) {
-        Ok(head) => head,
-        Err(_) => return Ok(false),
-    };
-    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
-        return Ok(false);
+    let handler_close = Arc::clone(&close_after);
+    let service = service_fn(move |request: Request<Incoming>| {
+        let exchange = Arc::clone(&exchange);
+        let input = input.clone();
+        let relays = Arc::clone(&relays);
+        let close = Arc::clone(&handler_close);
+        let exchange_pending = Arc::clone(&exchange_pending);
+        async move {
+            let (response, should_close) = handle_request(
+                request,
+                input,
+                exchange,
+                relays,
+                deadline,
+                Arc::clone(&close),
+                exchange_pending,
+            )
+            .await;
+            close.store(should_close, Ordering::Release);
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    });
+    hyper::server::conn::http1::Builder::new()
+        .max_buf_size(HEAD_LIMIT * 2)
+        .keep_alive(false)
+        .auto_date_header(false)
+        .serve_connection(TokioIo::new(BoundedHeadIo::new(stream)), service)
+        .await
+        .map_err(|_| BrowserError::Exchange)?;
+    Ok(close_after.load(Ordering::Acquire))
+}
+
+async fn handle_request(
+    request: Request<Incoming>,
+    input: ForwardInput,
+    exchange: Arc<dyn PairedExchange>,
+    relays: Arc<AtomicUsize>,
+    deadline: Instant,
+    close_requested: Arc<std::sync::atomic::AtomicBool>,
+    exchange_pending: Arc<std::sync::atomic::AtomicBool>,
+) -> (Response<Full<Bytes>>, bool) {
+    if *request.method() != Method::GET {
+        return (
+            response(
+                405,
+                page("Studio forwards only the sign-in redirect."),
+                "text/html; charset=utf-8",
+            ),
+            false,
+        );
     }
-    stream.set_write_timeout(Some(
-        deadline.saturating_duration_since(std::time::Instant::now()),
-    ))?;
-    let mut headers_buf = vec![httparse::EMPTY_HEADER; HEAD_LIMIT / 4];
-    let mut request = httparse::Request::new(&mut headers_buf);
-    if !matches!(request.parse(&head), Ok(httparse::Status::Complete(_))) {
-        drop(respond(
-            stream,
-            400,
-            page("Studio did not understand this request."),
-            "text/html; charset=utf-8",
-        ));
-        return Ok(false);
-    }
-    let method = request.method.unwrap_or_default();
-    let target = request.path.unwrap_or_default();
-    let version_ok = request.version.is_some();
-    if !version_ok {
-        drop(respond(
-            stream,
-            400,
-            page("Studio did not understand this request."),
-            "text/html; charset=utf-8",
-        ));
-        return Ok(false);
-    }
-    if method != "GET" {
-        drop(respond(
-            stream,
-            405,
-            page("Studio forwards only the sign-in redirect."),
-            "text/html; charset=utf-8",
-        ));
-        return Ok(false);
-    }
+    let target = request
+        .uri()
+        .path_and_query()
+        .map(|v| v.as_str())
+        .unwrap_or_default();
     let path = target.split('?').next().unwrap_or_default();
     if !target.starts_with('/') || path != input.path {
-        drop(respond(
-            stream,
-            404,
-            page("Studio forwards only the sign-in redirect."),
-            "text/html; charset=utf-8",
-        ));
-        return Ok(false);
+        return (
+            response(
+                404,
+                page("Studio forwards only the sign-in redirect."),
+                "text/html; charset=utf-8",
+            ),
+            false,
+        );
     }
     let mut headers = Map::new();
-    let mut seen = HashSet::new();
-    for header in request.headers {
-        let name = header.name.to_ascii_lowercase();
-        if SENT_HEADERS.contains(&name.as_str()) && seen.insert(name.clone()) {
-            let value = header
-                .value
+    for name in SENT_HEADERS {
+        let name_header = HeaderName::from_static(name);
+        if let Some(first) = request.headers().get_all(name_header).iter().next() {
+            let value = first
+                .as_bytes()
                 .iter()
                 .copied()
                 .map(char::from)
@@ -478,121 +548,109 @@ fn handle_connection(
                 .trim()
                 .to_owned();
             if value.chars().count() <= HEADER_LIMIT {
-                headers.insert(name, json!(value));
+                headers.insert(name.to_owned(), json!(value));
             }
         }
     }
-    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
-        return Ok(false);
+    let exchange_deadline = deadline.checked_sub(RESPONSE_RESERVE).unwrap_or(deadline);
+    if Instant::now() >= exchange_deadline {
+        return (failure_response(), true);
     }
-    let attempt = match relays.try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-        (value < MAX_RELAYS).then_some(value + 1)
+    let attempt = match relays.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        (count < MAX_RELAYS).then_some(count + 1)
     }) {
-        Ok(value) => value + 1,
+        Ok(previous) => previous + 1,
         Err(_) => {
-            drop(respond(
-                stream,
-                410,
-                page("This sign-in forward is closed. Return to Studio."),
-                "text/html; charset=utf-8",
-            ));
-            stop.store(true, Ordering::Release);
-            return Ok(false);
+            return (
+                response(
+                    410,
+                    page("This sign-in forward is closed. Return to Studio."),
+                    "text/html; charset=utf-8",
+                ),
+                true,
+            );
         }
     };
-    let request_id = fresh_request_id()?;
+    let request_id = match fresh_request_id() {
+        Ok(id) => id,
+        Err(_) => return (failure_response(), true),
+    };
     let payload =
         json!({"bridgeId":input.bridge_id,"token":input.token,"target":target,"headers":headers});
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| BrowserError::Exchange)?
-        .as_secs() as i64;
-    let result = match exchange_until(
-        exchange,
-        &input.server,
-        REMOTE_ACTION,
-        payload,
-        request_id,
-        now,
-        deadline,
-    ) {
-        Ok(ExchangeOutcome::Applied(result)) => result,
-        Ok(ExchangeOutcome::NotApplied(_)) => {
-            respond_best_effort(
-                stream,
-                502,
-                page("The sign-in result is unknown. Check the chat in Studio."),
-                "text/html; charset=utf-8",
-            );
-            return Ok(true);
-        }
-        Ok(ExchangeOutcome::Unknown) | Err(_) => {
-            respond_best_effort(
-                stream,
-                502,
-                page("The sign-in result is unknown. Check the chat in Studio."),
-                "text/html; charset=utf-8",
-            );
-            return Ok(true);
+        .map(|v| v.as_secs() as i64)
+        .unwrap_or_default();
+    exchange_pending.store(true, Ordering::Release);
+    let outcome = tokio::time::timeout_at(
+        exchange_deadline,
+        exchange.exchange(
+            &input.server,
+            REMOTE_ACTION,
+            &payload,
+            &request_id,
+            now,
+            exchange_deadline,
+        ),
+    )
+    .await;
+    exchange_pending.store(false, Ordering::Release);
+    let result = match outcome {
+        Ok(Ok(ExchangeOutcome::Applied(result))) => result,
+        Ok(Ok(ExchangeOutcome::NotApplied(_)))
+        | Ok(Ok(ExchangeOutcome::Unknown))
+        | Ok(Err(_))
+        | Err(_) => {
+            close_requested.store(true, Ordering::Release);
+            return (failure_response(), true);
         }
     };
     let (status, content_type, body, done) = match cleaned_result(&result) {
-        Ok(cleaned) => cleaned,
+        Ok(v) => v,
         Err(_) => {
-            respond_best_effort(
-                stream,
-                502,
-                page("The sign-in result is unknown. Check the chat in Studio."),
-                "text/html; charset=utf-8",
-            );
-            return Ok(true);
+            close_requested.store(true, Ordering::Release);
+            return (failure_response(), true);
         }
     };
-    if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
-        return Ok(false);
+    let should_close = done || attempt == MAX_RELAYS;
+    if done {
+        close_requested.store(true, Ordering::Release);
     }
-    stream.set_write_timeout(Some(
-        deadline.saturating_duration_since(std::time::Instant::now()),
-    ))?;
-    respond(stream, status, body, &content_type)?;
-    Ok(done || attempt >= MAX_RELAYS)
+    (response(status, body, &content_type), should_close)
 }
 
-fn exchange_until(
-    exchange: Arc<dyn PairedExchange>,
-    server: &str,
-    action: &str,
-    payload: Value,
-    request_id: String,
-    now: i64,
-    deadline: std::time::Instant,
-) -> Result<ExchangeOutcome, BrowserError> {
-    if std::time::Instant::now() >= deadline {
-        return Err(BrowserError::Unknown);
-    }
-    let active = ACTIVE_EXCHANGES.fetch_add(1, Ordering::AcqRel);
-    if active >= MAX_ACTIVE_EXCHANGES {
-        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
-        return Err(BrowserError::Exchange);
-    }
-    let server = server.to_owned();
-    let action = action.to_owned();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    let worker = thread::Builder::new()
-        .name("studio-browser-exchange".into())
-        .spawn(move || {
-            let _permit = ActiveExchangePermit;
-            let result = exchange.exchange(&server, &action, &payload, &request_id, now);
-            drop(sender.send(result));
-        });
-    if worker.is_err() {
-        ACTIVE_EXCHANGES.fetch_sub(1, Ordering::AcqRel);
-        return Err(BrowserError::Exchange);
-    }
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    receiver
-        .recv_timeout(remaining)
-        .map_err(|_| BrowserError::Unknown)?
+fn failure_response() -> Response<Full<Bytes>> {
+    response(
+        502,
+        page("The sign-in result is unknown. Check the chat in Studio."),
+        "text/html; charset=utf-8",
+    )
+}
+
+fn response(status: u16, body: Vec<u8>, content_type: &str) -> Response<Full<Bytes>> {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let content_length = body.len().to_string();
+    let mut response = Response::new(Full::new(Bytes::from(body)));
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or(HeaderValue::from_static("text/plain; charset=utf-8")),
+    );
+    headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&content_length).unwrap_or(HeaderValue::from_static("0")),
+    );
+    headers.insert("content-security-policy", HeaderValue::from_static(SANDBOX));
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(CONNECTION, HeaderValue::from_static("close"));
+    response
 }
 
 fn fresh_request_id() -> Result<String, BrowserError> {
@@ -602,32 +660,6 @@ fn fresh_request_id() -> Result<String, BrowserError> {
         "browser-callback:{}",
         uuid::Uuid::from_bytes(bytes).simple()
     ))
-}
-
-fn read_head(
-    stream: &mut TcpStream,
-    deadline: std::time::Instant,
-) -> Result<Vec<u8>, BrowserError> {
-    let mut data = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    while !data.windows(4).any(|window| window == b"\r\n\r\n") {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(BrowserError::Expired);
-        }
-        stream.set_read_timeout(Some(remaining))?;
-        let count = stream.read(&mut chunk)?;
-        if count == 0 || data.len() + count > HEAD_LIMIT {
-            return Err(BrowserError::InvalidForward);
-        }
-        data.extend_from_slice(&chunk[..count]);
-    }
-    let end = data
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .unwrap_or(data.len());
-    data.truncate(end + 4);
-    Ok(data)
 }
 
 fn cleaned_result(result: &Value) -> Result<(u16, String, Vec<u8>, bool), BrowserError> {
@@ -714,39 +746,17 @@ fn page(text: &str) -> Vec<u8> {
         .into_bytes()
 }
 
-fn respond(
-    stream: &mut TcpStream,
-    status: u16,
-    body: Vec<u8>,
-    content_type: &str,
-) -> std::io::Result<()> {
-    let phrase = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        410 => "Gone",
-        502 => "Bad Gateway",
-        _ => "Status",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {phrase}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nContent-Security-Policy: {SANDBOX}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(&body)
-}
-
-fn respond_best_effort(
-    stream: &mut TcpStream,
-    status: u16,
-    body: Vec<u8>,
-    content_type: &str,
-) -> bool {
-    respond(stream, status, body, content_type).is_ok()
-}
-
 /// Filesystem facts discovered alongside the Python-written config records.
+fn plugin_version(plugin: &std::path::Path) -> Option<String> {
+    let path = plugin.join(".codex-plugin/plugin.json");
+    let value: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    value
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserConfigAssets {
@@ -827,10 +837,32 @@ impl BrowserConfigSnapshot {
         {
             return Err(BrowserConfigSnapshotError::InvalidRecord);
         }
-        let skill_available = assets
-            .control_chrome_skill
-            .as_deref()
-            .is_some_and(|path| std::path::Path::new(path).is_file());
+        let skill_available = assets.control_chrome_skill.as_deref().is_some_and(|path| {
+            let path = std::path::Path::new(path);
+            let installed = std::path::Path::new(shared_home)
+                .join("plugins/cache/openai-bundled/chrome/latest/skills/control-chrome/SKILL.md");
+            if path == installed && path.is_file() {
+                return true;
+            }
+            let market = shared.pointer("/marketplaces/openai-bundled");
+            let Some(source) = market
+                .filter(|m| m.get("source_type").and_then(Value::as_str) == Some("local"))
+                .and_then(|m| m.get("source"))
+                .and_then(Value::as_str)
+            else {
+                return false;
+            };
+            let plugin = std::path::Path::new(source).join("plugins/chrome");
+            let installed_plugin = std::path::Path::new(shared_home)
+                .join("plugins/cache/openai-bundled/chrome/latest");
+            let expected = plugin.join("skills/control-chrome/SKILL.md");
+            let client = plugin.join("scripts/browser-client.mjs");
+            path == expected
+                && path.is_file()
+                && client.is_file()
+                && plugin_version(&plugin).is_some()
+                && plugin_version(&plugin) == plugin_version(&installed_plugin)
+        });
         let node_runtime_available = assets
             .node_runtime
             .as_deref()
@@ -993,39 +1025,53 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use tokio::sync::{Notify, Semaphore};
+
+    type ExchangeCall = (String, String, Value, String, i64);
+    type IdentityChange = (&'static str, fn(&mut ForwardInput));
 
     #[derive(Default)]
     struct FakeExchange {
-        outcomes: Mutex<Vec<ExchangeOutcome>>,
         calls: Mutex<Vec<ExchangeCall>>,
-    }
-
-    struct ExchangeCall {
-        server: String,
-        action: String,
-        payload: Value,
-        request_id: String,
-        now: i64,
+        count: AtomicUsize,
+        gate: Option<Arc<Semaphore>>,
+        entered: Option<Arc<Notify>>,
+        done: bool,
     }
 
     impl PairedExchange for FakeExchange {
-        fn exchange(
-            &self,
-            server: &str,
-            action: &str,
-            payload: &Value,
-            request_id: &str,
+        fn exchange<'a>(
+            &'a self,
+            server: &'a str,
+            action: &'a str,
+            payload: &'a Value,
+            request_id: &'a str,
             now: i64,
-        ) -> Result<ExchangeOutcome, BrowserError> {
-            self.calls.lock().expect("test mutex").push(ExchangeCall {
-                server: server.into(),
-                action: action.into(),
-                payload: payload.clone(),
-                request_id: request_id.into(),
-                now,
-            });
-            Ok(self.outcomes.lock().expect("test mutex").remove(0))
+            _deadline: Instant,
+        ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.calls.lock().expect("calls").push((
+                    server.into(),
+                    action.into(),
+                    payload.clone(),
+                    request_id.into(),
+                    now,
+                ));
+                let call = self.count.fetch_add(1, Ordering::AcqRel) + 1;
+                if let Some(entered) = &self.entered {
+                    entered.notify_one();
+                }
+                if call == MAX_RELAYS
+                    && let Some(gate) = &self.gate
+                {
+                    gate.acquire().await.expect("gate").forget();
+                }
+                Ok(ExchangeOutcome::Applied(
+                    json!({"status":200,"body":BASE64.encode(b"<html>ok</html>"),"done":self.done}),
+                ))
+            })
         }
     }
 
@@ -1041,421 +1087,375 @@ mod tests {
         }
     }
 
-    fn outcome(done: bool) -> ExchangeOutcome {
-        ExchangeOutcome::Applied(json!({
-            "status": 200,
-            "contentType": "text/html; charset=iso-8859-1",
-            "body": BASE64.encode(b"<html>ok</html>"),
-            "done": done
-        }))
-    }
-
-    fn request(port: u16) -> String {
-        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("forward bound");
-        stream.write_all(b"GET /oauth/callback?code=secret HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nCookie: private\r\nAuthorization: private\r\n\r\n").expect("request writes");
+    fn request(port: u16, raw: &'static [u8]) -> String {
+        let mut stream =
+            std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
+        stream.write_all(raw).expect("request");
         let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("response reads");
+        stream.read_to_string(&mut response).expect("response");
         response
     }
 
-    #[test]
-    fn listener_relays_only_the_checked_path_and_allowlisted_headers_once() {
-        let exchange = Arc::new(FakeExchange {
-            outcomes: Mutex::new(vec![outcome(false), outcome(true)]),
-            ..FakeExchange::default()
-        });
+    fn normal_request(port: u16) -> String {
+        request(port, b"GET /oauth/callback?code=secret HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nCookie: private\r\nAuthorization: private\r\n\r\n")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn listener_relays_only_checked_path_and_allowlisted_headers() {
+        let exchange = Arc::new(FakeExchange::default());
         let forwarder = BrowserForwarder::new(exchange.clone());
         let receipt = forwarder
             .open(input(), 1000.0, Some(0))
-            .expect("forward opens");
-        assert!(!receipt.replayed);
-        assert_ne!(receipt.port, 0);
-        let replay = forwarder
-            .open(input(), 1000.0, Some(0))
-            .expect("same bridge replay");
+            .await
+            .expect("open");
         assert_eq!(
-            replay,
+            forwarder
+                .open(input(), 1000.0, Some(0))
+                .await
+                .expect("replay"),
             ForwardReceipt {
                 replayed: true,
                 port: receipt.port
             }
         );
-        let mut other = input();
-        other.bridge_id = "1123456789abcdef0123456789abcdef".into();
-        assert!(matches!(
-            forwarder.open(other, 1000.0, Some(0)),
-            Err(BrowserError::PortInUse(43210))
-        ));
-        let mut abandoned = TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port))
-            .expect("listener remains available beside an incomplete request");
-        abandoned
-            .write_all(b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: slow")
-            .expect("partial request writes");
-        let response = request(receipt.port);
+        let response = normal_request(receipt.port);
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(response.contains("Content-Security-Policy: sandbox; default-src 'none'"));
-        assert!(response.contains("charset=iso-8859-1"));
-        let second_response = request(receipt.port);
-        assert!(second_response.starts_with("HTTP/1.1 200 OK\r\n"));
-        let calls = exchange.calls.lock().expect("test mutex");
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].server, "server-a");
-        assert_eq!(calls[0].action, REMOTE_ACTION);
         assert!(
-            calls[0].payload["target"]
-                .as_str()
-                .is_some_and(|value| value.starts_with("/oauth/callback?"))
+            response
+                .to_ascii_lowercase()
+                .contains("content-security-policy: sandbox; default-src 'none'")
         );
-        assert_eq!(
-            calls[0].payload["headers"],
-            json!({"user-agent":"test-agent","accept":"text/html"})
-        );
-        assert!(calls[0].request_id.starts_with("browser-callback:"));
-        assert_ne!(calls[0].request_id, calls[1].request_id);
-        assert!(calls[0].now > 0);
-        drop(abandoned);
+        {
+            let calls = exchange.calls.lock().expect("calls");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].2["headers"],
+                json!({"user-agent":"test-agent","accept":"text/html"})
+            );
+            assert!(calls[0].3.starts_with("browser-callback:"));
+        }
+        assert!(forwarder.close(&input().bridge_id).await.expect("close"));
     }
 
-    #[test]
-    fn oversized_first_user_agent_duplicate_is_not_replaced_by_a_later_short_value() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fifth_admitted_relay_receives_response_before_close() {
+        let gate = Arc::new(Semaphore::new(0));
+        let entered = Arc::new(Notify::new());
         let exchange = Arc::new(FakeExchange {
-            outcomes: Mutex::new(vec![outcome(true)]),
+            gate: Some(gate.clone()),
+            entered: Some(entered.clone()),
             ..FakeExchange::default()
         });
-        let forwarder = BrowserForwarder::new(exchange.clone());
+        let forwarder = Arc::new(BrowserForwarder::new(exchange.clone()));
         let receipt = forwarder
             .open(input(), 1000.0, Some(0))
-            .expect("forward opens");
-        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port)).expect("loopback");
-        write!(
-            stream,
-            "GET /oauth/callback HTTP/1.1\r\nUser-Agent: {}\r\nUser-Agent: short\r\n\r\n",
-            "x".repeat(HEADER_LIMIT + 1)
-        )
-        .expect("request writes");
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("response reads");
-        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-        let calls = exchange.calls.lock().expect("exchange calls");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].payload["headers"], json!({}));
+            .await
+            .expect("open");
+        let mut requests = Vec::new();
+        for _ in 0..MAX_RELAYS {
+            let port = receipt.port;
+            requests.push(tokio::task::spawn_blocking(move || normal_request(port)));
+        }
+        while exchange.count.load(Ordering::Acquire) < MAX_RELAYS {
+            entered.notified().await;
+        }
+        assert!(
+            forwarder
+                .open(input(), 1000.0, Some(0))
+                .await
+                .expect("still active")
+                .replayed
+        );
+        gate.add_permits(1);
+        let mut responses = 0;
+        for task in requests {
+            if task
+                .await
+                .expect("client")
+                .starts_with("HTTP/1.1 200 OK\r\n")
+            {
+                responses += 1;
+            }
+        }
+        assert_eq!(responses, MAX_RELAYS);
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("close joins")
+        );
     }
 
-    #[test]
-    fn active_bridge_identity_replay_refuses_changed_request_fields() {
-        let forwarder = BrowserForwarder::new(Arc::new(FakeExchange {
-            outcomes: Mutex::new(vec![outcome(true)]),
-            ..FakeExchange::default()
-        }));
-        let original = input();
-        let receipt = forwarder
-            .open(original.clone(), 1000.0, Some(0))
-            .expect("open");
-        for mutate in [0, 1, 2, 3, 4] {
-            let mut changed = original.clone();
-            match mutate {
-                0 => changed.server = "other-server".into(),
-                1 => changed.token = "different-token-with-entropy".into(),
-                2 => changed.path = "/different/callback".into(),
-                3 => changed.port += 1,
-                _ => changed.expires_at += 1.0,
-            }
-            assert!(matches!(
-                forwarder.open(changed, 1000.0, Some(0)),
-                Err(BrowserError::Conflict)
-            ));
+    #[tokio::test(start_paused = true)]
+    async fn absolute_deadline_cancels_exchange_and_close_joins() {
+        struct Pending {
+            entered: Arc<Notify>,
+            dropped: Arc<AtomicBool>,
         }
-        assert!(forwarder.close(&original.bridge_id).expect("close"));
+        impl PairedExchange for Pending {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    struct Guard(Arc<AtomicBool>);
+                    impl Drop for Guard {
+                        fn drop(&mut self) {
+                            self.0.store(true, Ordering::Release);
+                        }
+                    }
+                    let _guard = Guard(self.dropped.clone());
+                    self.entered.notify_one();
+                    std::future::pending().await
+                })
+            }
+        }
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let forwarder = Arc::new(BrowserForwarder::new(Arc::new(Pending {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        })));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let port = receipt.port;
+        let request = tokio::task::spawn_blocking(move || normal_request(port));
+        entered.notified().await;
+        tokio::time::advance(Duration::from_secs(CONNECTION_SECONDS)).await;
+        tokio::task::yield_now().await;
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("close joins")
+        );
+        let response = request.await.expect("client receives timeout response");
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(!response.contains("secret"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_close_cancels_and_joins_an_inflight_exchange() {
+        struct Pending {
+            entered: Arc<Notify>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PairedExchange for Pending {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    struct Guard(Arc<AtomicBool>);
+                    impl Drop for Guard {
+                        fn drop(&mut self) {
+                            self.0.store(true, Ordering::Release);
+                        }
+                    }
+                    let _guard = Guard(self.dropped.clone());
+                    self.entered.notify_one();
+                    std::future::pending().await
+                })
+            }
+        }
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let forwarder = Arc::new(BrowserForwarder::new(Arc::new(Pending {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        })));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let port = receipt.port;
+        let request = tokio::task::spawn_blocking(move || normal_request(port));
+        entered.notified().await;
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("close waits for task tree")
+        );
+        assert!(dropped.load(Ordering::Acquire));
+        let _ = request
+            .await
+            .expect("client exits when connection is cancelled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_expiry_stops_the_listener_task() {
+        let forwarder = BrowserForwarder::new(Arc::new(FakeExchange::default()));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        tokio::time::advance(Duration::from_secs(FORWARD_SECONDS)).await;
+        tokio::task::yield_now().await;
+        let finished = forwarder
+            .forwards
+            .lock()
+            .expect("forward map")
+            .get(&input().bridge_id)
+            .is_some_and(|active| active.task.is_finished());
+        assert!(finished, "the outer forward deadline stops its listener");
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("join expiry")
+        );
         assert_ne!(receipt.port, 0);
     }
 
-    #[test]
-    fn unknown_exchange_returns_502_and_is_never_retried() {
-        let exchange = Arc::new(FakeExchange {
-            outcomes: Mutex::new(vec![ExchangeOutcome::Unknown]),
-            ..FakeExchange::default()
-        });
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_exchange_returns_generic_502_once() {
+        struct Unknown(AtomicUsize);
+        impl PairedExchange for Unknown {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    self.0.fetch_add(1, Ordering::AcqRel);
+                    Ok(ExchangeOutcome::Unknown)
+                })
+            }
+        }
+        let exchange = Arc::new(Unknown(AtomicUsize::new(0)));
         let forwarder = BrowserForwarder::new(exchange.clone());
         let receipt = forwarder
             .open(input(), 1000.0, Some(0))
-            .expect("forward opens");
-        let response = request(receipt.port);
+            .await
+            .expect("open");
+        let response = normal_request(receipt.port);
         assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
-        assert_eq!(exchange.calls.lock().expect("test mutex").len(), 1);
+        assert!(!response.contains("secret"));
+        assert_eq!(exchange.0.load(Ordering::Acquire), 1);
+        assert!(forwarder.close(&input().bridge_id).await.expect("close"));
     }
 
-    #[test]
-    fn paired_refusal_reason_is_not_exposed_to_the_callback_client() {
-        let exchange = Arc::new(FakeExchange {
-            outcomes: Mutex::new(vec![ExchangeOutcome::NotApplied(
-                "code=callback-secret token=private".into(),
-            )]),
-            ..FakeExchange::default()
-        });
-        let forwarder = BrowserForwarder::new(exchange);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn changed_identity_and_first_duplicate_header_are_refused_or_preserved() {
+        let exchange = Arc::new(FakeExchange::default());
+        let forwarder = BrowserForwarder::new(exchange.clone());
+        let original = input();
         let receipt = forwarder
-            .open(input(), 1000.0, Some(0))
-            .expect("forward opens");
-        let response = request(receipt.port);
-        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
-        assert!(!response.contains("callback-secret"));
-        assert!(!response.contains("private"));
-    }
-
-    #[test]
-    fn exchange_wait_uses_the_connection_deadline_and_does_not_repeat_the_call() {
-        struct DelayedExchange(Arc<AtomicUsize>);
-        impl PairedExchange for DelayedExchange {
-            fn exchange(
-                &self,
-                _server: &str,
-                _action: &str,
-                _payload: &Value,
-                _request_id: &str,
-                _now: i64,
-            ) -> Result<ExchangeOutcome, BrowserError> {
-                self.0.fetch_add(1, Ordering::AcqRel);
-                thread::sleep(Duration::from_millis(100));
-                Ok(ExchangeOutcome::Applied(json!({"status":200,"body":""})))
-            }
+            .open(original.clone(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let port = receipt.port;
+        let raw = format!(
+            "GET /oauth/callback HTTP/1.1\r\nUser-Agent: {}\r\nUser-Agent: short\r\n\r\n",
+            "x".repeat(HEADER_LIMIT + 1)
+        )
+        .into_bytes();
+        tokio::task::spawn_blocking(move || {
+            let mut s =
+                std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
+            s.write_all(&raw).expect("request");
+            let mut r = String::new();
+            s.read_to_string(&mut r).expect("response");
+            r
+        })
+        .await
+        .expect("client");
+        assert_eq!(
+            exchange.calls.lock().expect("calls")[0].2["headers"],
+            json!({})
+        );
+        let changes: [IdentityChange; 6] = [
+            ("server", |value| value.server.push_str("-changed")),
+            ("token", |value| value.token.push_str("-changed")),
+            ("host", |value| value.host = "localhost".into()),
+            ("port", |value| value.port += 1),
+            ("path", |value| value.path.push_str("/changed")),
+            ("expiry", |value| value.expires_at += 1.0),
+        ];
+        for (field, change) in changes {
+            let mut changed = original.clone();
+            change(&mut changed);
+            assert!(
+                matches!(
+                    forwarder.open(changed, 1000.0, Some(0)).await,
+                    Err(BrowserError::Conflict)
+                ),
+                "a changed {field} under the same bridge identity conflicts"
+            );
         }
-        let calls = Arc::new(AtomicUsize::new(0));
-        let exchange: Arc<dyn PairedExchange> = Arc::new(DelayedExchange(Arc::clone(&calls)));
-        let started = std::time::Instant::now();
-        let result = exchange_until(
-            exchange,
-            "peer",
-            REMOTE_ACTION,
-            json!({}),
-            "request-id".into(),
-            0,
-            started + Duration::from_millis(10),
+        assert!(forwarder.close(&original.bridge_id).await.expect("close"));
+    }
+
+    #[test]
+    fn errors_are_redacted_and_redirect_completion_is_retained() {
+        assert_eq!(
+            format!("{:?}", BrowserError::Listener(std::io::ErrorKind::Other)),
+            "BrowserError(<redacted>)"
         );
-        assert!(matches!(result, Err(BrowserError::Unknown)));
-        assert!(started.elapsed() < Duration::from_millis(80));
-        thread::sleep(Duration::from_millis(120));
-        assert_eq!(calls.load(Ordering::Acquire), 1);
-        let not_started = Arc::new(AtomicUsize::new(0));
-        let result = exchange_until(
-            Arc::new(DelayedExchange(Arc::clone(&not_started))),
-            "peer",
-            REMOTE_ACTION,
-            json!({}),
-            "expired-request".into(),
-            0,
-            std::time::Instant::now() - Duration::from_millis(1),
-        );
-        assert!(matches!(result, Err(BrowserError::Unknown)));
-        assert_eq!(not_started.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn connection_read_timeout_is_absolute_and_incomplete_requests_do_not_relay() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("loopback listener");
-        let client = TcpStream::connect(listener.local_addr().expect("local address"))
-            .expect("loopback client");
-        let (mut accepted, _) = listener.accept().expect("accept loopback client");
-        let deadline = std::time::Instant::now() + Duration::from_millis(25);
-        assert!(matches!(
-            read_head(&mut accepted, deadline),
-            Err(BrowserError::Listener(_))
-        ));
-        drop(client);
-    }
-
-    #[test]
-    fn invalid_and_expired_forwards_do_not_bind_a_port() {
-        let forwarder = BrowserForwarder::new(Arc::new(FakeExchange::default()));
-        let mut invalid = input();
-        invalid.host = "0.0.0.0".into();
-        assert!(matches!(
-            forwarder.open(invalid, 1000.0, Some(0)),
-            Err(BrowserError::InvalidForward)
-        ));
-        assert!(matches!(
-            forwarder.open(input(), 2001.0, Some(0)),
-            Err(BrowserError::Expired)
-        ));
-        assert!(forwarder.forwards.lock().expect("forward map").is_empty());
-    }
-
-    #[test]
-    fn redirect_responses_are_not_followed_and_oversized_bodies_are_refused() {
-        let (status, content_type, body, done) =
-            cleaned_result(&json!({"status":302,"location":"https://private.invalid/"}))
-                .expect("redirect is replaced by a safe page");
-        assert_eq!(status, 200);
-        assert_eq!(content_type, "text/html; charset=utf-8");
         assert!(
-            String::from_utf8(body)
-                .expect("static HTML is UTF-8")
-                .contains("Studio does not follow it")
+            cleaned_result(&json!({"status":302,"done":true}))
+                .expect("redirect")
+                .3
         );
-        assert!(!done);
-        let (_, _, _, done) =
-            cleaned_result(&json!({"status":302,"done":true})).expect("safe redirect replacement");
-        assert!(done, "redirect replacement retains completion semantics");
-        let oversized = json!({"status":200,"body":"A".repeat(BODY_BASE64_LIMIT + 1)});
-        assert!(matches!(
-            cleaned_result(&oversized),
-            Err(BrowserError::EncodedBodyLimit)
-        ));
-    }
-
-    #[test]
-    fn oversized_encoded_body_is_refused_before_decode() {
-        let oversized = json!({"status":200,"body":"A".repeat(BODY_BASE64_LIMIT + 1)});
-        assert!(matches!(
-            cleaned_result(&oversized),
-            Err(BrowserError::EncodedBodyLimit)
-        ));
-    }
-
-    #[test]
-    fn non_string_response_body_is_refused_and_error_formatting_is_redacted() {
         assert!(matches!(
             cleaned_result(&json!({"status":200,"body":{}})),
             Err(BrowserError::Exchange)
         ));
-        let error = BrowserError::Refused;
-        assert_eq!(
-            error.to_string(),
-            "the paired server refused the sign-in redirect"
-        );
-        assert!(!format!("{error:?}").contains("callback-secret"));
     }
 
     #[test]
-    fn charset_search_matches_python_pattern_inside_a_content_type_parameter() {
-        let (_, content_type, _, _) = cleaned_result(&json!({
-            "status":200,
-            "contentType":"text/plain; charset=iso-8859-1 extra",
-            "body":""
-        }))
-        .expect("valid minimal response");
-        assert_eq!(content_type, "text/plain; charset=iso-8859-1");
-    }
-
-    #[test]
-    fn browser_config_is_pure_and_preserves_account_runtime() {
-        let root = tempfile::tempdir().expect("asset fixtures");
-        let skill_path = root.path().join("SKILL.md");
-        let node_path = root.path().join("node");
-        let service_path = root.path().join("browser.mjs");
-        std::fs::write(&skill_path, "skill").expect("skill fixture");
-        std::fs::write(&node_path, "node").expect("node fixture");
-        std::fs::write(&service_path, "service").expect("service fixture");
-        let skill = skill_path.to_string_lossy().into_owned();
-        let node = node_path.to_string_lossy().into_owned();
-        let service = service_path.to_string_lossy().into_owned();
-        let shared = json!({"mcp_servers":{"node_repl":{
-            "command":node, "args":["server.mjs"], "env":{
-                "NODE_REPL_TRUSTED_SERVICES":format!("{{\"browser\":{}}}", json!(service)),
-                "NODE_REPL_NODE_PATH":"/opt/modules", "SECRET":"not copied"
-            }
-        }}});
-        let assets = BrowserConfigAssets {
-            control_chrome_skill: Some(skill.clone()),
-            node_runtime: Some(node.clone()),
-            browser_service: Some(service.clone()),
+    fn arbitrary_file_is_not_a_control_chrome_skill() {
+        let root = tempfile::tempdir().expect("fixture");
+        let shared = root.path();
+        let plugin = shared.join("plugins/cache/openai-bundled/chrome/latest");
+        let skill = plugin.join("skills/control-chrome/SKILL.md");
+        std::fs::create_dir_all(skill.parent().expect("parent")).expect("skill dirs");
+        std::fs::write(&skill, "skill").expect("skill");
+        let other = shared.join("node");
+        std::fs::write(&other, "node").expect("node");
+        let records = json!({"mcp_servers":{"node_repl":{"command":other}}});
+        let mk = |path: String| BrowserConfigAssets {
+            control_chrome_skill: Some(path),
+            ..BrowserConfigAssets::default()
         };
-        let config = prepare_browser_config(
-            BrowserConfigSnapshot::from_stored_records(
-                &json!({}),
-                &shared,
-                "/acct",
-                "/shared",
-                assets.clone(),
-            )
-            .expect("valid stored records"),
-        );
-        assert_eq!(config.unavailable_reason, None);
-        assert_eq!(config.developer_instructions, Some(BROWSER_GUIDANCE));
-        assert_eq!(
-            config
-                .overrides
-                .get("mcp_servers.node_repl")
-                .and_then(|node| node.get("command")),
-            Some(&json!(node))
-        );
-        assert_eq!(
-            config
-                .overrides
-                .get("mcp_servers.node_repl")
-                .and_then(|node| node.pointer("/env/CODEX_HOME")),
-            Some(&json!("/acct"))
-        );
-        assert_eq!(
-            config
-                .overrides
-                .get("mcp_servers.node_repl")
-                .and_then(|node| node.pointer("/env/NODE_REPL_TRUSTED_SERVICES")),
-            Some(&json!(format!("{{\"browser\": {}}}", json!(service))))
-        );
-        assert_eq!(
-            config
-                .overrides
-                .get("mcp_servers.node_repl")
-                .and_then(|node| node.pointer("/env/SECRET")),
-            None
-        );
-        let disabled = prepare_browser_config(
-            BrowserConfigSnapshot::from_stored_records(
-                &json!({"features":{"plugins":false}}),
-                &shared,
-                "/acct",
-                "/shared",
-                assets.clone(),
-            )
-            .expect("valid stored records"),
-        );
-        assert_eq!(disabled.overrides, json!({}));
-        assert_eq!(
-            disabled.unavailable_reason,
-            Some("Plugins are disabled in this account's Codex configuration")
-        );
-        assert_eq!(disabled.developer_instructions, None);
-        let invalid_service_config = json!({"mcp_servers":{"node_repl":{"command":node,"env":{"NODE_REPL_TRUSTED_SERVICES":"not-json"}}}});
-        let invalid_service = prepare_browser_config(
-            BrowserConfigSnapshot::from_stored_records(
-                &json!({}),
-                &invalid_service_config,
-                "/acct",
-                "/shared",
-                BrowserConfigAssets {
-                    browser_service: None,
-                    ..assets.clone()
-                },
-            )
-            .expect("valid stored records"),
-        );
-        assert_eq!(invalid_service.overrides, json!({}));
-        assert_eq!(
-            invalid_service.unavailable_reason,
-            Some("NODE_REPL_TRUSTED_SERVICES is not valid JSON")
-        );
-        let empty_node = json!({"mcp_servers":{"node_repl":{}}});
-        let empty_target = prepare_browser_config(
-            BrowserConfigSnapshot::from_stored_records(
-                &empty_node,
-                &shared,
-                "/acct",
-                "/shared",
-                assets,
-            )
-            .expect("valid stored records"),
-        );
-        assert_eq!(empty_target.unavailable_reason, None);
-        assert_eq!(
-            empty_target
-                .overrides
-                .get("mcp_servers.node_repl")
-                .and_then(|node| node.get("enabled")),
-            None
-        );
+        let good = BrowserConfigSnapshot::from_stored_records(
+            &json!({}),
+            &records,
+            "/acct",
+            &shared.to_string_lossy(),
+            mk(skill.to_string_lossy().into_owned()),
+        )
+        .expect("snapshot");
+        assert!(good.skill_available);
+        let bad = BrowserConfigSnapshot::from_stored_records(
+            &json!({}),
+            &records,
+            "/acct",
+            &shared.to_string_lossy(),
+            mk(other.to_string_lossy().into_owned()),
+        )
+        .expect("snapshot");
+        assert!(!bad.skill_available);
     }
 }
