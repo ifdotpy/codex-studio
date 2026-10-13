@@ -124,6 +124,8 @@ const WORKSPACE_CHECKPOINT_HISTORY_URI: &str =
     "https://codex-studio.invalid/workspace-checkpoint-history-record.schema.json";
 const WORKSPACE_CHECKPOINT_HISTORY: &[u8] =
     include_bytes!("schemas/workspace-checkpoint-history-record.schema.json");
+const RELOCATION_URI: &str = "https://codex-studio.invalid/persisted-relocation.schema.json";
+const RELOCATION: &[u8] = include_bytes!("schemas/persisted-relocation.schema.json");
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCESS_RECORD_URI, ACCESS_RECORD),
@@ -131,6 +133,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (AGENT_RECORD_URI, AGENT_RECORD),
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
     (CHAT_MESSAGE_URI, CHAT_MESSAGE),
+    (RELOCATION_URI, RELOCATION),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (EVENT_METADATA_URI, EVENT_METADATA),
@@ -216,6 +219,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_access_clients" => "PersistedAccessRecord",
         "runtime_access_discovered" => "PersistedAccessRecord",
         "runtime_agents" => "PersistedAgentRecord",
+        "runtime_agent_moves" => "relocation/MoveRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
         "runtime_chat_messages" => "PersistedChatMessage",
@@ -375,6 +379,14 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         USAGE_LIMITS_URI,
         "workspace-usage-limits",
         &usage_limits,
+        &mut validators,
+    )?;
+    let relocation: Value = serde_json::from_slice(RELOCATION).map_err(|e| e.to_string())?;
+    compile_definitions(
+        &registry,
+        RELOCATION_URI,
+        "relocation",
+        &relocation,
         &mut validators,
     )?;
     Ok(CompiledSchemas { validators })

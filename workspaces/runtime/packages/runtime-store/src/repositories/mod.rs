@@ -1,4 +1,5 @@
 pub mod account_state;
+pub(crate) mod agent_move;
 pub(crate) mod agents;
 pub mod analytics;
 pub(crate) mod checkpoints;
@@ -12,6 +13,7 @@ pub mod monitor_runtime;
 pub(crate) mod monitors;
 pub(crate) mod multi_server;
 pub(crate) mod profiles;
+pub(crate) mod project_locations;
 pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;

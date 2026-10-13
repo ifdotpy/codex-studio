@@ -157,7 +157,7 @@ pub struct ProjectLocationRecord {
 impl crate::JsonRecord for ProjectLocationRecord {
     type Id = String;
     const TABLE: &'static str = "runtime_projects";
-    const SCHEMA: &'static str = "relocation/RelocationProject";
+    const SCHEMA: &'static str = "PersistedProjectRecord";
     const KEY_MODE: crate::RecordKeyMode = crate::RecordKeyMode::PayloadId;
     const QUERY_SHAPE: crate::RecordQueryShape = crate::RecordQueryShape::None;
     fn record_key(&self) -> Option<&String> {

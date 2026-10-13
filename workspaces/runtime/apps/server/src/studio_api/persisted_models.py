@@ -11,6 +11,7 @@ from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeIn
 from studio_api.workspace_operation_models import (
     PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
 )
+from studio_api.relocation_models import RelocationFormats
 
 
 def _unicode_scalar(value: str) -> str:
@@ -536,6 +537,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,
+    "persisted-relocation.schema.json": RelocationFormats,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
