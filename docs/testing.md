@@ -52,7 +52,7 @@ without maintaining a second suite inventory.
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Default nextest runs
 explicit fast witnesses; `just test-rust-runtime-corpora` sets
-`STUDIO_RUNTIME_CORPUS_FULL=1` and runs the full lifecycle/notification matrices
+`STUDIO_RUNTIME_CORPUS_FULL=1` and runs the full lifecycle/notification/preparation matrices
 as an announced heavy run. This command also runs the full account-worker crash
 matrix at every before/after store-bridge boundary; default nextest runs one
 witness per scenario and the reservation-recovery point. Worker scenarios clone
@@ -62,11 +62,14 @@ records every method, ordering, review regression and approved deviation; its
 runner requires every method and review regression to remain in the fast set.
 See the [notification corpus guide](../workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/NOTIFICATION-CORPUS.md)
 for the protocol, normalization and timing evidence. These corpora use disposable
-state, stub provider transport and background workers, and create no load generators.
+state, stub provider transport and background workers, and create no load generators. The
+[preparation corpus](../workspaces/runtime/packages/runtime-services/tests/turn_prepare/README.md)
+uses a minimal host and in-memory SQLite without constructing a Runtime; it checks
+pure context selection, event projection, transcript inputs and acceptance.
 
 `just test-rust-runtime-corpora-mutations` is a separate manual heavy run. It copies
 the checkout's sources below the external `CARGO_TARGET_DIR`, applies each entry
-in `tests/turn_lifecycle/mutations.json` only to that scratch copy, and runs both
+in `tests/turn_lifecycle/mutations.json` and `tests/turn_prepare/mutations.json` only to that scratch copy, and runs both
 default fast corpora and account-worker witnesses. It uses two build jobs and no load generators. Each mutation
 must cause a test failure; build and infrastructure failures are invalid evidence.
 The untouched baseline must pass. Logs, CPU/wall timings, and `results.json` stay

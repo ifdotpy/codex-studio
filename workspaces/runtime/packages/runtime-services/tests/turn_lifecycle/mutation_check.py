@@ -36,6 +36,7 @@ def main():
             # copy2 can make pristine sources older than the mutant artifact.
             shutil.copy(source, destination)
     mutations = json.loads(Path(__file__).with_name("mutations.json").read_text())
+    mutations += json.loads(Path(__file__).parents[1].joinpath("turn_prepare/mutations.json").read_text())
     assert len({m["id"] for m in mutations}) == len(mutations), "duplicate mutation ID"
     if args.only:
         wanted = set(args.only.split(","))
@@ -56,7 +57,8 @@ def main():
                        CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
-               "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) or test(account_worker)"]
+               ("binary(turn_prepare_corpus)" if all(m.get("suite") == "turn_prepare" for m in mutations)
+                else "binary(/^(turn_lifecycle|notification_dispatch|turn_prepare)_corpus$/) or test(account_worker)")]
     results = []
 
     def run(identity, tier):
