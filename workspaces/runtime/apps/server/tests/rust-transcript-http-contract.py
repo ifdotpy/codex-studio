@@ -507,7 +507,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_unavailable_event_and_workspace_routes_name_their_dependencies(self) -> None:
         expected = {
             "/api/transcript": "transcript/event-driver",
-            "/api/transcript/page": "transcript/event-driver, transcript/payload-store, transcript/workspace-state",
+            "/api/transcript/page": "transcript/event-driver, transcript/workspace-state",
             "/api/search": "transcript/search-index",
             "/api/search/item": "transcript/workspace-state",
         }

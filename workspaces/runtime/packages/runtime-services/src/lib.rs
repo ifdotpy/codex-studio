@@ -17,6 +17,7 @@ pub mod federation;
 pub mod model_catalog;
 pub mod multi_server;
 pub mod panels;
+pub mod payload_store;
 pub mod progress_panel;
 pub mod progress_watch;
 pub mod projects;

@@ -1,12 +1,14 @@
 //! File metadata and bounded content reads for local workspaces.
 
+use super::extractors::ApiJson;
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use base64::Engine as _;
+use base64::Engine;
 use serde_json::{Value, json};
+use studio_runtime_services::payload_store::{self, PayloadStoreError};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, WorkspaceFilesRepository};
 
@@ -18,6 +20,7 @@ const EXECUTION_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
+        post("/api/assets", OperationStatus::Implemented, upload_asset),
         get(
             "/api/file-info",
             OperationStatus::partial(&EXECUTION_DEPENDENCIES),
@@ -29,6 +32,26 @@ pub(crate) fn routes() -> RouteGroup {
             file_content,
         ),
     ])
+}
+
+async fn upload_asset(
+    State(state): State<HttpState>,
+    ApiJson(mut body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
+    let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
+    let id = take_string(&mut body, "id");
+    let encoded = take_string(&mut body, "base64")
+        .or_else(|| take_string(&mut body, "data"))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let asset = tokio::task::spawn_blocking(move || {
+        payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_payload_store_error)?;
+    super::generated_json::<crate::generated::AssetRecord>(asset).map(Json)
 }
 
 pub(crate) async fn file_info(
@@ -83,7 +106,7 @@ pub(crate) async fn file_content(
     super::generated_json::<crate::generated::FileContent>(json!({
         "name": result.name,
         "mime": result.mime,
-        "base64": base64::engine::general_purpose::STANDARD.encode(&result.bytes),
+        "base64": base64_encode(&result.bytes),
     }))
     .map(Json)
 }
@@ -248,6 +271,50 @@ fn file_error(error: WorkspaceFilesError) -> ApiError {
         ),
         WorkspaceFilesError::MissingPath => ApiError::new(StatusCode::BAD_REQUEST, "Supply a path"),
         WorkspaceFilesError::InvalidPath => ApiError::new(StatusCode::BAD_REQUEST, "Invalid path"),
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
+    match error {
+        PayloadStoreError::InvalidData => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data")
+        }
+        PayloadStoreError::InvalidFilename => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid filename")
+        }
+        PayloadStoreError::ContentLimit => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Files must contain 1 byte to 20 MiB",
+        ),
+        PayloadStoreError::UploadConflict => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "This upload id has different content",
+        ),
+        PayloadStoreError::UnknownAgent => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
+        }
+        PayloadStoreError::DeletedAgent => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
+        }
+        error @ PayloadStoreError::InvalidStoredAsset { .. } => {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+        PayloadStoreError::Io(_)
+        | PayloadStoreError::Store(_)
+        | PayloadStoreError::Json(_)
+        | PayloadStoreError::Clock
+        | PayloadStoreError::Entropy => ApiError::internal(),
+    }
+}
+
+fn take_string(body: &mut Value, key: &str) -> Option<String> {
+    match body.as_object_mut()?.remove(key)? {
+        Value::String(value) => Some(value),
+        _ => None,
     }
 }
 

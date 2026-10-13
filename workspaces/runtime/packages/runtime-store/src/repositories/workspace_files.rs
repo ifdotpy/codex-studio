@@ -1,6 +1,7 @@
 //! Read workspace upload records written by the Python runtime.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::Value;
 
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -46,6 +47,21 @@ impl WorkspaceFilesRepository {
             )
             .optional()
             .map_err(StoreError::from)
+    }
+
+    pub fn asset_ids(connection: &Connection) -> StoreResult<Vec<String>> {
+        let mut statement = connection.prepare("SELECT id FROM runtime_assets")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn insert_asset(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
+        connection.execute(
+            "INSERT INTO runtime_assets(id,record) VALUES (?1,?2)",
+            params![id, serde_json::to_string(record)?],
+        )?;
+        Ok(())
     }
 }
 
