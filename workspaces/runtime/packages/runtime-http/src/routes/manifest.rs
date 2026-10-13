@@ -21,7 +21,18 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "provider-session/model-list",
     "provider-session/app-server",
     "remote-transport/federation-exchange",
+    "remote-transport/identity-write",
     "remote-transport/multi-server",
+    "remote-transport/tailscale-identity",
+    "remote-transport/signed-federation-exchange",
+    "federation-credentials/key-generation",
+    "federation-credentials/invitation",
+    "federation-credentials/private-key",
+    "server-credentials/local-identity",
+    "remote-transport/signed-server-requests",
+    "remote-transport/owner-lookup",
+    "remote-transport/tailscale-discovery",
+    "multi-server-runtime/orchestration",
     "resource-policy/publish-drafts",
     "resource-policy/read-progress-panel",
     "resource-policy/windows-file-identity",
@@ -97,7 +108,7 @@ impl OperationStatus {
         reason = "partial route slices use this to bind 501 behavior"
     )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
-        matches!(self, Self::Partial { dependencies: declared } if declared == dependencies)
+        matches!(self, Self::Partial { dependencies: declared } if dependencies.iter().all(|dependency| declared.contains(dependency)))
     }
 }
 

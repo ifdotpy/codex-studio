@@ -5,16 +5,31 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_services::federation::{self, FederationError};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const EXCHANGE_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("federation-driver/rooms"),
-    Dependency::new("remote-transport/federation-exchange"),
+const SIGNING_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("federation-credentials/private-key")];
+const INVITE_DEPENDENCIES: [Dependency; 2] = [
+    Dependency::new("remote-transport/tailscale-identity"),
+    Dependency::new("federation-credentials/key-generation"),
 ];
+const ACCEPT_DEPENDENCIES: [Dependency; 2] = [
+    Dependency::new("federation-credentials/invitation"),
+    Dependency::new("remote-transport/signed-federation-exchange"),
+];
+const MANAGEMENT_DEPENDENCIES: [Dependency; 5] = [
+    Dependency::new("federation-credentials/private-key"),
+    Dependency::new("remote-transport/tailscale-identity"),
+    Dependency::new("federation-credentials/key-generation"),
+    Dependency::new("federation-credentials/invitation"),
+    Dependency::new("remote-transport/signed-federation-exchange"),
+];
+const IDENTITY_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("federation-credentials/key-generation")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -25,7 +40,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation",
-            OperationStatus::partial(&EXCHANGE_DEPENDENCIES),
+            OperationStatus::partial(&MANAGEMENT_DEPENDENCIES),
             manage,
         ),
         get(
@@ -35,7 +50,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/message",
-            OperationStatus::partial(&EXCHANGE_DEPENDENCIES),
+            OperationStatus::partial(&SIGNING_DEPENDENCIES),
             message,
         ),
         get(
@@ -45,7 +60,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/pair",
-            OperationStatus::partial(&EXCHANGE_DEPENDENCIES),
+            OperationStatus::partial(&SIGNING_DEPENDENCIES),
             pair,
         ),
         get(
@@ -55,7 +70,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/pull",
-            OperationStatus::partial(&EXCHANGE_DEPENDENCIES),
+            OperationStatus::partial(&SIGNING_DEPENDENCIES),
             pull,
         ),
         get(
@@ -65,7 +80,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/status",
-            OperationStatus::partial(&EXCHANGE_DEPENDENCIES),
+            OperationStatus::partial(&SIGNING_DEPENDENCIES),
             signed_status,
         ),
     ])
@@ -110,41 +125,35 @@ async fn manage(
                 crate::generated::FederationSnapshot,
             >(snapshot)?))
         }
-        "set_enabled" => {
-            let enabled = body
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("enabled")]))?;
-            if enabled {
-                return Err(dependency_error("POST", "/api/federation"));
+        "set_enabled" | "approve_peer" | "revoke_peer" | "room_options" | "create_room"
+        | "approve_room" => {
+            let store = state.store.clone().ok_or_else(ApiError::internal)?;
+            let queue_signal = matches!(action, "create_room" | "approve_room");
+            let wake = state.event_wake.clone();
+            let result = tokio::task::spawn_blocking(move || federation::manage(&store, &body))
+                .await
+                .map_err(|_| ApiError::internal())?
+                .map_err(map_service_error)?;
+            if queue_signal {
+                wake.notify_one();
             }
-            let store = state.store.clone().ok_or_else(ApiError::internal)?;
-            tokio::task::spawn_blocking(move || federation::set_enabled(&store, false))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(map_service_error)?;
-            let store = state.store.clone().ok_or_else(ApiError::internal)?;
-            let snapshot = tokio::task::spawn_blocking(move || federation::snapshot(&store))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(map_service_error)?;
             Ok(Json(super::generated_json::<
                 crate::generated::FederationSnapshot,
-            >(snapshot)?))
+            >(result)?))
         }
-        "revoke_peer" => {
-            let _ = body
-                .get("state_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("state_id")]))?;
-            Err(dependency_error("POST", "/api/federation"))
-        }
-        _ => Err(dependency_error("POST", "/api/federation")),
+        "create_invite" => Err(unavailable_for(&INVITE_DEPENDENCIES)),
+        "accept_peer" => Err(unavailable_for(&ACCEPT_DEPENDENCIES)),
+        _ => Err(unavailable_for(&SIGNING_DEPENDENCIES)),
     }
 }
 
 fn dependency_error(method: &str, path: &str) -> ApiError {
-    dependency_unavailable(method, path, &EXCHANGE_DEPENDENCIES)
+    dependency_unavailable(method, path, &SIGNING_DEPENDENCIES)
+        .unwrap_or_else(|_| ApiError::internal())
+}
+
+fn unavailable_for(dependencies: &'static [Dependency]) -> ApiError {
+    dependency_unavailable("POST", "/api/federation", dependencies)
         .unwrap_or_else(|_| ApiError::internal())
 }
 
@@ -153,5 +162,7 @@ fn map_service_error(error: FederationError) -> ApiError {
         FederationError::Store(error) => {
             ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
+        FederationError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        FederationError::NeedsIdentity => unavailable_for(&IDENTITY_DEPENDENCIES),
     }
 }

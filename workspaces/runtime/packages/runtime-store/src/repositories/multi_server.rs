@@ -32,26 +32,34 @@ pub struct MultiServerRepository;
 impl MultiServerRepository {
     pub fn audit(connection: &Connection) -> StoreResult<Value> {
         let mut statement = connection.prepare(
-            "SELECT seq,client,actor,action,created FROM runtime_access_audit ORDER BY seq DESC LIMIT 100",
+            "SELECT CAST(seq AS TEXT),client,actor,action,created FROM runtime_access_audit ORDER BY seq DESC LIMIT 100",
         )?;
         let records = statement.query_map([], |row| {
-            let sequence: i64 = row.get(0)?;
-            let client_id: String = row.get(1)?;
-            let actor_id: String = row.get(2)?;
-            let action: String = row.get(3)?;
-            let created: f64 = row.get(4)?;
-            Ok((sequence, client_id, actor_id, action, created))
+            Ok((
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                row.get::<_, String>(2),
+                row.get::<_, String>(3),
+                row.get::<_, f64>(4),
+            ))
         })?;
         let mut values = Vec::new();
         for record in records {
             let (sequence, client_id, actor_id, action, created) = record?;
-            if sequence < 1 || action.is_empty() || !created.is_finite() {
-                return Err(StoreError::SchemaMismatch(
-                    "invalid stored multi-server audit record".to_owned(),
-                ));
+            let sequence = sequence.map_err(|_| invalid("sequence", "unknown"))?;
+            let sequence_id = sequence.as_str();
+            let sequence_number = sequence
+                .parse::<i64>()
+                .map_err(|_| invalid("sequence", sequence_id))?;
+            let client_id = client_id.map_err(|_| invalid("client", sequence_id))?;
+            let actor_id = actor_id.map_err(|_| invalid("actor", sequence_id))?;
+            let action = action.map_err(|_| invalid("action", sequence_id))?;
+            let created = created.map_err(|_| invalid("created", sequence_id))?;
+            if sequence_number < 1 || action.is_empty() || !created.is_finite() {
+                return Err(invalid("record", sequence_id));
             }
             values.push(json!({
-                "sequence": sequence,
+                "sequence": sequence_number,
                 "clientId": client_id,
                 "actorId": actor_id,
                 "action": action,
@@ -60,4 +68,10 @@ impl MultiServerRepository {
         }
         Ok(json!({"records": values}))
     }
+}
+
+fn invalid(field: &str, sequence: &str) -> StoreError {
+    StoreError::SchemaMismatch(format!(
+        "invalid stored object runtime_access_audit/{sequence}: {field}"
+    ))
 }
