@@ -66,6 +66,7 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
+pub use radio_runtime::RadioCreation;
 pub mod recovery;
 pub mod recovery_absence;
 pub mod recovery_history;
