@@ -11,14 +11,9 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const PAGE_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("transcript/event-driver"),
-    Dependency::new("transcript/workspace-state"),
-];
+const PAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript/event-driver")];
 const CANVAS_TRANSCRIPT_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("transcript/event-driver")];
-const SEARCH_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript/search-index")];
-const SEARCH_ITEM_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript/workspace-state")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -39,14 +34,10 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/search/item",
-            OperationStatus::partial(&SEARCH_ITEM_DEPENDENCIES),
+            OperationStatus::Implemented,
             search_item,
         ),
-        get(
-            "/api/search",
-            OperationStatus::partial(&SEARCH_DEPENDENCIES),
-            search,
-        ),
+        get("/api/search", OperationStatus::Implemented, search),
         get(
             "/api/transcript",
             OperationStatus::partial(&CANVAS_TRANSCRIPT_DEPENDENCIES),
@@ -116,16 +107,52 @@ async fn transcript_search(
     >(value)?))
 }
 
-async fn search_item() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "GET",
-        "/api/search/item",
-        &SEARCH_ITEM_DEPENDENCIES,
-    ))
+async fn search_item(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let identity = query
+        .typed_value("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || transcript::search_item(&store, &identity))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(map_transcript_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::SearchItemResponse,
+    >(value)?))
 }
 
-async fn search() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("GET", "/api/search", &SEARCH_DEPENDENCIES))
+async fn search(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let query_text = query
+        .typed_value("q")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let limit = query
+        .typed_value("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(50);
+    let agent = query
+        .typed_value("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || {
+        transcript::search_work(&store, &query_text, agent.as_deref(), limit)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::SearchResponse,
+    >(value)?))
 }
 
 async fn canvas_transcript() -> Result<Json<Value>, ApiError> {
@@ -152,6 +179,16 @@ fn map_transcript_error(error: TranscriptError) -> ApiError {
         TranscriptError::MissingContent => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Full transcript content is unavailable",
+        ),
+        TranscriptError::SearchResultUnavailable => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This search result is unavailable")
+        }
+        TranscriptError::InvalidSearch => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Supply a valid search query")
+        }
+        TranscriptError::RequiresDependency(dependency) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {dependency}"),
         ),
         TranscriptError::InvalidStoredObject { table, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
