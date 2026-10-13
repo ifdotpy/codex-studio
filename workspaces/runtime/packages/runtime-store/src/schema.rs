@@ -226,6 +226,11 @@ pub fn python_json(value: &Value) -> String {
     python_json_separated(value, ", ", ": ", true)
 }
 
+/// Sorted UTF-8 JSON with Python's human-readable separators.
+pub fn python_json_utf8(value: &Value) -> String {
+    python_json_separated(value, ", ", ": ", false)
+}
+
 /// Compact Python-compatible JSON for content-addressed signatures.
 pub fn python_json_compact(value: &Value) -> String {
     python_json_separated(value, ",", ":", false)
