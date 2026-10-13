@@ -95,34 +95,62 @@ class RustCatalogHttpContract(unittest.TestCase):
             "XDG_DATA_HOME": str(cls.backend.root / "xdg-data"),
             "TMPDIR": str(cls.backend.scratch_root),
         }
-        with patch.dict(os.environ, environment):
-            runtime = Runtime(cls.backend.state)
-            try:
-                runtime.set_rate_limits(
-                    "default",
-                    {
-                        "data": {
-                            "accountId": "fixture-account",
-                            "status": "ready",
-                            "signedIn": True,
-                            "rateLimits": {"primary": {"usedPercent": 27}},
+        # Runtime starts its maintenance scheduler in this test process too.
+        # Use the same replay pin and restricted PATH as the HTTP child so
+        # host-side fixture bootstrapping cannot discover an installed Codex.
+        environment.update(cls.backend._environment())
+        with patch.dict(os.environ, environment, clear=True):
+            # This fixture tests persisted account and cached-limit reads. Keep
+            # provider-version maintenance offline and avoid contaminating the
+            # test process's global urllib opener with its temporary proxy.
+            with patch(
+                "codex_provider_upstream_releases.updates_enabled",
+                return_value=False,
+            ):
+                runtime = Runtime(cls.backend.state)
+                try:
+                    from codex_sync_entities import put as put_entity
+
+                    with runtime.db() as database:
+                        put_entity(
+                            database,
+                            "uiPreferences",
+                            "user",
+                            {
+                                "fields": {
+                                    '["codex-studio-preferences-v1","checkProviderUpdates"]': {
+                                        "value": False,
+                                        "timestamp": 1,
+                                        "writer": "catalog-http-contract",
+                                    },
+                                },
+                            },
+                        )
+                    runtime.set_rate_limits(
+                        "default",
+                        {
+                            "data": {
+                                "accountId": "fixture-account",
+                                "status": "ready",
+                                "signedIn": True,
+                                "rateLimits": {"primary": {"usedPercent": 27}},
+                            },
+                            "at": 1234.5,
+                            "readAt": 1234.5,
+                            "error": None,
                         },
-                        "at": 1234.5,
-                        "readAt": 1234.5,
-                        "error": None,
-                    },
-                )
-                runtime.set_rate_limits(
-                    "cached-unknown",
-                    {
-                        "data": {"accountId": "cached-only"},
-                        "at": 2345.0,
-                        "readAt": 2345.0,
-                        "error": None,
-                    },
-                )
-            finally:
-                runtime.close()
+                    )
+                    runtime.set_rate_limits(
+                        "cached-unknown",
+                        {
+                            "data": {"accountId": "cached-only"},
+                            "at": 2345.0,
+                            "readAt": 2345.0,
+                            "error": None,
+                        },
+                    )
+                finally:
+                    runtime.close()
         cls.backend.start()
 
     @classmethod
@@ -208,7 +236,8 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "XDG_DATA_HOME": str(backend.root / "xdg-data"),
                 "TMPDIR": str(backend.scratch_root),
             }
-            with patch.dict(os.environ, environment):
+            environment.update(backend._environment())
+            with patch.dict(os.environ, environment, clear=True):
                 runtime = Runtime(backend.state)
                 runtime.close()
             registry_path.write_text("{", encoding="utf-8")
@@ -241,7 +270,8 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "XDG_DATA_HOME": str(backend.root / "xdg-data"),
                 "TMPDIR": str(backend.scratch_root),
             }
-            with patch.dict(os.environ, environment):
+            environment.update(backend._environment())
+            with patch.dict(os.environ, environment, clear=True):
                 runtime = Runtime(backend.state)
                 runtime.close()
                 backend.start()

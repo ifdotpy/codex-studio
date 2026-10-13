@@ -9,7 +9,8 @@ use studio_runtime_services::workspace_views::{
     reported_change_files, task_feed_response,
 };
 use studio_runtime_store::{
-    Connection, StoreError, StoredRecord, TranscriptRepository, WorkspaceViewsRepository,
+    AgentRecord, CheckpointRecord, Connection, StoreError, StoredRecord, TranscriptRepository,
+    WorkspaceViewsRepository,
 };
 
 use crate::error::ApiError;
@@ -389,23 +390,28 @@ fn workspace_view(
         .map_err(|_| invalid_stored("runtime_checkpoints", "unknown"))?,
     )?;
     let agent_records = all_agents
-        .iter()
+        .into_iter()
         .map(|agent| {
-            (
-                agent["id"].as_str().unwrap_or_default().to_owned(),
-                agent.as_object().cloned().unwrap_or_default(),
-            )
+            let id = agent
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_agents", "unknown"))?
+                .to_owned();
+            AgentRecord::from_value(agent).map_err(|_| invalid_stored("runtime_agents", &id))
         })
-        .collect();
+        .collect::<Result<Vec<_>, ApiError>>()?;
     let checkpoint_records = checkpoint_records
         .into_iter()
         .map(|record| {
-            (
-                record["id"].as_str().unwrap_or_default().to_owned(),
-                record.as_object().cloned().unwrap_or_default(),
-            )
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_checkpoints", "unknown"))?
+                .to_owned();
+            CheckpointRecord::from_value(record)
+                .map_err(|_| invalid_stored("runtime_checkpoints", &id))
         })
-        .collect();
+        .collect::<Result<Vec<_>, ApiError>>()?;
     let checkpoints = studio_runtime_services::questions_reads::checkpoint_list(
         agent_id,
         agent_records,
@@ -511,25 +517,13 @@ async fn workspace_tasks(
         let connection = store.read().map_err(|_| ApiError::internal())?;
         WorkspaceViewsRepository::validate_task_records(&connection).map_err(map_store_error)?;
 
-        let agents = WorkspaceViewsRepository::agent_ids(&connection)
-            .map_err(map_store_error)?
-            .into_iter()
-            .map(|id| {
-                let record = WorkspaceViewsRepository::agent(&connection, &id)
-                    .map_err(map_store_error)?
-                    .ok_or_else(|| invalid_stored("runtime_agents", &id))?;
-                let record = record.value();
-                let record = checked_stored(
-                    &validators,
-                    "AgentRecordResponse",
-                    "runtime_agents",
-                    &id,
-                    record,
-                )?;
-                Ok(record)
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
-        let _root = studio_runtime_services::workspace_views::agent_root(&agents, agent.as_deref())
+        let agents = parse_records(
+            &validators,
+            "AgentRecordResponse",
+            "runtime_agents",
+            WorkspaceViewsRepository::agents(&connection).map_err(map_store_error)?,
+        )?;
+        let root = studio_runtime_services::workspace_views::agent_root(&agents, agent.as_deref())
             .map_err(|error| match error {
                 studio_runtime_services::workspace_views::AgentScopeError::MissingAgent => {
                     invalid_request()
@@ -539,7 +533,7 @@ async fn workspace_tasks(
                 }
             })?;
         let ids =
-            studio_runtime_services::workspace_views::agents_in_root(&agents, _root.as_deref())
+            studio_runtime_services::workspace_views::agents_in_root(&agents, root.as_deref())
                 .into_iter()
                 .filter_map(|record| record["id"].as_str().map(str::to_owned))
                 .collect::<Vec<_>>();

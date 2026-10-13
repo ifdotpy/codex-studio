@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use studio_runtime_services::questions_reads::{self, QuestionReadRecord, QuestionsReadsError};
+use studio_runtime_services::questions_reads::{self, QuestionsReadsError};
 use studio_runtime_store::QuestionsReadsRepository;
 
 use crate::error::ApiError;
@@ -44,19 +44,7 @@ pub(crate) async fn questions(
                 ))
             })
             .map_err(map_store_error)?;
-        let agents = agents
-            .into_iter()
-            .map(|record| (record.id, record.value))
-            .collect();
-        let requests = records
-            .into_iter()
-            .map(|record| QuestionReadRecord {
-                id: record.id,
-                raw: record.raw,
-                value: record.value,
-            })
-            .collect();
-        let value = questions_reads::question_history(agent_id.as_deref(), agents, requests)
+        let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
             .map_err(questions_error)?;
         Ok::<_, ApiError>(value)
     })
@@ -77,9 +65,8 @@ pub(crate) async fn complaint(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let stored = QuestionsReadsRepository::complaint(&connection, &id)
-            .map_err(map_store_error)?
-            .map(|record| (record.id, record.value));
+        let stored =
+            QuestionsReadsRepository::complaint(&connection, &id).map_err(map_store_error)?;
         questions_reads::complaint_detail(stored).map_err(questions_error)
     })
     .await
@@ -106,15 +93,7 @@ pub(crate) async fn checkpoints(
                 ))
             })
             .map_err(map_store_error)?;
-        let agents = agents
-            .into_iter()
-            .map(|record| (record.id, record.value))
-            .collect();
-        let checkpoints = records
-            .into_iter()
-            .map(|record| (record.id, record.value))
-            .collect();
-        let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, checkpoints)
+        let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, records)
             .map_err(questions_error)?;
         Ok::<_, ApiError>(value)
     })

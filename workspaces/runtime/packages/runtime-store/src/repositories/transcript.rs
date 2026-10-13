@@ -25,10 +25,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
         TableRequirement {
-            name: "runtime_item_fulltext",
-            columns: &["id", "body"],
-        },
-        TableRequirement {
             name: "runtime_items",
             columns: &["id", "agent", "record", "created"],
         },
@@ -63,8 +59,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub enum TranscriptStoreError {
     #[error("SQLite operation failed")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("invalid stored object {0}")]
-    InvalidStoredObject(&'static str),
+    #[error("invalid stored object {table}/{id}")]
+    InvalidStoredObject { table: &'static str, id: String },
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
 }
 
 pub type TranscriptStoreResult<T> = Result<T, TranscriptStoreError>;
@@ -83,7 +81,7 @@ impl TranscriptRepository {
         Table::<AgentRecord>::new(connection)
             .get(&AgentId::from(agent))
             .map(|record| record.map(|record| record.value()))
-            .map_err(|error| map_store_error(error, "runtime_agents"))
+            .map_err(map_store_error)
     }
 
     pub fn item(
@@ -102,7 +100,7 @@ impl TranscriptRepository {
                     record: item.value().clone(),
                 })
             })
-            .map_err(|error| map_store_error(error, "runtime_items"))
+            .map_err(map_store_error)
     }
 
     pub fn items_for_agent(
@@ -139,7 +137,7 @@ impl TranscriptRepository {
                     })
                     .collect()
             })
-            .map_err(|error| map_store_error(error, "runtime_items"))
+            .map_err(map_store_error)
     }
 
     pub fn event_text(
@@ -154,7 +152,7 @@ impl TranscriptRepository {
                 |row| row.get::<_, Option<String>>(0),
             )
             .optional()
-            .map_err(|error| map_column_error(error, "runtime_events"))?;
+            .map_err(|error| map_column_error(error, "runtime_events", event))?;
         Ok(text.flatten())
     }
 
@@ -169,7 +167,7 @@ impl TranscriptRepository {
                 |row| row.get::<_, Option<String>>(0),
             )
             .optional()
-            .map_err(|error| map_column_error(error, "runtime_item_fulltext"))?;
+            .map_err(|error| map_column_error(error, "runtime_item_fulltext", &item.id))?;
         if let Some(Some(full)) = full {
             return Ok(Some(full));
         }
@@ -185,7 +183,7 @@ impl TranscriptRepository {
                         |row| row.get::<_, Option<String>>(0),
                     )
                     .optional()
-                    .map_err(|error| map_column_error(error, "runtime_search"))?
+                    .map_err(|error| map_column_error(error, "runtime_search", &item.id))?
                     .flatten()
             } else {
                 connection
@@ -195,7 +193,7 @@ impl TranscriptRepository {
                         |row| row.get::<_, Option<String>>(0),
                     )
                     .optional()
-                    .map_err(|error| map_column_error(error, "runtime_search"))?
+                    .map_err(|error| map_column_error(error, "runtime_search", &item.id))?
                     .flatten()
             };
             if let Some(full) = full {
@@ -205,7 +203,7 @@ impl TranscriptRepository {
         if let Some(text) = item.record.get("text") {
             let text = text
                 .as_str()
-                .ok_or(TranscriptStoreError::InvalidStoredObject("runtime_items"))?;
+                .ok_or_else(|| invalid_record("runtime_items", &item.id))?;
             if item.record.get("truncated").and_then(Value::as_bool) != Some(true)
                 && (item.record.get("inputs").is_none() || !text.is_empty())
             {
@@ -229,16 +227,16 @@ impl TranscriptRepository {
             let inputs = match item.record.get("inputs") {
                 None | Some(Value::Null) => continue,
                 Some(Value::Array(inputs)) => inputs,
-                _ => return Err(TranscriptStoreError::InvalidStoredObject("runtime_items")),
+                _ => return Err(invalid_record("runtime_items", &item.id)),
             };
             for (index, input) in inputs.iter().enumerate() {
                 let Some(fields) = input.as_object() else {
-                    return Err(TranscriptStoreError::InvalidStoredObject("runtime_items"));
+                    return Err(invalid_record("runtime_items", &item.id));
                 };
                 let input_id = match fields.get("id") {
                     None | Some(Value::Null) => None,
                     Some(Value::String(id)) => Some(id.as_str()),
-                    _ => return Err(TranscriptStoreError::InvalidStoredObject("runtime_items")),
+                    _ => return Err(invalid_record("runtime_items", &item.id)),
                 };
                 let display_id = input_id.map_or_else(
                     || format!("{}:{index}", item.id),
@@ -261,19 +259,28 @@ fn table_exists(connection: &Connection, table: &str) -> TranscriptStoreResult<b
     )?)
 }
 
-fn map_store_error(error: crate::StoreError, object: &'static str) -> TranscriptStoreError {
+fn map_store_error(error: crate::StoreError) -> TranscriptStoreError {
     match error {
-        crate::StoreError::Sqlite(error) => TranscriptStoreError::Sqlite(error),
-        _ => TranscriptStoreError::InvalidStoredObject(object),
+        crate::StoreError::InvalidStoredObject { table, id } => {
+            TranscriptStoreError::InvalidStoredObject { table, id }
+        }
+        other => TranscriptStoreError::Store(other),
     }
 }
 
-fn map_column_error(error: rusqlite::Error, object: &'static str) -> TranscriptStoreError {
+fn map_column_error(error: rusqlite::Error, table: &'static str, id: &str) -> TranscriptStoreError {
     match error {
         rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..) => {
-            TranscriptStoreError::InvalidStoredObject(object)
+            invalid_record(table, id)
         }
         error => TranscriptStoreError::Sqlite(error),
+    }
+}
+
+fn invalid_record(table: &'static str, id: &str) -> TranscriptStoreError {
+    TranscriptStoreError::InvalidStoredObject {
+        table,
+        id: id.to_owned(),
     }
 }
 
@@ -290,7 +297,7 @@ mod tests {
     use super::{TranscriptRepository, TranscriptStoreError};
 
     #[test]
-    fn event_text_rejects_a_non_text_column_with_its_object_name() {
+    fn event_text_rejects_a_non_text_column_with_its_table_and_id() {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch("CREATE TABLE runtime_events (id TEXT, agent TEXT, text); INSERT INTO runtime_events VALUES ('e','a',x'01');")
@@ -298,7 +305,7 @@ mod tests {
 
         assert!(matches!(
             TranscriptRepository::event_text(&connection, "a", "e"),
-            Err(TranscriptStoreError::InvalidStoredObject("runtime_events"))
+            Err(TranscriptStoreError::InvalidStoredObject { table: "runtime_events", id }) if id == "e"
         ));
     }
 }

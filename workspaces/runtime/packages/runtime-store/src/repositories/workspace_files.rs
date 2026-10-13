@@ -21,7 +21,7 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: TABLES,
+    tables: &[TABLES[0]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],

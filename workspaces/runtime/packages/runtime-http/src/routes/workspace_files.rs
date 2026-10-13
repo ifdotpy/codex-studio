@@ -7,7 +7,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
-use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, WorkspaceFilesRepository};
+use studio_runtime_store::{
+    AgentId, AgentRepository, RuntimeStore, StoreError, WorkspaceFilesRepository,
+};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -96,7 +98,7 @@ fn read_info(
     if let Some(asset_id) = asset_id {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(map_store_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
         let asset_value = asset.value();
         let owner_id = asset_value
@@ -133,7 +135,7 @@ fn read_content(
     if let Some(asset_id) = asset_id {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(map_store_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
         let asset_value = asset.value();
         let owner_id = asset_value
@@ -174,7 +176,7 @@ fn workspace_context(
 fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceContext, ApiError> {
     let connection = store.read().map_err(|_| ApiError::internal())?;
     let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))
-        .map_err(|_| ApiError::internal())?
+        .map_err(map_store_error)?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
     let record = agent.value();
     if record.get("deletedAt").is_some_and(json_truthy) {
@@ -224,6 +226,13 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("Invalid stored object {object}/{id}"),
     )
+}
+
+fn map_store_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
+        _ => ApiError::internal(),
+    }
 }
 
 fn file_error(error: WorkspaceFilesError) -> ApiError {

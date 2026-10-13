@@ -13,7 +13,7 @@ const PROFILE_TABLE: TableRequirement = TableRequirement {
 };
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[PROFILE_TABLE],
+    tables: &[],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
@@ -39,7 +39,7 @@ impl JsonRecord for ProfileRecord {
     type Id = String;
 
     const TABLE: &'static str = "runtime_profiles";
-    const SCHEMA: &'static str = "ProfileRecord";
+    const SCHEMA: &'static str = "PersistedProfileRecord";
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
 

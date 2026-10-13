@@ -4,7 +4,9 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
+mod state_check;
 pub use schema::sha256_hex;
+pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
 pub use repositories::account_state;
 
@@ -33,7 +35,7 @@ pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::projects::ProjectsRepository;
-pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
+pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;

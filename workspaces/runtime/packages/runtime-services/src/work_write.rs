@@ -121,7 +121,9 @@ fn create(
     });
     let view = single_view(tx, &work)?;
     assignment_needed(agent, owner, true, is_ready(&view))?;
-    WorkItemsRepository::put_work(tx, &id, &work)?;
+    if !WorkItemsRepository::put_work(tx, &id, &work)? {
+        return Err(Error::Conflict("Work item already exists"));
+    }
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,

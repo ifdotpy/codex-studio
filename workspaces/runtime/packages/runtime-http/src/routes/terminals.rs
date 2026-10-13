@@ -112,6 +112,13 @@ fn terminal_error(error: TerminalError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object terminals/{id}"),
         ),
+        TerminalError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
+        ),
         _ => ApiError::internal(),
     }
 }

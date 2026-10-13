@@ -127,10 +127,16 @@ fn rename_error(error: RenameError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires provider-session/title-generation",
         ),
-        RenameError::InvalidStoredObject { object } => ApiError::new(
+        RenameError::InvalidStoredObject { table, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
+            format!("Invalid stored object {table}/{id}"),
         ),
+        RenameError::Store(studio_runtime_store::StoreError::InvalidStoredObject { table, id }) => {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {table}/{id}"),
+            )
+        }
         RenameError::Store(_) => ApiError::internal(),
     }
 }

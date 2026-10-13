@@ -62,6 +62,27 @@ runtime.close()
 print(json.dumps({"agent_id": agent_id}))
 "#;
 
+const READ_RUST_WRITTEN_STATE: &str = r#"
+import json, pathlib, sqlite3, sys
+db = sqlite3.connect(pathlib.Path(sys.argv[1]) / 'canvas.sqlite3')
+def record(table, key):
+    encoded = db.execute(f'SELECT record FROM {table} WHERE id=?', (key,)).fetchone()[0]
+    return json.loads(encoded)
+agent_id = db.execute("SELECT id FROM runtime_agents WHERE record LIKE '%rustAgentFlag%'").fetchone()[0]
+records = {
+    'agent': record('runtime_agents', agent_id),
+    'task': record('runtime_tasks', 'cross-task'),
+    'work': record('runtime_work', 'cross-work'),
+}
+event = db.execute("SELECT status,text FROM runtime_events WHERE id='cross-event'").fetchone()
+message = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id='cross-message'").fetchone()[0]
+numeric = []
+for event_id, payload, deleted in db.execute("SELECT id,payload,deleted FROM sync_entities WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id"):
+    numeric.append({'id': event_id, 'payload': json.loads(payload), 'deleted': bool(deleted)})
+print(json.dumps({'records': records, 'event': {'status': event[0], 'text': json.loads(event[1])},
+                  'deliveries': json.loads(message), 'numeric': numeric}, allow_nan=False))
+"#;
+
 const CREATE_FEATURE_STATE: &str = r#"
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])
@@ -449,6 +470,15 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
     assert_eq!(message.deliveries["delivery"], true);
     assert_eq!(message.deliveries["rustReceipt"], true);
 
+    let python_state: Value = serde_json::from_str(&python(&root, READ_RUST_WRITTEN_STATE, &[]))
+        .expect("Python reads and parses the committed Rust state");
+    assert_eq!(python_state["records"]["agent"], agent.value());
+    assert_eq!(&python_state["records"]["task"], task.value());
+    assert_eq!(&python_state["records"]["work"], work.value());
+    assert_eq!(python_state["event"]["status"], "running");
+    assert_eq!(python_state["event"]["text"]["rust"], true);
+    assert_eq!(python_state["deliveries"], message.deliveries);
+
     assert_eq!(rust_numeric_rows.len(), 10);
     let mut numeric_created = std::collections::BTreeMap::new();
     for (_, encoded, _, _) in &rust_numeric_rows {
@@ -472,6 +502,22 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
         ("numeric-created-negative-exponent", -1e-7),
     ] {
         assert_eq!(numeric_created.get(id), Some(&expected), "{id}");
+    }
+    let numeric = python_state["numeric"]
+        .as_array()
+        .expect("Python numeric state is an array");
+    assert_eq!(numeric.len(), 10);
+    for row in numeric {
+        let id = row["id"].as_str().expect("numeric sync entity id");
+        let created = row["payload"]["value"]["created"]
+            .as_f64()
+            .expect("Python parses numeric sync payload");
+        assert_eq!(
+            numeric_created.get(id),
+            Some(&created),
+            "Python parsed {id}"
+        );
+        assert_eq!(row["deleted"], false, "{id} remains live");
     }
 
     drop(reader);

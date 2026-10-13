@@ -36,7 +36,7 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: TABLES,
+    tables: &[TABLES[3]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
@@ -215,10 +215,25 @@ impl EventWriteRepository {
             .get(&key)?
             .map(|record| record.value().clone())
             .unwrap_or_else(|| serde_json::json!({}));
-        if value.get("timing").is_none() {
-            value["timing"] = serde_json::json!({});
+        let Some(object) = value.as_object_mut() else {
+            return Err(StoreError::InvalidStoredObject {
+                table: EventMetadataRecord::TABLE,
+                id: id.to_owned(),
+            });
+        };
+        let timing = object
+            .entry("timing".to_owned())
+            .or_insert_with(|| serde_json::json!({}));
+        if timing.is_null() {
+            *timing = serde_json::json!({});
         }
-        value["timing"]["enqueuedAt"] = serde_json::json!(monotonic_ns);
+        let Some(timing) = timing.as_object_mut() else {
+            return Err(StoreError::InvalidStoredObject {
+                table: EventMetadataRecord::TABLE,
+                id: id.to_owned(),
+            });
+        };
+        timing.insert("enqueuedAt".to_owned(), serde_json::json!(monotonic_ns));
         let record = EventMetadataRecord::from_value(value)?;
         table.put_at(&key, &record)
     }
@@ -385,6 +400,7 @@ impl EventWriteRepository {
 #[cfg(test)]
 mod tests {
     use super::EventWriteRepository;
+    use crate::StoreError;
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -514,6 +530,29 @@ mod tests {
                 ["enqueuedAt"],
             42
         );
+    }
+
+    #[test]
+    fn enqueue_refuses_scalar_timing_without_panicking_or_mutating_metadata() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 INSERT INTO runtime_event_meta VALUES('e','{\"timing\":true}');",
+            )
+            .expect("corrupt metadata fixture inserts");
+        assert!(matches!(
+            EventWriteRepository::mark_event_enqueued(&connection, "e", 42),
+            Err(StoreError::InvalidStoredObject { table: "runtime_event_meta", id }) if id == "e"
+        ));
+        let stored: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='e'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata remains available");
+        assert_eq!(stored, r#"{"timing":true}"#);
     }
 }
 inventory::submit! {

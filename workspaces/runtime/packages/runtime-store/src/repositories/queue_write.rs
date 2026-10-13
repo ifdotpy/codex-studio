@@ -21,7 +21,7 @@ const META_TABLE: &[TableRequirement] = &[TableRequirement {
 }];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[EVENT_TABLE[0], META_TABLE[0]],
+    tables: &[EVENT_TABLE[0]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],

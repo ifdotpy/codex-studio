@@ -36,7 +36,7 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: TABLES,
+    tables: &[TABLES[4]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
@@ -74,7 +74,7 @@ impl WorkItemsRepository {
             .map(|record| record.value().clone()))
     }
 
-    pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+    pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
         let record = WorkItemRecord::from_value(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
@@ -82,7 +82,7 @@ impl WorkItemsRepository {
                 id: id.to_owned(),
             });
         }
-        Table::<WorkItemRecord>::new(connection).put(&record)
+        Table::<WorkItemRecord>::new(connection).insert_new(&record)
     }
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
@@ -252,7 +252,11 @@ mod tests {
     #[test]
     fn bootstrapped_tables_are_required_and_empty_reads_succeed() {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
-        for table in REQUIREMENTS.tables {
+        for table in REQUIREMENTS
+            .tables
+            .iter()
+            .chain(REQUIREMENTS.bootstrap_tables)
+        {
             let columns = table.columns.join(" TEXT,");
             connection
                 .execute_batch(&format!("CREATE TABLE {}({columns} TEXT)", table.name))
@@ -273,6 +277,31 @@ mod tests {
             WorkItemsRepository::queue(&connection, "agent-a", 0)
                 .expect("empty queue")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn work_creation_refuses_an_existing_id_without_overwriting_it() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("work family creates");
+        let first = serde_json::json!({"id":"work-1","status":"ready","title":"original"});
+        let replacement =
+            serde_json::json!({"id":"work-1","status":"blocked","title":"replacement"});
+        assert!(
+            WorkItemsRepository::put_work(&connection, "work-1", &first)
+                .expect("new work item inserts")
+        );
+        assert!(
+            !WorkItemsRepository::put_work(&connection, "work-1", &replacement)
+                .expect("duplicate is refused")
+        );
+        assert_eq!(
+            WorkItemsRepository::work_record(&connection, "work-1")
+                .expect("original reads")
+                .expect("original remains")["title"],
+            "original"
         );
     }
 }

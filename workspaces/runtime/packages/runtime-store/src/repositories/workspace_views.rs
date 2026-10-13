@@ -209,14 +209,6 @@ impl WorkspaceViewsRepository {
         Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
-    pub fn agent_ids(connection: &Connection) -> StoreResult<Vec<String>> {
-        Ok(Table::<AgentRecord>::new(connection)
-            .list()?
-            .into_iter()
-            .map(|record| record.id().as_ref().to_owned())
-            .collect())
-    }
-
     pub fn validate_task_records(connection: &Connection) -> StoreResult<()> {
         Table::<TaskRecord>::new(connection).list()?;
         Ok(())

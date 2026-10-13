@@ -256,7 +256,7 @@ record_newtype!(
     TaskRecord,
     TaskId,
     table = "runtime_tasks",
-    schema = "TaskDetailResponse",
+    schema = "PersistedTaskRecord",
     key = PayloadId,
     query = JsonAgent
 );
@@ -264,7 +264,7 @@ record_newtype!(
     PlanRecord,
     AgentId,
     table = "runtime_plans",
-    schema = "PlanView",
+    schema = "PersistedPlanRecord",
     key = External,
     query = None
 );
@@ -272,7 +272,7 @@ record_newtype!(
     AnnotationRecord,
     String,
     table = "runtime_annotations",
-    schema = "AnnotationReceipt",
+    schema = "PersistedAnnotationRecord",
     key = PayloadId,
     query = None
 );
@@ -280,7 +280,7 @@ record_newtype!(
     RequestRecord,
     String,
     table = "runtime_requests",
-    schema = "RequestRecordResponse",
+    schema = "PersistedRequestRecord",
     key = PayloadId,
     query = JsonAgent
 );
@@ -288,7 +288,7 @@ record_newtype!(
     ComplaintRecord,
     String,
     table = "runtime_complaints",
-    schema = "ComplaintRecordResponse",
+    schema = "PersistedComplaintRecord",
     key = PayloadId,
     query = None
 );
@@ -296,7 +296,7 @@ record_newtype!(
     CheckpointRecord,
     String,
     table = "runtime_checkpoints",
-    schema = "CheckpointSummary",
+    schema = "PersistedCheckpointRecord",
     key = PayloadId,
     query = JsonAgent
 );
@@ -304,7 +304,7 @@ record_newtype!(
     MonitorRecord,
     String,
     table = "runtime_monitors",
-    schema = "MonitorRecordResponse",
+    schema = "PersistedMonitorRecord",
     key = PayloadId,
     query = JsonAgent
 );
@@ -312,7 +312,7 @@ record_newtype!(
     TerminalRecord,
     String,
     table = "user_terminals",
-    schema = "TerminalRecord",
+    schema = "PersistedTerminalRecord",
     key = PayloadId,
     query = None
 );
@@ -320,7 +320,7 @@ record_newtype!(
     UsageResumeRecord,
     String,
     table = "runtime_usage_resumes",
-    schema = "UsageResumeRecordResponse",
+    schema = "PersistedUsageResumeRecord",
     key = External,
     query = UsageResumeRecovery
 );
@@ -328,7 +328,7 @@ record_newtype!(
     WorkItemRecord,
     TaskId,
     table = "runtime_work",
-    schema = "WorkItem",
+    schema = "PersistedWorkItemRecord",
     key = PayloadId,
     query = None
 );
@@ -336,7 +336,7 @@ record_newtype!(
     RuleRecord,
     String,
     table = "runtime_rules",
-    schema = "RuleRecordResponse",
+    schema = "PersistedRuleRecord",
     key = PayloadId,
     query = None
 );
@@ -368,7 +368,7 @@ record_newtype!(
     GraphAgentRecord,
     String,
     table = "graph_agents",
-    schema = "JsonObjectResponse",
+    schema = "PersistedGraphAgentRecord",
     key = PayloadId,
     query = None
 );
@@ -826,7 +826,7 @@ fn quoted_table<R: JsonRecord>() -> String {
     format!("\"{}\"", R::TABLE.replace('"', "\"\""))
 }
 
-fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
+pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
@@ -918,8 +918,8 @@ pub struct MessageRepository;
 mod tests {
     use super::{
         AgentId, AgentRecord, AgentStatus, EventMetadataRecord, QueueEventId, RecordOrder,
-        RecordPredicate, Table, TaskRecord, TranscriptAssetId, TranscriptAssetRecord,
-        TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
+        RecordPredicate, RequestRecord, Table, TaskRecord, TranscriptAssetId,
+        TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
     };
     use crate::StoreError;
     use rusqlite::Connection;
@@ -978,6 +978,25 @@ mod tests {
             serde_json::to_value(work).expect("work item serializes")["futureField"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn persisted_task_and_request_records_accept_python_written_fields() {
+        let task = task(json!({
+            "id":"task-1", "reattachRecovery":{"status":"running"},
+            "outputPreviewOnly":true
+        }));
+        assert_eq!(
+            task.get("reattachRecovery").expect("recovery metadata")["status"],
+            "running"
+        );
+        assert_eq!(task.get("outputPreviewOnly"), Some(&Value::Bool(true)));
+
+        let request = RequestRecord::from_value(json!({
+            "id":"request-1", "connectionId":null
+        }))
+        .expect("Python may persist a request without a connection identity");
+        assert_eq!(request.get("connectionId"), Some(&Value::Null));
     }
 
     #[test]

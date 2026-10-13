@@ -4,7 +4,7 @@ use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 
 use crate::StoreResult;
-use crate::records::{AgentId, AgentRecord, MonitorRecord, RuleRecord, Table};
+use crate::records::{AgentId, AgentRecord, RuleRecord, Table};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{SchemaRequirements, TableRequirement};
 
@@ -15,7 +15,6 @@ const RULE_TABLE: TableRequirement = TableRequirement {
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
-        RULE_TABLE,
         TableRequirement {
             name: "runtime_agents",
             columns: &["id", "record"],
@@ -73,16 +72,17 @@ impl RulesRepository {
     }
 
     pub fn has_active_check(connection: &Connection, rule_id: &str) -> StoreResult<bool> {
-        Ok(Table::<MonitorRecord>::new(connection)
-            .list()?
-            .iter()
-            .any(|monitor| {
-                monitor.get("ruleId").and_then(Value::as_str) == Some(rule_id)
-                    && monitor
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .is_some_and(|status| matches!(status, "running" | "starting" | "approval"))
-            }))
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE \
+                 CASE WHEN json_valid(record) THEN \
+                 json_extract(record,'$.ruleId')=?1 AND \
+                 json_extract(record,'$.status') IN ('running','starting','approval') \
+                 ELSE 0 END)",
+                [rule_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 }
 
@@ -216,12 +216,13 @@ mod tests {
     }
 
     #[test]
-    fn active_check_lookup_uses_typed_monitor_records() {
+    fn active_check_lookup_is_filtered_and_ignores_unrelated_invalid_rows() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
             "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_monitors VALUES
-                 ('m1','{\"id\":\"m1\",\"agent\":\"a1\",\"ruleId\":\"r1\",\"status\":\"running\",\"created\":1}');",
+                 ('m1','{\"id\":\"m1\",\"agent\":\"a1\",\"ruleId\":\"r1\",\"status\":\"running\",\"created\":1}'),
+                 ('unrelated','{\"id\":\"unrelated\",\"status\":false}');",
         )
         .expect("monitor table creates");
         assert!(RulesRepository::has_active_check(&db, "r1").expect("active check is found"));

@@ -15,6 +15,29 @@ const TRANSCRIPT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-transcript-record.schema.json";
 const EVENT_METADATA_URI: &str = "https://codex-studio.invalid/runtime-event-metadata.schema.json";
 const AGENT_RECORD_URI: &str = "https://codex-studio.invalid/persisted-agent-record.schema.json";
+const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-record.schema.json";
+const PLAN_RECORD_URI: &str = "https://codex-studio.invalid/persisted-plan-record.schema.json";
+const ANNOTATION_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-annotation-record.schema.json";
+const REQUEST_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-request-record.schema.json";
+const COMPLAINT_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-complaint-record.schema.json";
+const CHECKPOINT_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-checkpoint-record.schema.json";
+const MONITOR_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-monitor-record.schema.json";
+const TERMINAL_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-terminal-record.schema.json";
+const USAGE_RESUME_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-usage-resume-record.schema.json";
+const WORK_ITEM_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-work-item-record.schema.json";
+const RULE_RECORD_URI: &str = "https://codex-studio.invalid/persisted-rule-record.schema.json";
+const GRAPH_AGENT_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-graph-agent-record.schema.json";
+const PROFILE_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-profile-record.schema.json";
 
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
@@ -23,6 +46,43 @@ const TRANSCRIPT_ASSET: &[u8] = include_bytes!("schemas/runtime-transcript-asset
 const TRANSCRIPT_RECORD: &[u8] = include_bytes!("schemas/persisted-transcript-record.schema.json");
 const EVENT_METADATA: &[u8] = include_bytes!("schemas/runtime-event-metadata.schema.json");
 const AGENT_RECORD: &[u8] = include_bytes!("schemas/persisted-agent-record.schema.json");
+const TASK_RECORD: &[u8] = include_bytes!("schemas/persisted-task-record.schema.json");
+const PLAN_RECORD: &[u8] = include_bytes!("schemas/persisted-plan-record.schema.json");
+const ANNOTATION_RECORD: &[u8] = include_bytes!("schemas/persisted-annotation-record.schema.json");
+const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.schema.json");
+const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
+const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
+const MONITOR_RECORD: &[u8] = include_bytes!("schemas/persisted-monitor-record.schema.json");
+const TERMINAL_RECORD: &[u8] = include_bytes!("schemas/persisted-terminal-record.schema.json");
+const USAGE_RESUME_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-usage-resume-record.schema.json");
+const WORK_ITEM_RECORD: &[u8] = include_bytes!("schemas/persisted-work-item-record.schema.json");
+const RULE_RECORD: &[u8] = include_bytes!("schemas/persisted-rule-record.schema.json");
+const GRAPH_AGENT_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-graph-agent-record.schema.json");
+const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
+
+const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (USAGE_LIMITS_URI, USAGE_LIMITS),
+    (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
+    (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
+    (EVENT_METADATA_URI, EVENT_METADATA),
+    (AGENT_RECORD_URI, AGENT_RECORD),
+    (TASK_RECORD_URI, TASK_RECORD),
+    (PLAN_RECORD_URI, PLAN_RECORD),
+    (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
+    (REQUEST_RECORD_URI, REQUEST_RECORD),
+    (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
+    (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
+    (MONITOR_RECORD_URI, MONITOR_RECORD),
+    (TERMINAL_RECORD_URI, TERMINAL_RECORD),
+    (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
+    (WORK_ITEM_RECORD_URI, WORK_ITEM_RECORD),
+    (RULE_RECORD_URI, RULE_RECORD),
+    (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
+    (PROFILE_RECORD_URI, PROFILE_RECORD),
+];
 
 type SchemaResult<T> = Result<T, String>;
 
@@ -34,77 +94,21 @@ static COMPILED_SCHEMAS: OnceLock<SchemaResult<CompiledSchemas>> = OnceLock::new
 
 /// Build the reference registry from the committed OpenAPI and persisted-state schemas.
 pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistry<'_>> {
-    let account_registry: Value = serde_json::from_slice(ACCOUNT_REGISTRY)
-        .map_err(|error| format!("cannot parse account-registry schema: {error}"))?;
-    let usage_limits: Value = serde_json::from_slice(USAGE_LIMITS)
-        .map_err(|error| format!("cannot parse workspace-usage-limits schema: {error}"))?;
-    let transcript_asset: Value = serde_json::from_slice(TRANSCRIPT_ASSET)
-        .map_err(|error| format!("cannot parse persisted transcript-asset schema: {error}"))?;
-    let transcript_record: Value = serde_json::from_slice(TRANSCRIPT_RECORD)
-        .map_err(|error| format!("cannot parse persisted transcript-record schema: {error}"))?;
-    let event_metadata: Value = serde_json::from_slice(EVENT_METADATA)
-        .map_err(|error| format!("cannot parse event-metadata schema: {error}"))?;
-    let agent_record: Value = serde_json::from_slice(AGENT_RECORD)
-        .map_err(|error| format!("cannot parse persisted-agent-record schema: {error}"))?;
-    registry_for_documents(
-        document,
-        &account_registry,
-        &usage_limits,
-        &transcript_asset,
-        &transcript_record,
-        &event_metadata,
-        &agent_record,
-    )
-}
-
-fn registry_for_documents<'document>(
-    document: &Value,
-    account_registry: &Value,
-    usage_limits: &Value,
-    transcript_asset: &Value,
-    transcript_record: &Value,
-    event_metadata: &Value,
-    agent_record: &Value,
-) -> SchemaResult<JsonSchemaRegistry<'document>> {
-    JsonSchemaRegistry::new()
+    let mut registry = JsonSchemaRegistry::new()
         .draft(Draft::Draft202012)
         .add(
             OPENAPI_URI,
             jsonschema::Resource::from_contents(document.clone()),
         )
-        .map_err(|error| error.to_string())?
-        .add(
-            ACCOUNT_REGISTRY_URI,
-            jsonschema::Resource::from_contents(account_registry.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .add(
-            USAGE_LIMITS_URI,
-            jsonschema::Resource::from_contents(usage_limits.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .add(
-            TRANSCRIPT_ASSET_URI,
-            jsonschema::Resource::from_contents(transcript_asset.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .add(
-            TRANSCRIPT_RECORD_URI,
-            jsonschema::Resource::from_contents(transcript_record.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .add(
-            EVENT_METADATA_URI,
-            jsonschema::Resource::from_contents(event_metadata.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .add(
-            AGENT_RECORD_URI,
-            jsonschema::Resource::from_contents(agent_record.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .prepare()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    for (uri, bytes) in PERSISTED_SCHEMAS {
+        let schema: Value = serde_json::from_slice(bytes)
+            .map_err(|error| format!("cannot parse persisted schema {uri}: {error}"))?;
+        registry = registry
+            .add(*uri, jsonschema::Resource::from_contents(schema))
+            .map_err(|error| error.to_string())?;
+    }
+    registry.prepare().map_err(|error| error.to_string())
 }
 
 /// Ensure every schema used by persisted Rust records has compiled successfully.
@@ -149,23 +153,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         .map_err(|error| format!("cannot parse account-registry schema: {error}"))?;
     let usage_limits: Value = serde_json::from_slice(USAGE_LIMITS)
         .map_err(|error| format!("cannot parse workspace-usage-limits schema: {error}"))?;
-    let transcript_asset: Value = serde_json::from_slice(TRANSCRIPT_ASSET)
-        .map_err(|error| format!("cannot parse persisted transcript-asset schema: {error}"))?;
-    let transcript_record: Value = serde_json::from_slice(TRANSCRIPT_RECORD)
-        .map_err(|error| format!("cannot parse persisted transcript-record schema: {error}"))?;
-    let event_metadata: Value = serde_json::from_slice(EVENT_METADATA)
-        .map_err(|error| format!("cannot parse event-metadata schema: {error}"))?;
-    let agent_record: Value = serde_json::from_slice(AGENT_RECORD)
-        .map_err(|error| format!("cannot parse persisted-agent-record schema: {error}"))?;
-    let registry = registry_for_documents(
-        &openapi,
-        &account_registry,
-        &usage_limits,
-        &transcript_asset,
-        &transcript_record,
-        &event_metadata,
-        &agent_record,
-    )?;
+    let registry = registry_for_document(&openapi)?;
     let mut validators = BTreeMap::new();
 
     for name in [
@@ -199,6 +187,19 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
+        ("PersistedTaskRecord", TASK_RECORD_URI),
+        ("PersistedPlanRecord", PLAN_RECORD_URI),
+        ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
+        ("PersistedRequestRecord", REQUEST_RECORD_URI),
+        ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
+        ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),
+        ("PersistedMonitorRecord", MONITOR_RECORD_URI),
+        ("PersistedTerminalRecord", TERMINAL_RECORD_URI),
+        ("PersistedUsageResumeRecord", USAGE_RESUME_RECORD_URI),
+        ("PersistedWorkItemRecord", WORK_ITEM_RECORD_URI),
+        ("PersistedRuleRecord", RULE_RECORD_URI),
+        ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
+        ("PersistedProfileRecord", PROFILE_RECORD_URI),
         (
             "account-registry/AccountRegistryRecord",
             ACCOUNT_REGISTRY_URI,
@@ -348,6 +349,39 @@ mod tests {
             .expect("runtime task schema exists")
         );
         assert!(validate(
+            "PersistedTaskRecord",
+            &json!({"id":"t","agent":"a","kind":"command","status":"completed","reattachRecovery":{"attempt":2},"outputPreviewOnly":true})
+        )
+        .expect("persisted task schema accepts Python state extensions"));
+        assert!(
+            validate(
+                "PersistedRequestRecord",
+                &json!({"id":"q","connectionId":null,"agent":null,"status":"pending"})
+            )
+            .expect("persisted request schema accepts nullable connection identity")
+        );
+        assert!(
+            !validate(
+                "PersistedRequestRecord",
+                &json!({"id":"q","connectionId":7})
+            )
+            .expect("persisted request schema exists")
+        );
+        assert!(
+            validate(
+                "PersistedTranscriptRecord",
+                &json!({"id":"i","inputs":[{"id":"a"}]})
+            )
+            .expect("legacy transcript item can be hydrated before response validation")
+        );
+        assert!(
+            validate(
+                "PersistedTranscriptRecord",
+                &json!({"id":"i","text":null,"inputs":[{"text":null}]})
+            )
+            .expect("nullable transcript text remains readable")
+        );
+        assert!(validate(
             "PersistedTranscriptAsset",
             &json!({"id":"asset","agent":"a","name":"n","path":"/tmp/n","mime":"text/plain","image":false,"size":1,"hash":"sha256:x","created":1.0,"future":true})
         )
@@ -358,6 +392,14 @@ mod tests {
                 &json!({"timing":{"enqueuedAt":123},"queueMutationRevision":4})
             )
             .expect("event metadata schema exists")
+        );
+        assert!(
+            !validate("RuntimeEventMetadataRecord", &json!({"assets":{}}))
+                .expect("event metadata schema exists")
+        );
+        assert!(
+            !validate("RuntimeEventMetadataRecord", &json!({"timing":true}))
+                .expect("event metadata schema exists")
         );
         assert!(!validate("WorkItem", &json!([])).expect("work item schema exists"));
         assert!(

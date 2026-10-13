@@ -1,11 +1,9 @@
 //! Persisted questions, complaints, and workspace checkpoint records.
 
-use rusqlite::Connection;
-use serde_json::{Map, Value};
-
 use crate::StoreResult;
 use crate::records::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
+use rusqlite::Connection;
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -27,7 +25,7 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: TABLES,
+    tables: &[TABLES[0], TABLES[1], TABLES[2]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
@@ -36,12 +34,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct QuestionsReadsRecord {
-    pub id: String,
-    pub value: Map<String, Value>,
-}
 
 #[cfg(test)]
 mod tests {
@@ -57,13 +49,9 @@ mod tests {
                 .iter()
                 .map(|table| table.name)
                 .collect::<Vec<_>>(),
-            [
-                "runtime_agents",
-                "runtime_requests",
-                "runtime_complaints",
-                "runtime_checkpoints"
-            ]
+            ["runtime_agents", "runtime_requests", "runtime_complaints"]
         );
+        assert_eq!(REQUIREMENTS.bootstrap_tables[0].name, "runtime_checkpoints");
         assert!(REQUIREMENTS.conditional_tables.is_empty());
     }
 
@@ -83,106 +71,49 @@ mod tests {
         .expect("families create");
 
         assert_eq!(
-            QuestionsReadsRepository::agents(&db).expect("agents read")[0].id,
+            QuestionsReadsRepository::agents(&db).expect("agents read")[0]
+                .id()
+                .as_ref(),
             "a"
         );
-        let question = &QuestionsReadsRepository::questions(&db).expect("questions read")[0];
+        let questions = QuestionsReadsRepository::questions(&db).expect("questions read");
+        let question = &questions[0].1;
         assert!(
-            question.raw.find("password").expect("password field")
-                < question.raw.find("color").expect("color field")
+            question.find("password").expect("password field")
+                < question.find("color").expect("color field")
         );
         assert_eq!(
             QuestionsReadsRepository::complaint(&db, "c")
                 .expect("complaint read")
                 .expect("complaint exists")
-                .value["text"],
+                .value()["text"],
             json!("Review")
         );
         assert_eq!(
-            QuestionsReadsRepository::checkpoints(&db).expect("checkpoint read")[0].id,
+            QuestionsReadsRepository::checkpoints(&db).expect("checkpoint read")[0].id(),
             "p"
         );
     }
-}
-pub struct QuestionsRequestRecord {
-    pub id: String,
-    pub raw: String,
-    pub value: Map<String, Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QuestionsReadsRepository;
 
 impl QuestionsReadsRepository {
-    pub fn agents(connection: &Connection) -> StoreResult<Vec<QuestionsReadsRecord>> {
-        Table::<AgentRecord>::new(connection)
-            .list()?
-            .into_iter()
-            .map(|record| {
-                let id = record.id().as_ref().to_owned();
-                let value = record.value();
-                let value = value.as_object().cloned().ok_or_else(|| {
-                    crate::StoreError::InvalidStoredObject {
-                        table: "runtime_agents",
-                        id: id.clone(),
-                    }
-                })?;
-                Ok(QuestionsReadsRecord { id, value })
-            })
-            .collect::<Result<_, crate::StoreError>>()
+    pub fn agents(connection: &Connection) -> StoreResult<Vec<AgentRecord>> {
+        Table::<AgentRecord>::new(connection).list()
     }
 
-    pub fn questions(connection: &Connection) -> StoreResult<Vec<QuestionsRequestRecord>> {
-        Table::<RequestRecord>::new(connection)
-            .list_with_raw()?
-            .into_iter()
-            .map(|(record, raw)| {
-                let id = record.id().to_owned();
-                let value = record.value().as_object().cloned().ok_or_else(|| {
-                    crate::StoreError::InvalidStoredObject {
-                        table: "runtime_requests",
-                        id: id.clone(),
-                    }
-                })?;
-                Ok(QuestionsRequestRecord { id, raw, value })
-            })
-            .collect::<Result<_, crate::StoreError>>()
+    pub fn questions(connection: &Connection) -> StoreResult<Vec<(RequestRecord, String)>> {
+        Table::<RequestRecord>::new(connection).list_with_raw()
     }
 
-    pub fn complaint(
-        connection: &Connection,
-        id: &str,
-    ) -> StoreResult<Option<QuestionsReadsRecord>> {
-        let Some(record) = Table::<ComplaintRecord>::new(connection).get(&id.to_owned())? else {
-            return Ok(None);
-        };
-        let value = record.value().as_object().cloned().ok_or_else(|| {
-            crate::StoreError::InvalidStoredObject {
-                table: "runtime_complaints",
-                id: id.to_owned(),
-            }
-        })?;
-        Ok(Some(QuestionsReadsRecord {
-            id: record.id().to_owned(),
-            value,
-        }))
+    pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {
+        Table::<ComplaintRecord>::new(connection).get(&id.to_owned())
     }
 
-    pub fn checkpoints(connection: &Connection) -> StoreResult<Vec<QuestionsReadsRecord>> {
-        Table::<CheckpointRecord>::new(connection)
-            .list()?
-            .into_iter()
-            .map(|record| {
-                let id = record.id().to_owned();
-                let value = record.value().as_object().cloned().ok_or_else(|| {
-                    crate::StoreError::InvalidStoredObject {
-                        table: "runtime_checkpoints",
-                        id: id.clone(),
-                    }
-                })?;
-                Ok(QuestionsReadsRecord { id, value })
-            })
-            .collect::<Result<_, crate::StoreError>>()
+    pub fn checkpoints(connection: &Connection) -> StoreResult<Vec<CheckpointRecord>> {
+        Table::<CheckpointRecord>::new(connection).list()
     }
 }
 

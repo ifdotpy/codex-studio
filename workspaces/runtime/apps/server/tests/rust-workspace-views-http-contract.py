@@ -317,18 +317,14 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertNotIn("not-json", response.body.decode())
         self.assertEqual(after, before)
 
-    def test_unknown_persisted_property_is_refused_by_rust(self) -> None:
+    def test_unknown_persisted_property_is_preserved(self) -> None:
         row_id = "workspace-views-other-task"
         original = self._record("runtime_tasks", row_id)
         self._write_record("runtime_tasks", row_id, {**original, "unexpectedStoredProperty": True})
         try:
             response = self.backend.request("GET", "/api/task?" + urlencode({"id": row_id}))
-            if self.rust_backend:
-                self.assertEqual(response.status, 500, response.body[:1000])
-                self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
-                self.assertNotIn("unexpectedStoredProperty", response.body.decode())
-            else:
-                self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertTrue(response.json()["unexpectedStoredProperty"])
         finally:
             self._write_record("runtime_tasks", row_id, original)
 
@@ -350,11 +346,11 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             self._write_record("runtime_agents", self.other_id, original)
 
-    def test_task_feed_refuses_missing_agent_and_mismatched_row_id(self) -> None:
+    def test_task_feed_refuses_invalid_agent_and_mismatched_row_id(self) -> None:
         row_id = "workspace-task-000"
         original = self._record("runtime_tasks", row_id)
-        without_agent = {key: value for key, value in original.items() if key != "agent"}
-        self._write_record("runtime_tasks", row_id, without_agent)
+        invalid_agent = {**original, "agent": 123}
+        self._write_record("runtime_tasks", row_id, invalid_agent)
         try:
             response = self.backend.request(
                 "GET", "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),

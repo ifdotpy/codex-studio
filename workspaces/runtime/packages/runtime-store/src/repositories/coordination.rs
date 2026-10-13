@@ -26,7 +26,7 @@ const GRAPH_AGENTS: &[TableRequirement] = &[TableRequirement {
 }];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[GROUPS[0], EDGES[0], MESSAGES[0], GRAPH_AGENTS[0]],
+    tables: &[],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],

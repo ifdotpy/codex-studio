@@ -154,9 +154,9 @@ fn map_transcript_error(error: TranscriptError) -> ApiError {
             StatusCode::BAD_REQUEST,
             "Full transcript content is unavailable",
         ),
-        TranscriptError::InvalidStoredObject(object) => ApiError::new(
+        TranscriptError::InvalidStoredObject { table, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
+            format!("Invalid stored object {table}/{id}"),
         ),
         TranscriptError::Store => ApiError::internal(),
     }

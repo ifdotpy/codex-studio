@@ -128,7 +128,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT record FROM runtime_rules WHERE id='visible'"
             ).fetchone()[0]
             invalid = json.loads(original)
-            invalid["stallWakeGeneration"] = "-1"
+            invalid["lowSince"] = "invalid"
             database.execute(
                 "UPDATE runtime_rules SET record=? WHERE id='visible'",
                 (json.dumps(invalid),),

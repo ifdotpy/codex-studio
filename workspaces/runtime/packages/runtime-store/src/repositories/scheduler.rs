@@ -29,7 +29,7 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: TABLES,
+    tables: &[TABLES[0], TABLES[1]],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
@@ -448,10 +448,11 @@ fn select_turn_batch(
     let mut has_composer_input = false;
     for event in events.into_iter().take(limit.min(MAX_EVENTS_PER_TURN)) {
         let meta = metadata.get(&event.id.0);
-        let assets = meta
-            .and_then(|value| value.get("assets"))
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
+        let assets = match meta.and_then(|value| value.get("assets")) {
+            None => 0,
+            Some(Value::Array(assets)) => assets.len(),
+            Some(_) => break,
+        };
         if asset_count + assets > 8 {
             break;
         }
@@ -613,6 +614,36 @@ mod tests {
             )
             .expect("agent sync activity reads");
         assert!(projected_in_flight);
+    }
+
+    #[test]
+    fn non_array_attachment_metadata_is_refused_without_reserving_events() {
+        let mut connection = database();
+        connection
+            .execute(
+                "INSERT INTO runtime_event_meta(id,record) VALUES('first','{\"assets\":{\"invalid\":true}}')",
+                [],
+            )
+            .expect("malformed attachment metadata is persisted");
+        let transaction = connection.transaction().expect("claim transaction begins");
+        assert!(matches!(
+            SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2),
+            Err(crate::StoreError::InvalidStoredObject { table: "runtime_event_meta", id }) if id == "first"
+        ));
+        drop(transaction);
+        let pending: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("pending events remain readable");
+        assert_eq!(pending, 3);
+        let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+            .expect("agent reads")
+            .expect("agent remains");
+        assert_eq!(agent.status, AgentStatus::Queued);
+        assert!(!agent.extra.contains_key("startAttempt"));
     }
 
     #[test]
@@ -1166,6 +1197,10 @@ mod tests {
         let mut asset_metadata = BTreeMap::new();
         asset_metadata.insert("notice".to_owned(), json!({"assets":[1,2,3,4,5,6,7,8,9]}));
         assert!(select_turn_batch(&agent, events, &asset_metadata, 32).is_empty());
+
+        let malformed = vec![selected_event("malformed", "user", "hello")];
+        let metadata = BTreeMap::from([("malformed".to_owned(), json!({"assets":false}))]);
+        assert!(select_turn_batch(&agent, malformed, &metadata, 32).is_empty());
     }
 
     fn selected_event(id: &str, kind: &str, text: &str) -> QueueEvent {
