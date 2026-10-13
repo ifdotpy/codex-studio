@@ -1,6 +1,7 @@
 pub(crate) mod agents;
 pub(crate) mod event_write;
 pub(crate) mod events;
+pub(crate) mod execution_history;
 pub(crate) mod messages;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
@@ -15,6 +16,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
     &event_write::REQUIREMENTS,
+    &execution_history::REQUIREMENTS,
     &messages::REQUIREMENTS,
     &rules::REQUIREMENTS,
     &scheduler::REQUIREMENTS,

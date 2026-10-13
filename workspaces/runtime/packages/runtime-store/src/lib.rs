@@ -19,6 +19,7 @@ pub use records::{
     TaskRepository, WorkStatus,
 };
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
+pub use repositories::execution_history::ExecutionHistoryRepository;
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
