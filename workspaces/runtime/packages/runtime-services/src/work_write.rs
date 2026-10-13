@@ -21,6 +21,11 @@ pub struct CreateWork {
     pub dependencies: Vec<String>,
 }
 
+pub enum WorkActorWrite {
+    Create(CreateWork),
+    Mutate(WorkMutation),
+}
+
 pub struct WorkActorResult {
     pub record: Value,
     pub event_inserted: bool,
@@ -33,7 +38,7 @@ pub fn write_as_agent(
     actor_id: &str,
     request_id: Option<&str>,
     signature: &str,
-    command: WorkWrite,
+    command: WorkActorWrite,
 ) -> Result<WorkActorResult, Error> {
     let selected = event_write::checked_agent(tx, agent_id)?;
     let actor = event_write::checked_agent(tx, actor_id)?;
@@ -62,7 +67,7 @@ pub fn write_as_agent(
         });
     }
     let result = match command {
-        WorkWrite::Create(mut input) => {
+        WorkActorWrite::Create(mut input) => {
             if actor.id != actor.root_id {
                 return Err(Error::InvalidRequest(
                     "Only the lead can change work assignments",
@@ -71,7 +76,7 @@ pub fn write_as_agent(
             input.actor_id = actor_id.to_owned();
             create(tx, &selected, input, request_id, signature)?
         }
-        WorkWrite::Mutate(action) => {
+        WorkActorWrite::Mutate(action) => {
             match &action {
                 WorkMutation::Update { .. } | WorkMutation::Reject { .. } => {
                     if actor.id != actor.root_id {
@@ -106,7 +111,6 @@ pub fn write_as_agent(
                 signature,
             )?
         }
-        _ => return Err(Error::InvalidRequest("Invalid request")),
     };
     Ok(WorkActorResult {
         record: result.record,
@@ -248,8 +252,8 @@ fn mutate(
         }
         | WorkMutation::Reject {
             task_id, version, ..
-        }
-        | WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
+        } => (task_id.clone(), *version),
+        WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
     };
     let mut work = WorkItemsRepository::work_record(tx, &task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
