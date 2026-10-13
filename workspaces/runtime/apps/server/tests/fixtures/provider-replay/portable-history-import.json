@@ -1,0 +1,45 @@
+{
+  "source": "synthetic provider replies for portable history import contracts",
+  "boundaryOnly": true,
+  "rpcReplies": {
+    "thread/list": {
+      "direction": "in",
+      "responseFor": "thread/list",
+      "timestamp": 0,
+      "message": {
+        "result": {
+          "data": [{ "id": "source-thread", "title": "Fixture thread" }],
+          "nextCursor": null
+        }
+      }
+    },
+    "thread/read": {
+      "direction": "in",
+      "responseFor": "thread/read",
+      "timestamp": 0,
+      "message": { "result": { "thread": { "id": "$threadId", "cwd": "." } } }
+    },
+    "thread/turns/list": {
+      "direction": "in",
+      "responseFor": "thread/turns/list",
+      "timestamp": 0,
+      "message": {
+        "result": {
+          "data": [
+            {
+              "items": [
+                {
+                  "type": "userMessage",
+                  "content": [
+                    { "type": "text", "text": "Synthetic source question" }
+                  ]
+                },
+                { "type": "agentMessage", "text": "Synthetic source answer" }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

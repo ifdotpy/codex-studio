@@ -50,7 +50,12 @@ db.close()
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    assert_eq!(tables.len(), 42);
+    assert_eq!(tables.len(), 46);
+    let names: std::collections::BTreeSet<_> = tables
+        .iter()
+        .map(|table| table["table"].as_str().expect("table name is a string"))
+        .collect();
+    assert_eq!(names.len(), tables.len(), "one report per table");
     assert!(
         tables
             .iter()

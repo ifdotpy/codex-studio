@@ -1980,6 +1980,7 @@ dependencies = [
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
 ]
@@ -2049,6 +2050,7 @@ dependencies = [
  "base64",
  "chrono",
  "futures-util",
+ "data-encoding",
  "getrandom 0.3.4",
  "jsonschema",
  "mime_guess",
@@ -2072,10 +2074,12 @@ dependencies = [
  "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-store",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",
  "ureq",
+ "url",
  "uuid",
 ]
 
