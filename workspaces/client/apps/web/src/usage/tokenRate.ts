@@ -27,7 +27,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
   values.set(id, value);
-  if (values.size > 2048) values.delete(values.keys().next().value!);
+  if (values.size > TOKEN_RATE_MAX_ENTRIES)
+    values.delete(values.keys().next().value!);
   for (const listener of listeners.get(id) || []) listener(value);
 }
 export const workerRateKey = (teamId: string, agentId: string) =>

@@ -201,20 +201,27 @@ test("chat samples accept stream values without a duplicate field-shape walk", (
 });
 
 test("publishing token rates refreshes their LRU position and evicts old samples", () => {
-  const samples = Array.from({ length: 2050 }, (_, index) => ({
-    turnId: String(index),
-    active: false,
-    estimated: false,
-    rate: index,
-    outputTokens: index,
-  }));
+  const samples = Array.from(
+    { length: TOKEN_RATE_MAX_ENTRIES + 2 },
+    (_, index) => ({
+      turnId: String(index),
+      active: false,
+      estimated: false,
+      rate: index,
+      outputTokens: index,
+    }),
+  );
   for (let index = 0; index < samples.length; index++)
     receiveTokenRate(`cache-sample-${index}`, {
       data: JSON.stringify(samples[index]),
     });
   assert.equal(getTokenRate("cache-sample-0"), null);
+  assert.equal(getTokenRate("cache-sample-1"), null);
   assert.deepEqual(getTokenRate("cache-sample-2"), samples[2]);
-  assert.deepEqual(getTokenRate("cache-sample-2049"), samples[2049]);
+  assert.deepEqual(
+    getTokenRate(`cache-sample-${samples.length - 1}`),
+    samples.at(-1),
+  );
 });
 
 test("an updated sample moves to the newest cache position", () => {
@@ -226,13 +233,40 @@ test("an updated sample moves to the newest cache position", () => {
     outputTokens: 1,
   };
   receiveTokenRate("lru-first", { data: JSON.stringify(first) });
-  for (let index = 0; index < 2047; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES - 1; index++)
     receiveTokenRate(`lru-fill-${index}`, { data: JSON.stringify(first) });
   const refreshed = { ...first, turnId: "refreshed", rate: 2 };
   receiveTokenRate("lru-first", { data: JSON.stringify(refreshed) });
   receiveTokenRate("lru-newest", { data: JSON.stringify(first) });
   assert.deepEqual(getTokenRate("lru-first"), refreshed);
   assert.deepEqual(getTokenRate("lru-newest"), first);
+});
+
+test("a full visible team batch remains available in the token-rate cache", () => {
+  const teamId = "full-visible-team";
+  const firstId = "worker-0";
+  const lastId = `worker-${TOKEN_RATE_MAX_ENTRIES - 1}`;
+  const valid = {
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 2,
+  };
+  const rates = Object.fromEntries(
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+      `worker-${index}`,
+      { ...valid, turnId: String(index) },
+    ]),
+  );
+  receiveTeamTokenRates(teamId, {
+    data: JSON.stringify({ teamId, rates }),
+  });
+  assert.deepEqual(
+    getTokenRate(workerRateKey(teamId, firstId)),
+    rates[firstId],
+  );
+  assert.deepEqual(getTokenRate(workerRateKey(teamId, lastId)), rates[lastId]);
 });
 
 test("team events retain container and key limits without walking each rate shape", () => {
@@ -316,7 +350,7 @@ test("clearing a team removes its inactive cache entry", () => {
     rate: 1,
     outputTokens: 1,
   };
-  for (let index = 0; index < 2048; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES; index++)
     receiveTokenRate(`clear-cache-fill-${index}`, {
       data: JSON.stringify(sample),
     });
@@ -327,7 +361,7 @@ test("clearing a team removes its inactive cache entry", () => {
     data: JSON.stringify({ teamId: team, rates: { worker: sample } }),
   });
   clearTeamTokenRates(team);
-  for (let index = 0; index < 2047; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES - 1; index++)
     receiveTokenRate(`clear-cache-after-${index}`, {
       data: JSON.stringify(sample),
     });
