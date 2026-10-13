@@ -370,7 +370,15 @@ impl SyncDocumentsRepository {
         deleted: bool,
     ) -> StoreResult<bool> {
         let hash = hash_payload(payload);
-        Self::write_entity_hash(transaction, collection, id, &hash, deleted, Some(payload))
+        Self::write_entity_hash(
+            transaction,
+            collection,
+            id,
+            &hash,
+            deleted,
+            Some(payload),
+            None,
+        )
     }
 
     /// Store an entity hash without retaining its payload.
@@ -381,7 +389,26 @@ impl SyncDocumentsRepository {
         hash: &str,
         deleted: bool,
     ) -> StoreResult<bool> {
-        Self::write_entity_hash(transaction, collection, id, hash, deleted, None)
+        Self::write_entity_hash(transaction, collection, id, hash, deleted, None, None)
+    }
+
+    pub(crate) fn put_entity_hash_at_sequence(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        hash: &str,
+        deleted: bool,
+        sequence: i64,
+    ) -> StoreResult<bool> {
+        Self::write_entity_hash(
+            transaction,
+            collection,
+            id,
+            hash,
+            deleted,
+            None,
+            Some(sequence),
+        )
     }
 
     fn write_entity_hash(
@@ -391,6 +418,7 @@ impl SyncDocumentsRepository {
         hash: &str,
         deleted: bool,
         payload: Option<&str>,
+        sequence: Option<i64>,
     ) -> StoreResult<bool> {
         let current = transaction
             .query_row(
@@ -401,7 +429,7 @@ impl SyncDocumentsRepository {
             .optional()?;
         if current
             .as_ref()
-            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
+            .is_some_and(|(old_hash, old_deleted)| old_hash == hash && *old_deleted == deleted)
         {
             return Ok(false);
         }
@@ -413,7 +441,10 @@ impl SyncDocumentsRepository {
             params![
                 collection,
                 id,
-                next_sequence(transaction)?,
+                match sequence {
+                    Some(sequence) => sequence,
+                    None => next_sequence(transaction)?,
+                },
                 hash,
                 payload,
                 i64::from(deleted)
@@ -509,22 +540,26 @@ mod tests {
             )
             .expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
-        assert!(SyncDocumentsRepository::put_entity_hash(
-            &transaction,
-            "transcript:agent",
-            "item:one",
-            "digest",
-            false,
-        )
-        .expect("hash-only entity stores"));
-        assert!(!SyncDocumentsRepository::put_entity_hash(
-            &transaction,
-            "transcript:agent",
-            "item:one",
-            "digest",
-            false,
-        )
-        .expect("identical hash replays"));
+        assert!(
+            SyncDocumentsRepository::put_entity_hash(
+                &transaction,
+                "transcript:agent",
+                "item:one",
+                "digest",
+                false,
+            )
+            .expect("hash-only entity stores")
+        );
+        assert!(
+            !SyncDocumentsRepository::put_entity_hash(
+                &transaction,
+                "transcript:agent",
+                "item:one",
+                "digest",
+                false,
+            )
+            .expect("identical hash replays")
+        );
         let row: (i64, Option<String>) = transaction
             .query_row(
                 "SELECT seq,payload FROM sync_entities WHERE collection='transcript:agent' AND id='item:one'",

@@ -1,8 +1,11 @@
 //! Read persisted transcript items without projecting live event state.
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    RuntimeStore, TranscriptItem, TranscriptRepository, TranscriptStoreError,
+    AgentId, AgentRecord, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId,
+    TranscriptItem, TranscriptRepository, TranscriptStoreError, WorkItemRecord,
+    WorkspaceViewsRepository,
 };
 use thiserror::Error;
 
@@ -18,6 +21,12 @@ pub enum TranscriptError {
     InvalidStoredObject { table: &'static str, id: String },
     #[error("transcript storage failed")]
     Store,
+    #[error("this search result is unavailable")]
+    SearchResultUnavailable,
+    #[error("search query is invalid")]
+    InvalidSearch,
+    #[error("transcript operation requires {0}")]
+    RequiresDependency(&'static str),
 }
 
 impl From<TranscriptStoreError> for TranscriptError {
@@ -26,10 +35,28 @@ impl From<TranscriptStoreError> for TranscriptError {
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
+            TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
             TranscriptStoreError::Store(_) => Self::Store,
             TranscriptStoreError::Sqlite(_) => Self::Store,
         }
     }
+}
+
+impl From<StoreError> for TranscriptError {
+    fn from(_: StoreError) -> Self {
+        Self::Store
+    }
+}
+
+pub fn pull_scope(
+    store: &RuntimeStore,
+    scope: &str,
+    agent: &str,
+    after: i64,
+) -> Result<Value, TranscriptError> {
+    store.transaction_with(|transaction| {
+        TranscriptRepository::pull(transaction, scope, agent, after).map_err(TranscriptError::from)
+    })
 }
 
 pub fn item(store: &RuntimeStore, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
@@ -129,6 +156,226 @@ pub fn search(
         }
     }
     Ok(json!({"results": results, "truncated": false}))
+}
+
+pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, TranscriptError> {
+    let connection = store.read().map_err(|_| TranscriptError::Store)?;
+    if let Some(row) = TranscriptRepository::item_any_agent(&connection, identity)? {
+        let actor = TranscriptRepository::agent(&connection, &row.agent)?
+            .ok_or(TranscriptError::SearchResultUnavailable)?;
+        if actor.get("deletedAt").is_some_and(is_truthy)
+            || row.record.get("afterRestore").is_some_and(is_truthy)
+        {
+            return Err(TranscriptError::SearchResultUnavailable);
+        }
+        let text = TranscriptRepository::full_text(&connection, &row)?
+            .or_else(|| {
+                row.record
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
+        let mut result = row
+            .record
+            .as_object()
+            .cloned()
+            .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
+        result.insert("text".to_owned(), Value::String(text));
+        result.insert("agent".to_owned(), Value::String(row.agent));
+        result.insert("kind".to_owned(), Value::String("message".to_owned()));
+        return Ok(Value::Object(result));
+    }
+
+    if let Some((id, room, sender, text, sequence, created, deliveries)) = connection
+        .query_row(
+            "SELECT id,room,sender,text,seq,created,deliveries FROM runtime_chat_messages WHERE id=?1",
+            [identity],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, f64>(5)?, row.get::<_, String>(6)?)),
+        )
+        .optional()
+        .map_err(|_| TranscriptError::Store)?
+    {
+        let deliveries = serde_json::from_str::<Value>(&deliveries)
+            .map_err(|_| invalid_stored("runtime_chat_messages", &id))?;
+        return Ok(json!({"id":id,"room":room,"sender":sender,"text":text,
+            "seq":sequence,"created":created,"deliveries":deliveries,
+            "agent":sender,"kind":"room"}));
+    }
+
+    let result = if let Some(row) = Table::<WorkItemRecord>::new(&connection)
+        .get(&TaskId::from(identity))
+        .map_err(|_| TranscriptError::Store)?
+    {
+        Some((row.value().clone(), "work"))
+    } else if let Some(row) = Table::<PlanRecord>::new(&connection)
+        .get(&AgentId::from(identity))
+        .map_err(|_| TranscriptError::Store)?
+    {
+        Some((row.value().clone(), "plan"))
+    } else {
+        Table::<ComplaintRecord>::new(&connection)
+            .get(&String::from(identity))
+            .map_err(|_| TranscriptError::Store)?
+            .map(|row| (row.value().clone(), "complaint"))
+    };
+    let Some((mut record, kind)) = result else {
+        return Err(TranscriptError::SearchResultUnavailable);
+    };
+    let owner = record
+        .get("rootId")
+        .or_else(|| record.get("leadId"))
+        .or_else(|| record.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_stored("runtime_search", identity))?;
+    TranscriptRepository::agent(&connection, &owner)?
+        .filter(|actor| !actor.get("deletedAt").is_some_and(is_truthy))
+        .ok_or(TranscriptError::SearchResultUnavailable)?;
+    let text = record
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or(serde_json::to_string_pretty(&record).map_err(|_| TranscriptError::Store)?);
+    let object = record
+        .as_object_mut()
+        .ok_or_else(|| invalid_stored("runtime_search", identity))?;
+    object.insert("agent".to_owned(), Value::String(owner));
+    object.insert("kind".to_owned(), Value::String(kind.to_owned()));
+    object.insert("text".to_owned(), Value::String(text));
+    Ok(record)
+}
+
+pub fn search_work(
+    store: &RuntimeStore,
+    query: &str,
+    agent_filter: Option<&str>,
+    limit: i64,
+) -> Result<Value, TranscriptError> {
+    let query = query.trim();
+    if query.is_empty() || query.chars().count() > 500 {
+        return Err(TranscriptError::InvalidSearch);
+    }
+    let limit = limit.clamp(1, 100) as usize;
+    let connection = store.read().map_err(|_| TranscriptError::Store)?;
+    let agents = Table::<AgentRecord>::new(&connection)
+        .list()
+        .map_err(|_| TranscriptError::Store)?;
+    let caller_root = if let Some(agent) = agent_filter {
+        let caller = TranscriptRepository::agent(&connection, agent)?
+            .ok_or(TranscriptError::SearchResultUnavailable)?;
+        if caller.get("deletedAt").is_some_and(is_truthy) {
+            return Err(TranscriptError::DeletedConversation);
+        }
+        caller
+            .get("rootId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    let allowed = agents
+        .iter()
+        .filter(|agent| !agent.value().get("deletedAt").is_some_and(is_truthy))
+        .filter(|agent| {
+            caller_root
+                .as_deref()
+                .is_none_or(|root| agent.root_id.0 == root)
+        })
+        .map(|agent| agent.id().0.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let match_query = query
+        .split_whitespace()
+        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let mut found = Vec::new();
+    for (id, agent, kind) in TranscriptRepository::search_hits(&connection, &match_query)? {
+        if !allowed.contains(agent.as_str()) || agent_filter.is_some_and(|caller| caller != agent) {
+            continue;
+        }
+        let Some(item) = TranscriptRepository::item(&connection, &agent, &id)? else {
+            continue;
+        };
+        let body = TranscriptRepository::full_text(&connection, &item)?
+            .or_else(|| {
+                item.record
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        let excerpt = excerpt(&body, query);
+        found.push(json!({"id":id,"agent":agent,"type":"message","kind":kind,"reference":id,"excerpt":excerpt,"text":excerpt}));
+    }
+    let needle = query.to_lowercase();
+    for (table, kind, field) in [
+        ("runtime_work", "work", "title"),
+        ("runtime_complaints", "complaint", "title"),
+        ("runtime_plans", "plan", "text"),
+    ] {
+        for stored in WorkspaceViewsRepository::records(&connection, table)
+            .map_err(|_| TranscriptError::Store)?
+        {
+            let Some(encoded) = stored.record else {
+                return Err(invalid_stored(table, &stored.id));
+            };
+            let record: Value =
+                serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
+            let root = record
+                .get("rootId")
+                .or_else(|| record.get("leadId"))
+                .or_else(|| record.get("id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored(table, &stored.id))?;
+            if !allowed.contains(root) {
+                continue;
+            }
+            let serialized = serde_json::to_string(&record).map_err(|_| TranscriptError::Store)?;
+            if !serialized.to_lowercase().contains(&needle) {
+                continue;
+            }
+            let excerpt = record
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect::<String>();
+            found.push(json!({
+                "id": stored.id, "agent": root, "type": kind, "kind": kind,
+                "excerpt": excerpt, "reference": stored.id, "text": excerpt
+            }));
+        }
+    }
+    found.truncate(limit);
+    Ok(json!({"results":found,"query":query,"limit":limit}))
+}
+
+fn excerpt(body: &str, query: &str) -> String {
+    if body.chars().count() <= 500 {
+        return body.to_owned();
+    }
+    let lower = body.to_lowercase();
+    let position = lower.find(&query.to_lowercase()).unwrap_or(0);
+    let start = body[..position.min(body.len())]
+        .char_indices()
+        .rev()
+        .nth(250)
+        .map_or(0, |(index, _)| index);
+    let end = body[start..]
+        .char_indices()
+        .nth(500)
+        .map_or(body.len(), |(offset, _)| start + offset);
+    let mut result = String::new();
+    if start > 0 {
+        result.push_str(" … ");
+    }
+    result.push_str(&body[start..end]);
+    if end < body.len() {
+        result.push_str(" … ");
+    }
+    result
 }
 
 fn project(
@@ -359,6 +606,7 @@ mod tests {
                 .expect("persisted transcript permits absent or null parent text");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
+                agent: "agent-1".to_owned(),
                 record: record.value().clone(),
             };
 
@@ -387,6 +635,7 @@ mod tests {
             .expect("persisted transcript permits absent or null optional input fields");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
+                agent: "agent-1".to_owned(),
                 record: record.value().clone(),
             };
             let projected = hydrate_input(
