@@ -168,9 +168,18 @@ const packageRequire = createRequire(
   join(sourceRoot, "workspaces/client/apps/web/package.json"),
 );
 const { chromium } = packageRequire("playwright-core");
+const managedPython = execFileSync(
+  "python3",
+  [join(sourceRoot, "workspaces/runtime/apps/server/src/codex_python.py")],
+  { encoding: "utf8" },
+).trim();
+assert(
+  managedPython,
+  "codex_python.py must return the managed interpreter path",
+);
 const state = await mkdtemp(join(evidenceRoot, ".runtime-load-case-"));
 const fixture = spawn(
-  "python3",
+  managedPython,
   ["-B", join(harness, "server.py"), state, sourceRoot, frontendDist],
   {
     cwd: sourceRoot,
