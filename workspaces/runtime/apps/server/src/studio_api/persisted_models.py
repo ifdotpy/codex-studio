@@ -263,7 +263,7 @@ class PersistedSummaryValue(_OpenPersistedRecord):
     title: StrictStr | None = None
     created: float | None = None
     updated: float | None = None
-    version: SafeInt | None = None
+    version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
     params: PersistedSummaryParams | None = None
 
 
