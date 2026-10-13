@@ -7,14 +7,10 @@ use serde_json::Value;
 use studio_runtime_services::coordination::{self, CoordinationError};
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const CHAT_HISTORY_DEP: [Dependency; 1] = [Dependency::new("coordination-policy/chat-history")];
-const MESSAGE_RECEIPTS_DEP: [Dependency; 1] = [Dependency::new("event-driver/message-receipts")];
-const ROOM_VISIBILITY_DEP: [Dependency; 1] =
-    [Dependency::new("coordination-policy/room-visibility")];
 const MESSAGE_SEND_DEPENDENCIES: [Dependency; 6] = [
     Dependency::new("budget-policy/message-admission"),
     Dependency::new("capacity-retry/store"),
@@ -41,11 +37,7 @@ struct Connection {
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get(
-            "/api/agent-chat",
-            OperationStatus::partial(&CHAT_HISTORY_DEP),
-            agent_chat,
-        ),
+        get("/api/agent-chat", OperationStatus::Implemented, agent_chat),
         get("/api/messages", OperationStatus::Implemented, messages),
         post(
             "/api/messages",
@@ -54,7 +46,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/messages/receipts",
-            OperationStatus::partial(&MESSAGE_RECEIPTS_DEP),
+            OperationStatus::Implemented,
             receipts,
         ),
         post("/api/chats", OperationStatus::Implemented, create_chat),
@@ -65,7 +57,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/room/delete",
-            OperationStatus::partial(&ROOM_VISIBILITY_DEP),
+            OperationStatus::Implemented,
             delete_room,
         ),
     ])
@@ -176,26 +168,95 @@ async fn post_message(
     Ok(Json(result))
 }
 
-async fn agent_chat() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "GET",
-        "/api/agent-chat",
-        &CHAT_HISTORY_DEP,
-    ))
+async fn agent_chat(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let room = query
+        .typed_value("room")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let before = query.typed_value("before").and_then(Value::as_i64);
+    let after = query.typed_value("after").and_then(Value::as_i64);
+    let limit = query
+        .typed_value("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(100);
+    if before.is_some() && after.is_some() {
+        return Err(ApiError::validation(vec![
+            serde_json::json!("query"),
+            serde_json::json!("before"),
+        ]));
+    }
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || {
+        let mut connection = store.read().map_err(|_| ApiError::internal())?;
+        let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+        let value = studio_runtime_services::coordination_reads::chat_read(
+            &tx, &room, before, after, limit,
+        )
+        .map_err(coordination_error)?;
+        super::generated_json::<crate::generated::ChatRead>(value)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(value))
 }
-async fn receipts() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "GET",
-        "/api/messages/receipts",
-        &MESSAGE_RECEIPTS_DEP,
-    ))
+async fn receipts(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let agent = query
+        .typed_value("agent")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let ids = query
+        .typed_value("ids")
+        .and_then(Value::as_str)
+        .unwrap_or("[]");
+    let ids: Vec<String> = serde_json::from_str(ids).map_err(|_| {
+        ApiError::validation(vec![serde_json::json!("query"), serde_json::json!("ids")])
+    })?;
+    let workspace = state.workspace_id;
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || {
+        let mut connection = store.read().map_err(|_| ApiError::internal())?;
+        let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+        let mut value =
+            studio_runtime_services::coordination_reads::delivery_receipts(&tx, &agent, &ids)
+                .map_err(coordination_error)?;
+        value["workspaceId"] = Value::String(workspace);
+        super::generated_json::<crate::generated::MessageReceipts>(value)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(value))
 }
-async fn delete_room() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "POST",
-        "/api/room/delete",
-        &ROOM_VISIBILITY_DEP,
-    ))
+async fn delete_room(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::RoomDeleteBody>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || {
+        store.transaction_with_error(|tx| {
+            let value =
+                studio_runtime_services::coordination_reads::delete_room(tx, &body.id, |v| {
+                    super::generated_json::<crate::generated::RoomEntityDto>(v.clone()).is_ok()
+                })?;
+            super::generated_json::<crate::generated::MutationReceipt>(value).map_err(|_| {
+                CoordinationError::InvalidStored {
+                    object: "runtime_rooms",
+                    id: body.id.clone(),
+                }
+            })
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(coordination_error)?;
+    Ok(Json(value))
 }
 
 fn default_connected() -> bool {
@@ -216,6 +277,13 @@ fn coordination_error(error: CoordinationError) -> ApiError {
             table,
             id,
         }) => invalid_stored(table, &id),
+        CoordinationError::Store(studio_runtime_store::StoreError::InvalidSyncObject {
+            scope,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {scope}/{id}"),
+        ),
         CoordinationError::Store(_) => ApiError::internal(),
     }
 }
@@ -227,9 +295,6 @@ fn invalid_stored(object: &'static str, id: &str) -> ApiError {
     )
 }
 
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
-}
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "messages",
@@ -237,10 +302,7 @@ inventory::submit! {
         dependencies: &[
             "budget-policy/message-admission",
             "capacity-retry/store",
-            "coordination-policy/chat-history",
-            "coordination-policy/room-visibility",
             "cross-server/remote-events",
-            "event-driver/message-receipts",
             "event-driver/message-send",
             "federation-driver/rooms",
             "payload-store/uploads",
