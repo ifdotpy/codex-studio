@@ -6,6 +6,28 @@ use serde_json::Value;
 use std::io::Cursor;
 
 #[test]
+fn supervisor_action_display_preserves_wire_names() {
+    use SupervisorAction::*;
+    let cases = [
+        (Health, "health"),
+        (Open, "open"),
+        (Next, "next"),
+        (FinishFallback, "finishFallback"),
+        (AdminCloseHandle, "adminCloseHandle"),
+        (RetireCommand, "retireCommand"),
+        (Write, "write"),
+        (OperationStatus, "operationStatus"),
+        (Ack, "ack"),
+        (Replay, "replay"),
+        (Status, "status"),
+        (Detach, "detach"),
+    ];
+    for (action, expected) in cases {
+        assert_eq!(action.to_string(), expected);
+    }
+}
+
+#[test]
 fn frame_codec_round_trips_compact_json_and_preserves_extensions() {
     let value = serde_json::json!({"action":"status","handle":"h","future":42});
     let mut encoded = Vec::new();

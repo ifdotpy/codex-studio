@@ -8,7 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use studio_runtime_process::{
@@ -31,19 +31,16 @@ const SUPERVISOR: &str = concat!(
     "/../../apps/server/src/codex_process_supervisor.py"
 );
 
-struct DisposableState(PathBuf);
+#[allow(dead_code)]
+struct DisposableState(PathBuf, tempfile::TempDir);
 
 impl DisposableState {
     fn new() -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rp-{}-{unique}", std::process::id()));
+        let directory = tempfile::Builder::new().prefix("rp-").tempdir().unwrap();
+        let path = directory.path().to_path_buf();
         assert_outside_runtime_state(&path);
         assert_socket_path_fits(&path.join(SOCKET));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        Self(path, directory)
     }
 
     fn socket(&self) -> PathBuf {
@@ -55,12 +52,6 @@ impl DisposableState {
             backend_id: BackendId(format!("rust-runtime-process-{}", std::process::id())),
             state_dir: self.0.clone(),
         }
-    }
-}
-
-impl Drop for DisposableState {
-    fn drop(&mut self) {
-        drop(fs::remove_dir_all(&self.0));
     }
 }
 
