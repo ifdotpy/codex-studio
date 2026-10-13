@@ -157,6 +157,8 @@ fn actor(
     let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
     let (events, journal) = mpsc::channel(LANE_CAPACITY);
     let status = AttachmentStatus {
+        handle: ProviderHandle::for_account("unit"),
+        open_attempted: false,
         info: None,
         initialization: InitializationStatus::AwaitingReply,
     };

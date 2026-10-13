@@ -61,7 +61,6 @@ fn options(state: &DisposableState) -> OpenOptions {
             BTreeMap::new(),
             state.0.clone(),
         ),
-        initialize_params: json!({}),
         expected_generation: None,
     }
 }
@@ -98,12 +97,12 @@ async fn open_peer(state: &DisposableState) -> (ProviderAttachment, Peer) {
 }
 
 #[tokio::test]
-async fn invalid_initialization_refused_before_socket_open() {
+async fn invalid_launch_refused_before_socket_open() {
     let state = DisposableState::new();
     let listener = UnixListener::bind(state.socket()).unwrap();
     let factory = SupervisorProviderTaskFactory::new(state.identity());
     let mut invalid = options(&state);
-    invalid.initialize_params = json!({"oversized":"x".repeat(1024 * 1024)});
+    invalid.launch.command = vec!["x".repeat(1024 * 1024)];
     assert!(matches!(
         factory
             .open(
@@ -112,7 +111,7 @@ async fn invalid_initialization_refused_before_socket_open() {
                 Shutdown::default()
             )
             .await,
-        Err(AdapterError::InvalidConfiguration)
+        Err(AdapterError::Supervisor(SupervisorError::InvalidFrame(_)))
     ));
     let mut accept = Box::pin(listener.accept());
     assert!(
@@ -319,6 +318,13 @@ async fn readiness_requires_real_initialized_receipt_and_stable_identity() {
         attachment.status.borrow().initialization,
         InitializationStatus::Ready
     );
+    assert!(
+        attachment
+            .status
+            .borrow()
+            .initialization_recovery()
+            .is_none()
+    );
     assert!(attachment.shutdown().await.recovery_needed.is_none());
 }
 
@@ -467,7 +473,6 @@ for line in sys.stdin:
     let opts = || OpenOptions {
         clock: SessionClock::default(),
         launch: launch.clone(),
-        initialize_params: json!({}),
         expected_generation: None,
     };
     let mut first = factory
@@ -503,7 +508,12 @@ for line in sys.stdin:
     assert_eq!(resumed.pid, info.pid);
     assert_eq!(resumed.generation, recovery.generation.unwrap());
     assert_eq!(
-        resumed.initialization_recovery.unwrap().phase,
+        second
+            .status
+            .borrow()
+            .initialization_recovery()
+            .unwrap()
+            .phase,
         recovery.phase
     );
     assert!(matches!(
@@ -794,7 +804,6 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
             OpenOptions {
                 clock: SessionClock::default(),
                 launch,
-                initialize_params: json!({}),
                 expected_generation: None,
             },
             Shutdown::default(),
@@ -848,7 +857,7 @@ async fn initialized_identity_is_scoped_to_real_child_generation() {
         let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],BTreeMap::from([("PYTHONUNBUFFERED".into(),"1".into())]),state.0.clone());
         let factory = SupervisorProviderTaskFactory::new(state.identity());
         let handle = ProviderHandle::for_account("generation");
-        let opts = || OpenOptions { clock: SessionClock::default(), launch: launch.clone(), initialize_params: json!({}), expected_generation: None };
+        let opts = || OpenOptions { clock: SessionClock::default(), launch: launch.clone(), expected_generation: None };
         let mut first = factory.open(handle.clone(),opts(),Shutdown::default()).await.unwrap();
         let first_info = real_info(&mut first).await;
         supervisor.own_child(first_info.pid);

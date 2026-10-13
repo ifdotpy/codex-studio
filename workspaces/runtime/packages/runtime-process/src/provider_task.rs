@@ -6,9 +6,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
 #[cfg(target_os = "linux")]
 use std::{io, sync::Arc};
-use studio_runtime_providers::{
-    DecodedJournalPayload, decode_journal_entry, validate_initialize_params,
-};
+use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
 #[cfg(target_os = "linux")]
 use tokio::sync::Semaphore;
 use tokio::{
@@ -48,18 +46,6 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
         shutdown: Shutdown,
     ) -> OpenFuture<'_> {
         Box::pin(async move {
-            validate_initialize_params(&options.initialize_params)
-                .map_err(|_| AdapterError::InvalidConfiguration)?;
-            // Provider codecs allow 16 MiB, while supervisor v1 allows 1 MiB.
-            // Reserve envelope/identity space before opening a child.
-            if serde_json::to_vec(&options.initialize_params)
-                .map_err(|_| AdapterError::InvalidConfiguration)?
-                .len()
-                + 2048
-                > crate::transport::MAX_FRAME_BYTES
-            {
-                return Err(AdapterError::InvalidConfiguration);
-            }
             if handle.as_str().len() > 180
                 || options.launch.command.is_empty()
                 || options.launch.command.iter().any(|arg| arg.contains('\0'))
@@ -80,6 +66,8 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (events, journal) = mpsc::channel(LANE_CAPACITY);
             let (state, status) = watch::channel(AttachmentStatus {
+                handle: handle.clone(),
+                open_attempted: false,
                 info: None,
                 initialization: InitializationStatus::AwaitingReply,
             });
@@ -233,13 +221,8 @@ impl AdapterTask {
         while let Ok(command) = self.commands.try_recv() {
             command.reject();
         }
-        let recovery_needed = (self.open_attempted
-            && self.initialization != InitializationStatus::Ready)
-            .then(|| InitializationRecovery {
-                handle: self.handle.clone(),
-                generation: self.info.as_ref().map(|info| info.generation),
-                phase: self.initialization,
-            });
+        self.publish();
+        let recovery_needed = self.status.borrow().initialization_recovery();
         TaskExit {
             result,
             recovery_needed,
@@ -248,6 +231,8 @@ impl AdapterTask {
 
     fn publish(&self) {
         self.status.send_replace(AttachmentStatus {
+            handle: self.handle.clone(),
+            open_attempted: self.open_attempted,
             info: self.info.clone(),
             initialization: self.initialization,
         });
@@ -298,6 +283,7 @@ impl AdapterTask {
             return Err(AdapterError::UnverifiableChild);
         }
         self.open_attempted = true;
+        self.publish();
         let opened: OpenResult = rpc
             .call(SupervisorAction::Open, &self.open, &mut self.stop)
             .await?;
@@ -317,11 +303,6 @@ impl AdapterTask {
             pid: opened.pid,
             acknowledged: EventCursor(opened.acknowledged),
             resumed: opened.resumed,
-            initialization_recovery: opened.resumed.then(|| InitializationRecovery {
-                handle: self.handle.clone(),
-                generation: Some(opened.generation),
-                phase: self.initialization,
-            }),
         });
         if opened.resumed && prior.as_ref().is_none_or(|prior| prior.pid != opened.pid)
             || self

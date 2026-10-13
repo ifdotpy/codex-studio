@@ -219,7 +219,7 @@ never sends ACK itself, including for the launch spec's recovered handled cursor
 `TaskExit::recovery_needed` identifies incomplete initialization separately from
 socket cleanup, including a generation when known. Persist it before declaring
 protocol cleanup complete. A verified resumed child without cached initialization
-returns `AttachmentInfo::initialization_recovery` and can complete the same
+returns `AttachmentStatus::initialization_recovery()` and can complete the same
 handshake; it does not fail with generic Launch. I/O loss cannot prove protocol
 completion. Retained-child environment checks run in at most four owned blocking
 jobs per factory; shutdown reaps an already-started job. Linux `/proc` identity

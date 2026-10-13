@@ -197,15 +197,27 @@ pub struct AttachmentInfo {
     pub pid: u32,
     pub acknowledged: EventCursor,
     pub resumed: bool,
-    /// A verified retained child without cached initialize reply is recoverable,
-    /// not a generic launch failure. The session persists and drives recovery.
-    pub initialization_recovery: Option<InitializationRecovery>,
 }
 
 #[derive(Clone, Debug)]
 pub struct AttachmentStatus {
+    pub handle: ProviderHandle,
+    pub open_attempted: bool,
     pub info: Option<AttachmentInfo>,
     pub initialization: InitializationStatus,
+}
+
+impl AttachmentStatus {
+    /// Derived from current readiness, including uncertain open before metadata.
+    pub fn initialization_recovery(&self) -> Option<InitializationRecovery> {
+        (self.open_attempted && self.initialization != InitializationStatus::Ready).then(|| {
+            InitializationRecovery {
+                handle: self.handle.clone(),
+                generation: self.info.as_ref().map(|info| info.generation),
+                phase: self.initialization,
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -281,13 +293,7 @@ impl ProviderAttachment {
         let result = match self.task.as_mut() {
             Some(task) => task.await.unwrap_or_else(|_| TaskExit {
                 result: Err(AdapterError::TaskFailed),
-                recovery_needed: self.status.borrow().info.as_ref().map(|info| {
-                    InitializationRecovery {
-                        handle: info.handle.clone(),
-                        generation: Some(info.generation),
-                        phase: self.status.borrow().initialization,
-                    }
-                }),
+                recovery_needed: self.status.borrow().initialization_recovery(),
             }),
             None => TaskExit {
                 result: Err(AdapterError::TaskFailed),
@@ -310,7 +316,6 @@ impl Drop for ProviderAttachment {
 pub struct OpenOptions {
     pub clock: SessionClock,
     pub launch: ProviderLaunchSpec,
-    pub initialize_params: Value,
     /// Persisted identity from a previous attachment, if available.
     pub expected_generation: Option<Generation>,
 }
