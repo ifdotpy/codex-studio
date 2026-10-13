@@ -126,6 +126,7 @@ impl Registry {
             "QueueItem",
             "RequestRecordResponse",
             "RequestEntityDto",
+            "ResourceRef",
             "RoomEntityDto",
             "RuleEntityDto",
             "SyncEntityPayload",
@@ -349,6 +350,18 @@ impl Registry {
         self.stored_schemas
             .get(schema)
             .is_some_and(|validator| validator.is_valid(value))
+    }
+
+    pub(crate) fn validate_component(&self, schema: &str, value: &Value) -> bool {
+        self.validate_stored(schema, value)
+    }
+
+    pub(crate) fn valid_stored_record(&self, schema: &str, id: &str, value: &Value) -> bool {
+        self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
+    }
+
+    pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
+        studio_runtime_services::sync_views::project_persisted_record(schema, value)
     }
 
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {

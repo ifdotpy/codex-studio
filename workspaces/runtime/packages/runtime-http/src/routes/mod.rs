@@ -27,7 +27,7 @@ mod sync_stream;
 mod terminals;
 mod transcript;
 mod usage;
-mod voice;
+pub(crate) mod voice;
 mod work_items;
 mod work_write;
 mod workspace_files;
