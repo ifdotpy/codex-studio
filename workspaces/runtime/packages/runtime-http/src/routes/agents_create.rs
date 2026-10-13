@@ -6,7 +6,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use studio_runtime_services::agents_create::{self, RenameError};
 use studio_runtime_services::event_write::python_json;
 use studio_runtime_store::SyncDocumentsRepository;
@@ -102,10 +101,7 @@ fn rename_signature(id: &str, name: Option<&str>) -> String {
         "{{\"chat\": {}, \"name\": {name}, \"operation\": \"rename\"}}",
         python_json(&Value::String(id.to_owned()))
     );
-    Sha256::digest(body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    studio_runtime_store::sha256_hex(body.as_bytes())
 }
 
 fn rename_error(error: RenameError) -> ApiError {
@@ -138,15 +134,10 @@ fn rename_error(error: RenameError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::rename_signature;
-    use sha2::{Digest, Sha256};
-
     #[test]
     fn rename_signature_matches_python_sorted_json_encoding() {
         let body = r#"{"chat": "chat-1", "name": "Caf\u00e9", "operation": "rename"}"#;
-        let expected = Sha256::digest(body.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let expected = studio_runtime_store::sha256_hex(body.as_bytes());
         assert_eq!(rename_signature("chat-1", Some("Café")), expected);
     }
 }
