@@ -20,6 +20,7 @@ mod session;
 mod sync;
 mod sync_delta;
 mod sync_documents;
+mod sync_stream;
 mod terminals;
 mod transcript;
 mod usage;

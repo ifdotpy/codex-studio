@@ -9,6 +9,7 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod change_notifications;
 pub mod agents_create;
 pub mod coordination;
 pub mod event_write;
@@ -17,6 +18,7 @@ pub mod model_catalog;
 pub mod multi_server;
 pub mod panels;
 pub mod progress_panel;
+pub mod progress_watch;
 pub mod projects;
 pub mod provider_session;
 pub mod questions_reads;

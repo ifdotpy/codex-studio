@@ -125,6 +125,7 @@ impl Registry {
             "QueueItem",
             "RequestEntityDto",
             "RequestRecordResponse",
+            "ResourceRef",
             "RoomEntityDto",
             "RuleEntityDto",
             "RuleRecordResponse",

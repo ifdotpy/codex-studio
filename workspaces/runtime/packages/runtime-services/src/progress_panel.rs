@@ -62,6 +62,47 @@ pub fn progress_path(state_dir: &Path, agent: &str) -> Result<PathBuf, ProgressP
     Ok(root.join("progress").join(agent).join("PROGRESS.md"))
 }
 
+/// Prepare the per-agent directory whose direct child is watched for PROGRESS.md changes.
+pub fn prepare_watch_directory(
+    state_dir: &Path,
+    agent: &str,
+) -> Result<PathBuf, ProgressPanelError> {
+    let progress = progress_path(state_dir, agent)?;
+    let agent_directory = progress.parent().ok_or(ProgressPanelError::InvalidAgent)?;
+    let progress_directory = agent_directory
+        .parent()
+        .ok_or(ProgressPanelError::InvalidAgent)?;
+    let state_directory = progress_directory
+        .parent()
+        .ok_or(ProgressPanelError::InvalidAgent)?;
+    check_directory(state_directory)?;
+    ensure_watch_directory(progress_directory)?;
+    ensure_watch_directory(agent_directory)?;
+    Ok(agent_directory.to_owned())
+}
+
+fn ensure_watch_directory(directory: &Path) -> Result<(), ProgressPanelError> {
+    match fs::symlink_metadata(directory) {
+        Ok(_) => check_directory(directory),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(directory) {
+                Ok(()) => check_directory(directory),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    check_directory(directory)
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub fn read_progress(state_dir: &Path, agent: &str) -> Result<Value, ProgressPanelError> {
     let path = progress_path(state_dir, agent)?;
     let mut panel = json!({

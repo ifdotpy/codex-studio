@@ -185,11 +185,6 @@ class BoundaryContractTests(TimedBoundaryTest):
             "apiSchema": backend.schema_hash,
             "resources": json.dumps([{"kind": "drafts"}], separators=(",", ":")),
         })
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            unavailable = backend.request("GET", "/api/sync/stream?" + query)
-            self.assertEqual(unavailable.status, 501, unavailable.body[:1000])
-            self.assertEqual(unavailable.json()["error"], "Not implemented")
-            return
         started = time.monotonic()
         with urlopen(Request(backend.origin + "/api/sync/stream?" + query),
                      timeout=HTTP_WAIT_GUARD_SECONDS) as response:
@@ -199,7 +194,8 @@ class BoundaryContractTests(TimedBoundaryTest):
             current: dict[str, object] = {}
             data_lines: list[str] = []
             deadline = started + HTTP_WAIT_GUARD_SECONDS
-            while len(frames) < 3:
+            expected = 2 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 3
+            while len(frames) < expected:
                 raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
                 line = response.readline().decode("utf-8").rstrip("\r\n")
                 if line.startswith("event: "):
@@ -211,8 +207,10 @@ class BoundaryContractTests(TimedBoundaryTest):
                     frames.append(current)
                     current = {}
                     data_lines = []
-        self.assertEqual([frame["event"] for frame in frames],
-                         ["api-schema", "resources", "token-rates"], frames)
+        expected_events = ["api-schema", "resources"]
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            expected_events.append("token-rates")
+        self.assertEqual([frame["event"] for frame in frames], expected_events, frames)
 
     def test_message_receipt_replay_conflict_and_single_effect(self) -> None:
         backend = self.backend

@@ -56,6 +56,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript/payload-store",
     "transcript/search-index",
     "transcript/workspace-state",
+    "usage-policy/token-rates",
     "work-policy/views",
     "workspace-state/git-changes",
     "workspace-state/image-execution",

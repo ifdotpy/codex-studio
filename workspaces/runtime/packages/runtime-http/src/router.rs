@@ -46,6 +46,11 @@ impl HttpState {
     ) -> Self {
         let model_catalog =
             studio_runtime_services::model_catalog::ModelCatalogService::new(native_path.clone());
+        let sync_changes = Arc::new(ChangeNotificationHub::new());
+        if let Some(store) = &store {
+            let changes = Arc::clone(&sync_changes);
+            store.set_commit_notifier(move || changes.notify_one());
+        }
         Self {
             token,
             workspace_id,
