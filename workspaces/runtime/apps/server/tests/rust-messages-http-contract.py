@@ -540,11 +540,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", agent_id,
             )
             for field in ("status", "inFlight", "turnId", "autoWake", "error", "capacityRetry"):
-                if field == "status":
-                    # The dispatcher may advance accepted agents at codex_runtime.py:6857.
-                    self.assertIn(projection.get(field), {"queued", "starting"})
-                    self.assertIn(record.get(field), {"queued", "starting"})
-                    continue
                 self.assertEqual(projection.get(field), record.get(field), f"agent projection field {field}")
 
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
