@@ -266,7 +266,7 @@ impl TranscriptRepository {
         }
         transaction.execute(
             "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record,created=excluded.created",
+             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![
                 id,
                 agent,

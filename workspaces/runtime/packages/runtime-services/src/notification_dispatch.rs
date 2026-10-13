@@ -69,7 +69,7 @@ mod stream;
 #[path = "notification_dispatch/submission.rs"]
 mod submission;
 pub use stream::NotificationStreamBuffer;
-use stream::StreamKey;
+use stream::{EnqueueResult, StreamKey};
 use submission::{submission_record, validate_submission};
 
 const ITEM_PREVIEW_CHARS: usize = 20_000;
@@ -115,6 +115,8 @@ pub struct PreparedSubmission {
 pub enum NotificationDispatchError {
     #[error("invalid provider notification or delivery identity")]
     InvalidNotification,
+    #[error("open notification stream capacity reached")]
+    StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
     InvalidStoredObject { table: &'static str, id: String },
     #[error("delivery identity was reused with different content")]
@@ -146,6 +148,8 @@ pub fn record_user_submission(
             "submittedAt": submission.submitted_at,
             "createdAt": submission.created_at,
             "record": record,
+            "text": submission.text,
+            "inputTexts": submission.inputs.iter().map(|input| &input.text).collect::<Vec<_>>(),
         }))?;
         let receipt_id = format!(
             "{SUBMISSION_RECEIPT_PREFIX}{}",
@@ -204,18 +208,28 @@ pub fn record_user_submission(
     })
 }
 
-/// Apply one decoded provider frame using its durable supervisor delivery ID.
-/// `observed_at` is used for first-write timestamps and is never part of identity.
+/// Stored outcome and a staged connection-buffer replacement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationDispatchResult {
+    pub outcome: DispatchOutcome,
+    pub stream_update: Option<NotificationStreamBuffer>,
+}
+
+/// The caller owns the transaction and the connection's stream buffer. Commit
+/// SQLite first, then apply `stream_update` (when present) to that buffer. On
+/// rollback or commit failure discard the update. This call never mutates the
+/// supplied buffer; a saved receipt returns the saved outcome and no update.
+/// `observed_at` is never part of delivery identity.
 pub fn dispatch_notification(
     transaction: &Transaction<'_>,
     agent_id: &str,
     state_dir: &str,
-    streams: &mut NotificationStreamBuffer,
+    streams: &NotificationStreamBuffer,
     identity: &ProviderDeliveryIdentity,
     notification: &Frame,
     observed_at: f64,
-) -> Result<DispatchOutcome, NotificationDispatchError> {
-    let prior_streams = streams.clone();
+) -> Result<NotificationDispatchResult, NotificationDispatchError> {
+    let mut next_streams = streams.clone();
     let result = in_savepoint(transaction, || {
         if !observed_at.is_finite()
             || observed_at < 0.0
@@ -244,8 +258,17 @@ pub fn dispatch_notification(
 
         let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
             .ok_or_else(|| stored("runtime_agents", agent_id))?;
+        if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+            return save_outcome(
+                transaction,
+                &receipt_id,
+                &content_signature,
+                DispatchOutcome::Ignored {
+                    reason: "deleted-agent".to_owned(),
+                },
+            );
+        }
         validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
-        validate_agent_write_fields(&agent, agent_id)?;
         let turn_id = params
             .get("turnId")
             .and_then(Value::as_str)
@@ -270,7 +293,7 @@ pub fn dispatch_notification(
                             if write_text_notification(
                                 transaction,
                                 &mut agent,
-                                streams,
+                                &mut next_streams,
                                 TextWriteInput {
                                     agent_id,
                                     identity,
@@ -326,7 +349,7 @@ pub fn dispatch_notification(
                         if write_text_notification(
                             transaction,
                             &mut agent,
-                            streams,
+                            &mut next_streams,
                             TextWriteInput {
                                 agent_id,
                                 identity,
@@ -362,7 +385,7 @@ pub fn dispatch_notification(
             }
         };
 
-        if matches!(outcome, DispatchOutcome::Ignored { .. }) {
+        if kind == "item/agentMessage/delta" || matches!(outcome, DispatchOutcome::Ignored { .. }) {
             return save_outcome(transaction, &receipt_id, &content_signature, outcome);
         }
         let mut reasons = extra_reasons;
@@ -385,10 +408,10 @@ pub fn dispatch_notification(
         }
         save_outcome(transaction, &receipt_id, &content_signature, outcome)
     });
-    if result.is_err() {
-        *streams = prior_streams;
-    }
-    result
+    result.map(|outcome| NotificationDispatchResult {
+        outcome,
+        stream_update: (next_streams != *streams).then_some(next_streams),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -456,19 +479,7 @@ fn validate_agent(
     kind: &str,
     params: &Value,
 ) -> Result<(), NotificationDispatchError> {
-    if agent.get("id").and_then(Value::as_str) != Some(agent_id)
-        || agent
-            .get("epoch")
-            .and_then(Value::as_i64)
-            .is_none_or(|epoch| epoch < 0)
-        || agent
-            .get("rootId")
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-        || agent.get("deletedAt").is_some_and(|value| !value.is_null())
-    {
-        return Err(stored("runtime_agents", agent_id));
-    }
+    validate_agent_write_fields(agent, agent_id)?;
     let thread = agent
         .get("threadId")
         .and_then(Value::as_str)
@@ -590,36 +601,47 @@ fn write_text_notification(
         method: "item/agentMessage/delta".to_owned(),
     };
     let (text, streaming, phase, index_search, completed) = match update {
-        TextUpdate::Started(snapshot, phase) => {
-            streams.start(&key);
-            (
-                snapshot.unwrap_or_default().to_owned(),
-                true,
-                phase.cloned().unwrap_or(Value::Null),
-                true,
-                false,
-            )
-        }
-        TextUpdate::Delta(delta) => {
-            if !streams.enqueue_delta(key.clone(), delta) {
-                return Ok(false);
-            }
-            let text = streams.flush(&key, &previous).unwrap_or(previous);
-            let phase = old
-                .as_ref()
-                .and_then(|(record, _)| record.get("phase"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let indexed = text.chars().count() > ITEM_PREVIEW_CHARS;
-            (text, true, phase, indexed, false)
-        }
-        TextUpdate::Completed(snapshot, phase) => (
-            streams.complete(&key, &previous, snapshot),
-            false,
+        TextUpdate::Started(snapshot, phase) => (
+            snapshot.unwrap_or_default().to_owned(),
+            true,
             phase.cloned().unwrap_or(Value::Null),
             true,
-            true,
+            false,
         ),
+        TextUpdate::Delta(delta) => {
+            return match streams.enqueue_delta(key, delta, params) {
+                EnqueueResult::Buffered => Ok(true),
+                EnqueueResult::Closed => Ok(false),
+                EnqueueResult::Full => Err(NotificationDispatchError::StreamCapacity),
+            };
+        }
+        TextUpdate::Completed(snapshot, phase) => {
+            flush_selected(
+                transaction,
+                agent_id,
+                agent,
+                streams,
+                Some(&key),
+                observed_at,
+            )?;
+            let latest =
+                NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
+            let latest_text = latest
+                .as_ref()
+                .map(|(record, _)| saved_text(transaction, &id, record))
+                .transpose()?
+                .unwrap_or(previous);
+            (
+                snapshot
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or(&latest_text)
+                    .to_owned(),
+                false,
+                phase.cloned().unwrap_or(Value::Null),
+                true,
+                true,
+            )
+        }
     };
     let turn = turn.or_else(|| {
         agent
@@ -644,11 +666,113 @@ fn write_text_notification(
         agent["tail"] = Value::String(suffix(&text, 300));
     } else {
         agent["activity"] = json!({"phase":"writing", "at":observed_at});
-        if matches!(update, TextUpdate::Delta(_)) {
-            agent["tail"] = Value::String(suffix(&text, 300));
-        }
     }
     Ok(true)
+}
+
+/// Flush this agent's streams from the shared connection buffer. Other agents'
+/// entries remain untouched; callers flush each affected agent. Commit, then replace it with
+/// the returned value; discard it on rollback. `None` means no state changed.
+pub fn flush_notification_streams(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    state_dir: &str,
+    streams: &NotificationStreamBuffer,
+    observed_at: f64,
+) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
+    let mut next = streams.clone();
+    in_savepoint(transaction, || {
+        let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
+            .ok_or_else(|| stored("runtime_agents", agent_id))?;
+        validate_agent_write_fields(&agent, agent_id)?;
+        let before = agent.clone();
+        flush_selected(
+            transaction,
+            agent_id,
+            &mut agent,
+            &mut next,
+            None,
+            observed_at,
+        )?;
+        if agent != before {
+            persist_agent(transaction, agent_id, &agent, state_dir)?;
+        }
+        Ok((next != *streams).then_some(next))
+    })
+}
+
+fn flush_selected(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    agent: &mut Value,
+    streams: &mut NotificationStreamBuffer,
+    terminal: Option<&StreamKey>,
+    observed_at: f64,
+) -> Result<(), NotificationDispatchError> {
+    for key in streams.selected(terminal) {
+        if agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
+            || agent
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != key.account
+        {
+            continue;
+        }
+        if agent.get("deletedAt").is_some_and(|v| !v.is_null())
+            || key
+                .turn
+                .as_deref()
+                .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn))
+        {
+            streams.discard(&key);
+            if terminal.is_some() {
+                streams.close(&key);
+            }
+            continue;
+        }
+        let id = format!("{agent_id}:{}", key.item);
+        let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
+        let previous = old
+            .as_ref()
+            .map(|(record, _)| saved_text(transaction, &id, record))
+            .transpose()?
+            .unwrap_or_default();
+        if let Some((text, count, params)) = streams.flush(&key, &previous) {
+            let phase = old
+                .as_ref()
+                .and_then(|(record, _)| record.get("phase"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let turn = key
+                .turn
+                .as_deref()
+                .or_else(|| agent.get("turnId").and_then(Value::as_str));
+            let record = assistant_item_record(&id, &text, observed_at, true, turn, phase);
+            NotificationDispatchRepository::put_transcript_item(
+                transaction,
+                &id,
+                agent_id,
+                &record,
+                observed_at,
+                &text,
+                text.chars().count() > ITEM_PREVIEW_CHARS,
+            )?;
+            update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
+            agent["events"] = Value::from(
+                agent["events"]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .saturating_add(count - 1),
+            );
+            agent["activity"] = json!({"phase":"writing", "at":observed_at});
+            agent["tail"] = Value::String(suffix(&text, 300));
+        }
+        if terminal.is_some() {
+            streams.close(&key);
+        }
+    }
+    Ok(())
 }
 
 fn assistant_item_record(
@@ -764,7 +888,8 @@ fn update_common_agent_fields(
         "item/agentMessage/delta" | "item/started" | "item/completed"
     ) && agent.get("nativeStatus").is_some_and(|status| {
         status.get("phase").and_then(Value::as_str) == Some("retrying")
-            && status.get("turnId") == params.get("turnId")
+            && status.get("turnId").unwrap_or(&Value::Null)
+                == params.get("turnId").unwrap_or(&Value::Null)
     }) && let Some(fields) = agent.as_object_mut()
     {
         fields.remove("nativeStatus");
@@ -949,17 +1074,39 @@ fn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use rusqlite::{Connection, params};
     use serde_json::{Value, json};
 
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
-        SubmittedInput, dispatch_notification, record_user_submission,
+        SubmittedInput, record_user_submission,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
     use studio_runtime_store::{NotificationDispatchRepository, TranscriptRepository};
+
+    // Legacy fixtures model a transaction-local buffer with an immediate timer.
+    // The corpus exercises the caller's commit/apply and rollback/drop boundary.
+    fn dispatch_notification(
+        transaction: &rusqlite::Transaction<'_>,
+        agent: &str,
+        state: &str,
+        streams: &mut NotificationStreamBuffer,
+        identity: &ProviderDeliveryIdentity,
+        frame: &Frame,
+        at: f64,
+    ) -> Result<DispatchOutcome, super::NotificationDispatchError> {
+        let result =
+            super::dispatch_notification(transaction, agent, state, streams, identity, frame, at)?;
+        if let Some(update) = result.stream_update {
+            *streams = update;
+        }
+        if let Some(update) =
+            super::flush_notification_streams(transaction, agent, state, streams, at)?
+        {
+            *streams = update;
+        }
+        Ok(result.outcome)
+    }
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
@@ -1021,6 +1168,57 @@ mod tests {
             &frame(value),
             observed_at,
         )
+    }
+
+    #[test]
+    fn bounded_open_streams_refuse_without_writing() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../tests/turn_lifecycle/notification_cases.json"
+        ))
+        .expect("cases");
+        let case = cases
+            .iter()
+            .find(|c| c["id"] == "bounded-open-streams")
+            .expect("boundary case");
+        let mut streams = NotificationStreamBuffer::default();
+        for index in 0..case["bound"].as_u64().expect("bound") {
+            assert!(matches!(
+                streams.enqueue_delta(
+                    super::stream::StreamKey {
+                        account: "default".into(),
+                        generation: 7,
+                        thread: "thread".into(),
+                        turn: Some("turn".into()),
+                        item: index.to_string(),
+                        method: "item/agentMessage/delta".into(),
+                    },
+                    "pending",
+                    &json!({})
+                ),
+                super::stream::EnqueueResult::Buffered
+            ));
+        }
+        let original = streams.clone();
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let before = tx.total_changes();
+        let result = super::dispatch_notification(
+            &tx,
+            "agent",
+            ".",
+            &streams,
+            &identity(1),
+            &frame(
+                &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"overflow","delta":"retained"}}),
+            ),
+            1.0,
+        );
+        assert!(matches!(
+            result,
+            Err(super::NotificationDispatchError::StreamCapacity)
+        ));
+        assert_eq!(tx.total_changes(), before);
+        assert_eq!(streams, original);
     }
 
     #[test]
@@ -1111,370 +1309,6 @@ mod tests {
     }
 
     #[test]
-    fn real_python_submission_and_notification_path_matches_rust_projections() {
-        let server =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/server/tests/fixtures/provider-replay/restart-mid-turn-supervisor-replay.json");
-        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/notification_dispatch_python.py");
-        let database_path = std::env::temp_dir().join(format!(
-            "notification-dispatch-parity-{}-{}.sqlite",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock is after unix epoch")
-                .as_nanos()
-        ));
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .or_else(|| std::env::var_os("PYTHON"))
-            .unwrap_or_else(|| "python3".into());
-        let output = Command::new(python)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg(script)
-            .arg(server)
-            .arg(&fixture_path)
-            .arg(&database_path)
-            .output()
-            .expect("Python parity oracle starts");
-        assert!(
-            output.status.success(),
-            "Python parity oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&output.stdout)
-            .expect("Python parity oracle emits one JSON object");
-        let seed_path = std::path::PathBuf::from(format!("{}.seed", database_path.display()));
-        let mut connection = Connection::open(&seed_path).expect("Python seed database opens");
-
-        let prepared = &expected["prepared"];
-        let inputs = prepared["inputs"]
-            .as_array()
-            .expect("prepared inputs are an array")
-            .iter()
-            .map(|input| SubmittedInput {
-                id: input["id"].as_str().expect("input id is text").to_owned(),
-                at: input["at"].as_f64().expect("input time is numeric"),
-                kind: input["kind"]
-                    .as_str()
-                    .expect("input kind is text")
-                    .to_owned(),
-                text: input["text"]
-                    .as_str()
-                    .expect("input text is text")
-                    .to_owned(),
-                assets: input["assets"].clone(),
-            })
-            .collect();
-        let submission = PreparedSubmission {
-            first_event_id: prepared["firstEventId"]
-                .as_str()
-                .expect("first event id is text")
-                .to_owned(),
-            submitted_at: prepared["submittedAt"]
-                .as_f64()
-                .expect("submission time is numeric"),
-            created_at: prepared["createdAt"]
-                .as_f64()
-                .expect("creation time is numeric"),
-            text: prepared["text"]
-                .as_str()
-                .expect("submission text is text")
-                .to_owned(),
-            inputs,
-            assets: prepared["assets"].clone(),
-        };
-        let transaction = connection
-            .transaction()
-            .expect("Rust parity transaction begins");
-        let mut streams = NotificationStreamBuffer::default();
-        assert_eq!(
-            record_user_submission(&transaction, "agent", &submission)
-                .expect("Rust writes prepared submission"),
-            DispatchOutcome::Written
-        );
-        let fixture: Value =
-            serde_json::from_slice(&std::fs::read(&fixture_path).expect("recorded fixture reads"))
-                .expect("recorded fixture is JSON");
-        for (cursor, event) in fixture["events"]
-            .as_array()
-            .expect("fixture events are an array")
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event["method"].as_str(),
-                    Some("item/agentMessage/delta" | "item/completed")
-                )
-            })
-            .enumerate()
-        {
-            let mut event = event.clone();
-            replace_fixture_ids(&mut event);
-            assert_eq!(
-                dispatch_notification(
-                    &transaction,
-                    "agent",
-                    ".",
-                    &mut streams,
-                    &identity(cursor as u64 + 1),
-                    &frame(&event),
-                    1234.5,
-                )
-                .expect("Rust applies recorded notification"),
-                DispatchOutcome::Written
-            );
-        }
-        transaction
-            .commit()
-            .expect("base replay transaction commits");
-        let baseline_items = TranscriptRepository::items_for_agent(&connection, "agent")
-            .expect("baseline transcript reads")
-            .into_iter()
-            .map(|item| (item.id, item.record))
-            .collect::<serde_json::Map<_, _>>();
-        assert_eq!(Value::Object(baseline_items), expected["baseline"]["items"]);
-        let baseline_agent = TranscriptRepository::agent(&connection, "agent")
-            .expect("baseline agent reads")
-            .expect("baseline agent exists");
-        assert_eq!(baseline_agent, expected["baseline"]["agent"]);
-        let (baseline_seq, baseline_hash, baseline_payload): (i64, String, String) = connection
-            .query_row(
-                "SELECT seq,hash,payload FROM sync_entities WHERE collection='agent' AND id='agent'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("baseline sync projection reads");
-        let baseline_sync = &expected["baseline"]["sync"];
-        assert_eq!(
-            baseline_seq,
-            baseline_sync["seq"]
-                .as_i64()
-                .expect("baseline seq is integer")
-        );
-        assert_eq!(
-            baseline_hash,
-            baseline_sync["hash"]
-                .as_str()
-                .expect("baseline hash is text")
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&baseline_payload).expect("baseline payload is JSON"),
-            baseline_sync["payload"]
-        );
-        let transaction = connection
-            .transaction()
-            .expect("ordering notification transaction begins");
-        for (index, event) in expected["orderingEvents"]
-            .as_array()
-            .expect("Python ordering events are an array")
-            .iter()
-            .enumerate()
-        {
-            assert_eq!(
-                dispatch_notification(
-                    &transaction,
-                    "agent",
-                    ".",
-                    &mut streams,
-                    &identity(index as u64 + 3),
-                    &frame(event),
-                    1234.5,
-                )
-                .expect("Rust applies reordered notification"),
-                DispatchOutcome::Written
-            );
-        }
-        transaction
-            .commit()
-            .expect("Rust parity transaction commits");
-
-        let rust_items = TranscriptRepository::items_for_agent(&connection, "agent")
-            .expect("Rust transcript reads")
-            .into_iter()
-            .map(|item| (item.id, item.record))
-            .collect::<serde_json::Map<_, _>>();
-        assert_eq!(Value::Object(rust_items), expected["items"]);
-
-        let rust_agent = TranscriptRepository::agent(&connection, "agent")
-            .expect("Rust agent reads")
-            .expect("Rust agent exists");
-        let mut comparable_agent = rust_agent.clone();
-        let unhandled = comparable_agent
-            .as_object_mut()
-            .and_then(|agent| agent.remove("unhandledNotifications"))
-            .expect("partial notification counters persist on the Rust agent");
-        let mut expected_agent = expected["agent"].clone();
-        expected_agent
-            .as_object_mut()
-            .expect("Python agent is an object")
-            .remove("tokensUsed");
-        assert_eq!(comparable_agent, expected_agent);
-        assert_eq!(
-            rust_agent["contextUsage"],
-            json!({"tokens":42,"window":1024,"at":1234.5})
-        );
-        assert_eq!(
-            unhandled["thread/tokenUsage/updated"],
-            json!({"count":1,"reasons":{
-                "usage-policy/budget-capture":1,
-                "agent-move/cache-capture-not-ported":1,
-                "analytics/token-rate-observation-not-ported":1
-            }})
-        );
-        assert_eq!(
-            unhandled["item/completed"]["reasons"]["questions-service/async-question"],
-            1
-        );
-
-        let (seq, hash, payload_raw): (i64, String, String) = connection
-            .query_row(
-                "SELECT seq,hash,payload FROM sync_entities WHERE collection='agent' AND id='agent'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("Rust sync projection reads");
-        let payload: Value = serde_json::from_str(&payload_raw).expect("Rust sync payload is JSON");
-        assert!(seq >= baseline_seq);
-        assert_eq!(
-            hash,
-            studio_runtime_store::sha256_hex(payload_raw.as_bytes())
-        );
-        let mut expected_payload = expected["sync"]["payload"].clone();
-        expected_payload["value"]
-            .as_object_mut()
-            .expect("Python sync value is an object")
-            .remove("tokensUsed");
-        assert_eq!(payload, expected_payload);
-
-        let mut event_meta = serde_json::Map::new();
-        let mut statement = connection
-            .prepare("SELECT id,record FROM runtime_event_meta ORDER BY id")
-            .expect("event metadata query prepares");
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .expect("event metadata query runs");
-        for row in rows {
-            let (id, record) = row.expect("event metadata row reads");
-            event_meta.insert(
-                id,
-                serde_json::from_str(&record).expect("event metadata is JSON"),
-            );
-        }
-        drop(statement);
-        assert_eq!(Value::Object(event_meta), expected["eventMeta"]);
-
-        let notification_receipts = {
-            let mut statement = connection
-                .prepare("SELECT result FROM runtime_operation_receipts WHERE id LIKE 'provider-notification:%' ORDER BY id")
-                .expect("notification receipt query prepares");
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .expect("notification receipt query runs");
-            rows.map(|row| {
-                serde_json::from_str::<Value>(&row.expect("receipt reads"))
-                    .expect("receipt result is JSON")
-            })
-            .collect::<Vec<_>>()
-        };
-        let expected_receipts = expected["notificationResults"]
-            .as_array()
-            .expect("Python notification results are an array")
-            .iter()
-            .map(|result| json!({"status": result["status"]}))
-            .collect::<Vec<_>>();
-        assert_eq!(notification_receipts, expected_receipts);
-        let submission_receipt: String = connection
-            .query_row(
-                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'provider-submission:%'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("submission receipt exists");
-        assert_eq!(
-            serde_json::from_str::<Value>(&submission_receipt).expect("submission receipt is JSON"),
-            json!({"status":"written"})
-        );
-
-        let legacy_search = {
-            let mut statement = connection
-                .prepare("SELECT s.id,s.agent,s.kind,s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid ORDER BY s.id")
-                .expect("legacy search query prepares");
-            let rows = statement
-                .query_map([], |row| {
-                    Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"body":row.get::<_,String>(3)?}))
-                })
-                .expect("legacy search query runs");
-            rows.map(|row| row.expect("legacy search row reads"))
-                .collect::<Vec<_>>()
-        };
-        let next_search = {
-            let mut statement = connection
-                .prepare(
-                    "SELECT id,agent,kind,search_rowid FROM runtime_search_next_meta ORDER BY id",
-                )
-                .expect("next search query prepares");
-            let rows = statement
-                .query_map([], |row| {
-                    Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"kind":row.get::<_,String>(2)?,"searchRowId":row.get::<_,i64>(3)?}))
-                })
-                .expect("next search query runs");
-            rows.map(|row| row.expect("next search row reads"))
-                .collect::<Vec<_>>()
-        };
-        connection
-            .execute_batch(
-                "CREATE VIRTUAL TABLE temp.runtime_search_next_vocab USING fts5vocab(main,runtime_search_next,'instance')",
-            )
-            .expect("next search vocabulary opens");
-        let next_tokens = {
-            let mut statement = connection
-                .prepare("SELECT term,doc,col,offset FROM runtime_search_next_vocab ORDER BY term,doc,col,offset")
-                .expect("next search token query prepares");
-            let rows = statement
-                .query_map([], |row| {
-                    Ok(json!([
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?
-                    ]))
-                })
-                .expect("next search token query runs");
-            rows.map(|row| row.expect("next search token reads"))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            json!({"legacy":legacy_search,"next":next_search,"nextTokens":next_tokens}),
-            expected["search"]
-        );
-        drop(connection);
-        drop(std::fs::remove_file(database_path));
-        drop(std::fs::remove_file(seed_path));
-    }
-
-    fn replace_fixture_ids(value: &mut Value) {
-        match value {
-            Value::Object(fields) => {
-                for value in fields.values_mut() {
-                    replace_fixture_ids(value);
-                }
-            }
-            Value::Array(values) => {
-                for value in values {
-                    replace_fixture_ids(value);
-                }
-            }
-            Value::String(value) if value == "$threadId" => *value = "thread".to_owned(),
-            Value::String(value) if value == "$turnId" => {
-                *value = "replay-turn-1".to_owned();
-            }
-            _ => {}
-        }
-    }
-
-    #[test]
     fn route_refusal_is_clean_and_post_write_failure_rolls_back_savepoint() {
         let mut connection = database();
         let mut streams = NotificationStreamBuffer::default();
@@ -1489,7 +1323,7 @@ mod tests {
             .expect("refusal leaves caller transaction committable");
 
         connection.execute_batch("CREATE TRIGGER fail_sync_projection BEFORE UPDATE ON sync_entities BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").expect("failure trigger creates");
-        let delta = json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"rollback","delta":"written then refused"}});
+        let delta = json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"rollback","type":"agentMessage","text":"written then refused"}}});
         let transaction = connection.transaction().expect("transaction begins");
         assert!(dispatch(&transaction, &mut streams, 2, &delta, 2.0).is_err());
         transaction

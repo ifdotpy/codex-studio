@@ -289,7 +289,11 @@ impl NotificationDispatchRepository {
 
 fn validate_item(item: &TranscriptItem, agent: &str) -> StoreResult<()> {
     let role = item.record.get("role").and_then(Value::as_str);
-    if item.record.get("id").and_then(Value::as_str) != Some(item.id.as_str())
+    if ["truncated", "streaming"].iter().any(|key| {
+        item.record
+            .get(key)
+            .is_some_and(|value| !value.is_boolean())
+    }) || item.record.get("id").and_then(Value::as_str) != Some(item.id.as_str())
         || !matches!(role, Some("assistant" | "user"))
         || item
             .record

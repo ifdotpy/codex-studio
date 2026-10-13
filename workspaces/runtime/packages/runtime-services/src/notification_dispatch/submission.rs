@@ -26,9 +26,6 @@ pub(super) fn validate_submission(
     }
     let agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
-    if agent.get("id").and_then(Value::as_str) != Some(agent_id) {
-        return Err(stored("runtime_agents", agent_id));
-    }
     validate_agent_write_fields(&agent, agent_id)?;
     if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
         return Err(stored("runtime_agents", agent_id));
@@ -70,8 +67,9 @@ pub(super) fn validate_submission(
         if meta
             .as_ref()
             .and_then(|meta| meta.get("transcriptItemId"))
-            .and_then(Value::as_str)
-            .is_some_and(|value| value != format!("{agent_id}:{}", submission.first_event_id))
+            .is_some_and(|value| {
+                value.as_str() != Some(format!("{agent_id}:{}", submission.first_event_id).as_str())
+            })
         {
             return Err(stored("runtime_event_meta", &input.id));
         }
@@ -105,7 +103,7 @@ fn validate_submission_policy(
     text: &str,
     metadata: Option<&Value>,
 ) -> Result<(), NotificationDispatchError> {
-    if kind == "radio_turn" || kind == "radio" {
+    if kind == "radio_turn" {
         return Err(NotificationDispatchError::Dependency("radio-policy"));
     }
     if matches!(
@@ -213,12 +211,13 @@ fn validate_submission_policy(
             .or_else(|| payload.get("lead"))
             .and_then(Value::as_str)
             .ok_or(NotificationDispatchError::UnauthorizedSubmission)?;
+        if payload.pointer("/response/author").and_then(Value::as_str) != Some(sender) {
+            return Err(NotificationDispatchError::UnauthorizedSubmission);
+        }
         if sender == "user" {
             return Ok(());
         }
-        if complaint.get("leadId").and_then(Value::as_str) != Some(sender)
-            || payload.pointer("/response/author").and_then(Value::as_str) != Some(sender)
-        {
+        if complaint.get("leadId").and_then(Value::as_str) != Some(sender) {
             return Err(NotificationDispatchError::UnauthorizedSubmission);
         }
         sender
@@ -283,7 +282,7 @@ fn peer_pair_allowed(
                 .is_some_and(|value| !value.is_null() && !value.is_string())
             || agent
                 .get("deletedAt")
-                .is_some_and(|value| !value.is_null() && !value.is_boolean() && !value.is_string())
+                .is_some_and(|value| !value.is_null() && !value.is_number())
         {
             return Err(stored("runtime_agents", id));
         }
@@ -291,7 +290,7 @@ fn peer_pair_allowed(
     let Some(path) = left
         .get("cwd")
         .and_then(Value::as_str)
-        .filter(|path| !path.is_empty())
+        .and_then(crate::sync_policy::normalized_project_path)
     else {
         return Ok(false);
     };
@@ -302,12 +301,19 @@ fn peer_pair_allowed(
             && agent.get("rootId").and_then(Value::as_str)
                 == agent.get("id").and_then(Value::as_str)
     };
-    if !is_lead(&left) || !is_lead(&right) || right.get("cwd").and_then(Value::as_str) != Some(path)
+    if !is_lead(&left)
+        || !is_lead(&right)
+        || right
+            .get("cwd")
+            .and_then(Value::as_str)
+            .and_then(crate::sync_policy::normalized_project_path)
+            .as_deref()
+            != Some(path.as_str())
     {
         return Ok(false);
     }
     let Some(project) =
-        NotificationDispatchRepository::related_record(transaction, "runtime_projects", path)?
+        NotificationDispatchRepository::related_record(transaction, "runtime_projects", &path)?
     else {
         return Ok(false);
     };
@@ -315,17 +321,17 @@ fn peer_pair_allowed(
         value
             .as_array()
             .map(Vec::as_slice)
-            .ok_or_else(|| stored("runtime_projects", path))
+            .ok_or_else(|| stored("runtime_projects", &path))
     })?;
     for team in teams {
         let Some(members) = team.get("members") else {
-            return Err(stored("runtime_projects", path));
+            return Err(stored("runtime_projects", &path));
         };
         let members = members
             .as_array()
-            .ok_or_else(|| stored("runtime_projects", path))?;
+            .ok_or_else(|| stored("runtime_projects", &path))?;
         if members.iter().any(|member| !member.is_string()) {
-            return Err(stored("runtime_projects", path));
+            return Err(stored("runtime_projects", &path));
         }
         if members
             .iter()

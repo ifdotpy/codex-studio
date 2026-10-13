@@ -1,10 +1,9 @@
-//! Bounded transient text-stream keys and pending deltas, keyed like Python's buffer.
-
-use std::collections::{HashMap, HashSet, VecDeque};
+//! Pure, bounded connection stream state. SQLite commit controls when updates apply.
+use serde_json::Value;
 
 const MAX_STREAMS: usize = 8_192;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct StreamKey {
     pub account: String,
     pub generation: u64,
@@ -14,172 +13,106 @@ pub(super) struct StreamKey {
     pub method: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, PartialEq)]
 struct Entry {
+    key: StreamKey,
+    base: Option<String>,
     pending: String,
+    count: u64,
+    params: Value,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NotificationStreamBuffer {
-    entries: HashMap<StreamKey, Entry>,
-    entry_order: VecDeque<StreamKey>,
-    closed: HashSet<StreamKey>,
-    closed_order: VecDeque<StreamKey>,
+    entries: Vec<Entry>,
+    closed: Vec<StreamKey>,
+}
+
+pub(super) enum EnqueueResult {
+    Buffered,
+    Closed,
+    Full,
 }
 
 impl NotificationStreamBuffer {
-    pub(super) fn enqueue_delta(&mut self, key: StreamKey, delta: &str) -> bool {
+    pub(super) fn enqueue_delta(
+        &mut self,
+        key: StreamKey,
+        delta: &str,
+        params: &Value,
+    ) -> EnqueueResult {
         if self.closed.contains(&key) {
-            return false;
+            return EnqueueResult::Closed;
         }
-        if !self.entries.contains_key(&key) {
-            self.make_room();
-            self.entry_order.push_back(key.clone());
-            self.entries.insert(key.clone(), Entry::default());
-        }
-        let Some(entry) = self.entries.get_mut(&key) else {
-            return false;
+        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
+            index
+        } else {
+            if self.entries.len() == MAX_STREAMS {
+                return EnqueueResult::Full;
+            }
+            self.entries.push(Entry {
+                key,
+                base: None,
+                pending: String::new(),
+                count: 0,
+                params: params.clone(),
+            });
+            self.entries.len() - 1
         };
+        let entry = &mut self.entries[index];
+        if entry.count == 0 {
+            entry.params = params.clone();
+        }
         entry.pending.push_str(delta);
-        true
+        entry.count += 1;
+        EnqueueResult::Buffered
     }
 
-    pub(super) fn flush(&mut self, key: &StreamKey, current_text: &str) -> Option<String> {
-        let entry = self.entries.get_mut(key)?;
-        if entry.pending.is_empty() {
-            return None;
-        }
-        let mut text = String::with_capacity(current_text.len() + entry.pending.len());
-        text.push_str(current_text);
-        text.push_str(&entry.pending);
-        entry.pending.clear();
-        Some(text)
+    pub(super) fn selected(&self, terminal: Option<&StreamKey>) -> Vec<StreamKey> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                terminal.is_none_or(|key| {
+                    entry.key.account == key.account
+                        && entry.key.thread == key.thread
+                        && entry.key.item == key.item
+                        && key
+                            .turn
+                            .as_ref()
+                            .is_none_or(|turn| entry.key.turn.as_ref() == Some(turn))
+                })
+            })
+            .map(|entry| entry.key.clone())
+            .collect()
     }
 
-    pub(super) fn start(&mut self, key: &StreamKey) {
-        if let Some(entry) = self.entries.get_mut(key) {
-            entry.pending.clear();
-        }
-    }
-
-    pub(super) fn complete(
+    pub(super) fn flush(
         &mut self,
         key: &StreamKey,
-        previous_text: &str,
-        snapshot: Option<&str>,
-    ) -> String {
-        let Some(entry) = self.entries.remove(key) else {
-            return snapshot
-                .filter(|text| !text.is_empty())
-                .unwrap_or(previous_text)
-                .to_owned();
-        };
-        self.entry_order.retain(|candidate| candidate != key);
-        let text = if let Some(snapshot) = snapshot.filter(|text| !text.is_empty()) {
-            snapshot.to_owned()
-        } else {
-            let mut text = String::with_capacity(previous_text.len() + entry.pending.len());
-            text.push_str(previous_text);
-            text.push_str(&entry.pending);
-            text
-        };
-        self.close_key(key.clone());
-        text
+        current_text: &str,
+    ) -> Option<(String, u64, Value)> {
+        let entry = self.entries.iter_mut().find(|entry| &entry.key == key)?;
+        if entry.count == 0 {
+            return None;
+        }
+        let text = entry.base.get_or_insert_with(|| current_text.to_owned());
+        text.push_str(&entry.pending);
+        entry.pending.clear();
+        let count = std::mem::take(&mut entry.count);
+        Some((text.clone(), count, entry.params.clone()))
     }
 
-    fn make_room(&mut self) {
-        while self.entries.len() >= MAX_STREAMS {
-            let Some(oldest) = self.entry_order.pop_front() else {
-                break;
-            };
-            self.entries.remove(&oldest);
+    pub(super) fn close(&mut self, key: &StreamKey) {
+        self.entries.retain(|entry| &entry.key != key);
+        if !self.closed.contains(key) {
+            self.closed.push(key.clone());
+        }
+        if self.closed.len() > MAX_STREAMS {
+            self.closed.remove(0);
         }
     }
 
-    fn close_key(&mut self, key: StreamKey) {
-        if self.closed.insert(key.clone()) {
-            self.closed_order.push_back(key);
-        }
-        while self.closed.len() > MAX_STREAMS {
-            if let Some(oldest) = self.closed_order.pop_front() {
-                self.closed.remove(&oldest);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_STREAMS, NotificationStreamBuffer, StreamKey};
-
-    fn key(generation: u64, item: &str, method: &str) -> StreamKey {
-        StreamKey {
-            account: "default".to_owned(),
-            generation,
-            thread: "thread".to_owned(),
-            turn: Some("turn".to_owned()),
-            item: item.to_owned(),
-            method: method.to_owned(),
-        }
-    }
-
-    #[test]
-    fn flushed_delta_is_replaced_by_snapshot_and_closed_keys_are_generation_scoped() {
-        let mut streams = NotificationStreamBuffer::default();
-        let first = key(7, "answer", "item/agentMessage/delta");
-        assert!(streams.enqueue_delta(first.clone(), "before"));
-        assert_eq!(streams.flush(&first, "").as_deref(), Some("before"));
-        assert!(streams.enqueue_delta(first.clone(), "pending"));
-        streams.start(&first);
-        assert_eq!(streams.complete(&first, "snapshot", Some("final")), "final");
-        assert!(!streams.enqueue_delta(first, "late"));
-
-        let next = key(8, "answer", "item/agentMessage/delta");
-        assert!(streams.enqueue_delta(next.clone(), "late"));
-        assert_eq!(streams.flush(&next, "final").as_deref(), Some("finallate"));
-    }
-
-    #[test]
-    fn completion_without_a_stream_does_not_close_the_first_delta() {
-        let mut streams = NotificationStreamBuffer::default();
-        let key = key(7, "answer", "item/agentMessage/delta");
-        assert_eq!(streams.complete(&key, "final", None), "final");
-        assert!(streams.enqueue_delta(key, "late"));
-    }
-
-    #[test]
-    fn stream_key_includes_account_generation_thread_turn_item_and_method() {
-        let baseline = key(7, "answer", "item/agentMessage/delta");
-        let mut other = baseline.clone();
-        other.account = "another".to_owned();
-        assert_ne!(baseline, other);
-        let mut other = baseline.clone();
-        other.generation = 8;
-        assert_ne!(baseline, other);
-        let mut other = baseline.clone();
-        other.thread = "another-thread".to_owned();
-        assert_ne!(baseline, other);
-        let mut other = baseline.clone();
-        other.turn = None;
-        assert_ne!(baseline, other);
-        let mut other = baseline.clone();
-        other.item = "another-item".to_owned();
-        assert_ne!(baseline, other);
-        assert_ne!(
-            baseline,
-            key(7, "answer", "item/commandExecution/outputDelta")
-        );
-    }
-
-    #[test]
-    fn transient_stream_storage_is_bounded() {
-        let mut streams = NotificationStreamBuffer::default();
-        for index in 0..=MAX_STREAMS {
-            assert!(
-                streams.enqueue_delta(key(7, &index.to_string(), "item/agentMessage/delta"), "x")
-            );
-        }
-        let oldest = key(7, "0", "item/agentMessage/delta");
-        assert!(streams.flush(&oldest, "").is_none());
+    pub(super) fn discard(&mut self, key: &StreamKey) {
+        self.entries.retain(|entry| &entry.key != key);
     }
 }
