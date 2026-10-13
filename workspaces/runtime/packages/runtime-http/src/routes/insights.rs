@@ -136,8 +136,12 @@ async fn session_cost(
 }
 
 fn cost_dependency(dependency: &'static str) -> ApiError {
-    let dependencies = [Dependency::new(dependency)];
-    dependency_unavailable("GET", "/api/session-cost", &dependencies)
+    debug_assert!(
+        SESSION_COST_DEPENDENCIES
+            .iter()
+            .any(|candidate| candidate.name() == dependency)
+    );
+    dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
         .unwrap_or_else(|_| ApiError::internal())
 }
 
@@ -162,8 +166,8 @@ fn map_costs_error(error: CostsError) -> ApiError {
         | CostsError::Grouping(_)
         | CostsError::Repository(_)
         | CostsError::Sqlite(_)
-        | CostsError::InvalidPricing
         | CostsError::Computation => ApiError::internal(),
+        CostsError::InvalidPricing => cost_dependency("costs/pricing-refresh"),
     }
 }
 
