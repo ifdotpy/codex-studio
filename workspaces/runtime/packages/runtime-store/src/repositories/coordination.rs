@@ -318,3 +318,9 @@ fn python_string(value: &str) -> String {
     result.push('"');
     result
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "coordination",
+        requirements: &REQUIREMENTS,
+    }
+}

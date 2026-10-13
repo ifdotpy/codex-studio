@@ -185,3 +185,10 @@ mod tests {
         assert!(version(&json!({"version": 1.5})).is_err());
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "work_write",
+        routes: Some(routes),
+        dependencies: &[],
+    }
+}

@@ -42,3 +42,10 @@ fn status(state: &HttpState) -> Value {
         "supervisorNotice": null, "stateDir": state.state_dir, "linuxVm": null
     })
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "desktop",
+        routes: Some(routes),
+        dependencies: &["cross-server/remote-events", "federation-driver/rooms"],
+    }
+}

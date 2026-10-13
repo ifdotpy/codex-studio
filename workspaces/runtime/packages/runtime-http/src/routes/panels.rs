@@ -276,3 +276,10 @@ fn profile_read_error(error: StoreError) -> ApiError {
         _ => ApiError::internal(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "panels",
+        routes: Some(routes),
+        dependencies: &["resource-policy/read-progress-panel", "resource-policy/windows-file-identity", "resource-policy/write-progress-layout"],
+    }
+}

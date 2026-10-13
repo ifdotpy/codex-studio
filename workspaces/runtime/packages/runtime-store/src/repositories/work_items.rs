@@ -259,3 +259,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "work_items",
+        requirements: &REQUIREMENTS,
+    }
+}

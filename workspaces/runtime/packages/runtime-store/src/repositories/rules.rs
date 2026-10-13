@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(agents[0].id().0, "a1");
         assert!(
             REQUIREMENTS
-                .tables
+                .bootstrap_tables
                 .iter()
                 .any(|table| table.name == "runtime_rules")
         );
@@ -226,5 +226,11 @@ mod tests {
         .expect("monitor table creates");
         assert!(RulesRepository::has_active_check(&db, "r1").expect("active check is found"));
         assert!(!RulesRepository::has_active_check(&db, "r2").expect("other rule has no check"));
+    }
+}
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "rules",
+        requirements: &REQUIREMENTS,
     }
 }

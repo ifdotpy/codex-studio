@@ -101,3 +101,10 @@ fn validate_queue_action(body: &Value) -> Result<(), ApiError> {
 fn write_error(error: QueueWriteError) -> ApiError {
     super::queue_read::api_error(error)
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "queue_write",
+        routes: None,
+        dependencies: &["event-driver/queue-mutations"],
+    }
+}

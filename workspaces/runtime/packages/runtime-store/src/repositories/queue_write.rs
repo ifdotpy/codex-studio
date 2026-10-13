@@ -116,3 +116,9 @@ impl QueueWriteRepository {
         Table::<EventMetadataRecord>::new(transaction).put_at(&key, &record)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "queue_write",
+        requirements: &REQUIREMENTS,
+    }
+}

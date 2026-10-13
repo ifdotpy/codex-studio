@@ -33,6 +33,7 @@ let_underscore_must_use = "deny"
 unwrap_used = "warn"
 
 [workspace.dependencies]
+inventory = "=0.3.25"
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std", "float_roundtrip"] }
 serde_path_to_error = "=0.1.20"

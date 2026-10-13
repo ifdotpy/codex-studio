@@ -76,3 +76,9 @@ impl AgentRepository {
         Table::<AgentRecord>::new(connection).put(record)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "agents",
+        requirements: &REQUIREMENTS,
+    }
+}

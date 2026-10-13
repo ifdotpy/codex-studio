@@ -18,7 +18,8 @@ pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<(
 pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     let canvas = open_read_only(canvas_path)?;
     let analytics = open_read_only(analytics_path)?;
-    for requirements in crate::repositories::REQUIREMENTS {
+    for registration in crate::repositories::schema_registrations() {
+        let requirements = registration.requirements;
         for table in requirements.tables {
             if is_bootstrap_table(requirements, table) {
                 continue;
@@ -39,7 +40,7 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
             require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
         }
         for function in requirements.connection_functions {
-            if !SUPPORTED_CONNECTION_FUNCTIONS.contains(function) {
+            if !has_registered_connection_function(function) {
                 return Err(object_mismatch(
                     "canvas.sqlite3",
                     function,
@@ -75,7 +76,9 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
 }
 
 pub(crate) fn verify_bootstrap(canvas: &Connection) -> StoreResult<()> {
-    for requirements in crate::repositories::REQUIREMENTS {
+    let registrations = crate::repositories::schema_registrations();
+    for registration in &registrations {
+        let requirements = registration.requirements;
         for table in requirements.bootstrap_tables {
             require_columns(canvas, "canvas.sqlite3", table.name, table.columns)?;
         }
@@ -83,7 +86,7 @@ pub(crate) fn verify_bootstrap(canvas: &Connection) -> StoreResult<()> {
             require_trigger(canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
         }
         for function in requirements.bootstrap_connection_functions {
-            if !SUPPORTED_CONNECTION_FUNCTIONS.contains(function) {
+            if !has_registered_connection_function(function) {
                 return Err(object_mismatch(
                     "canvas.sqlite3",
                     function,
@@ -92,7 +95,8 @@ pub(crate) fn verify_bootstrap(canvas: &Connection) -> StoreResult<()> {
             }
         }
     }
-    for requirements in crate::repositories::REQUIREMENTS {
+    for registration in &registrations {
+        let requirements = registration.requirements;
         for conditional in requirements.conditional_triggers {
             if table_exists(canvas, conditional.table_exists)? {
                 for trigger in conditional.triggers {
@@ -139,7 +143,33 @@ pub(crate) struct SchemaRequirements {
     pub bootstrap_connection_functions: &'static [&'static str],
 }
 
-const SUPPORTED_CONNECTION_FUNCTIONS: &[&str] = &["sync_entity_payload", "sync_entity_hash"];
+struct ConnectionFunctionRegistration(&'static str);
+
+inventory::collect!(ConnectionFunctionRegistration);
+
+inventory::submit! {
+    ConnectionFunctionRegistration("sync_entity_hash")
+}
+
+inventory::submit! {
+    ConnectionFunctionRegistration("sync_entity_payload")
+}
+
+#[cfg(test)]
+fn registered_connection_functions() -> Vec<&'static str> {
+    let mut functions = inventory::iter::<ConnectionFunctionRegistration>
+        .into_iter()
+        .map(|registration| registration.0)
+        .collect::<Vec<_>>();
+    functions.sort_unstable();
+    functions
+}
+
+fn has_registered_connection_function(name: &str) -> bool {
+    inventory::iter::<ConnectionFunctionRegistration>
+        .into_iter()
+        .any(|registration| registration.0 == name)
+}
 
 pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
     connection.create_scalar_function(
@@ -524,10 +554,17 @@ fn connection_pragmas(connection: &Connection) -> StoreResult<(String, i64)> {
 mod tests {
     use super::{
         PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json,
-        verify_payload_migration,
+        registered_connection_functions, verify_payload_migration,
     };
     use rusqlite::Connection;
     use serde_json::Value;
+
+    #[test]
+    fn connection_functions_are_registered_in_stable_order() {
+        let functions = registered_connection_functions();
+        assert_eq!(functions.len(), 2);
+        assert!(functions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 
     #[test]
     fn committed_snapshot_has_both_database_catalogs_and_expected_markers() {

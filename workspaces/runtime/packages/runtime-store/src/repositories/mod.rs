@@ -20,26 +20,20 @@ pub(crate) mod workspace_views;
 
 use crate::schema::SchemaRequirements;
 
-pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
-    &agents::REQUIREMENTS,
-    &account_state::REQUIREMENTS,
-    &coordination::REQUIREMENTS,
-    &tasks::REQUIREMENTS,
-    &events::REQUIREMENTS,
-    &event_write::REQUIREMENTS,
-    &queue_write::REQUIREMENTS,
-    &messages::REQUIREMENTS,
-    &monitors::REQUIREMENTS,
-    &profiles::REQUIREMENTS,
-    &rules::REQUIREMENTS,
-    &questions_reads::REQUIREMENTS,
-    &scheduler::REQUIREMENTS,
-    &sync_documents::REQUIREMENTS,
-    &terminals::REQUIREMENTS,
-    &transcript::REQUIREMENTS,
-    &work_items::REQUIREMENTS,
-    &workspace_files::REQUIREMENTS,
-];
+pub(crate) struct SchemaRegistration {
+    pub(crate) repository: &'static str,
+    pub(crate) requirements: &'static SchemaRequirements,
+}
+
+inventory::collect!(SchemaRegistration);
+
+pub(crate) fn schema_registrations() -> Vec<&'static SchemaRegistration> {
+    let mut registrations = inventory::iter::<SchemaRegistration>
+        .into_iter()
+        .collect::<Vec<_>>();
+    registrations.sort_unstable_by_key(|registration| registration.repository);
+    registrations
+}
 
 #[cfg(test)]
 mod tests {
@@ -51,6 +45,9 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::Value;
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
     use sync_documents::SyncDocumentsRepository;
 
     fn database_with(requirements: &crate::schema::SchemaRequirements) -> Connection {
@@ -79,6 +76,73 @@ mod tests {
                 .expect("declared repository table creates");
         }
         connection
+    }
+
+    fn declared_modules(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                ["pub(crate) mod ", "pub mod ", "mod "]
+                    .into_iter()
+                    .find_map(|prefix| line.strip_prefix(prefix))
+                    .and_then(|declaration| declaration.strip_suffix(';'))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repository_modules_match_the_source_directory_in_alphabetical_order() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/repositories");
+        let mut source_modules = fs::read_dir(&directory)
+            .expect("repositories directory is readable")
+            .map(|entry| {
+                entry
+                    .expect("repositories directory entry is readable")
+                    .path()
+            })
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .filter_map(|path| {
+                let stem = path.file_stem()?.to_str()?;
+                (stem != "mod").then(|| stem.to_owned())
+            })
+            .collect::<Vec<_>>();
+        source_modules.sort_unstable();
+
+        assert_eq!(declared_modules(include_str!("mod.rs")), source_modules);
+
+        let mut requirement_modules = fs::read_dir(&directory)
+            .expect("repositories directory is readable")
+            .map(|entry| {
+                entry
+                    .expect("repositories directory entry is readable")
+                    .path()
+            })
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .filter_map(|path| {
+                if path.file_stem().is_some_and(|stem| stem == "mod") {
+                    return None;
+                }
+                let source = fs::read_to_string(&path).expect("repository source is readable");
+                source
+                    .contains(
+                        "pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements",
+                    )
+                    .then(|| path.file_stem()?.to_str().map(str::to_owned))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        requirement_modules.sort_unstable();
+
+        let registrations = super::schema_registrations();
+        let registered_modules = registrations
+            .iter()
+            .map(|registration| registration.repository.to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(registered_modules, requirement_modules);
+        assert_eq!(registrations.len(), 18);
+        assert!(registered_modules.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]

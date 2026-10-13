@@ -1414,6 +1414,7 @@ dependencies = [
  "axum",
  "form_urlencoded",
  "futures-util",
+ "inventory",
  "jsonschema",
  "openapi-to-rust",
  "rusqlite",
@@ -1488,6 +1489,8 @@ dependencies = [
 name = "studio-runtime-store"
 version = "0.1.0"
 dependencies = [
+ "inventory",
+ "jsonschema",
  "rusqlite",
  "serde",
  "serde_json",

@@ -104,7 +104,6 @@ mod tests {
         );
     }
 }
-
 pub struct QuestionsRequestRecord {
     pub id: String,
     pub raw: String,
@@ -184,5 +183,12 @@ impl QuestionsReadsRepository {
                 Ok(QuestionsReadsRecord { id, value })
             })
             .collect::<Result<_, crate::StoreError>>()
+    }
+}
+
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "questions_reads",
+        requirements: &REQUIREMENTS,
     }
 }

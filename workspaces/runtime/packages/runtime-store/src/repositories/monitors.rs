@@ -30,3 +30,9 @@ impl MonitorsRepository {
         Table::<MonitorRecord>::new(connection).get(&id.to_owned())
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "monitors",
+        requirements: &REQUIREMENTS,
+    }
+}

@@ -27,3 +27,9 @@ impl TaskRepository {
         Table::<TaskRecord>::new(connection).put(record)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "tasks",
+        requirements: &REQUIREMENTS,
+    }
+}
