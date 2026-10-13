@@ -18,27 +18,29 @@ use thiserror::Error;
 
 pub use path::resolve_state_dir;
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
-    EventMetadataRecord, JsonRecord, MessageRepository, QueueEvent, QueueEventId,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
+    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, GraphAgentRecord,
+    JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent, QueueEventId,
     QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
-    RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TranscriptAssetId,
-    TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
+    RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord,
+    TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
+    UsageResumeRecord, WorkItemRecord, WorkStatus,
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
-pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
+pub use repositories::monitors::MonitorsRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
-pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
+pub use repositories::rules::RulesRepository;
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
-pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
-pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
+pub use repositories::work_items::{StoredQueueEvent, WorkItemsRepository};
+pub use repositories::workspace_files::WorkspaceFilesRepository;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;

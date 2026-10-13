@@ -156,18 +156,25 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
 
     for name in [
         "AgentRecordResponse",
-        "TaskDetailResponse",
-        "WorkItem",
-        "PlanView",
-        "QueueItem",
-        "TranscriptAsset",
-        "RuleRecordResponse",
+        "AgentRequest",
         "AnnotationReceipt",
         "CheckpointSummary",
         "CheckpointsResponse",
-        "AgentRequest",
+        "ComplaintRecordResponse",
+        "JsonObjectResponse",
+        "MonitorRecordResponse",
+        "PlanView",
+        "ProfileRecord",
+        "QueueItem",
         "QuestionEntry",
         "QuestionHistory",
+        "RequestRecordResponse",
+        "RuleRecordResponse",
+        "TaskDetailResponse",
+        "TerminalRecord",
+        "TranscriptAsset",
+        "UsageResumeRecordResponse",
+        "WorkItem",
     ] {
         let reference = format!("{OPENAPI_URI}#/components/schemas/{name}");
         let validator = compile(&registry, json!({"$ref": reference}), name)?;
