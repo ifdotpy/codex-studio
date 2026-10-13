@@ -116,9 +116,54 @@ async fn sticky_shutdown_interrupts_connect_future_and_closed_sender() {
     cancelled(&mut receiver).await;
 }
 
+struct FragmentProbe {
+    inner: tokio::io::DuplexStream,
+    received: usize,
+    consumed: Option<oneshot::Sender<()>>,
+}
+impl AsyncRead for FragmentProbe {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+        self.received += buffer.filled().len() - before;
+        // A second read poll after the fragment proves Rpc consumed its buffer.
+        if result.is_pending() && self.received > 0 {
+            if let Some(consumed) = self.consumed.take() {
+                let _ = consumed.send(());
+            }
+        }
+        result
+    }
+}
+impl AsyncWrite for FragmentProbe {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, bytes)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_interrupts_partial_response_without_restart() {
     let (client, mut server) = tokio::io::duplex(128);
+    let (consumed, barrier) = oneshot::channel();
+    let client = FragmentProbe {
+        inner: client,
+        received: 0,
+        consumed: Some(consumed),
+    };
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let task = tokio::spawn(async move {
@@ -142,6 +187,7 @@ async fn shutdown_interrupts_partial_response_without_restart() {
         }
     }
     server.write_all(b"{\"requestId\":1,").await.unwrap();
+    barrier.await.unwrap();
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
     assert_eq!(server.read(&mut byte).await.unwrap(), 0);
@@ -436,4 +482,118 @@ fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
         release.send(()).unwrap();
         assert!(matches!(join.await, Err(AdapterError::Cancelled)));
     });
+}
+
+#[tokio::test(start_paused = true)]
+async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_entries() {
+    let shutdown = Shutdown::default();
+    let (mut actor, _commands, _journal) = actor(&shutdown);
+    actor.info = Some(AttachmentInfo {
+        handle: actor.handle.clone(),
+        generation: Generation(1),
+        pid: 1,
+        acknowledged: EventCursor(0),
+        resumed: false,
+    });
+    let (socket, server) = tokio::io::duplex(4096);
+    let mut server = BufReader::new(server);
+    let task = tokio::spawn(async move {
+        let mut rpc = Rpc {
+            stream: BufReader::new(socket),
+            sequence: 0,
+            started: false,
+        };
+        for id in 1..=MAX_PENDING_RESPONSES as u64 {
+            let receipt = actor
+                .write(
+                    &mut rpc,
+                    PreparedWrite {
+                        operation_id: OperationId(format!("request:{id}")),
+                        message: serde_json::json!({"id":id,"method":"model/list"}),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(matches!(receipt, CommandReceipt::Written { .. }));
+        }
+        assert_eq!(actor.response_ids.len(), MAX_PENDING_RESPONSES);
+        let rejected = actor
+            .write(
+                &mut rpc,
+                PreparedWrite {
+                    operation_id: OperationId("overflow".into()),
+                    message: serde_json::json!({"id":99,"method":"model/list"}),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(rejected, CommandReceipt::NotSent));
+        for id in 1..=MAX_PENDING_RESPONSES as u64 {
+            let event = SupervisorEvent {
+                sequence: EventCursor(id),
+                generation: Generation(1),
+                kind: EventKind::Stdout,
+                payload: serde_json::json!({"id":id,"result":{}}),
+                extra: Default::default(),
+            };
+            let frame = actor.journal_entry(event, 0).unwrap();
+            assert!(
+                matches!(frame.payload, JournalPayload::Frame(studio_runtime_providers::Frame::Response { id: studio_runtime_providers::RequestId::Number(local), .. }) if local == id)
+            );
+        }
+        assert!(actor.response_ids.is_empty());
+        assert!(matches!(
+            actor
+                .write(
+                    &mut rpc,
+                    PreparedWrite {
+                        operation_id: OperationId("after-prune".into()),
+                        message: serde_json::json!({"id":99,"method":"model/list"})
+                    }
+                )
+                .await
+                .unwrap(),
+            CommandReceipt::Written { .. }
+        ));
+        assert_eq!(actor.response_ids.len(), 1);
+    });
+    for remote in 1..=MAX_PENDING_RESPONSES as u64 + 1 {
+        let request = read_request(&mut server).await;
+        assert_ne!(request["operationId"], "overflow");
+        let response = serde_json::json!({"requestId":request["requestId"],"result":{"accepted":true,"duplicate":false,"remoteId":remote,"durableMs":0}});
+        server
+            .get_mut()
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    task.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn panic_during_uncertain_open_closes_socket_and_preserves_handle_recovery() {
+    let (socket, mut peer) = tokio::io::duplex(128);
+    let shutdown = Shutdown::default();
+    let handle = ProviderHandle::for_account("panic-open");
+    let (status, observed) = watch::channel(AttachmentStatus {
+        handle: handle.clone(),
+        open_attempted: true,
+        info: None,
+        initialization: InitializationStatus::AwaitingReply,
+    });
+    let (commands, _inbox) = mpsc::channel(1);
+    let (_events, journal) = mpsc::channel(1);
+    async fn panic_task(
+        socket: tokio::io::DuplexStream,
+        status: watch::Sender<AttachmentStatus>,
+    ) -> TaskExit {
+        let _owned = (socket, status);
+        panic!("test panic after uncertain open");
+    }
+    let task = tokio::spawn(panic_task(socket, status));
+    let mut attachment = ProviderAttachment::from_task(commands, journal, observed, shutdown, task);
+    let exit = attachment.completion().await;
+    assert!(matches!(exit.result, Err(AdapterError::TaskFailed)));
+    assert_eq!(exit.recovery_needed.unwrap().handle, handle);
+    assert_eq!(peer.read(&mut [0]).await.unwrap(), 0);
 }

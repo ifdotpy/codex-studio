@@ -98,81 +98,93 @@ async fn open_peer(state: &DisposableState) -> (ProviderAttachment, Peer) {
 
 #[tokio::test]
 async fn invalid_launch_refused_before_socket_open() {
-    let state = DisposableState::new();
-    let listener = UnixListener::bind(state.socket()).unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
-    let mut invalid = options(&state);
-    invalid.launch.command = vec!["x".repeat(1024 * 1024)];
-    assert!(matches!(
-        factory
-            .open(
-                ProviderHandle::for_account("test"),
-                invalid,
-                Shutdown::default()
-            )
-            .await,
-        Err(AdapterError::Supervisor(SupervisorError::InvalidFrame(_)))
-    ));
-    let mut accept = Box::pin(listener.accept());
-    assert!(
-        std::future::poll_fn(|cx| std::task::Poll::Ready(accept.as_mut().poll(cx).is_pending()))
+    watchdog(async {
+        let state = DisposableState::new();
+        let listener = UnixListener::bind(state.socket()).unwrap();
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let mut invalid = options(&state);
+        invalid.launch.command = vec!["x".repeat(1024 * 1024)];
+        assert!(matches!(
+            factory
+                .open(
+                    ProviderHandle::for_account("test"),
+                    invalid,
+                    Shutdown::default()
+                )
+                .await,
+            Err(AdapterError::Supervisor(SupervisorError::InvalidFrame(_)))
+        ));
+        let mut accept = Box::pin(listener.accept());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                accept.as_mut().poll(cx).is_pending()
+            ))
             .await
-    );
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn shutdown_interrupts_handshake_and_closes_socket() {
-    let state = DisposableState::new();
-    let listener = UnixListener::bind(state.socket()).unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
-    let mut attachment = factory
-        .open(
-            ProviderHandle::for_account("test"),
-            options(&state),
-            Shutdown::default(),
-        )
-        .await
-        .unwrap();
-    let (socket, _) = listener.accept().await.unwrap();
-    let mut peer = Peer(BufReader::new(socket));
-    peer.read().await.unwrap(); // Actual handshake bytes reached the peer.
-    assert!(matches!(
-        attachment.shutdown().await.result,
-        Err(AdapterError::Cancelled)
-    ));
-    assert!(peer.read().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let listener = UnixListener::bind(state.socket()).unwrap();
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let mut attachment = factory
+            .open(
+                ProviderHandle::for_account("test"),
+                options(&state),
+                Shutdown::default(),
+            )
+            .await
+            .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut peer = Peer(BufReader::new(socket));
+        peer.read().await.unwrap(); // Actual handshake bytes reached the peer.
+        assert!(matches!(
+            attachment.shutdown().await.result,
+            Err(AdapterError::Cancelled)
+        ));
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn full_replay_lane_stops_next_but_ack_and_shutdown_remain_live() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    for cursor in 0..LANE_CAPACITY as u64 {
-        peer.next_event(cursor, cursor + 1, "stdout", json!({"method":"notice"}))
-            .await;
-    }
-    // Commands serialize after the final event response. If `next` were issued
-    // without capacity, it would appear before this ACK and fail the assertion.
-    let (ack, receipt) = AdapterCommand::ack(EventCursor(1));
-    attachment
-        .commands
-        .send(ack)
-        .await
-        .unwrap_or_else(|_| panic!("closed lane"));
-    let request = peer.request("ack").await;
-    assert_eq!(attachment.journal.len(), LANE_CAPACITY);
-    peer.result(&request, json!({"acknowledged":1})).await;
-    assert!(matches!(
-        receipt.receive().await,
-        CommandReceipt::Acknowledged(EventCursor(1))
-    ));
-    let exit = attachment.shutdown().await;
-    assert!(exit.recovery_needed.is_some());
-    assert!(peer.read().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        for cursor in 0..LANE_CAPACITY as u64 {
+            peer.next_event(cursor, cursor + 1, "stdout", json!({"method":"notice"}))
+                .await;
+        }
+        // Commands serialize after the final event response. If `next` were issued
+        // without capacity, it would appear before this ACK and fail the assertion.
+        let (ack, receipt) = AdapterCommand::ack(EventCursor(1));
+        attachment
+            .commands
+            .send(ack)
+            .await
+            .unwrap_or_else(|_| panic!("closed lane"));
+        let request = peer.request("ack").await;
+        assert_eq!(attachment.journal.len(), LANE_CAPACITY);
+        peer.result(&request, json!({"acknowledged":1})).await;
+        assert!(matches!(
+            receipt.receive().await,
+            CommandReceipt::Acknowledged(EventCursor(1))
+        ));
+        let exit = attachment.shutdown().await;
+        assert!(exit.recovery_needed.is_some());
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn stdout_stderr_exit_raw_keep_cursors_and_never_auto_ack() {
+    watchdog(async {
     let state = DisposableState::new();
     let (mut attachment, mut peer) = open_peer(&state).await;
     let entries = [
@@ -200,56 +212,64 @@ async fn stdout_stderr_exit_raw_keep_cursors_and_never_auto_ack() {
     peer.request("next").await;
     attachment.shutdown().await;
     assert!(peer.read().await.is_none());
+    }).await;
 }
 
 #[tokio::test]
 async fn duplicate_cursor_is_not_delivered_twice() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    peer.next_event(0, 1, "stdout", json!({"method":"notice"}))
-        .await;
-    assert_eq!(
-        attachment.journal.recv().await.unwrap().cursor,
-        EventCursor(1)
-    );
-    peer.next_event(1, 1, "stdout", json!({"method":"notice"}))
-        .await;
-    assert!(attachment.completion().await.result.is_err());
-    assert!(attachment.journal.recv().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        peer.next_event(0, 1, "stdout", json!({"method":"notice"}))
+            .await;
+        assert_eq!(
+            attachment.journal.recv().await.unwrap().cursor,
+            EventCursor(1)
+        );
+        peer.next_event(1, 1, "stdout", json!({"method":"notice"}))
+            .await;
+        assert!(attachment.completion().await.result.is_err());
+        assert!(attachment.journal.recv().await.is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn lost_write_receipt_is_unknown_and_remaining_commands_are_not_sent() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    let next = peer.request("next").await;
-    let (first, receipt) = write("owned:1", json!({"id":7,"method":"model/list"}));
-    attachment
-        .commands
-        .send(first)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    peer.result(&next, empty()).await;
-    let request = peer.request("write").await;
-    assert_eq!(request["operationId"], "owned:1");
-    let (second, second_receipt) = write("owned:2", json!({"id":8,"method":"model/list"}));
-    attachment
-        .commands
-        .send(second)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    drop(peer); // Acceptance may have happened; its receipt did not arrive.
-    assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
-    assert!(matches!(
-        second_receipt.receive().await,
-        CommandReceipt::NotSent
-    ));
-    assert!(attachment.completion().await.result.is_err());
-    assert!(attachment.commands.is_closed());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        let next = peer.request("next").await;
+        let (first, receipt) = write("owned:1", json!({"id":7,"method":"model/list"}));
+        attachment
+            .commands
+            .send(first)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        peer.result(&next, empty()).await;
+        let request = peer.request("write").await;
+        assert_eq!(request["operationId"], "owned:1");
+        let (second, second_receipt) = write("owned:2", json!({"id":8,"method":"model/list"}));
+        attachment
+            .commands
+            .send(second)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        drop(peer); // Acceptance may have happened; its receipt did not arrive.
+        assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
+        assert!(matches!(
+            second_receipt.receive().await,
+            CommandReceipt::NotSent
+        ));
+        assert!(attachment.completion().await.result.is_err());
+        assert!(attachment.commands.is_closed());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn readiness_requires_real_initialized_receipt_and_stable_identity() {
+    watchdog(async {
     let state = DisposableState::new();
     let (mut attachment, mut peer) = open_peer(&state).await;
     let next = peer.request("next").await;
@@ -326,33 +346,38 @@ async fn readiness_requires_real_initialized_receipt_and_stable_identity() {
             .is_none()
     );
     assert!(attachment.shutdown().await.recovery_needed.is_none());
+    }).await;
 }
 
 #[tokio::test]
 async fn failed_status_probe_is_not_absence_and_never_opens_child() {
-    let state = DisposableState::new();
-    let listener = UnixListener::bind(state.socket()).unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
-    let mut attachment = factory
-        .open(
-            ProviderHandle::for_account("test"),
-            options(&state),
-            Shutdown::default(),
-        )
-        .await
-        .unwrap();
-    let (socket, _) = listener.accept().await.unwrap();
-    let mut peer = Peer(BufReader::new(socket));
-    peer.read().await.unwrap();
-    peer.send(json!({"ok":true})).await;
-    let status = peer.request("status").await;
-    peer.error(&status, "status probe failed").await;
-    assert!(attachment.completion().await.result.is_err());
-    assert!(peer.read().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let listener = UnixListener::bind(state.socket()).unwrap();
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let mut attachment = factory
+            .open(
+                ProviderHandle::for_account("test"),
+                options(&state),
+                Shutdown::default(),
+            )
+            .await
+            .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut peer = Peer(BufReader::new(socket));
+        peer.read().await.unwrap();
+        peer.send(json!({"ok":true})).await;
+        let status = peer.request("status").await;
+        peer.error(&status, "status probe failed").await;
+        assert!(attachment.completion().await.result.is_err());
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn unverifiable_retained_child_refused_before_open() {
+    watchdog(async {
     let state = DisposableState::new();
     let listener = UnixListener::bind(state.socket()).unwrap();
     let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -375,53 +400,60 @@ async fn unverifiable_retained_child_refused_before_open() {
         Err(AdapterError::UnverifiableChild)
     ));
     assert!(peer.read().await.is_none());
+    }).await;
 }
 
 #[tokio::test]
 async fn shutdown_completes_with_full_commands_and_outstanding_sender_permit() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    peer.request("next").await; // Task is inside a cancellable RPC.
-    let sender = attachment.commands.clone();
-    let reserved = sender.reserve().await.unwrap();
-    let mut receipts = Vec::new();
-    for _ in 1..LANE_CAPACITY {
-        let (ack, receipt) = AdapterCommand::ack(EventCursor(0));
-        attachment
-            .commands
-            .send(ack)
-            .await
-            .unwrap_or_else(|_| panic!("closed"));
-        receipts.push(receipt);
-    }
-    assert_eq!(attachment.commands.capacity(), 0);
-    attachment.shutdown().await;
-    for receipt in receipts {
-        assert!(matches!(receipt.receive().await, CommandReceipt::NotSent));
-    }
-    drop(reserved);
-    assert!(peer.read().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        peer.request("next").await; // Task is inside a cancellable RPC.
+        let sender = attachment.commands.clone();
+        let reserved = sender.reserve().await.unwrap();
+        let mut receipts = Vec::new();
+        for _ in 1..LANE_CAPACITY {
+            let (ack, receipt) = AdapterCommand::ack(EventCursor(0));
+            attachment
+                .commands
+                .send(ack)
+                .await
+                .unwrap_or_else(|_| panic!("closed"));
+            receipts.push(receipt);
+        }
+        assert_eq!(attachment.commands.capacity(), 0);
+        attachment.shutdown().await;
+        for receipt in receipts {
+            assert!(matches!(receipt.receive().await, CommandReceipt::NotSent));
+        }
+        drop(reserved);
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn cancelling_shutdown_future_keeps_owned_join_handle() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    peer.request("next").await;
-    // Poll completion while actor is blocked in RPC, then discard that wait.
-    let mut completion = Box::pin(attachment.completion());
-    assert!(
-        std::future::poll_fn(|cx| std::task::Poll::Ready(
-            completion.as_mut().poll(cx).is_pending()
-        ))
-        .await
-    );
-    drop(completion);
-    assert!(matches!(
-        attachment.shutdown().await.result,
-        Err(AdapterError::Cancelled)
-    ));
-    assert!(peer.read().await.is_none());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        peer.request("next").await;
+        // Poll completion while actor is blocked in RPC, then discard that wait.
+        let mut completion = Box::pin(attachment.completion());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                completion.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        drop(completion);
+        assert!(matches!(
+            attachment.shutdown().await.result,
+            Err(AdapterError::Cancelled)
+        ));
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 async fn real_info(attachment: &mut ProviderAttachment) -> AttachmentInfo {
@@ -451,6 +483,7 @@ async fn real_write(
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn real_supervisor_incomplete_initialization_recovers_same_child_and_replays_after_ack() {
+    watchdog(async {
     let state = DisposableState::new();
     let python = python_executable();
     let mut supervisor = SupervisorProcess::start(&state, &python);
@@ -600,97 +633,108 @@ for line in sys.stdin:
         }
     ));
     assert!(third.shutdown().await.recovery_needed.is_none());
+    }).await;
 }
 
 #[tokio::test]
 async fn lost_ack_receipt_is_unknown_and_does_not_retry() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    peer.next_event(0, 1, "stderr", json!({"data":"diagnostic"}))
-        .await;
-    attachment.journal.recv().await.unwrap();
-    let next = peer.request("next").await;
-    let (command, receipt) = AdapterCommand::ack(EventCursor(1));
-    attachment
-        .commands
-        .send(command)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    peer.result(&next, empty()).await;
-    let ack = peer.request("ack").await;
-    assert_eq!(ack["sequence"], 1);
-    drop(peer);
-    assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
-    assert!(attachment.completion().await.result.is_err());
-    assert!(attachment.commands.is_closed());
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        peer.next_event(0, 1, "stderr", json!({"data":"diagnostic"}))
+            .await;
+        attachment.journal.recv().await.unwrap();
+        let next = peer.request("next").await;
+        let (command, receipt) = AdapterCommand::ack(EventCursor(1));
+        attachment
+            .commands
+            .send(command)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        peer.result(&next, empty()).await;
+        let ack = peer.request("ack").await;
+        assert_eq!(ack["sequence"], 1);
+        drop(peer);
+        assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
+        assert!(attachment.completion().await.result.is_err());
+        assert!(attachment.commands.is_closed());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn caller_losing_write_receipt_closes_attachment() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    let next = peer.request("next").await;
-    let (command, receipt) = write("caller:lost", json!({"method":"notice"}));
-    attachment
-        .commands
-        .send(command)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    peer.result(&next, empty()).await;
-    let written = peer.request("write").await;
-    drop(receipt);
-    peer.result(
-        &written,
-        json!({"accepted":true,"duplicate":false,"remoteId":null,"durableMs":0}),
-    )
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        let next = peer.request("next").await;
+        let (command, receipt) = write("caller:lost", json!({"method":"notice"}));
+        attachment
+            .commands
+            .send(command)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        peer.result(&next, empty()).await;
+        let written = peer.request("write").await;
+        drop(receipt);
+        peer.result(
+            &written,
+            json!({"accepted":true,"duplicate":false,"remoteId":null,"durableMs":0}),
+        )
+        .await;
+        assert!(attachment.completion().await.result.is_err());
+        assert!(peer.read().await.is_none());
+    })
     .await;
-    assert!(attachment.completion().await.result.is_err());
-    assert!(peer.read().await.is_none());
 }
 
 #[tokio::test]
 async fn shutdown_after_initialize_reply_before_initialized_receipt_reports_recovery() {
-    let state = DisposableState::new();
-    let (mut attachment, mut peer) = open_peer(&state).await;
-    let next = peer.request("next").await;
-    let (command, receipt) = write("caller:init", json!({"id":1,"method":"initialize"}));
-    attachment
-        .commands
-        .send(command)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    peer.result(&next, empty()).await;
-    let written = peer.request("write").await;
-    peer.result(
-        &written,
-        json!({"accepted":true,"duplicate":false,"remoteId":1,"durableMs":0}),
-    )
-    .await;
-    receipt.receive().await;
-    peer.next_event(0, 1, "stdout", json!({"id":1,"result":{}}))
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        let next = peer.request("next").await;
+        let (command, receipt) = write("caller:init", json!({"id":1,"method":"initialize"}));
+        attachment
+            .commands
+            .send(command)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        peer.result(&next, empty()).await;
+        let written = peer.request("write").await;
+        peer.result(
+            &written,
+            json!({"accepted":true,"duplicate":false,"remoteId":1,"durableMs":0}),
+        )
         .await;
-    attachment.journal.recv().await.unwrap();
-    let next = peer.request("next").await;
-    let (command, receipt) = write("initialized:account:test", json!({"method":"initialized"}));
-    attachment
-        .commands
-        .send(command)
-        .await
-        .unwrap_or_else(|_| panic!("closed"));
-    peer.result(&next, empty()).await;
-    peer.request("write").await; // Receipt deliberately held.
-    let exit = attachment.shutdown().await;
-    assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
-    assert_eq!(
-        exit.recovery_needed.unwrap().phase,
-        InitializationStatus::InitializedWritePending
-    );
-    assert!(peer.read().await.is_none());
+        receipt.receive().await;
+        peer.next_event(0, 1, "stdout", json!({"id":1,"result":{}}))
+            .await;
+        attachment.journal.recv().await.unwrap();
+        let next = peer.request("next").await;
+        let (command, receipt) = write("initialized:account:test", json!({"method":"initialized"}));
+        attachment
+            .commands
+            .send(command)
+            .await
+            .unwrap_or_else(|_| panic!("closed"));
+        peer.result(&next, empty()).await;
+        peer.request("write").await; // Receipt deliberately held.
+        let exit = attachment.shutdown().await;
+        assert!(matches!(receipt.receive().await, CommandReceipt::Unknown));
+        assert_eq!(
+            exit.recovery_needed.unwrap().phase,
+            InitializationStatus::InitializedWritePending
+        );
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn full_unix_connect_backlog_fails_closed_without_reconnect_or_stranded_task() {
+    watchdog(async {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
     struct ListenerChild(std::process::Child);
@@ -728,42 +772,47 @@ async fn full_unix_connect_backlog_fails_closed_without_reconnect_or_stranded_ta
     );
     assert!(exit.recovery_needed.is_none());
     assert!(attachment.commands.is_closed());
+    }).await;
 }
 
 #[cfg(not(target_os = "linux"))]
 #[tokio::test]
 async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
-    let state = DisposableState::new();
-    let listener = UnixListener::bind(state.socket()).unwrap();
-    let factory = SupervisorProviderTaskFactory::new(state.identity());
-    let mut attachment = factory
-        .open(
-            ProviderHandle::for_account("test"),
-            options(&state),
-            Shutdown::default(),
+    watchdog(async {
+        let state = DisposableState::new();
+        let listener = UnixListener::bind(state.socket()).unwrap();
+        let factory = SupervisorProviderTaskFactory::new(state.identity());
+        let mut attachment = factory
+            .open(
+                ProviderHandle::for_account("test"),
+                options(&state),
+                Shutdown::default(),
+            )
+            .await
+            .unwrap();
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut peer = Peer(BufReader::new(socket));
+        peer.read().await.unwrap();
+        peer.send(json!({"ok":true})).await;
+        let request = peer.request("status").await;
+        peer.result(
+            &request,
+            json!({"pid":123,"sequence":0,"acknowledged":0,"returnCode":0,"backpressure":false}),
         )
-        .await
-        .unwrap();
-    let (socket, _) = listener.accept().await.unwrap();
-    let mut peer = Peer(BufReader::new(socket));
-    peer.read().await.unwrap();
-    peer.send(json!({"ok":true})).await;
-    let request = peer.request("status").await;
-    peer.result(
-        &request,
-        json!({"pid":123,"sequence":0,"acknowledged":0,"returnCode":0,"backpressure":false}),
-    )
+        .await;
+        assert!(matches!(
+            attachment.completion().await.result,
+            Err(AdapterError::UnverifiableChild)
+        ));
+        assert!(peer.read().await.is_none());
+    })
     .await;
-    assert!(matches!(
-        attachment.completion().await.result,
-        Err(AdapterError::UnverifiableChild)
-    ));
-    assert!(peer.read().await.is_none());
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
+    watchdog(async {
     let state = DisposableState::new();
     let python = python_executable();
     let mut supervisor = SupervisorProcess::start(&state, &python);
@@ -844,11 +893,13 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
         std::future::poll_fn(|cx| std::task::Poll::Ready(accept.as_mut().poll(cx).is_pending()))
             .await
     );
+    }).await;
 }
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn initialized_identity_is_scoped_to_real_child_generation() {
+    watchdog(async {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let state = DisposableState::new();
         let python = python_executable();
@@ -890,10 +941,12 @@ async fn initialized_identity_is_scoped_to_real_child_generation() {
         assert_eq!(second.status.borrow().initialization,InitializationStatus::Ready);
         assert!(second.shutdown().await.recovery_needed.is_none());
     }).await.expect("review probe exceeded watchdog");
+    }).await;
 }
 
 #[tokio::test]
 async fn terminal_eof_serves_already_queued_final_ack_before_completion() {
+    watchdog(async {
     let state = DisposableState::new();
     let (mut attachment, mut peer) = open_peer(&state).await;
     peer.next_event(0, 1, "exit", json!({"returnCode":0})).await;
@@ -915,4 +968,11 @@ async fn terminal_eof_serves_already_queued_final_ack_before_completion() {
     ));
     assert!(attachment.completion().await.result.is_ok());
     assert!(peer.read().await.is_none());
+    }).await;
+}
+
+async fn watchdog<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(15), future)
+        .await
+        .expect("adapter integration exceeded local watchdog")
 }
