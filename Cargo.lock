@@ -1464,6 +1464,7 @@ dependencies = [
 name = "studio-runtime-services"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "getrandom",
  "jsonschema",
  "mime_guess",
@@ -1475,6 +1476,7 @@ dependencies = [
  "studio-runtime-providers",
  "studio-runtime-store",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

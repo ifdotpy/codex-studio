@@ -2,11 +2,12 @@
 name = "studio-runtime-services"
 version.workspace = true
 edition.workspace = true
-description = "Synchronous application services of the Codex Studio runtime"
+description = "Application services of the Codex Studio runtime"
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+futures-util.workspace = true
 getrandom = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -16,10 +17,12 @@ studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }
 studio-runtime-store = { path = "../runtime-store" }
 thiserror = { workspace = true }
+tokio.workspace = true
 jsonschema = { version = "=0.49.9", default-features = false }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
