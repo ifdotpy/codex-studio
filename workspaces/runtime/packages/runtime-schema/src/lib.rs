@@ -19,6 +19,9 @@ const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-recor
 const PLAN_RECORD_URI: &str = "https://codex-studio.invalid/persisted-plan-record.schema.json";
 const ANNOTATION_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-annotation-record.schema.json";
+const RECOVERY_AGENT_URI: &str = "https://codex-studio.invalid/recovery-agent-record.schema.json";
+const RECOVERY_RECEIPT_URI: &str = "https://codex-studio.invalid/recovery-tool-receipt.schema.json";
+const RECOVERY_TASK_URI: &str = "https://codex-studio.invalid/recovery-task-record.schema.json";
 const REQUEST_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-request-record.schema.json";
 const COMPLAINT_RECORD_URI: &str =
@@ -49,6 +52,9 @@ const AGENT_RECORD: &[u8] = include_bytes!("schemas/persisted-agent-record.schem
 const TASK_RECORD: &[u8] = include_bytes!("schemas/persisted-task-record.schema.json");
 const PLAN_RECORD: &[u8] = include_bytes!("schemas/persisted-plan-record.schema.json");
 const ANNOTATION_RECORD: &[u8] = include_bytes!("schemas/persisted-annotation-record.schema.json");
+const RECOVERY_AGENT: &[u8] = include_bytes!("schemas/recovery-agent-record.schema.json");
+const RECOVERY_RECEIPT: &[u8] = include_bytes!("schemas/recovery-tool-receipt.schema.json");
+const RECOVERY_TASK: &[u8] = include_bytes!("schemas/recovery-task-record.schema.json");
 const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.schema.json");
 const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
 const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
@@ -110,6 +116,9 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         "https://codex-studio.invalid/persisted-budget-usage.schema.json",
         include_bytes!("schemas/persisted-budget-usage.schema.json"),
     ),
+    (RECOVERY_AGENT_URI, RECOVERY_AGENT),
+    (RECOVERY_RECEIPT_URI, RECOVERY_RECEIPT),
+    (RECOVERY_TASK_URI, RECOVERY_TASK),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
@@ -260,6 +269,9 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
+        ("RecoveryAgentRecord", RECOVERY_AGENT_URI),
+        ("RecoveryTaskRecord", RECOVERY_TASK_URI),
+        ("RecoveryToolReceipt", RECOVERY_RECEIPT_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedTaskRecord", TASK_RECORD_URI),
