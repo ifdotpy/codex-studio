@@ -109,4 +109,8 @@ cases.append(run('cancel-followup','cancel',op,agents))
 op, agents = base('blocked'); op['members']={'z':dict(op['members']['lead'],error='z reason'),'a':dict(op['members']['lead'],phase='left',reason='a reason')}
 agents += [dict(agents[0],id='z',isLead=False),dict(agents[0],id='a',isLead=False)]
 cases.append(run('member-order','finish_history',op,agents))
+# Python can preserve truthy legacy values in extensible runtime_agents fields.
+op, agents = base('waiting')
+agents[0]['deletedAt'] = True
+cases.append(run('legacy-deleted-at-truthy','restart',op,agents))
 print(json.dumps(cases, ensure_ascii=False, allow_nan=False))

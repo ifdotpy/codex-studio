@@ -283,3 +283,74 @@ fn selection_holds_pending_resume_without_changing_agent() {
         agent
     );
 }
+
+#[test]
+fn python_written_legacy_truthy_deleted_at_row_is_readable() {
+    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let output = Command::new(python)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
+        .output()
+        .expect("oracle starts");
+    assert!(output.status.success());
+    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle cases");
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "legacy-deleted-at-truthy")
+        .expect("Python writes the legacy row");
+    let row = case["agents"][0][1].as_str().expect("raw agent row");
+    assert_eq!(
+        serde_json::from_str::<Value>(row).expect("JSON row")["deletedAt"],
+        true
+    );
+    let snapshot = read(case);
+    assert_eq!(
+        snapshot
+            .decide(Transition::Restart)
+            .expect("recovery")
+            .operation["members"]["lead"]["phase"],
+        "waiting"
+    );
+    studio_runtime_services::account_selection::SelectionSnapshot::read(row)
+        .expect("selection accepts table-schema extension");
+}
+
+#[test]
+fn retry_only_resets_blocked_members() {
+    let (mut op, agent, _) = fixture();
+    op["members"]["a"]["phase"] = json!("ready");
+    let result = snapshot(&op, &agent)
+        .decide(Transition::Action(Action::Retry))
+        .expect("retry");
+    assert_eq!(result.operation["members"]["a"]["phase"], "ready");
+}
+
+#[test]
+fn cancel_refuses_unresolved_interrupt() {
+    let (mut op, agent, _) = fixture();
+    op["members"]["a"]["interruptSubmittedAt"] = json!(4.0);
+    op["members"]["a"]["interruptOutcome"] = json!("unknown");
+    let error = match snapshot(&op, &agent).decide(Transition::Action(Action::Cancel)) {
+        Err(error) => error,
+        Ok(_) => panic!("unresolved interrupt hold"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "Retry the unresolved turn interruption before cancelling this transfer"
+    );
+}
+
+#[test]
+fn cancel_refuses_acknowledged_interrupt_while_turn_is_active() {
+    let (mut op, mut agent, _) = fixture();
+    op["members"]["a"]["interruptSubmittedAt"] = json!(4.0);
+    op["members"]["a"]["interruptOutcome"] = json!("acknowledged");
+    agent["inFlight"] = json!(true);
+    let error = match snapshot(&op, &agent).decide(Transition::Action(Action::Cancel)) {
+        Err(error) => error,
+        Ok(_) => panic!("active interruption hold"),
+    };
+    assert_eq!(
+        error.to_string(),
+        "Wait for the active turn interruption to finish before cancelling this transfer"
+    );
+}
