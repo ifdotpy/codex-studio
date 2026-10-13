@@ -257,18 +257,12 @@ pub fn ui_summary(
     let mut projects = Vec::new();
     for project in rows("project").iter().filter(|p| truthy(p.get("path"))) {
         let mut p = json!({});
-        for key in [
-            "id",
-            "homeServerId",
-            "locations",
-            "projectAliases",
-            "path",
-            "name",
-        ] {
-            if let Some(v) = project.get(key) {
-                p[key] = v.clone();
-            }
-        }
+        copy_fields(
+            &mut p,
+            project,
+            "id homeServerId locations projectAliases path name",
+            false,
+        );
         if let Some(index) = projects.iter().position(|v: &Value| v["path"] == p["path"]) {
             projects[index] = p;
         } else {
@@ -303,55 +297,49 @@ pub fn ui_summary(
                 ensure_project(&mut projects, path);
             }
             let mut chat = json!({"id":id,"name":fallback(agent,"name","Chat"),"path":path,"archived":truthy(agent.get("archived")),"status":fallback(agent,"status",""),"unread":unread.contains(id),"inFlight":truthy(agent.get("inFlight")),"pinned":truthy(agent.get("pinned")),"team":team_members.contains(id)});
-            for key in [
-                "serverId",
-                "projectId",
-                "projectServerId",
-                "provider",
-                "created",
-                "updated",
-            ] {
-                chat[key] = agent[key].clone();
-            }
+            copy_fields(
+                &mut chat,
+                agent,
+                "serverId projectId projectServerId provider created updated",
+                true,
+            );
             chats.push(chat);
         }
         if !truthy(agent.get("isLead")) || truthy(agent.get("inFlight")) {
             continue;
         }
         let turn = fallback(agent, "lastCompletedTurn", "");
-        if agent["status"] == "completed"
+        let stopped = matches!(agent["status"].as_str(), Some("failed" | "interrupted"));
+        let completed = agent["status"] == "completed"
             && !turn.is_empty()
-            && agent["lastCompletedTurnStatus"] == "completed"
-        {
-            alert(
-                &mut alerts,
-                format!("completed:{id}:{turn}"),
+            && agent["lastCompletedTurnStatus"] == "completed";
+        if stopped || completed {
+            let (kind, title) = if stopped {
+                ("failed", "Work stopped")
+            } else {
+                ("completed", "Reply ready")
+            };
+            let body = if stopped {
+                agent["error"]
+                    .get("message")
+                    .unwrap_or(&agent["error"])
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Open the chat to check the error.")
+            } else {
+                fallback(agent, "tail", "Open the chat to read the reply.")
+            };
+            let turn = fallback(
                 agent,
-                "Reply ready",
-                fallback(agent, "tail", "Open the chat to read the reply."),
-                None,
+                "lastCompletedTurn",
+                fallback(agent, "turnId", fallback(agent, "status", "")),
             );
-        }
-        if matches!(agent["status"].as_str(), Some("failed" | "interrupted")) {
-            let error = agent["error"]
-                .get("message")
-                .unwrap_or(&agent["error"])
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("Open the chat to check the error.");
             alert(
                 &mut alerts,
-                format!(
-                    "failed:{id}:{}",
-                    fallback(
-                        agent,
-                        "lastCompletedTurn",
-                        fallback(agent, "turnId", fallback(agent, "status", ""))
-                    )
-                ),
+                format!("{kind}:{id}:{turn}"),
                 agent,
-                "Work stopped",
-                error,
+                title,
+                body,
                 None,
             );
         }
@@ -414,6 +402,13 @@ pub fn ui_summary(
     result["chats"] = json!(chats);
     result["alerts"] = json!(alerts);
     Ok(result)
+}
+fn copy_fields(target: &mut Value, source: &Value, keys: &str, include_missing: bool) {
+    for key in keys.split_whitespace() {
+        if include_missing || source.get(key).is_some() {
+            target[key] = source[key].clone();
+        }
+    }
 }
 fn fallback<'a>(value: &'a Value, key: &str, default: &'a str) -> &'a str {
     value[key]

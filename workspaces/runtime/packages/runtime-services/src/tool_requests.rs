@@ -176,12 +176,33 @@ fn refresh(
     if terminal(record) {
         return Ok(());
     }
-    // Project-location receipts require their own durable reconciliation service.
-    if matches!(
-        text(record, "tool"),
-        "orchestration_move" | "orchestration_teleport"
-    ) {
-        return Err(ToolRequestError::RequiresDependency(MOVE));
+    if record["tool"] == "orchestration_servers"
+        && record["outcome"] == "unknown"
+        && records::exists(tx, "runtime_server_outbox")?
+    {
+        let key = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!(
+                "studio-cross-server:project-location:{}:{}",
+                text(record, "agent"),
+                text(record, "id")
+            )
+            .as_bytes(),
+        );
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_server_outbox WHERE id=?1)",
+            [key.to_string()],
+            |r| r.get::<_, bool>(0),
+        )? {
+            records::validate(
+                "runtime_server_outbox",
+                &key.to_string(),
+                json!({"id":key.to_string()}),
+            )?;
+            return Err(ToolRequestError::RequiresDependency(
+                "multi-server/project-location-receipt",
+            ));
+        }
     }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
     if saved
@@ -190,18 +211,23 @@ fn refresh(
     {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    let Some(mut result) =
-        saved.or_else(|| record.get("result").filter(|r| r.is_object()).cloned())
+    let Some(result) = saved
+        .map(|mut result| {
+            expire(&mut result, now);
+            result
+        })
+        .or_else(|| record.get("result").filter(|r| r.is_object()).cloned())
     else {
         return Ok(());
     };
-    if specific {
-        expire(&mut result, now);
-    }
     let committed = operation_result(tx, text(record, "id"))?.is_some();
     if lifecycle::settle(record, &result, committed)? {
         record["result"] = result;
         record["updated"] = json!(now);
+        if record.get("timing").is_none() {
+            record["timing"] = json!({});
+        }
+        record["timing"]["handlerEndedAt"] = json!(crate::event_write::monotonic_ns());
         if record.get("finished").is_none() {
             record["finished"] = json!(now);
         }

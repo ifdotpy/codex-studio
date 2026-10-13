@@ -143,14 +143,20 @@ class AgentChatHTTPContract(TimedHTTPContractTest,unittest.TestCase):
                 self.assertEqual(json.loads(payload)["value"],expected)
             else:self.assertTrue(deleted)
             before=snapshot(self.backend.state / "canvas.sqlite3")
-            replay=self.backend.request("POST","/api/room/delete",body={"id":room},headers=self.headers())
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as observer:
+                version=observer.execute("PRAGMA data_version").fetchone()[0]
+                replay=self.backend.request("POST","/api/room/delete",body={"id":room},headers=self.headers())
+                if self.rust_backend:
+                    self.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0],version)
             self.assertEqual(replay.status,200,replay.body)
             self.assertEqual(snapshot(self.backend.state / "canvas.sqlite3"),before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),"strict stored-state refusal")
     def test_corrupt_delivery_and_room_fail_with_identity_without_writes(self):
-        for table,key,column,value,url in (("runtime_chat_messages","ordered-3","deliveries",json.dumps({"recipient":4}),"/api/agent-chat?room=ordered"),("runtime_rooms","ordered","record","[]","/api/agent-chat?room=ordered")):
+        for table,key,column,value,url in (("runtime_chat_messages","ordered-3","deliveries",json.dumps({"recipient":4}),"/api/agent-chat?room=ordered"),("runtime_rooms","ordered","record","[]","/api/agent-chat?room=ordered"),("runtime_events","merged","status","invalid","/api/messages/receipts?"+urlencode({"agent":self.agents[0],"ids":json.dumps(["merged"])}))):
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                from codex_sync_entities import register_functions
+                register_functions(db)
                 original=db.execute(f"SELECT {column} FROM {table} WHERE id=?",(key,)).fetchone()[0]
                 db.execute(f"UPDATE {table} SET {column}=? WHERE id=?",(value,key))
             before=snapshot(self.backend.state / "canvas.sqlite3")
@@ -158,8 +164,26 @@ class AgentChatHTTPContract(TimedHTTPContractTest,unittest.TestCase):
             self.assertEqual(response.status,500,response.body)
             self.assertIn(f"{table}/{key}",response.json()["error"])
             self.assertEqual(snapshot(self.backend.state / "canvas.sqlite3"),before)
-            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:db.execute(f"UPDATE {table} SET {column}=? WHERE id=?",(original,key))
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                register_functions(db)
+                db.execute(f"UPDATE {table} SET {column}=? WHERE id=?",(original,key))
 
+
+    def test_unnamed_remote_participants_keep_expanded_id_sender_name(self):
+        path=self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as db:
+            original=db.execute("SELECT record FROM runtime_federation_rooms WHERE id='federated'").fetchone()[0]
+        try:
+            for person in ({"id":"other"},{"id":"other","name":""}):
+                record=json.loads(original); record["remoteMembers"]=[person]
+                with sqlite3.connect(path) as db:
+                    db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id='federated'",(json.dumps(record),))
+                response=self.backend.request("GET","/api/agent-chat?room=federated",headers=self.headers())
+                self.assertEqual(response.status,200,response.body)
+                self.assertTrue(response.json()["messages"])
+                self.assertTrue(all(m["senderName"]=="remote:peer:other" for m in response.json()["messages"]))
+        finally:
+            with sqlite3.connect(path) as db:db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id='federated'",(original,))
 
     def test_peer_assignment_is_removed_and_revoked_federation_is_tombstoned(self):
         path=self.backend.state / "canvas.sqlite3"
