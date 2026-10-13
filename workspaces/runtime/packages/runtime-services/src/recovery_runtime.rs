@@ -104,12 +104,6 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
         }
         let receipt = self.port.request(scope, method, params, deadline)?;
         self.ready(scope, deadline)?;
-        if receipt.body.to_string().len() > crate::recovery_history::MAX_RESPONSE_BYTES {
-            return Err(HistoryError::Capacity);
-        }
-        if receipt.scope != *scope {
-            return Err(HistoryError::Identity);
-        }
         Ok(receipt)
     }
     fn barrier(&mut self, scope: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError> {
@@ -174,6 +168,9 @@ impl RecoveryJob {
 
 /// Cursor alternates agent and task pages, so neither a large account nor a
 /// permanently held task can starve later rows. It is disposable pacing state.
+/// Each load examines at most 32 rows and hands off at most one eligible row;
+/// unread rows stay after the cursor regardless of the scan's backoff eviction.
+/// The account owner loads again only when its prior recovery has finished.
 #[derive(Default)]
 pub struct RecoveryCursor {
     agents: String,
@@ -188,7 +185,7 @@ pub fn load_recovery_jobs(
     let db = store.read()?;
     let mut jobs = Vec::new();
     if cursor.task_page {
-        let mut stmt=db.prepare("SELECT t.id,t.record,a.record FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
+        let mut stmt=db.prepare("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.tasks, MAX_SCAN_JOBS as i64],
@@ -197,25 +194,29 @@ pub fn load_recovery_jobs(
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
                     ))
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
         let full = rows.len() == MAX_SCAN_JOBS;
-        for (id, task, agent) in rows {
+        for (id, task, agent, agent_id) in rows {
             let task: Value =
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
-            let agent: Value =
-                serde_json::from_str(&agent).map_err(|_| invalid_record("runtime_agents", &id))?;
+            let agent: Value = serde_json::from_str(&agent)
+                .map_err(|_| invalid_record("runtime_agents", &agent_id))?;
             let (aliases, receipts) =
                 crate::task_recovery_store::receipt_state(&db, &agent, &task)?;
-            let snapshot = TaskRecoverySnapshot::from_records(agent, task, aliases, receipts)?;
+            let snapshot = TaskRecoverySnapshot::from_stored_records(
+                &agent_id, &id, agent, task, aliases, receipts,
+            )?;
             cursor.tasks = id;
             if snapshot.agent().eligibility().task_owner {
                 jobs.push(RecoveryJob::Task(snapshot));
+                break;
             }
         }
-        if !full {
+        if jobs.is_empty() && !full {
             cursor.tasks.clear();
         }
     } else {
@@ -230,7 +231,8 @@ pub fn load_recovery_jobs(
         for (id, raw) in rows {
             let snapshot = RecoverySnapshot::from_record(
                 serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?,
-            )?;
+            )
+            .map_err(|_| invalid_record("runtime_agents", &id))?;
             let e = snapshot.eligibility();
             cursor.agents = id;
             if e.connection {
@@ -238,12 +240,14 @@ pub fn load_recovery_jobs(
                     snapshot,
                     automatic: true,
                 });
+                break;
             } else if e.unconfirmed_start || e.orphan_busy || snapshot.record()["inFlight"] == true
             {
                 jobs.push(RecoveryJob::Turn(snapshot));
+                break;
             }
         }
-        if !full {
+        if jobs.is_empty() && !full {
             cursor.agents.clear();
         }
     }

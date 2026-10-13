@@ -7,7 +7,7 @@ import copy
 import json
 import sqlite3
 import threading
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 from codex_runtime import Runtime as ProductionRuntime
@@ -32,9 +32,8 @@ class Runtime:
     def worker_continuation_pending(self, agent): return False
 
 
-def notification_counter():
-    # Real notification/scheduler terminal path and Python row writer; only
-    # unrelated analytics, parent delivery and account timers are inert.
+@contextmanager
+def database():
     from codex_sync_entities import register_functions
     schema_path = Path(__file__).resolve().parents[3] / "runtime-store/tests/fixtures/live-state-schema.json"
     schema = json.loads(schema_path.read_text())["canvas.sqlite3"]["sqlite_master"]
@@ -49,6 +48,11 @@ def notification_counter():
         db.execute("INSERT INTO runtime_scheduler_agent_change_state VALUES (1,0,0,0,0)")
         rootpage = db.execute("SELECT rootpage FROM sqlite_master WHERE name='runtime_items'").fetchone()[0]
         db.execute("INSERT INTO runtime_turn_item_link_state_v1 VALUES (1,'fixture',?,NULL,NULL,1,0,0,0)", (rootpage,))
+        yield db
+
+
+def notification_counter():
+    with database() as db:
         before = dict(id="agent", rootId="agent", epoch=0, status="running", provider="codex", accountKey="default", threadId="thread", turnId="turn", turnEpoch=0, inFlight=True, autoWake=True, events=7,
                       startAttempt=dict(id="attempt", epoch=0, accountKey="default", threadId="thread", turnId="turn", submitted=True, events=["event"]))
         exec(statement, dict(db=db, table="agents", record=before, json=json))
@@ -62,6 +66,28 @@ def notification_counter():
         assert after["events"] == 8 and after["status"] == "completed"
         assert after["startAttempt"]["events"] == ["event"]
         return after
+
+
+def accepted_start():
+    with database() as db:
+        attempt = dict(id="attempt", epoch=0, accountKey="default", threadId="thread", connectionId="connection", connectionGeneration=1, submitted=True, events=["event"], created=1.0)
+        before = dict(id="agent", rootId="agent", epoch=0, status="running", provider="codex", accountKey="default", threadId="thread", turnId=None, turnEpoch=0, inFlight=True, autoWake=True, events=0,
+                      error="turn/start response timed out; outcome unknown", startAttempt=attempt)
+        exec(statement, dict(db=db, table="agents", record=before, json=json))
+        db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)")
+        runtime = Runtime(db, object())
+        runtime.operation_current = ProductionRuntime.operation_current.__get__(runtime)
+        runtime.bind_start = ProductionRuntime.bind_start.__get__(runtime)
+        runtime.sync_chat_delivery = ProductionRuntime.sync_chat_delivery
+        runtime.mark_event_timing = ProductionRuntime.mark_event_timing.__get__(runtime)
+        runtime.mark_event_timings = ProductionRuntime.mark_event_timings.__get__(runtime)
+        runtime.capacity_started = lambda *args: None
+        runtime._stage_event_resources = lambda *args: None
+        turn = dict(id="turn",status="inProgress",items=[dict(id="input",type="userMessage",clientId="event")])
+        ProductionRuntime.start_accepted(runtime,"agent",attempt,dict(turn=turn))
+        return dict(before=before,turn=turn,after=runtime.agent("agent"),
+                    events=[dict(row) for row in db.execute("SELECT * FROM runtime_events ORDER BY id")],
+                    items=[json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_items ORDER BY id")])
 
 
 def corpus():
@@ -102,6 +128,6 @@ def corpus():
                     row = dict(id="operation",agent="agent",turnId=scope,status=state,stage=state,outcome=state)
                     exec(statement,dict(db=db,table=table,record=row,json=json))
                     unresolved.append(dict(table=table,record=row,expected=connection.unresolved_turn_receipts(db,base,"turn")))
-    return dict(connection=cases,unresolved=unresolved,notification_counter=notification_counter())
+    return dict(connection=cases,unresolved=unresolved,notification_counter=notification_counter(),accepted_start=accepted_start())
 
 if __name__ == "__main__": print(json.dumps(corpus()))

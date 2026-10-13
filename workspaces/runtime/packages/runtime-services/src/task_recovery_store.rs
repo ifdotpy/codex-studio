@@ -182,9 +182,15 @@ pub(crate) fn receipt_state(
         )
         .optional()?;
     let rows = row
-        .map(|(key, raw)| serde_json::from_str(&raw).map(|v| (key, v)))
-        .transpose()
-        .map_err(|_| RecoveryError::CommitFailed)?
+        .map(|(key, raw)| {
+            serde_json::from_str(&raw)
+                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_tool_requests",
+                    id: key.clone(),
+                })
+                .map(|v| (key, v))
+        })
+        .transpose()?
         .into_iter()
         .collect::<Vec<_>>();
     Ok((aliases, rows))
@@ -307,6 +313,10 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter<'_> {
 /// Inline receipts are complete on this base. Blob references need the payload
 /// owner's resolver; silently returning their preview would lose task output.
 pub fn resolve_inline_receipt(receipt: &Value) -> Result<Value, RecoveryError> {
+    let invalid = || studio_runtime_store::StoreError::InvalidStoredObject {
+        table: "runtime_tool_requests",
+        id: receipt["id"].as_str().unwrap_or("<missing>").into(),
+    };
     if crate::event_write::truthy(receipt.get("_payloadBlobs"))
         || crate::event_write::truthy(receipt["result"].get("_payloadBlobs"))
     {
@@ -314,10 +324,8 @@ pub fn resolve_inline_receipt(receipt: &Value) -> Result<Value, RecoveryError> {
             "payload-store/tool-request-recovery",
         ));
     }
-    if !studio_runtime_schema::validate("RecoveryToolReceipt", receipt)
-        .map_err(|_| RecoveryError::CommitFailed)?
-    {
-        return Err(RecoveryError::CommitFailed);
+    if !studio_runtime_schema::validate("RecoveryToolReceipt", receipt).map_err(|_| invalid())? {
+        return Err(invalid().into());
     }
     Ok(receipt.clone())
 }

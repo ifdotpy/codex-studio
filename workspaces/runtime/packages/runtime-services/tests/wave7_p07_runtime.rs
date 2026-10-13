@@ -136,6 +136,28 @@ impl RecoveryDelivery for RootDelivery {
         }
     }
 }
+// The canonical message owner is injected on integration; this double asserts
+// routing and returns agent changes, never constructs a parallel transcript.
+fn mock_message(
+    _: &Transaction<'_>,
+    agent: &mut Value,
+    account: &str,
+    generation: u64,
+    turn: &Value,
+    item: &Value,
+    _: f64,
+) -> Result<
+    Option<studio_runtime_services::notification_dispatch::NotificationStreamBuffer>,
+    studio_runtime_services::notification_dispatch::NotificationDispatchError,
+> {
+    assert_eq!(account, "default");
+    assert_eq!(generation, 1);
+    assert_eq!(agent["turnId"], turn["id"]);
+    assert_eq!(item["type"], "agentMessage");
+    agent["events"] = json!(agent["events"].as_u64().unwrap_or(0) + 1);
+    agent["lastAnswer"] = item["text"].clone();
+    Ok(None)
+}
 fn apply(
     store: &RuntimeStore,
     before: &Value,
@@ -146,6 +168,8 @@ fn apply(
     let mut completion = LifecycleCompletionWriter {
         at: 1000.,
         delivery: &mut delivery,
+        write_message: &mut mock_message,
+        stream_update: None,
     };
     RecoveryStore {
         store,
@@ -387,11 +411,9 @@ fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         };
         let mut reader = RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe)
             .expect("reader");
-        let result = reader.read(
-            &scope(),
+        let result = HistoryRead::new(&mut reader, scope(), deadline).call(
             HistoryMethod::Turns,
             json!({"threadId":if scenario=="thread"{"foreign"}else{"thread"}}),
-            deadline,
         );
         assert_eq!(result.is_ok(), scenario == "ok", "{scenario}");
         drop(reader);
@@ -658,6 +680,8 @@ fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_ra
         let mut completion = LifecycleCompletionWriter {
             at: 1000.,
             delivery: &mut delivery,
+            write_message: &mut mock_message,
+            stream_update: None,
         };
         let task_write = |_: &Transaction<'_>, _: &Value, _: &Value, _: &Value, _: f64| {
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
@@ -710,22 +734,28 @@ fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() 
         })
         .expect("seed page");
     let mut cursor = RecoveryCursor::default();
+    let mut observed = Vec::new();
+    for _ in 0..34 {
+        let jobs = load_recovery_jobs(&store, "default", &mut cursor).expect("agent candidate");
+        assert_eq!(jobs.len(), 1);
+        let RecoveryJob::Connection { snapshot, .. } = &jobs[0] else {
+            panic!("connection");
+        };
+        observed.push(snapshot.record()["id"].as_str().expect("id").to_owned());
+        assert!(
+            load_recovery_jobs(&store, "default", &mut cursor)
+                .expect("task page")
+                .is_empty()
+        );
+    }
     assert_eq!(
-        load_recovery_jobs(&store, "default", &mut cursor)
-            .expect("first page")
-            .len(),
-        32
+        observed,
+        (0..34).map(|n| format!("agent-{n:02}")).collect::<Vec<_>>()
     );
     assert!(
         load_recovery_jobs(&store, "default", &mut cursor)
-            .expect("task page")
+            .expect("exhausted")
             .is_empty()
-    );
-    assert_eq!(
-        load_recovery_jobs(&store, "default", &mut cursor)
-            .expect("second page")
-            .len(),
-        2
     );
     assert!(
         load_recovery_jobs(&store, "default", &mut cursor)
@@ -736,7 +766,7 @@ fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() 
         load_recovery_jobs(&store, "default", &mut cursor)
             .expect("wrap")
             .len(),
-        32
+        1
     );
 }
 
@@ -867,5 +897,266 @@ fn task_completion_rejects_changed_alias_or_operation_receipt() {
         };
         assert!(!writer.complete(&snapshot,&scope(),json!({"id":"item","type":"dynamicToolCall","status":"completed","success":true})).expect("recheck"));
         assert_eq!(records(&store, "runtime_tasks")[0]["status"], "running");
+    }
+}
+
+#[test]
+fn held_scan_survives_257_full_pages_and_check_eviction() {
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let template = &corpus()["connection"][0]["before"];
+    const ROWS: usize = 257 * MAX_SCAN_JOBS;
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_agents", [])?;
+            for n in 0..ROWS {
+                let id = format!("agent-{n:05}");
+                let mut row = template.clone();
+                row["id"] = json!(id);
+                row["rootId"] = json!(id);
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![id, row.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("held rows");
+    let mut cursor = RecoveryCursor::default();
+    let mut scan = RecoveryScan::default();
+    let now = Instant::now();
+    for n in 0..ROWS {
+        let jobs = load_recovery_jobs(&store, "default", &mut cursor).expect("scan");
+        let job = scan
+            .take(jobs, now, 1000.)
+            .expect("each held candidate once");
+        let RecoveryJob::Connection { snapshot, .. } = &job else {
+            panic!("connection");
+        };
+        assert_eq!(snapshot.record()["id"], format!("agent-{n:05}"));
+        scan.finish(&job, now, &Ok(RecoveryOutcome::Unconfirmed))
+            .expect("hold");
+        assert!(
+            load_recovery_jobs(&store, "default", &mut cursor)
+                .expect("tasks")
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
+    for bad in ["agent", "task", "receipt"] {
+        let root = fixture();
+        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let mut owner = corpus()["connection"][0]["before"].clone();
+        owner["events"] = if bad == "agent" { json!(-1) } else { json!(0) };
+        seed(&store, &owner);
+        let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
+        if bad == "task" {
+            task["created"] = json!(-1);
+        }
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["agent:item", task.to_string()],
+                )?;
+                if bad == "receipt" {
+                    tx.execute(
+                        "INSERT INTO runtime_tool_requests(id,record) VALUES('thread:item',?1)",
+                        [json!({"id":"thread:item","agent":"agent","callId":8}).to_string()],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("corrupt record");
+        let mut cursor = RecoveryCursor::default();
+        let result = load_recovery_jobs(&store, "default", &mut cursor);
+        let error = if bad == "agent" {
+            result.err().expect("agent rejected")
+        } else {
+            result.expect("agent valid");
+            load_recovery_jobs(&store, "default", &mut cursor)
+                .err()
+                .expect("task/receipt rejected")
+        }
+        .to_string();
+        let (table, id) = match bad {
+            "agent" => ("runtime_agents", "agent"),
+            "task" => ("runtime_tasks", "agent:item"),
+            _ => ("runtime_tool_requests", "thread:item"),
+        };
+        assert!(
+            error.contains(table) && error.contains(id),
+            "{bad}: {error}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
+    struct Blocked {
+        runtime: tokio::runtime::Handle,
+        entered: Option<tokio::sync::oneshot::Sender<Instant>>,
+    }
+    impl RetainedHistory for Blocked {
+        fn request(
+            &mut self,
+            _: &ConnectionScope,
+            _: HistoryMethod,
+            _: Value,
+            _: Instant,
+        ) -> Result<HistoryReceipt, HistoryError> {
+            Err(HistoryError::Unsupported)
+        }
+        fn barrier(&mut self, _: &ConnectionScope, deadline: Instant) -> Result<(), HistoryError> {
+            self.runtime.block_on(async {
+                let timer = tokio::time::sleep_until(deadline.into());
+                tokio::pin!(timer);
+                // Register the deadline before the test advances paused time.
+                assert!(futures_util::poll!(&mut timer).is_pending());
+                self.entered
+                    .take()
+                    .expect("one barrier")
+                    .send(deadline)
+                    .expect("test receiver");
+                timer.await;
+                Err(HistoryError::Deadline)
+            })
+        }
+    }
+    let (sender, entered) = tokio::sync::oneshot::channel();
+    let runtime = tokio::runtime::Handle::current();
+    let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(20);
+    let waiter = tokio::task::spawn_blocking(move || {
+        let mut port = Blocked {
+            runtime,
+            entered: Some(sender),
+        };
+        let observe = |_: &ConnectionScope| Some(observation());
+        RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe)
+            .expect("reader")
+            .barrier(&scope(), deadline)
+    });
+    assert_eq!(entered.await.expect("waiting"), deadline);
+    tokio::time::advance(Duration::from_secs(19)).await;
+    assert!(!waiter.is_finished());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        waiter.await.expect("barrier task"),
+        Err(HistoryError::Deadline)
+    );
+}
+
+#[test]
+fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
+    let case = &corpus()["accepted_start"];
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    seed(&store, &case["before"]);
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
+        Ok(())
+    }).expect("input");
+    apply(
+        &store,
+        &case["before"],
+        RecoveryAction::AcceptStart {
+            turn: case["turn"].clone(),
+        },
+        false,
+    )
+    .expect("accept");
+    assert_eq!(agent(&store), case["after"]);
+    let rows: Vec<Value> = store.read().expect("read").prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id").expect("query")
+        .query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?}))).expect("rows").collect::<Result<_,_>>().expect("events");
+    assert_eq!(json!(rows), case["events"]);
+    assert_eq!(json!(records(&store, "runtime_items")), case["items"]);
+}
+
+#[test]
+fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
+    for native_status in ["completed", "failed", "interrupted"] {
+        for fail in [false, true] {
+            let root = fixture();
+            let store = RuntimeStore::open(Some(root.path())).expect("store");
+            let before = &corpus()["accepted_start"]["before"];
+            seed(&store, before);
+            store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
+            Ok(())
+        }).expect("input");
+            let messages = json!([
+                {"id":"buffered","type":"agentMessage","text":""},
+                {"id":"question","type":"agentMessage","text":"Choose?","questions":[{"title":"Which?","options":["one","two"]}]}
+            ]);
+            let turn = json!({"id":"turn","status":native_status,"items":[
+                {"id":"input","type":"userMessage","clientId":"event"},messages[0],messages[1]
+            ]});
+            let mut called = Vec::new();
+            let mut message_writer = |_: &Transaction<'_>,
+                                      a: &mut Value,
+                                      account: &str,
+                                      generation: u64,
+                                      t: &Value,
+                                      item: &Value,
+                                      at: f64| {
+                assert_eq!((account, generation, at), ("default", 1, 1000.));
+                assert_eq!(a["turnId"], "turn");
+                assert_eq!(t, &turn);
+                called.push(item.clone());
+                a["events"] = json!(a["events"].as_u64().expect("counter") + 1);
+                if fail {
+                    return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
+                }
+                Ok(Some(
+                studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default(),
+            ))
+            };
+            let mut delivery = RootDelivery { fail: false };
+            let mut completion = LifecycleCompletionWriter {
+                at: 1000.,
+                delivery: &mut delivery,
+                write_message: &mut message_writer,
+                stream_update: None,
+            };
+            let outcome = RecoveryStore {
+                store: &store,
+                connection_current: &|_| true,
+                completion: &mut completion,
+                at: 1000.,
+                observation_current: &|_| Some(observation()),
+            }
+            .apply(
+                &RecoverySnapshot::from_record(before.clone()).expect("snapshot"),
+                &scope(),
+                RecoveryAction::AcceptStart { turn: turn.clone() },
+            );
+            assert_eq!(outcome.is_err(), fail);
+            if fail {
+                assert_eq!(agent(&store), *before);
+                assert_eq!(
+                    store
+                        .read()
+                        .expect("read")
+                        .query_row("SELECT status FROM runtime_events", [], |r| r
+                            .get::<_, String>(0))
+                        .expect("event"),
+                    "uncertain"
+                );
+            } else {
+                assert!(completion.stream_update.is_some());
+                assert_eq!(
+                    outcome.expect("settled"),
+                    RecoveryOutcome::Applied(
+                        json!({"status":"reconciled","turnId":"turn","outcome":native_status})
+                    )
+                );
+                assert_eq!(agent(&store)["inFlight"], false);
+                assert_eq!(agent(&store)["events"], 3);
+                assert_eq!(json!(called), messages);
+            }
+        }
     }
 }

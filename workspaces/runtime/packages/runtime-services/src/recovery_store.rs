@@ -319,9 +319,26 @@ pub trait RecoveryDelivery {
 
 /// Reuses scheduler acceptance/terminal receipts. Recovery never manufactures a
 /// provider response ticket or writes a delivered receipt for unrelated input.
+pub type RecoveryMessageWriter<'a> = dyn FnMut(
+        &Transaction<'_>,
+        &mut Value,
+        &str,
+        u64,
+        &Value,
+        &Value,
+        f64,
+    ) -> Result<
+        Option<crate::notification_dispatch::NotificationStreamBuffer>,
+        crate::notification_dispatch::NotificationDispatchError,
+    > + 'a;
+
 pub struct LifecycleCompletionWriter<'a> {
     pub at: f64,
     pub delivery: &'a mut dyn RecoveryDelivery,
+    /// Canonical item/completed adapter; closure owns a staged stream-buffer copy.
+    /// Discard that copy on failure. Publish this update only after apply commits.
+    pub write_message: &'a mut RecoveryMessageWriter<'a>,
+    pub stream_update: Option<crate::notification_dispatch::NotificationStreamBuffer>,
 }
 impl CompletionWriter for LifecycleCompletionWriter<'_> {
     fn start_held(
@@ -337,7 +354,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
         &mut self,
         tx: &Transaction<'_>,
         expected: &RecoverySnapshot,
-        _scope: &ConnectionScope,
+        scope: &ConnectionScope,
         action: &RecoveryAction,
     ) -> Result<RecoveryOutcome, RecoveryError> {
         use crate::recovery::CompletionMode;
@@ -371,6 +388,28 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     text(attempt, "id")?,
                     text(turn, "id")?,
                 )?;
+                if accepted
+                    && matches!(
+                        turn["status"].as_str(),
+                        Some("completed" | "failed" | "interrupted")
+                    )
+                {
+                    let raw = AgentRepository::get_raw(tx, &AgentId::from(id))?
+                        .ok_or(RecoveryError::CommitFailed)?;
+                    let current = RecoverySnapshot::from_record(
+                        serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)?,
+                    )?;
+                    return self.complete(
+                        tx,
+                        &current,
+                        scope,
+                        &RecoveryAction::Terminal {
+                            turn: turn.clone(),
+                            native_state: "active".into(),
+                            mode: CompletionMode::ObservedTurn,
+                        },
+                    );
+                }
                 Ok(if accepted {
                     RecoveryOutcome::Applied(json!({"status":"accepted","turnId":turn["id"]}))
                 } else {
@@ -422,12 +461,52 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                             "turn-recovery/legacy-terminal-lifecycle",
                         ));
                     };
+                    let mut restored = a.clone();
                     if *mode == CompletionMode::AutomaticConnection {
-                        let mut restored = a.clone();
                         restored["autoWake"] = json!(true);
                         restored["inFlight"] = json!(true);
-                        put_agent(tx, restored)?;
                     }
+                    for item in turn["items"]
+                        .as_array()
+                        .ok_or(RecoveryError::CommitFailed)?
+                    {
+                        if item["type"] != "agentMessage" {
+                            continue;
+                        }
+                        let item_id = format!("{id}:{}", text(item, "id")?);
+                        let previous =
+                            studio_runtime_store::NotificationDispatchRepository::transcript_item(
+                                tx, id, &item_id,
+                            )?;
+                        if previous.as_ref().is_some_and(|(stored, _)| {
+                            stored["streaming"] != true
+                                && stored["text"].as_str()
+                                    == Some(item["text"].as_str().unwrap_or_default())
+                        }) {
+                            continue;
+                        }
+                        if let Some(update) = (self.write_message)(
+                            tx,
+                            &mut restored,
+                            &scope.account,
+                            scope.generation,
+                            turn,
+                            item,
+                            self.at,
+                        )
+                        .map_err(|error| match error {
+                            crate::notification_dispatch::NotificationDispatchError::Store(
+                                error,
+                            ) => RecoveryError::Store(error),
+                            crate::notification_dispatch::NotificationDispatchError::Dependency(
+                                name,
+                            ) => RecoveryError::Dependency(name),
+                            _ => RecoveryError::CommitFailed,
+                        })? {
+                            self.stream_update = Some(update);
+                        }
+                    }
+                    put_agent(tx, restored)?;
                     let identity = TurnAttemptIdentity {
                         agent_id: id.into(),
                         epoch,
@@ -468,8 +547,8 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     )?;
                     updated
                 };
-                restore_text(tx, &mut updated, turn, self.at)?;
                 if !normal {
+                    restore_text(tx, &mut updated, turn, self.at)?;
                     let notice_id = format!("{id}:connection-recovery:{turn_id}");
                     let notice_text = format!(
                         "Connection checked. Codex reports the previous turn as {}.",
