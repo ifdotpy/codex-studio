@@ -10,9 +10,14 @@ use studio_runtime_services::browser::{
     PairedExchange, prepare_browser_config,
 };
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
+type ExchangeCall = (String, String, Value, String, i64);
+
 #[derive(Default)]
 struct Exchange {
-    calls: Mutex<Vec<(String, String, Value, String, i64)>>,
+    calls: Mutex<Vec<ExchangeCall>>,
     outcome: Mutex<Option<ExchangeOutcome>>,
 }
 
@@ -25,23 +30,27 @@ impl PairedExchange for Exchange {
         request_id: &str,
         now: i64,
     ) -> Result<ExchangeOutcome, BrowserError> {
-        self.calls.lock().unwrap().push((
-            server.into(),
-            action.into(),
-            payload.clone(),
-            request_id.into(),
-            now,
-        ));
+        self.calls
+            .lock()
+            .expect("valid browser differential fixture")
+            .push((
+                server.into(),
+                action.into(),
+                payload.clone(),
+                request_id.into(),
+                now,
+            ));
         self.outcome
             .lock()
-            .unwrap()
+            .expect("valid browser differential fixture")
             .take()
             .ok_or(BrowserError::Exchange)
     }
 }
 
 fn python_corpus() -> Value {
-    let python = std::env::var("CODEX_AGENTS_PYTHON").expect("prepared isolated Python");
+    let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let python = prepared_python::prepared_python(&source);
     let script = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/browser_bridge/oracle.py"
@@ -68,9 +77,12 @@ fn input() -> ForwardInput {
 
 fn local_request(port: u16, method: &str, target: &str, headers: &str) -> String {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
-    write!(stream, "{method} {target} HTTP/1.1\r\n{headers}\r\n").unwrap();
+    write!(stream, "{method} {target} HTTP/1.1\r\n{headers}\r\n")
+        .expect("valid browser differential fixture");
     let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+    stream
+        .read_to_string(&mut response)
+        .expect("valid browser differential fixture");
     response
 }
 
@@ -97,7 +109,9 @@ fn differing_paths(left: &Value, right: &Value, prefix: &str, out: &mut Vec<Stri
 }
 
 fn rust_response(case: &Value) -> (Value, Vec<Value>) {
-    let name = case["name"].as_str().unwrap();
+    let name = case["name"]
+        .as_str()
+        .expect("valid browser differential fixture");
     let exchange = Arc::new(Exchange::default());
     let result = match name {
         "redirect-response" => json!({"status":302,"location":"https://private.invalid/"}),
@@ -109,9 +123,15 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
                     "body":"YWNjZXB0ZWQ=","done":true}),
     };
     if name == "unknown" {
-        *exchange.outcome.lock().unwrap() = Some(ExchangeOutcome::Unknown);
+        *exchange
+            .outcome
+            .lock()
+            .expect("valid browser differential fixture") = Some(ExchangeOutcome::Unknown);
     } else {
-        *exchange.outcome.lock().unwrap() = Some(ExchangeOutcome::Applied(result));
+        *exchange
+            .outcome
+            .lock()
+            .expect("valid browser differential fixture") = Some(ExchangeOutcome::Applied(result));
     }
     let forwarder = BrowserForwarder::new(exchange.clone());
     let receipt = forwarder
@@ -149,23 +169,27 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
             "User-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\nCookie: secret-cookie\r\nAuthorization: secret-auth\r\n",
         ),
     };
-    let calls = exchange.calls.lock().unwrap().iter().map(|(server, action, payload, request_id, now)| {
+    let calls = exchange.calls.lock().expect("valid browser differential fixture").iter().map(|(server, action, payload, request_id, now)| {
         json!({"server":server,"action":action,"payload":payload,"requestId":request_id,"now":now})
     }).collect::<Vec<_>>();
-    let _ = forwarder.close(&input().bridge_id);
+    forwarder
+        .close(&input().bridge_id)
+        .expect("close browser differential listener");
     if response.is_empty() {
         return (Value::Null, calls);
     }
-    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .expect("valid browser differential fixture");
     let status = head
         .lines()
         .next()
-        .unwrap()
+        .expect("valid browser differential fixture")
         .split_whitespace()
         .nth(1)
-        .unwrap()
+        .expect("valid browser differential fixture")
         .parse::<u16>()
-        .unwrap();
+        .expect("valid browser differential fixture");
     let mut headers = serde_json::Map::new();
     for line in head.lines().skip(1) {
         if let Some((key, value)) = line.split_once(':') {
@@ -184,7 +208,7 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let forward_cases = oracle["forward"]
         .as_array()
-        .unwrap()
+        .expect("valid browser differential fixture")
         .iter()
         .filter(|case| {
             full || matches!(
@@ -204,7 +228,7 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         .collect::<Vec<_>>();
     let config_cases = oracle["config"]
         .as_array()
-        .unwrap()
+        .expect("valid browser differential fixture")
         .iter()
         .filter(|case| {
             full || matches!(
@@ -221,7 +245,9 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             actual == case["python"]["response"],
             "browser forward response differs"
         );
-        let calls = case["python"]["calls"].as_array().unwrap();
+        let calls = case["python"]["calls"]
+            .as_array()
+            .expect("valid browser differential fixture");
         assert!(
             case["python"]["open"] == json!({"status":"forwarding"}),
             "open receipt differs"
@@ -238,7 +264,9 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                 rust_calls[0]["payload"] == expected["payload"],
                 "callback payload differs"
             );
-            let identity = rust_calls[0]["requestId"].as_str().unwrap();
+            let identity = rust_calls[0]["requestId"]
+                .as_str()
+                .expect("valid browser differential fixture");
             let random = identity
                 .strip_prefix("browser-callback:")
                 .unwrap_or_default();
@@ -257,12 +285,24 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         let decision = prepare_browser_config(BrowserConfigSnapshot {
             target,
             shared,
-            home: case["home"].as_str().unwrap(),
-            shared_home: case["sharedHome"].as_str().unwrap(),
-            skill_available: case["skillAvailable"].as_bool().unwrap(),
-            node_runtime_available: case["nodeRuntimeAvailable"].as_bool().unwrap(),
-            trusted_services_valid: case["trustedServicesValid"].as_bool().unwrap(),
-            browser_service_available: case["browserServiceAvailable"].as_bool().unwrap(),
+            home: case["home"]
+                .as_str()
+                .expect("valid browser differential fixture"),
+            shared_home: case["sharedHome"]
+                .as_str()
+                .expect("valid browser differential fixture"),
+            skill_available: case["skillAvailable"]
+                .as_bool()
+                .expect("valid browser differential fixture"),
+            node_runtime_available: case["nodeRuntimeAvailable"]
+                .as_bool()
+                .expect("valid browser differential fixture"),
+            trusted_services_valid: case["trustedServicesValid"]
+                .as_bool()
+                .expect("valid browser differential fixture"),
+            browser_service_available: case["browserServiceAvailable"]
+                .as_bool()
+                .expect("valid browser differential fixture"),
         });
         let mut python_overrides = json!({});
         if let Some(node) = case["python"]["overrides"].get("mcp_servers.node_repl") {
@@ -273,10 +313,11 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             differing_paths(&decision.overrides, &python_overrides, "", &mut paths);
             paths.sort();
             paths.dedup();
-            assert!(
-                false,
+            panic!(
                 "browser config differs for {} at {paths:?}",
-                case["name"].as_str().unwrap()
+                case["name"]
+                    .as_str()
+                    .expect("valid browser differential fixture")
             );
         }
         assert!(
@@ -289,21 +330,33 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         );
     }
     let exchange = &oracle["pairedExchange"];
-    assert_eq!(exchange["calls"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        exchange["calls"]
+            .as_array()
+            .expect("valid browser differential fixture")
+            .len(),
+        4
+    );
     let queued = &exchange["calls"][0];
     assert_eq!(queued["phase"], "queue");
     assert_eq!(queued["action"], "browser_callback");
     assert!(
         queued["requestId"]
             .as_str()
-            .unwrap()
+            .expect("valid browser differential fixture")
             .starts_with("browser-callback:")
     );
     assert_eq!(exchange["calls"][1]["phase"], "deliver");
     assert_eq!(exchange["calls"][2]["phase"], "queue");
     assert_ne!(queued["requestId"], exchange["calls"][2]["requestId"]);
     assert_eq!(oracle["expired"]["type"], "ValueError");
-    assert_eq!(oracle["conflict"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        oracle["conflict"]
+            .as_array()
+            .expect("valid browser differential fixture")
+            .len(),
+        1
+    );
 
     let forwarder = BrowserForwarder::new(Arc::new(Exchange::default()));
     let mut expired = input();
