@@ -132,6 +132,21 @@ impl Registry {
                 })?;
             stored_schemas.insert(name.to_owned(), validator);
         }
+        let draft_payload: Value = serde_json::from_slice(include_bytes!(
+            "../draft-payload.schema.json"
+        ))
+        .map_err(|error| CompileError {
+            operation_id: "DraftPayload".to_owned(),
+            message: error.to_string(),
+        })?;
+        let draft_payload_validator = jsonschema::options()
+            .with_draft(Draft::Draft202012)
+            .build(&draft_payload)
+            .map_err(|error| CompileError {
+                operation_id: "DraftPayload".to_owned(),
+                message: error.to_string(),
+            })?;
+        stored_schemas.insert("DraftPayload".to_owned(), draft_payload_validator);
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(

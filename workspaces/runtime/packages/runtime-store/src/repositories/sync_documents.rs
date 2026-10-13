@@ -85,10 +85,152 @@ pub struct EntityRow {
     pub deleted: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EntityPage {
+    pub rows: Vec<EntityRow>,
+    pub max_sequence: i64,
+    pub tombstone_floor: i64,
+    pub initial_high: i64,
+    pub checkpoint: i64,
+    pub reset: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SyncDocumentsRepository;
 
 impl SyncDocumentsRepository {
+    pub fn pull_entities(
+        transaction: &Transaction<'_>,
+        after: i64,
+        limit: i64,
+        fresh: bool,
+        initial_high: i64,
+        reset_support: bool,
+        priority_id: Option<&str>,
+    ) -> StoreResult<EntityPage> {
+        let tombstone_floor = Self::entity_tombstone_floor(transaction)?;
+        let stored_max = transaction.query_row(
+            "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let max_sequence = stored_max.max(tombstone_floor);
+        let initial_high = if fresh {
+            if initial_high > 0 {
+                max_sequence.min(initial_high)
+            } else {
+                max_sequence
+            }
+        } else {
+            0
+        };
+        let after = after.max(0);
+        if reset_support && !fresh && after > 0 && (after < tombstone_floor || after > max_sequence)
+        {
+            return Ok(EntityPage {
+                rows: Vec::new(),
+                max_sequence,
+                tombstone_floor,
+                initial_high,
+                checkpoint: max_sequence,
+                reset: true,
+            });
+        }
+
+        let limit = limit.clamp(1, 500);
+        let rows = if after == 0 && fresh {
+            if let Some(priority_id) = priority_id {
+                let mut statement = transaction.prepare(
+                    "SELECT collection,id,seq,payload,deleted FROM sync_entities \
+                     WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
+                       AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
+                     ORDER BY CASE WHEN collection='agent' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
+                )?;
+                statement
+                    .query_map(
+                        params![
+                            after,
+                            tombstone_floor,
+                            i64::from(fresh),
+                            initial_high,
+                            priority_id,
+                            limit
+                        ],
+                        entity_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                read_entity_page(
+                    transaction,
+                    after,
+                    tombstone_floor,
+                    fresh,
+                    initial_high,
+                    limit,
+                )?
+            }
+        } else {
+            read_entity_page(
+                transaction,
+                after,
+                tombstone_floor,
+                fresh,
+                initial_high,
+                limit,
+            )?
+        };
+        let checkpoint = if rows.len() as i64 == limit {
+            rows.last().map_or(after, |row| row.sequence)
+        } else {
+            max_sequence
+        };
+        Ok(EntityPage {
+            rows,
+            max_sequence,
+            tombstone_floor,
+            initial_high,
+            checkpoint,
+            reset: false,
+        })
+    }
+
+    pub fn draft(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<SyncDocument>> {
+        transaction
+            .query_row(
+                "SELECT seq,id,payload,deleted FROM sync_documents WHERE scope='drafts' AND id=?1",
+                [id],
+                |row| {
+                    Ok(SyncDocument {
+                        sequence: row.get(0)?,
+                        id: row.get(1)?,
+                        payload: row.get(2)?,
+                        deleted: row.get::<_, i64>(3)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    pub fn put_draft(
+        transaction: &Transaction<'_>,
+        id: &str,
+        payload: &str,
+        deleted: bool,
+    ) -> StoreResult<bool> {
+        if Self::draft(transaction, id)?
+            .is_some_and(|current| current.payload == payload && current.deleted == deleted)
+        {
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO sync_documents(seq,scope,id,payload,deleted) VALUES(?1,'drafts',?2,?3,?4) \
+             ON CONFLICT(scope,id) DO UPDATE SET seq=excluded.seq,payload=excluded.payload,deleted=excluded.deleted",
+            params![next_sequence(transaction)?, id, payload, i64::from(deleted)],
+        )?;
+        Ok(true)
+    }
+
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
     pub fn put_entity(
         transaction: &Transaction<'_>,
@@ -235,6 +377,45 @@ impl SyncDocumentsRepository {
         )?;
         Ok(true)
     }
+}
+
+fn read_entity_page(
+    transaction: &Transaction<'_>,
+    after: i64,
+    tombstone_floor: i64,
+    fresh: bool,
+    initial_high: i64,
+    limit: i64,
+) -> StoreResult<Vec<EntityRow>> {
+    let mut statement = transaction.prepare(
+        "SELECT collection,id,seq,payload,deleted FROM sync_entities \
+         WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
+           AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
+         ORDER BY seq LIMIT ?5",
+    )?;
+    statement
+        .query_map(
+            params![
+                after,
+                tombstone_floor,
+                i64::from(fresh),
+                initial_high,
+                limit
+            ],
+            entity_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)
+}
+
+fn entity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityRow> {
+    Ok(EntityRow {
+        collection: row.get(0)?,
+        id: row.get(1)?,
+        sequence: row.get(2)?,
+        payload: row.get(3)?,
+        deleted: row.get::<_, i64>(4)? != 0,
+    })
 }
 
 pub(crate) fn hash_payload(payload: &str) -> String {
