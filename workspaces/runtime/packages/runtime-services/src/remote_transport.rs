@@ -17,7 +17,7 @@ use std::time::Duration;
 use thiserror::Error;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
-use crate::event_write::python_json;
+use crate::event_write::python_json_compact;
 use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
@@ -421,7 +421,7 @@ pub fn federation_message_signing_bytes(envelope: &Value) -> RemoteTransportResu
 
 /// Canonical compact JSON compatible with `json.dumps(sort_keys=True, ensure_ascii=False)`.
 pub fn canonical_json(value: &Value) -> RemoteTransportResult<String> {
-    Ok(python_json(value))
+    Ok(python_json_compact(value))
 }
 
 pub fn verify_signature(

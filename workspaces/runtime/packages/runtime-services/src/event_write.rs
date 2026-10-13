@@ -12,42 +12,38 @@ use thiserror::Error;
 
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
-/// Match the compact, sorted JSON written by Python's signed federation protocol.
+/// Match the previous Python-default sorted JSON format used by durable signatures.
 pub fn python_json(value: &Value) -> String {
-    python_json_with_options(value, JsonOptions::COMPACT_UNICODE)
+    python_json_with_options(value, JsonOptions::DEFAULT)
 }
 
-/// Match Python's default sorted JSON format used by existing durable signatures.
-pub fn python_json_default(value: &Value) -> String {
-    python_json_with_options(value, JsonOptions::DEFAULT)
+/// Match the compact UTF-8 JSON written by Python's signed federation protocol.
+pub fn python_json_compact(value: &Value) -> String {
+    python_json_with_options(value, JsonOptions::COMPACT_UNICODE)
 }
 
 #[derive(Clone, Copy)]
 struct JsonOptions {
     compact: bool,
     ensure_ascii: bool,
-    python_float: bool,
 }
 
 impl JsonOptions {
     const COMPACT_UNICODE: Self = Self {
         compact: true,
         ensure_ascii: false,
-        python_float: true,
     };
 
     const DEFAULT: Self = Self {
         compact: false,
         ensure_ascii: true,
-        python_float: false,
     };
 }
 
 fn python_json_with_options(value: &Value, options: JsonOptions) -> String {
     match value {
         Value::Null | Value::Bool(_) => value.to_string(),
-        Value::Number(number) if options.python_float => python_number(number),
-        Value::Number(number) => number.to_string(),
+        Value::Number(number) => python_number(number),
         Value::String(value) => python_quote(value, options.ensure_ascii),
         Value::Array(values) => format!(
             "[{}]",
@@ -702,40 +698,53 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, python_json_default,
+        AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, python_json_compact,
         save_plan,
     };
     use serde_json::json;
 
     #[test]
-    fn python_json_uses_python_exponent_spelling_for_floats() {
+    fn python_json_matches_python_default_float_vector() {
         assert_eq!(
             python_json(&serde_json::from_str("1e-6").expect("float JSON parses")),
             "1e-06"
         );
         assert_eq!(
-            python_json(&serde_json::from_str("1e16").expect("float JSON parses")),
+            python_json(&json!({"duration": 1e-6})),
+            // Captured from Python json.dumps({"duration": 1e-6}, sort_keys=True).
+            "{\"duration\": 1e-06}"
+        );
+        assert_eq!(
+            python_json(&json!({"z":1,"a":"Café🙂"})),
+            "{\"a\": \"Caf\\u00e9\\ud83d\\ude42\", \"z\": 1}"
+        );
+    }
+
+    #[test]
+    fn python_json_compact_matches_federation_wire_format() {
+        assert_eq!(
+            python_json_compact(&serde_json::from_str("1e-6").expect("float JSON parses")),
+            "1e-06"
+        );
+        assert_eq!(
+            python_json_compact(&serde_json::from_str("1e16").expect("float JSON parses")),
             "1e+16"
         );
         assert_eq!(
-            python_json(&serde_json::from_str("1e-4").expect("float JSON parses")),
+            python_json_compact(&serde_json::from_str("1e-4").expect("float JSON parses")),
             "0.0001"
         );
         assert_eq!(
-            python_json(&serde_json::from_str("1e15").expect("float JSON parses")),
+            python_json_compact(&serde_json::from_str("1e15").expect("float JSON parses")),
             "1000000000000000.0"
         );
         assert_eq!(
-            python_json(&serde_json::from_str("-0.0").expect("float JSON parses")),
+            python_json_compact(&serde_json::from_str("-0.0").expect("float JSON parses")),
             "-0.0"
         );
         assert_eq!(
-            python_json(&json!({"z":1,"a":"é"})),
+            python_json_compact(&json!({"z":1,"a":"é"})),
             "{\"a\":\"é\",\"z\":1}"
-        );
-        assert_eq!(
-            python_json_default(&json!({"z":1,"a":"Café🙂"})),
-            "{\"a\": \"Caf\\u00e9\\ud83d\\ude42\", \"z\": 1}"
         );
     }
     use std::collections::BTreeMap;
