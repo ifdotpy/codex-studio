@@ -34,6 +34,7 @@ async fn accounts(
         .account_policy
         .clone()
         .ok_or_else(ApiError::internal)?;
+    let account_driver = state.account_driver.clone();
     let snapshot = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ())?;
         let waiting = studio_runtime_store::account_state::authentication_recovery_account_keys(
@@ -44,7 +45,10 @@ async fn accounts(
                 .as_secs_f64(),
         )
         .map_err(|_| ())?;
-        let mut snapshot = account_policy.accounts();
+        let mut snapshot = match account_driver {
+            Some(driver) => driver.snapshot().map_err(|_| ())?,
+            None => account_policy.accounts(),
+        };
         studio_runtime_services::account_policy::apply_authentication_recovery(
             &mut snapshot,
             &waiting,
