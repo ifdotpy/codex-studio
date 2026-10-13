@@ -302,79 +302,99 @@ async fn receipt_write_matrix_reopens_without_relaunch_or_config_loss() {
     };
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     // start, login identity, login close, probe identity, probe close, ready, chat repair.
-    for boundary in 1..=7 {
-        if !full && ![1, 6].contains(&boundary) {
-            continue;
-        }
-        for after in [false, true] {
-            let f = Fixture::new();
-            let script = f.directory.join("instant-login");
-            std::fs::write(&script,br##"#!/bin/sh
+    for reauth in [false, true] {
+        for boundary in 1..=if reauth { 7 } else { 6 } {
+            if !full && ![1, 6].contains(&boundary) {
+                continue;
+            }
+            for after in [false, true] {
+                let f = Fixture::new();
+                let script = f.directory.join("instant-login");
+                std::fs::write(&script,br##"#!/bin/sh
 if [ "$2" = status ]; then
 printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}'
 fi
 exit 0
 "##).expect("script");
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
-                .expect("mode");
-            f.receipts.fail_at.store(boundary, Ordering::SeqCst);
-            f.receipts.after.store(after, Ordering::SeqCst);
-            let changes = f.changes.clone();
-            let service = LoginService::open(
-                LoginConfig {
-                    directory: f.receipts.file.directory().into(),
-                    program: script,
-                    cwd: f.directory.clone(),
-                    environment: BTreeMap::new(),
-                },
-                f.accounts.clone(),
-                Arc::new(StreamLauncher),
-                f.receipts.clone(),
-                f.chats.clone(),
-                Arc::new(move || changes.notify_one()),
-            )
-            .await
-            .expect("open");
-            let started = service.start(ID.into(), None, None, None).await;
-            if started.is_ok() {
-                tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                    loop {
-                        let changed = f.changes.notified();
-                        let value = service.status(ID).await.expect("status");
-                        if value["status"] == "error" || value["status"] == "ready" {
-                            break;
-                        }
-                        changed.await;
-                    }
-                })
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+                    .expect("mode");
+                let account = if reauth {
+                    let config = f.directory.join("reauth-config");
+                    std::fs::create_dir(&config).expect("reauth config");
+                    let metadata = studio_runtime_services::account_driver::claude::auth_metadata_from_output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#,true);
+                    Some(f.accounts.register_claude_verified(serde_json::json!({"configDir":config,"binaryPath":script,"customModels":[]}).as_object().expect("options").clone(),"Fixture",&f.directory,&metadata).expect("registered fixture"))
+                } else {
+                    None
+                };
+                f.receipts.fail_at.store(boundary, Ordering::SeqCst);
+                f.receipts.after.store(after, Ordering::SeqCst);
+                let changes = f.changes.clone();
+                let service = LoginService::open(
+                    LoginConfig {
+                        directory: f.receipts.file.directory().into(),
+                        program: script,
+                        cwd: f.directory.clone(),
+                        environment: BTreeMap::new(),
+                    },
+                    f.accounts.clone(),
+                    Arc::new(StreamLauncher),
+                    f.receipts.clone(),
+                    f.chats.clone(),
+                    Arc::new(move || changes.notify_one()),
+                )
                 .await
-                .expect("actor settled");
-            }
-            service.shutdown().await.expect("close owned children");
-            assert!(
-                f.receipts.writes.load(Ordering::SeqCst) >= boundary,
-                "{boundary}/{after}"
-            );
-            let restart = f.open().await;
-            if boundary == 1 && !after {
-                assert!(restart.status(ID).await.is_err());
-            } else {
-                let value = restart.status(ID).await.expect("reopened receipt");
-                assert!(["error", "ready"].contains(&value["status"].as_str().expect("status")));
-                if value["status"] == "ready" {
-                    assert_eq!(value["email"], "fixture@example.test");
+                .expect("open");
+                let started = service.start(ID.into(), account, None, None).await;
+                if started.is_ok() {
+                    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                        loop {
+                            let changed = f.changes.notified();
+                            let value = service.status(ID).await.expect("status");
+                            if value["status"] == "error" || value["status"] == "ready" {
+                                break;
+                            }
+                            changed.await;
+                        }
+                    })
+                    .await
+                    .expect("actor settled");
                 }
+                service.shutdown().await.expect("close owned children");
+                assert!(
+                    f.receipts.writes.load(Ordering::SeqCst) >= boundary,
+                    "{boundary}/{after}"
+                );
+                let restart = f.open().await;
+                if boundary == 1 && !after {
+                    assert!(restart.status(ID).await.is_err());
+                } else {
+                    // Observe the durable restore without invoking the deliberately forbidden
+                    // credential reader in this fixture. A real caller revalidates chat repair.
+                    let value = f
+                        .receipts
+                        .load()
+                        .expect("restored receipts")
+                        .pop()
+                        .expect("restored receipt")
+                        .receipt();
+                    assert!(
+                        ["error", "ready"].contains(&value["status"].as_str().expect("status"))
+                    );
+                    if value["status"] == "ready" {
+                        assert_eq!(value["email"], "fixture@example.test");
+                    }
+                }
+                assert!(
+                    f.launcher
+                        .receiver
+                        .try_lock()
+                        .expect("script queue")
+                        .try_recv()
+                        .is_err(),
+                    "restart must not relaunch"
+                );
+                restart.shutdown().await.expect("shutdown");
             }
-            assert!(
-                f.launcher
-                    .receiver
-                    .try_lock()
-                    .expect("script queue")
-                    .try_recv()
-                    .is_err(),
-                "restart must not relaunch"
-            );
-            restart.shutdown().await.expect("shutdown");
         }
     }
 }
