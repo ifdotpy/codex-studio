@@ -2029,7 +2029,7 @@ dependencies = [
  "getrandom 0.3.4",
  "jsonschema",
  "mime_guess",
- "nix",
+ "nix 0.31.3",
  "notify",
  "process-wrap",
  "ring",

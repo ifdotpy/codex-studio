@@ -1,6 +1,38 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "PersistedAgentArchive": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Archive identity consumed by lifecycle restoration; other audit data stays open.",
+      "properties": {
+        "at": {
+          "title": "At",
+          "type": "number"
+        },
+        "cleanupPending": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cleanuppending"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        }
+      },
+      "required": ["at", "epoch"],
+      "title": "PersistedAgentArchive",
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
@@ -18,6 +50,16 @@
       ],
       "title": "Accountkey"
     },
+    "agentArchive": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedAgentArchive"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "approvalPolicy": {
       "anyOf": [
         {
@@ -28,6 +70,45 @@
         }
       ],
       "title": "Approvalpolicy"
+    },
+    "autoWake": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Autowake"
+    },
+    "cleanedImageWorkspace": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cleanedimageworkspace"
+    },
+    "cleanedWorktree": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cleanedworktree"
     },
     "cwd": {
       "anyOf": [
@@ -60,9 +141,53 @@
       "title": "Epoch",
       "type": "integer"
     },
+    "executionMode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Executionmode"
+    },
     "id": {
       "title": "Id",
       "type": "string"
+    },
+    "imageWorkspace": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Imageworkspace"
+    },
+    "imageWorkspaceReady": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Imageworkspaceready"
+    },
+    "inFlight": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Inflight"
     },
     "isLead": {
       "anyOf": [
@@ -108,6 +233,17 @@
       ],
       "title": "Parentid"
     },
+    "parkedEvent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parkedevent"
+    },
     "rootId": {
       "title": "Rootid",
       "type": "string"
@@ -151,6 +287,31 @@
         }
       ],
       "title": "Turnid"
+    },
+    "worktreeCleanup": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Worktreecleanup"
+    },
+    "worktreeReady": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Worktreeready"
     }
   },
   "required": ["id", "rootId", "epoch", "status"],

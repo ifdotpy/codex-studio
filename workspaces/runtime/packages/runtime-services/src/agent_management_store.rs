@@ -65,11 +65,7 @@ pub fn execute_in_transaction(
         let deleted = decision.result["deleted"]
             .as_array()
             .ok_or(ManagementError::Invalid("Invalid deletion decision"))?;
-        let agents = records
-            .tables
-            .get("runtime_agents")
-            .cloned()
-            .unwrap_or_default();
+        let room_directory = crate::sync_entity_context::RoomDirectory::load(transaction)?;
         for (_, raw) in crate::sync_policy::stored_records(transaction, "runtime_rooms")? {
             let room: Value =
                 serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
@@ -80,8 +76,7 @@ pub fn execute_in_transaction(
             {
                 continue;
             }
-            let context =
-                crate::sync_entity_context::room_view_context(transaction, &room, &agents)?;
+            let context = room_directory.for_room(transaction, &room, true)?;
             if let Some(mut view) = crate::sync_views::room_entity_view(&room, &context) {
                 if let Some(members) = view.get_mut("members").and_then(Value::as_array_mut) {
                     members.retain(|member| {

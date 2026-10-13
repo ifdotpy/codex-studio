@@ -216,17 +216,8 @@ pub(crate) fn save_room(tx: &Transaction<'_>, peer: &str, room: &Value) -> Resul
     Repo::put(tx, Table::Room, id, peer, room)?;
     let standard = json!({"id":id,"kind":"federated","members":room["localMembers"],"updated":room["updated"],"name":room["name"],"federation":true,"peerId":room["peerId"],"peerLabel":room["peerLabel"]});
     tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,transport::canonical_json(&standard)?]).map_err(StoreError::from)?;
-    let mut agents = Vec::new();
-    for member in room["localMembers"]
-        .as_array()
-        .ok_or(Error::Invalid("room.localMembers"))?
-    {
-        let member = member.as_str().ok_or(Error::Invalid("room.localMembers"))?;
-        if let Some(agent) = AgentRepository::get(tx, &AgentId::from(member))? {
-            agents.push(agent.value());
-        }
-    }
-    let context = crate::sync_entity_context::room_view_context(tx, &standard, &agents)?;
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    let context = directory.for_room(tx, &standard, true)?;
     let view = crate::sync_views::room_entity_view(&standard, &context);
     SyncDocumentsRepository::put_entity(
         tx,
