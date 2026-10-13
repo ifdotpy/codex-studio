@@ -31,8 +31,9 @@ from codex_workspace import WorkspaceMixin
 from codex_time import message_clock, append_message_clocks
 import codex_vm_agents
 
+isolation_root = Path(os.environ.get("STUDIO_TEST_ISOLATION_ROOT", str(Path(os.environ["TMPDIR"]).parent))).resolve()
 for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
-    assert Path(os.environ[key]).resolve().is_relative_to(Path(os.environ["TMPDIR"]).parent), key
+    assert Path(os.environ[key]).resolve().is_relative_to(isolation_root), key
 
 TOKENS = {}
 ORIGINAL_DIGEST = efficiency.digest
