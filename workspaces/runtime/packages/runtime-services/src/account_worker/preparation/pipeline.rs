@@ -10,6 +10,7 @@ pub(crate) struct CommitGuard {
     token: crate::workspace_ready::ReadyToken,
     resources: PreparationResources,
     thread: thread::Snapshot,
+    compiler_dependencies: Value,
     state_root: std::path::PathBuf,
 }
 pub(crate) struct RequestPreparation {
@@ -109,6 +110,8 @@ fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, Wor
         || record["startAttempt"]["submitted"] != false
         || record["autoWake"] != true
         || record["nativeFailureHold"] == true
+        || native_thread_blocked(&record)
+        || context_repair_blocked(&record)
     {
         return Err(refusal("preparation/ownership-changed".into()));
     }
@@ -225,7 +228,6 @@ pub(crate) fn workspace(
         )),
     }
 }
-#[cfg(test)]
 pub(crate) fn prepare(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -284,6 +286,7 @@ pub(crate) fn prepare_ready(
         token,
         resources: resources.clone(),
         thread: snapshot.clone(),
+        compiler_dependencies: compiler_dependencies(&turn_snapshot, &events)?,
         state_root: store.root().to_path_buf(),
     };
     if method == Method::ThreadResume {
@@ -324,6 +327,7 @@ pub(crate) fn prepare_ready(
             guard,
         });
     }
+    continuation_gate(&snapshot, &intent.attempt_id)?;
     snapshot.actor.thread_id = prepared_intent.thread_id.clone();
     turn_snapshot.operation_id = format!(
         "account:{}:{}:{}",
@@ -394,6 +398,26 @@ pub(crate) fn prepare_ready(
         guard,
     })
 }
+// Compare every compiler input under the submission transaction. Adapter-owned
+// timestamps and artifact paths are not database dependencies.
+fn compiler_dependencies(
+    snapshot: &turn::PreparationSnapshot,
+    events: &[turn::Event],
+) -> Result<Value, WorkerError> {
+    let mut snapshot = snapshot.clone();
+    snapshot.prepared_at = 0.0;
+    snapshot.operation_id.clear();
+    snapshot.artifact_paths.clear();
+    serde_json::to_value((&snapshot, events)).map_err(|_| invalid("compiler snapshot"))
+}
+fn continuation_gate(snapshot: &thread::Snapshot, attempt: &str) -> Result<(), WorkerError> {
+    match thread::plan(snapshot, attempt, "continuation-admission") {
+        thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
+        thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
+        thread::Outcome::Start(_) => Err(refusal("thread-preparation/thread-required".into())),
+        thread::Outcome::Resume(_) | thread::Outcome::Ready(_) => Ok(()),
+    }
+}
 pub(crate) fn commit(
     tx: &Transaction<'_>,
     context: &Pending,
@@ -420,6 +444,16 @@ pub(crate) fn commit(
         frozen["effort"] = current["effort"].clone();
         frozen["nativeEffort"] = current["nativeEffort"].clone();
     }
+    let (current_submission, current_events) = submission_snapshot(
+        tx,
+        &guard.resources,
+        &current,
+        &context.intent,
+        &guard.state_root,
+    )?;
+    if compiler_dependencies(&current_submission, &current_events)? != guard.compiler_dependencies {
+        return Err(refusal("turn-preparation/snapshot-changed".into()));
+    }
     let current = thread_snapshot(
         tx,
         &guard.resources,
@@ -429,6 +463,9 @@ pub(crate) fn commit(
     )?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));
+    }
+    if context.compiled.is_some() {
+        continuation_gate(&current, &context.intent.attempt_id)?;
     }
     if let Some(attempt) = &context.thread {
         apply_patch(&mut frozen, &attempt.before_submit)?;

@@ -2,7 +2,6 @@ mod pipeline;
 mod receipts;
 mod snapshot;
 use super::*;
-use crate::notification_dispatch::{PreparedSubmission, SubmittedInput};
 #[cfg(test)]
 pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
@@ -11,106 +10,62 @@ pub(super) use pipeline::{
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
 pub use snapshot::PreparationResources;
-use studio_runtime_store::AgentRecord;
 
 fn refusal(reason: String) -> WorkerError {
     WorkerError::PreparationRefused(reason)
 }
 
-/// Compile a submission after the caller has established thread and workspace readiness.
-/// The worker owns admission and calls the same compiler through its guarded pipeline.
-pub struct PreparationInput<'a> {
-    pub intent: &'a TurnIntent,
-    pub agent: &'a AgentRecord,
-    pub transaction: &'a studio_runtime_store::Transaction<'a>,
-    pub resources: &'a PreparationResources,
-    pub state_root: &'a std::path::Path,
-    pub submitted_at: f64,
+/// Synchronous preparation entry for callers already on a blocking executor.
+/// Runs the same admission, workspace, compiler and guarded commit as the worker.
+/// Provider transport and receipt reduction remain owned by the account worker.
+pub struct PreparedTurn(pipeline::RequestPreparation);
+pub fn prepare_turn(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    generation: u64,
+) -> Result<PreparedTurn, WorkerError> {
+    pipeline::prepare(store, resources, intent, Method::TurnStart, generation).map(PreparedTurn)
 }
-pub struct PreparedTurn {
-    pub params: Value,
-    pub submission: PreparedSubmission,
-    pub compiled: crate::turn_prepare::PreparedSubmission,
-}
-pub fn prepare_turn(input: PreparationInput<'_>) -> Result<PreparedTurn, String> {
-    prepare_compiled(input).map_err(|e| e.to_string())
-}
-fn prepare_compiled(input: PreparationInput<'_>) -> Result<PreparedTurn, WorkerError> {
-    let record = input.agent.value();
-    let thread = snapshot::thread_snapshot(
-        input.transaction,
-        input.resources,
-        &record,
-        "corpus",
-        input.state_root,
-    )?;
-    let (mut snapshot, events) = snapshot::submission_snapshot(
-        input.transaction,
-        input.resources,
-        &record,
-        input.intent,
-        input.state_root,
-    )?;
-    snapshot.prepared_at = input.submitted_at;
-    snapshot.operation_id = format!(
-        "account:{}:{}:turn/start",
-        input.intent.account_key, input.intent.attempt_id
-    );
-    let compiled =
-        crate::turn_prepare::compile(&snapshot, &events).map_err(|e| refusal(e.to_string()))?;
-    let mut params = crate::thread_prepare::turn_params(
-        &thread,
-        &crate::thread_prepare::TurnInput {
-            events: events
-                .iter()
-                .map(|e| crate::thread_prepare::TurnEvent {
-                    kind: e.kind.clone(),
-                    text: e.text.clone(),
-                })
-                .collect(),
-            has_assets: events.iter().any(|e| !e.metadata.assets.is_empty()),
-        },
-    )
-    .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
-    params.insert("input".into(), json!(compiled.provider_inputs));
-    params.insert(
-        "clientUserMessageId".into(),
-        json!(compiled.event_ids.first()),
-    );
-    let submission = PreparedSubmission {
-        first_event_id: compiled.event_ids[0].clone(),
-        submitted_at: input.submitted_at,
-        created_at: input.intent.events[0].created,
-        text: compiled
-            .fulltext
-            .clone()
-            .unwrap_or_else(|| compiled.transcript.text.clone()),
-        inputs: input
-            .intent
-            .events
-            .iter()
-            .zip(&compiled.transcript.inputs)
-            .map(|(e, t)| SubmittedInput {
-                id: e.id.clone(),
-                at: e.created,
-                kind: e.kind.clone(),
-                text: e.text.clone(),
-                assets: json!(t.assets),
-            })
-            .collect(),
-        assets: json!(compiled.transcript.assets),
-    };
-    Ok(PreparedTurn {
-        params: json!(params),
-        submission,
-        compiled,
-    })
-}
-/// Persist compiler-owned metadata after the ordinary submission identity check.
-/// Kept public for lifecycle boundary replay; production uses the guarded worker.
-pub fn persist_prepared_compilation(
-    tx: &studio_runtime_store::Transaction<'_>,
-    compiled: &crate::turn_prepare::PreparedSubmission,
-) -> Result<(), WorkerError> {
-    pipeline::persist_compilation(tx, compiled)
+impl PreparedTurn {
+    /// Own the same submission transaction as account_worker::store::submitted.
+    pub fn commit(
+        &self,
+        store: &RuntimeStore,
+        request_id: &str,
+        generation: u64,
+    ) -> Result<bool, WorkerError> {
+        scheduler::lifecycle_transaction_with(store, |tx| {
+            let prepared = &self.0;
+            if !SchedulerRepository::reconcile_obsolete_before_submit(
+                tx,
+                &prepared.intent.agent_id,
+                prepared.intent.epoch,
+                &prepared.intent.attempt_id,
+            )? {
+                return Ok(false);
+            }
+            let pending = Pending {
+                intent: prepared.intent.clone(),
+                method: "turn/start".into(),
+                operation: format!(
+                    "account:{}:{}:turn/start",
+                    prepared.intent.account_key, prepared.intent.attempt_id
+                ),
+                thread: prepared.thread.clone(),
+                compiled: prepared.compiled.clone(),
+            };
+            pipeline::commit(tx, &pending, &prepared.guard)?;
+            let submission = prepared
+                .submission
+                .as_ref()
+                .ok_or_else(|| refusal("preparation/turn-required".into()))?;
+            let committed =
+                commit_prepared_turn(tx, &prepared.intent, request_id, generation, submission)?;
+            if committed && let Some(compiled) = &prepared.compiled {
+                pipeline::persist_compilation(tx, compiled)?;
+            }
+            Ok(committed)
+        })
+    }
 }

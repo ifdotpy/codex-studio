@@ -5373,7 +5373,7 @@
       }
     ],
     "probe": {
-      "transition": "submission"
+      "transition": "submission_identity"
     },
     "afterEventText": "changed frozen input",
     "tier": "fast",
@@ -6895,5 +6895,253 @@
     "tier": "fast",
     "return": true,
     "replay": true
+  },
+  {
+    "id": "submit_retained_repair_completed",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true,
+    "agent": {
+      "contextRepair": {
+        "phase": "completed"
+      }
+    }
+  },
+  {
+    "id": "submit_retained_repair_unchanged",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true,
+    "agent": {
+      "contextRepair": {
+        "phase": "unchanged"
+      }
+    }
+  },
+  {
+    "id": "submit_missing_complaint_preserves_evidence",
+    "transition": "submission",
+    "phase": "claimed",
+    "state": "python_attempt",
+    "findings": ["A1"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_agents/0/record/startAttempt/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/connectionGeneration",
+        "python": null,
+        "pythonPresent": false,
+        "rust": 1,
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "submission": {
+            "input": {
+              "account": "default",
+              "agent": "agent",
+              "epoch": 0,
+              "generation": 1,
+              "thread": "thread",
+              "ticket": "ticket"
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_execution_attempts/0/record/requestTicket",
+        "python": null,
+        "pythonPresent": false,
+        "rust": "ticket",
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true,
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"missing\", \"text\": \"important evidence\"}]}"
+    }
   }
 ]

@@ -496,13 +496,33 @@ fn duration_ms(duration: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use studio_runtime_process::ProviderLaunchSpec;
     use studio_runtime_process::{EventCursor, provider_seam::*};
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
+
+    pub(crate) fn publish_fixture(
+        service: &ModelCatalogService,
+        account: &str,
+        home: &str,
+        value: Value,
+    ) {
+        let key = (account.to_owned(), home.to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: None,
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        assert!(store_result(&service.0, &key, 7, Ok(value)));
+    }
 
     struct Script(Vec<Value>, usize);
     impl ProviderTaskFactory for Script {

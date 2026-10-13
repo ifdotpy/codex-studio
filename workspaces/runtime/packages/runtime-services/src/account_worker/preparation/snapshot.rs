@@ -262,6 +262,72 @@ pub(super) fn guidance(
         thread_config: resources.thread_config.clone(),
     })
 }
+pub(super) fn native_thread_blocked(record: &Value) -> bool {
+    let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    record["nativeThreadBlock"]["threadId"] == thread
+        || record["error"]["codexErrorInfo"] == "misalignmentPolicyViolation"
+        || (nonempty(&record["nativeTurnError"]["turnId"])
+            && record["nativeTurnError"]["turnId"] == record["turnId"]
+            && record["nativeTurnError"]["error"]["codexErrorInfo"]
+                == "misalignmentPolicyViolation")
+}
+pub(super) fn context_repair_blocked(record: &Value) -> bool {
+    nonempty(&record["contextRepairWait"])
+        || matches!(
+            record["contextRepair"]["phase"].as_str(),
+            Some("preparing" | "submitted" | "unknown" | "ready")
+        )
+}
+pub(super) fn nonempty(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Object(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::String(value) => !value.is_empty(),
+        Value::Number(value) => value.as_f64() != Some(0.0),
+    }
+}
+fn preserve_complaint(
+    tx: &Transaction<'_>,
+    agent: &str,
+    event: &crate::scheduler::TurnEvent,
+) -> Result<bool, WorkerError> {
+    if event.kind != "complaint" {
+        return Ok(false);
+    }
+    let value: Value = match serde_json::from_str(&event.text) {
+        Ok(value) => value,
+        Err(_) => return Ok(true),
+    };
+    let Some(entries) = value["complaints"].as_array().filter(|v| !v.is_empty()) else {
+        return Ok(true);
+    };
+    for entry in entries {
+        let Some(id) = entry["complaint_id"].as_str().filter(|s| !s.is_empty()) else {
+            return Ok(true);
+        };
+        use rusqlite::OptionalExtension;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(true);
+        };
+        let complaint: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint["leadId"] != agent {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn thread_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
@@ -301,7 +367,7 @@ pub(super) fn thread_snapshot(
         .is_some_and(|v| !v.is_null())
     {
         Some(thread::HoldReason::AccountTransfer)
-    } else if record.get("contextRepair").is_some_and(|v| !v.is_null()) {
+    } else if context_repair_blocked(record) {
         Some(thread::HoldReason::ContextRepair)
     } else if record.get("nativeRelease").is_some_and(|v| {
         !v.is_null() && !matches!(v["phase"].as_str(), Some("resumed" | "released"))
@@ -477,7 +543,6 @@ pub(super) fn submission_snapshot(
         });
     }
     let mut assets = Vec::new();
-    let all_assets = records(tx, "runtime_assets")?;
     let ids = intent
         .events
         .iter()
@@ -488,16 +553,20 @@ pub(super) fn submission_snapshot(
         .flatten()
         .collect::<BTreeSet<_>>();
     for id in ids {
-        let raw = all_assets
-            .get(&id)
+        use rusqlite::OptionalExtension;
+        let raw: String = tx
+            .query_row(
+                "SELECT record FROM runtime_assets WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?
             .ok_or_else(|| refusal("Unknown attachment".into()))?;
-        let v: Value = serde_json::from_str(raw).map_err(|_| invalid("asset"))?;
+        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("asset"))?;
         let owner = text(&v, "agentId")?
             .or(text(&v, "agent")?)
             .ok_or_else(|| invalid("asset/agent"))?;
-        let owner: Value =
-            serde_json::from_str(agents.get(&owner).ok_or_else(|| invalid("asset/owner"))?)
-                .map_err(|_| invalid("asset/owner"))?;
+        let owner = agent(tx, &owner)?.value();
         assets.push(turn::Asset {
             id,
             owner_id: decode(owner["id"].clone(), "owner/id")?,
@@ -547,7 +616,7 @@ pub(super) fn submission_snapshot(
                         .clone(),
                 },
                 preserve_progress: flag(&e.metadata, "preserveProgress")?,
-                preserve_complaint: flag(&e.metadata, "preserveComplaint")?,
+                preserve_complaint: preserve_complaint(tx, &intent.agent_id, e)?,
             })
         })
         .collect::<Result<Vec<_>, WorkerError>>()?;
@@ -657,6 +726,28 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 #[cfg(test)]
 mod resource_tests {
     use super::*;
+
+    #[test]
+    fn native_thread_blocks_follow_the_current_thread_and_turn() {
+        assert!(native_thread_blocked(
+            &json!({"threadId":"current","nativeThreadBlock":{"threadId":"current"}})
+        ));
+        assert!(!native_thread_blocked(
+            &json!({"threadId":"current","nativeThreadBlock":{"threadId":"old"}})
+        ));
+        assert!(native_thread_blocked(
+            &json!({"threadId":"current","error":{"codexErrorInfo":"misalignmentPolicyViolation"}})
+        ));
+        assert!(!native_thread_blocked(
+            &json!({"threadId":null,"error":{"codexErrorInfo":"misalignmentPolicyViolation"}})
+        ));
+        assert!(native_thread_blocked(
+            &json!({"threadId":"current","turnId":"turn","nativeTurnError":{"turnId":"turn","error":{"codexErrorInfo":"misalignmentPolicyViolation"}}})
+        ));
+        assert!(!native_thread_blocked(
+            &json!({"threadId":"current","turnId":"new","nativeTurnError":{"turnId":"old","error":{"codexErrorInfo":"misalignmentPolicyViolation"}}})
+        ));
+    }
 
     #[test]
     fn guidance_uses_the_resolved_runtime_interpreter() {

@@ -243,6 +243,9 @@ def capture_submission(runtime, *, stop="submitted"):
     class Provider:
         supervisor_mode = False
 
+        def after_events(self, callback):
+            callback()
+
     captured = {}
     item = runtime.item
     def record_item(db, *args, **kwargs):
@@ -265,7 +268,15 @@ def capture_submission(runtime, *, stop="submitted"):
     with runtime.read_db() as db:
         rows = [dict(db.execute("SELECT * FROM runtime_events WHERE id=?", (key,)).fetchone())
                 for key in agent["startAttempt"]["events"]]
-    with patch.object(runtime, "prepare", lambda a:a), \
+    from codex_wakeups import complaint_records
+    with runtime.read_db() as db:
+        for row in rows:
+            if row["kind"] == "complaint" and complaint_records(db, agent, row["text"]) is None:
+                row["preserveComplaint"] = True
+    # The fixture starts with a loaded native thread. Runtime.prepare itself
+    # still runs every readiness and continuation check; only provider I/O is fake.
+    runtime.loaded.add(agent["id"])
+    with patch.object(runtime, "connect", lambda *_:Provider()), \
          patch.object(runtime, "connect_agent", lambda a:Provider()), \
          patch.object(runtime, "agent_connection", lambda a:None), \
          patch.object(runtime, "item", record_item), \
@@ -274,7 +285,7 @@ def capture_submission(runtime, *, stop="submitted"):
             Runtime.start(runtime, agent, rows)
         except Captured:
             return captured
-    raise AssertionError("real start did not reach the selected submission boundary")
+    raise AssertionError("real start did not reach the selected submission boundary: " + repr(runtime.agent("agent").get("error")))
 
 
 _SEED_AGENT = None
@@ -311,6 +322,10 @@ def seed(runtime, case):
             db.execute("UPDATE runtime_events SET status=?,turn_id=? WHERE id='event'",
                        ("delivered" if phase == "accepted" else "reserved" if phase == "claimed" else "dispatching",
                         "turn" if phase == "accepted" else None))
+        if case["transition"] in {"submission", "reconcile_submission"}:
+            workspace = runtime.root / "workspace"
+            workspace.mkdir(exist_ok=True)
+            agent.update(cwd=str(workspace), worktree=False, workspaceMode="shared", nativeEffort=None)
         for key in case.get("remove", []):
             agent.pop(key, None)
         agent.update(case.get("agent", {}))
@@ -445,7 +460,7 @@ class LifecycleCases:
         runtime, case = self.runtime, command["case"]
         runtime.close_notification_database()
         runtime.__dict__.pop("_agent_records_cache", None)
-        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","removeAfterRecovery","extraEvents","related","expectRefusal") if k in case}}, sort_keys=True)
+        key = json.dumps({"prepare":case["transition"] in {"submission", "reconcile_submission"},"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","removeAfterRecovery","extraEvents","related","expectRefusal") if k in case}}, sort_keys=True)
         if key not in self.seeds:
             with sqlite3.connect(runtime.db_path) as db:
                 self.pristine.backup(db)
@@ -469,7 +484,13 @@ class LifecycleCases:
         assert snapshot(rust) == before, "pre-states differ"
         python_error = None
         try:
-            self.runtime = transition(runtime, case) or runtime
+            if case["transition"] == "submission":
+                # Both interpreters emit the same actual progress-artifact path.
+                # SQLite remains the separate Python prestate via runtime.db_path.
+                with patch.object(runtime, "root", rust):
+                    self.runtime = transition(runtime, case) or runtime
+            else:
+                self.runtime = transition(runtime, case) or runtime
         except Exception as error:
             if not case.get("expectRefusal"): raise
             python_error = type(error).__name__
