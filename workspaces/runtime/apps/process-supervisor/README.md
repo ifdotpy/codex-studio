@@ -64,7 +64,14 @@ reading; health exposes backpressure and persistence errors.
 On supervisor restart, the lease is acquired before the socket or journal is
 replaced. Existing Python-written journal records are read in place. For each
 open handle, recovery compares its saved process start identity with the current
-process and verifies that its process group belongs to that PID. A verified
+process and verifies that its process group belongs to that PID. Rust-created
+identities contain the Linux boot ID and `/proc/<pid>/stat` start ticks, compared
+exactly even when two starts fall in the same wall-clock second. A matching legacy
+Python `lstart` identity and process-group leader are accepted once, then upgraded
+in a FULL-sync transaction before any signal; failed commit leaves the child
+untouched and recovery blocked. The first legacy acceptance inherits Python's
+one-second PID-reuse ambiguity. Subsequent verification uses only boot ID and
+kernel ticks; a legacy mismatch never authorizes a signal. A verified
 live group receives TERM, then a bounded, reverified KILL escalation if needed.
 Receipts and output survive, the old handle is closed, and fallback readiness is
 recorded. Linux v1 checks the recorded root's exit; it does not prove that a
@@ -96,6 +103,12 @@ The initial cutover has explicit resource guardrails:
 | Buffered output per handle | 256 MiB                                       | 256 MiB                             | Same journal limit; reading pauses, writes report `Supervisor output journal is full; waiting for backend replay acknowledgement`.                                        |
 | One stdout frame           | 256 MiB                                       | No explicit limit                   | Avoid an unlimited unterminated line; `Child stdout frame exceeds journal capacity` appears in reader health.                                                             |
 | Child input deadline       | 5 seconds                                     | No explicit deadline                | A stalled pipe returns `Child input deadline exceeded; durable outcome remains unknown`; accepted input is never resent.                                                  |
+
+Handshakes and frames in progress each have a 10-second absolute deadline;
+Python v1 has no explicit Unix read deadline. A partial frame cannot extend its
+deadline by trickling bytes. An idle established connection has no read deadline.
+Expiry returns `Supervisor handshake or frame deadline exceeded`, releases the
+connection slot and backend admission, and leaves existing children untouched.
 
 Capacity and framing refusals never signal existing children. Native identity on
 macOS and Windows transport are named startup refusals in this first cut.

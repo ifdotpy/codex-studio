@@ -1,6 +1,8 @@
 //! Standalone protocol-v1 supervisor. One lease, bounded connections and owned children.
 use super::supervisor_child::OwnedChild;
-use super::supervisor_identity::{RETRY, free_space, start_time, stop_verified, valid_start};
+use super::supervisor_identity::{
+    RETRY, free_space, inspect_start, start_time, stop_verified, valid_start, verify_group,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -19,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use studio_runtime_providers::supervisor_v1::{
-    Command, HANDLE_LIMIT, Handshake, Ownership, PROTOCOL, Request, WriteDecision,
+    Command, HANDLE_LIMIT, Handshake, Ownership, PROTOCOL, Request, StartMatch, WriteDecision,
 };
 use studio_runtime_store::supervisor_journal::{
     JournalError, StoredHandle, SupervisorJournal, launch_signature,
@@ -28,6 +30,7 @@ use studio_runtime_store::supervisor_journal::{
 const MAX_REQUEST_BYTES: u64 = crate::transport::MAX_FRAME_BYTES as u64;
 const MAX_CONNECTIONS: usize = 512;
 const MAX_CHILDREN: usize = 128;
+const FRAME_BUDGET: Duration = Duration::from_secs(10);
 const OPERATOR_CLOSED: &str = "Closed by operator after verified test/unknown-client ownership";
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -135,7 +138,14 @@ impl Supervisor {
                             || saved.closed_reason.as_deref() == Some(OPERATOR_CLOSED);
                         if !proof
                             || !saved.start_time.as_deref().is_some_and(valid_start)
-                            || start_time(saved.pid, false)? == saved.start_time
+                            || matches!(
+                                inspect_start(
+                                    saved.pid,
+                                    saved.start_time.as_deref().unwrap_or("")
+                                )?
+                                .0,
+                                StartMatch::Exact | StartMatch::Legacy
+                            )
                         {
                             return Err(Error::Refused(
                                 "Supervisor handle is orphaned; native outcome remains unknown",
@@ -184,17 +194,18 @@ impl Supervisor {
                         ));
                     }
                     if let Some(expected) = &row.start_time {
-                        match start_time(row.pid, false)? {
-                            None => {}
-                            Some(actual) if actual == *expected => {
+                        match inspect_start(row.pid, expected)?.0 {
+                            StartMatch::Gone => {}
+                            StartMatch::Exact | StartMatch::Legacy => {
+                                let verified = self.verified_start(&row)?;
                                 stop_verified(
                                     row.pid,
                                     row.pgid
                                         .ok_or(Error::Refused("Missing child process group"))?,
-                                    expected,
+                                    &verified,
                                 )?;
                             }
-                            Some(_) => {
+                            StartMatch::Different => {
                                 return Err(Error::Refused(
                                     "Operator close refused: child identity changed",
                                 ));
@@ -214,7 +225,8 @@ impl Supervisor {
                         clean["blocked"] = Value::Null;
                         clean["fallbackReady"] = clean["degraded"].clone();
                     }
-                    self.journal.close_unknown(&row, now()?, &clean)?;
+                    self.journal
+                        .close_unknown(&self.saved(&row.id)?, now()?, &clean)?;
                     *recovery = clean;
                     return Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}));
                 }
@@ -341,26 +353,47 @@ impl Supervisor {
             _ => Err(Error::Refused("Unknown supervisor action")),
         }
     }
+    fn verified_start(&self, row: &StoredHandle) -> Result<String> {
+        let expected = row
+            .start_time
+            .as_deref()
+            .ok_or(Error::Refused("Missing child start identity"))?;
+        let pgid = row
+            .pgid
+            .ok_or(Error::Refused("Missing child process group"))?;
+        verify_group(row.pid, pgid)?;
+        let (kind, actual) = inspect_start(row.pid, expected)?;
+        let actual = actual.ok_or(Error::Refused("Child exited before identity verification"))?;
+        match kind {
+            StartMatch::Exact => {}
+            StartMatch::Legacy => self.journal.upgrade_identity(row, &actual)?,
+            _ => return Err(Error::Refused("Child identity changed before signal")),
+        }
+        Ok(actual)
+    }
     fn recover(&self) -> Result<()> {
         let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
         for row in self.journal.handles(true)? {
             let (outcome, detail) =
                 if let (Some(expected), Some(pgid)) = (&row.start_time, row.pgid) {
-                    match start_time(row.pid, false)? {
-                        None => (
+                    match inspect_start(row.pid, expected)?.0 {
+                        StartMatch::Gone => (
                             "already-exited",
                             "Native child was no longer running when the supervisor recovered",
                         ),
-                        Some(actual) if actual != *expected => (
+                        StartMatch::Different => (
                             "identity-mismatch",
                             "PID belongs to a different process start time",
                         ),
-                        Some(_) => {
+                        StartMatch::Exact | StartMatch::Legacy => {
                             recovery["degraded"] = json!(true);
                             recovery["notice"] = json!(
                                 "The process supervisor restarted; native work is using recovery."
                             );
-                            match stop_verified(row.pid, pgid, expected) {
+                            match self
+                                .verified_start(&row)
+                                .and_then(|verified| stop_verified(row.pid, pgid, &verified))
+                            {
                                 Ok(outcome) => (outcome, "verified process group terminated"),
                                 Err(_) => {
                                     recovery["blocked"] =
@@ -381,7 +414,8 @@ impl Supervisor {
                         "Native child PID and start time were not recorded",
                     )
                 };
-            self.journal.recovered(&row, outcome, detail, now()?)?;
+            self.journal
+                .recovered(&self.saved(&row.id)?, outcome, detail, now()?)?;
         }
         recovery["fallbackReady"] =
             json!(recovery["degraded"] == true && recovery["blocked"].is_null());
@@ -391,20 +425,67 @@ impl Supervisor {
     }
 }
 
-fn read_frame(reader: &mut impl BufRead) -> Result<Option<Value>> {
+fn read_frame(
+    reader: &mut BufReader<UnixStream>,
+    mut deadline: Option<Instant>,
+    budget: Duration,
+) -> Result<Option<Value>> {
     let mut bytes = Vec::new();
-    let n = reader
-        .take(MAX_REQUEST_BYTES + 1)
-        .read_until(b'\n', &mut bytes)?;
-    if n == 0 {
-        return Ok(None);
+    loop {
+        let remaining = deadline
+            .map(|at| {
+                at.checked_duration_since(Instant::now())
+                    .filter(|left| !left.is_zero())
+                    .ok_or(Error::Refused(
+                        "Supervisor handshake or frame deadline exceeded",
+                    ))
+            })
+            .transpose()?;
+        reader.get_ref().set_read_timeout(remaining)?;
+        let chunk = match reader.fill_buf() {
+            Ok(chunk) => chunk,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(Error::Refused(
+                    "Supervisor handshake or frame deadline exceeded",
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if deadline.is_some_and(|at| Instant::now() >= at) {
+            return Err(Error::Refused(
+                "Supervisor handshake or frame deadline exceeded",
+            ));
+        }
+        if chunk.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                Err(Error::Refused(
+                    "Supervisor frame exceeds the size limit or is incomplete",
+                ))
+            };
+        }
+        // An established idle connection has no deadline. Once its first bytes arrive,
+        // subsequent reads share one absolute deadline, so trickling cannot extend it.
+        deadline.get_or_insert_with(|| Instant::now() + budget);
+        let end = chunk.iter().position(|b| *b == b'\n').map(|i| i + 1);
+        let count = end.unwrap_or(chunk.len());
+        if (bytes.len() + count) as u64 > MAX_REQUEST_BYTES {
+            return Err(Error::Refused(
+                "Supervisor frame exceeds the size limit or is incomplete",
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+        if end.is_some() {
+            return Ok(Some(serde_json::from_slice(&bytes)?));
+        }
     }
-    if n as u64 > MAX_REQUEST_BYTES || bytes.last() != Some(&b'\n') {
-        return Err(Error::Refused(
-            "Supervisor frame exceeds the size limit or is incomplete",
-        ));
-    }
-    Ok(Some(serde_json::from_slice(&bytes)?))
 }
 fn write_frame(writer: &mut impl Write, value: &Value) -> Result<()> {
     serde_json::to_writer(&mut *writer, value)?;
@@ -412,18 +493,22 @@ fn write_frame(writer: &mut impl Write, value: &Value) -> Result<()> {
     writer.flush()?;
     Ok(())
 }
-fn connection(supervisor: Arc<Supervisor>, mut socket: UnixStream) {
+fn connection(supervisor: Arc<Supervisor>, socket: UnixStream) {
+    connection_with_budget(supervisor, socket, FRAME_BUDGET);
+}
+fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, budget: Duration) {
     let mut admitted = None;
     let result = (|| -> Result<()> {
         socket.set_write_timeout(Some(Duration::from_secs(10)))?;
         let mut reader = BufReader::new(socket.try_clone()?);
         let first: Handshake = serde_json::from_value(
-            read_frame(&mut reader)?.ok_or(Error::Refused("Missing supervisor handshake"))?,
+            read_frame(&mut reader, Some(Instant::now() + budget), budget)?
+                .ok_or(Error::Refused("Missing supervisor handshake"))?,
         )?;
         admitted =
             lock(&supervisor.ownership)?.attach(&first, &supervisor.root.to_string_lossy())?;
         write_frame(&mut socket, &json!({"ok":true}))?;
-        while let Some(raw) = read_frame(&mut reader)? {
+        while let Some(raw) = read_frame(&mut reader, None, budget)? {
             let id = raw.get("requestId").cloned();
             let response = match serde_json::from_value::<Request>(raw)
                 .map_err(Error::from)
@@ -506,7 +591,10 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         let expected = identity["startTime"].as_str().ok_or(Error::Refused(
             "The previous supervisor lease identity is invalid",
         ))?;
-        if start_time(pid, false)?.as_deref() == Some(expected) {
+        if matches!(
+            inspect_start(pid, expected)?.0,
+            StartMatch::Exact | StartMatch::Legacy
+        ) {
             return Err(Error::Refused(
                 "The previous supervisor process is still alive",
             ));
@@ -563,3 +651,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
     drop(lease);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../tests/supervisor/deadlines.rs"]
+mod deadline_tests;

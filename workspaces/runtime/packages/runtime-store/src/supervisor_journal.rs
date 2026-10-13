@@ -279,6 +279,25 @@ impl SupervisorJournal {
             Ok(())
         })
     }
+    /// Commit stronger identity before the caller may signal an adopted child.
+    pub fn upgrade_identity(&self, expected: &StoredHandle, start: &str) -> Result<()> {
+        self.transaction(|tx| {
+            let current = stored(tx, &expected.id)?.ok_or(Refusal("Unknown supervisor handle"))?;
+            if current.closed_at.is_some()
+                || current.pid != expected.pid
+                || current.pgid != expected.pgid
+                || current.start_time != expected.start_time
+                || current.signature != expected.signature
+            {
+                return Err(Refusal("Child identity changed before durable upgrade").into());
+            }
+            tx.execute(
+                "UPDATE child_identities SET start_time=? WHERE handle=?",
+                params![start, expected.id],
+            )?;
+            Ok(())
+        })
+    }
     pub fn recovered(
         &self,
         row: &StoredHandle,

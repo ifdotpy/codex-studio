@@ -98,5 +98,35 @@
         "after": "ORDER BY id DESC LIMIT 17"
       }
     ]
+  },
+  {
+    "id": "kernel-same-second-collision",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if expected == actual {",
+        "after": "if expected.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) == actual.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) {"
+      }
+    ]
+  },
+  {
+    "id": "identity-upgrade-not-durable",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "UPDATE child_identities SET start_time=? WHERE handle=?",
+        "after": "UPDATE child_identities SET start_time=start_time WHERE handle=?2 AND ?1 IS NOT NULL"
+      }
+    ]
+  },
+  {
+    "id": "open-missing-cwd",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "#[serde(deserialize_with = \"Option::<String>::deserialize\")]",
+        "after": "#[serde(default)]"
+      }
+    ]
   }
 ]
