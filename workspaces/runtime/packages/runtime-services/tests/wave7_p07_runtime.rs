@@ -958,10 +958,15 @@ fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         }
         store
             .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
-                    rusqlite::params!["agent:item", task.to_string()],
-                )?;
+                if bad != "agent" {
+                    tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", rusqlite::params!["agent:item",task.to_string()])?;
+                }
+                let mut valid = corpus()["connection"][0]["before"].clone();
+                valid["id"] = json!("z-agent");
+                valid["rootId"] = json!("z-agent");
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES('z-agent',?1)",[valid.to_string()])?;
+                let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
+                tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('z-agent:item',?1)",[valid_task.to_string()])?;
                 if bad == "receipt" {
                     tx.execute(
                         "INSERT INTO runtime_tool_requests(id,record) VALUES('thread:item',?1)",
@@ -990,6 +995,39 @@ fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         assert!(
             error.contains(table) && error.contains(id),
             "{bad}: {error}"
+        );
+        let mut later_agent = false;
+        let mut later_task = false;
+        let mut next_pass_error = false;
+        for _ in 0..8 {
+            match load_recovery_jobs(&store, "default", &mut cursor) {
+                Ok(jobs) => {
+                    for job in jobs {
+                        match job {
+                            RecoveryJob::Connection { snapshot, .. } => {
+                                later_agent |= snapshot.record()["id"] == "z-agent"
+                            }
+                            RecoveryJob::Task(snapshot) => {
+                                later_task |= snapshot.task()["id"] == "z-agent:item"
+                            }
+                            RecoveryJob::Turn(_) => panic!("unexpected turn"),
+                        }
+                    }
+                }
+                Err(repeated) => {
+                    assert_eq!(repeated.to_string(), error);
+                    assert!(
+                        later_agent && later_task,
+                        "invalid {bad} must not pin either table"
+                    );
+                    next_pass_error = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            next_pass_error,
+            "strict validation must report the invalid {bad} again on the next pass"
         );
     }
 }
@@ -1077,8 +1115,42 @@ fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
 
 #[test]
 fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
+    // Include the receipt records and sync publication contents, not just row
+    // counts: rollback must restore existing rows as well as remove new ones.
+    fn durable_rows(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        let db = store.read().expect("read evidence");
+        [
+            "runtime_agents",
+            "runtime_events",
+            "runtime_items",
+            "runtime_execution_attempts",
+            "runtime_execution_runs",
+            "runtime_execution_inputs",
+            "runtime_operation_receipts",
+            "runtime_completed_turns",
+            "sync_entities",
+            "sync_documents",
+            "sync_versions",
+            "sync_generation",
+            "sync_entity_meta",
+        ]
+        .into_iter()
+        .map(|table| {
+            let mut stmt = db
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .expect("evidence query");
+            let columns = stmt.column_count();
+            stmt.query_map([], |row| {
+                (0..columns).map(|column| row.get(column)).collect()
+            })
+            .expect("evidence rows")
+            .collect::<Result<_, _>>()
+            .expect("evidence values")
+        })
+        .collect()
+    }
     for native_status in ["completed", "failed", "interrupted"] {
-        for fail in [false, true] {
+        for failure in ["none", "first-message", "terminal-delivery"] {
             let root = fixture();
             let store = RuntimeStore::open(Some(root.path())).expect("store");
             let before = &corpus()["accepted_start"]["before"];
@@ -1087,6 +1159,7 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','original input','uncertain',1,0,NULL,NULL)",[])?;
             Ok(())
         }).expect("input");
+            let original_rows = durable_rows(&store);
             let messages = json!([
                 {"id":"buffered","type":"agentMessage","text":""},
                 {"id":"question","type":"agentMessage","text":"Choose?","questions":[{"title":"Which?","options":["one","two"]}]}
@@ -1107,14 +1180,16 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                 assert_eq!(t, &turn);
                 called.push(item.clone());
                 a["events"] = json!(a["events"].as_u64().expect("counter") + 1);
-                if fail {
+                if failure == "first-message" {
                     return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
                 }
                 Ok(Some(
                 studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default(),
             ))
             };
-            let mut delivery = RootDelivery { fail: false };
+            let mut delivery = RootDelivery {
+                fail: failure == "terminal-delivery",
+            };
             let mut completion = LifecycleCompletionWriter {
                 at: 1000.,
                 delivery: &mut delivery,
@@ -1133,8 +1208,18 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                 &scope(),
                 RecoveryAction::AcceptStart { turn: turn.clone() },
             );
-            assert_eq!(outcome.is_err(), fail);
-            if fail {
+            assert_eq!(outcome.is_err(), failure != "none");
+            if failure != "none" {
+                assert_eq!(
+                    completion.stream_update.is_some(),
+                    failure == "terminal-delivery",
+                    "late delivery failure follows successful staged messages"
+                );
+                assert_eq!(
+                    durable_rows(&store),
+                    original_rows,
+                    "{native_status}/{failure}: receipts and publication must roll back"
+                );
                 assert_eq!(agent(&store), *before);
                 assert_eq!(
                     store
@@ -1155,8 +1240,35 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
                 );
                 assert_eq!(agent(&store)["inFlight"], false);
                 assert_eq!(agent(&store)["events"], 3);
-                assert_eq!(json!(called), messages);
+                let committed_rows = durable_rows(&store);
+                let replay = RecoveryStore {
+                    store: &store,
+                    connection_current: &|_| true,
+                    completion: &mut completion,
+                    at: 1000.,
+                    observation_current: &|_| Some(observation()),
+                }
+                .apply(
+                    &RecoverySnapshot::from_record(before.clone()).expect("snapshot"),
+                    &scope(),
+                    RecoveryAction::AcceptStart { turn: turn.clone() },
+                )
+                .expect("committed replay");
+                assert_eq!(replay, RecoveryOutcome::Superseded);
+                assert_eq!(
+                    durable_rows(&store),
+                    committed_rows,
+                    "replay must not repeat receipt or publication writes"
+                );
             }
+            assert_eq!(
+                json!(called),
+                if failure == "first-message" {
+                    json!([messages[0]])
+                } else {
+                    messages
+                }
+            );
         }
     }
 }

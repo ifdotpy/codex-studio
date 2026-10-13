@@ -184,7 +184,10 @@ pub fn load_recovery_jobs(
 ) -> Result<Vec<RecoveryJob>, RecoveryError> {
     let db = store.read()?;
     let mut jobs = Vec::new();
-    if cursor.task_page {
+    let task_page = cursor.task_page;
+    // A located row refusal must not pin either table's disposable scan state.
+    cursor.task_page = !task_page;
+    if task_page {
         let mut stmt=db.prepare("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
             .query_map(
@@ -201,6 +204,7 @@ pub fn load_recovery_jobs(
             .collect::<Result<Vec<_>, _>>()?;
         let full = rows.len() == MAX_SCAN_JOBS;
         for (id, task, agent, agent_id) in rows {
+            cursor.tasks = id.clone();
             let task: Value =
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
             let agent: Value = serde_json::from_str(&agent)
@@ -210,7 +214,6 @@ pub fn load_recovery_jobs(
             let snapshot = TaskRecoverySnapshot::from_stored_records(
                 &agent_id, &id, agent, task, aliases, receipts,
             )?;
-            cursor.tasks = id;
             if snapshot.agent().eligibility().task_owner {
                 jobs.push(RecoveryJob::Task(snapshot));
                 break;
@@ -229,12 +232,12 @@ pub fn load_recovery_jobs(
             .collect::<Result<Vec<_>, _>>()?;
         let full = rows.len() == MAX_SCAN_JOBS;
         for (id, raw) in rows {
+            cursor.agents = id.clone();
             let snapshot = RecoverySnapshot::from_record(
                 serde_json::from_str(&raw).map_err(|_| invalid_record("runtime_agents", &id))?,
             )
             .map_err(|_| invalid_record("runtime_agents", &id))?;
             let e = snapshot.eligibility();
-            cursor.agents = id;
             if e.connection {
                 jobs.push(RecoveryJob::Connection {
                     snapshot,
@@ -251,7 +254,6 @@ pub fn load_recovery_jobs(
             cursor.agents.clear();
         }
     }
-    cursor.task_page = !cursor.task_page;
     Ok(jobs)
 }
 
