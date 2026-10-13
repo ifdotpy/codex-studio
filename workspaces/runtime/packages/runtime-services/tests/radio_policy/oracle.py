@@ -22,9 +22,8 @@ spec.loader.exec_module(fixture)
 Radio = fixture.Radio
 
 
-def records_for(radio):
-    db = radio.runtime.db()
-    try:
+def records_for(radio, recipient_id):
+    with radio.runtime.db() as db:
         rooms = {key: raw for key, raw in db.execute(
             "SELECT id,record FROM runtime_rooms WHERE id GLOB 'radio:*' "
             "AND json_type(record,'$.radio')='object' ORDER BY id")}
@@ -46,18 +45,16 @@ def records_for(radio):
             if isinstance(path, str) and path.strip():
                 resolved[path] = _path(path)
         return {
-            "recipient_id": radio.room()["radio"]["active"]["agentId"],
+            "recipient_id": recipient_id,
             "rooms": rooms,
             "agents": agents,
             "projects": projects,
             "resolved_paths": resolved,
         }
-    finally:
-        db.close()
 
 
 def evaluate(case):
-    radio = Radio("test_radio_policy")
+    radio = Radio("test_two_replies_share_all_text_and_stop")
     radio.setUp()
     try:
         radio.action("send", text="A shared instruction")
@@ -130,7 +127,7 @@ def evaluate(case):
             "allowed": result is None,
             "denial": result,
             "binding": binding,
-            "records": records_for(radio),
+            "records": records_for(radio, agent_id),
             "event_id": active["eventId"],
         }
     finally:
