@@ -1,12 +1,11 @@
-//! Persistence for provider notification dispatch and transcript writes.
+//! Persistence for provider notification dispatch.
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 use crate::repositories::transcript::{TranscriptItem, TranscriptRepository, TranscriptStoreError};
-use crate::{StoreError, StoreResult};
+use crate::{EventWriteReceipt, EventWriteRepository, StoreError, StoreResult};
 
-const ITEM_PREVIEW_CHARS: usize = 20_000;
 const EVENT_META_TABLE: &[crate::schema::TableRequirement] = &[crate::schema::TableRequirement {
     name: "runtime_event_meta",
     columns: &["id", "record"],
@@ -62,15 +61,8 @@ pub(crate) const REQUIREMENTS: crate::schema::SchemaRequirements =
 
 impl NotificationDispatchRepository {
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
-        let raw = transaction
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [agent],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        raw.map(|raw| decode_object(&raw, "runtime_agents"))
-            .transpose()
+        TranscriptRepository::agent(transaction, agent)
+            .map_err(|error| map_transcript_error(error, "runtime_agents", agent))
     }
 
     pub fn put_agent_record(
@@ -79,12 +71,15 @@ impl NotificationDispatchRepository {
         record: &Value,
     ) -> StoreResult<()> {
         if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(agent) {
-            return Err(invalid_record("runtime_agents"));
+            return Err(invalid_record("runtime_agents", agent));
         }
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE runtime_agents SET record=?2 WHERE id=?1",
             params![agent, serde_json::to_string(record)?],
         )?;
+        if changed != 1 {
+            return Err(invalid_record("runtime_agents", agent));
+        }
         Ok(())
     }
 
@@ -93,15 +88,23 @@ impl NotificationDispatchRepository {
         agent: &str,
         id: &str,
     ) -> StoreResult<Option<(Value, f64)>> {
-        let row = transaction
-            .query_row(
-                "SELECT record,created FROM runtime_items WHERE id=?1 AND agent=?2",
-                params![id, agent],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
-            )
-            .optional()?;
-        row.map(|(raw, created)| Ok((decode_object(&raw, "runtime_items")?, created)))
-            .transpose()
+        let item = TranscriptRepository::item(transaction, agent, id)
+            .map_err(|error| map_transcript_error(error, "runtime_items", id))?;
+        item.map(|item| {
+            validate_item(&item, agent)?;
+            let created = transaction
+                .query_row(
+                    "SELECT created FROM runtime_items WHERE id=?1 AND agent=?2",
+                    params![id, agent],
+                    |row| row.get::<_, f64>(0),
+                )
+                .map_err(|_| invalid_record("runtime_items", id))?;
+            if !created.is_finite() || created < 0.0 {
+                return Err(invalid_record("runtime_items", id));
+            }
+            Ok((item.record, created))
+        })
+        .transpose()
     }
 
     pub fn full_text(
@@ -116,10 +119,7 @@ impl NotificationDispatchRepository {
                 record: record.clone(),
             },
         )
-        .map_err(|error| match error {
-            TranscriptStoreError::Sqlite(error) => StoreError::Sqlite(error),
-            TranscriptStoreError::InvalidStoredObject(object) => invalid_record(object),
-        })
+        .map_err(|error| map_transcript_error(error, "runtime_items", id))
     }
 
     pub fn put_transcript_item(
@@ -129,43 +129,10 @@ impl NotificationDispatchRepository {
         record: &Value,
         created: f64,
         text: &str,
+        index_search: bool,
     ) -> StoreResult<()> {
-        let has_fulltext = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_item_fulltext')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if text.chars().count() > ITEM_PREVIEW_CHARS && !has_fulltext {
-            return Err(StoreError::SchemaMismatch(
-                "runtime_item_fulltext is required for a long transcript item".to_owned(),
-            ));
-        }
-        let existing_agent = transaction
-            .query_row("SELECT agent FROM runtime_items WHERE id=?1", [id], |row| {
-                row.get::<_, String>(0)
-            })
-            .optional()?;
-        if existing_agent
-            .as_deref()
-            .is_some_and(|owner| owner != agent)
-        {
-            return Err(invalid_record("runtime_items"));
-        }
-        transaction.execute(
-            "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record,created=excluded.created",
-            params![id, agent, serde_json::to_string(record)?, created],
-        )?;
-        if text.chars().count() > ITEM_PREVIEW_CHARS {
-            transaction.execute(
-                "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
-                 ON CONFLICT(id) DO UPDATE SET body=excluded.body",
-                params![id, text],
-            )?;
-        } else if has_fulltext {
-            transaction.execute("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
-        }
-        Ok(())
+        TranscriptRepository::put_item(transaction, id, agent, record, created, text, index_search)
+            .map_err(|error| map_transcript_error(error, "runtime_items", id))
     }
 
     pub fn link_transcript_item_to_event(
@@ -174,18 +141,26 @@ impl NotificationDispatchRepository {
         event_id: &str,
         item_id: &str,
     ) -> StoreResult<()> {
-        let has_event_meta = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if has_event_meta {
-            transaction.execute(
-                "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1) \
-                 WHERE id=?2 AND EXISTS (SELECT 1 FROM runtime_events WHERE id=?2 AND agent=?3)",
-                params![item_id, event_id, agent],
-            )?;
+        let meta: Option<String> = transaction
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id=?1 AND EXISTS \
+                 (SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2)",
+                params![event_id, agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(meta) = meta else {
+            return Err(invalid_record("runtime_event_meta", event_id));
+        };
+        let parsed: Value = serde_json::from_str(&meta)
+            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
+        if !parsed.is_object() {
+            return Err(invalid_record("runtime_event_meta", event_id));
         }
+        transaction.execute(
+            "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1,'$.modelEventProjection',1) WHERE id=?2",
+            params![item_id, event_id],
+        )?;
         Ok(())
     }
 
@@ -194,26 +169,56 @@ impl NotificationDispatchRepository {
         agent: &str,
         event_id: &str,
     ) -> StoreResult<Option<(String, String, f64)>> {
-        Ok(transaction
+        let event = transaction
             .query_row(
                 "SELECT kind,text,created FROM runtime_events WHERE id=?1 AND agent=?2",
                 params![event_id, agent],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                },
             )
-            .optional()?)
+            .optional()
+            .map_err(|error| match error {
+                rusqlite::Error::InvalidColumnType(..)
+                | rusqlite::Error::FromSqlConversionFailure(..) => {
+                    invalid_record("runtime_events", event_id)
+                }
+                error => StoreError::Sqlite(error),
+            })?;
+        if event
+            .as_ref()
+            .is_some_and(|(_, _, created)| !created.is_finite() || *created < 0.0)
+        {
+            return Err(invalid_record("runtime_events", event_id));
+        }
+        Ok(event)
+    }
+
+    pub fn event_metadata(transaction: &Transaction<'_>, event_id: &str) -> StoreResult<Value> {
+        let raw: String = transaction
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id=?1",
+                [event_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
+        let value: Value = serde_json::from_str(&raw)
+            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
+        if !value.is_object() {
+            return Err(invalid_record("runtime_event_meta", event_id));
+        }
+        Ok(value)
     }
 
     pub fn notification_receipt(
         transaction: &Transaction<'_>,
         id: &str,
-    ) -> StoreResult<Option<(String, String)>> {
-        Ok(transaction
-            .query_row(
-                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?)
+    ) -> StoreResult<Option<EventWriteReceipt>> {
+        EventWriteRepository::receipt(transaction, id)
     }
 
     pub fn put_notification_receipt(
@@ -222,22 +227,35 @@ impl NotificationDispatchRepository {
         signature: &str,
         result: &str,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-            params![id, signature, result],
-        )?;
-        Ok(())
+        EventWriteRepository::put_receipt(transaction, id, signature, result)
     }
 }
 
-fn decode_object(raw: &str, object: &'static str) -> StoreResult<Value> {
-    let value: Value = serde_json::from_str(raw)?;
-    if !value.is_object() {
-        return Err(invalid_record(object));
+fn validate_item(item: &TranscriptItem, agent: &str) -> StoreResult<()> {
+    let role = item.record.get("role").and_then(Value::as_str);
+    if item.record.get("id").and_then(Value::as_str) != Some(item.id.as_str())
+        || !matches!(role, Some("assistant" | "user"))
+        || item
+            .record
+            .get("text")
+            .is_some_and(|text| !text.is_string())
+    {
+        return Err(invalid_record("runtime_items", &item.id));
     }
-    Ok(value)
+    let expected_prefix = format!("{agent}:");
+    if !item.id.starts_with(&expected_prefix) {
+        return Err(invalid_record("runtime_items", &item.id));
+    }
+    Ok(())
 }
 
-fn invalid_record(object: &'static str) -> StoreError {
-    StoreError::SchemaMismatch(format!("invalid stored object {object}"))
+fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &str) -> StoreError {
+    match error {
+        TranscriptStoreError::Sqlite(error) => StoreError::Sqlite(error),
+        TranscriptStoreError::InvalidStoredObject(_) => invalid_record(table, id),
+    }
+}
+
+fn invalid_record(table: &str, id: &str) -> StoreError {
+    StoreError::SchemaMismatch(format!("invalid stored object {table}:{id}"))
 }

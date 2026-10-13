@@ -63,7 +63,10 @@ pub enum ProviderSessionEvent {
     UnknownOutcome {
         ticket: RequestTicket,
     },
-    Inbound(Inbound),
+    Inbound {
+        inbound: Inbound,
+        cursor: u64,
+    },
     Closed {
         generation: u64,
     },
@@ -81,6 +84,8 @@ pub enum ProviderSessionError {
     Session(#[from] SessionError),
     #[error("provider session is closed")]
     Closed,
+    #[error("provider delivery cursor is exhausted")]
+    CursorExhausted,
 }
 
 enum ReadEvent {
@@ -101,6 +106,8 @@ pub struct ProviderSession {
     started: Instant,
     transport_failed: bool,
     reader_ended: bool,
+    next_inbound_cursor: u64,
+    cursor_exhausted: bool,
 }
 
 impl ProviderSession {
@@ -149,6 +156,8 @@ impl ProviderSession {
             started,
             transport_failed: false,
             reader_ended: false,
+            next_inbound_cursor: 0,
+            cursor_exhausted: false,
         };
         session.apply_actions(initial_actions);
         loop {
@@ -213,6 +222,9 @@ impl ProviderSession {
         loop {
             if let Some(event) = self.queued.pop_front() {
                 return Ok(event);
+            }
+            if self.cursor_exhausted {
+                return Err(ProviderSessionError::CursorExhausted);
             }
             if self.reader_ended {
                 return Err(ProviderSessionError::Closed);
@@ -292,8 +304,15 @@ impl ProviderSession {
                     });
                 }
                 Action::Dispatch(frame) => {
-                    self.queued
-                        .push_back(ProviderSessionEvent::Inbound(to_inbound(frame)));
+                    if let Some(cursor) = self.next_inbound_cursor.checked_add(1) {
+                        self.next_inbound_cursor = cursor;
+                        self.queued.push_back(ProviderSessionEvent::Inbound {
+                            inbound: to_inbound(frame),
+                            cursor,
+                        });
+                    } else {
+                        self.cursor_exhausted = true;
+                    }
                 }
                 Action::GenerationClosed { generation } => self
                     .queued
@@ -301,6 +320,11 @@ impl ProviderSession {
                 Action::ThreadReleased { .. } => {}
             }
         }
+    }
+
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.state.generation()
     }
 
     fn transport_lost(&mut self) {

@@ -64,6 +64,7 @@ fn connect(mode: &str) -> ProviderSession {
 #[test]
 fn fake_provider_initializes_exchanges_request_and_routes_notifications() {
     let mut session = connect("normal");
+    assert_eq!(session.generation(), 1);
     let ticket = session
         .send_request(Method::ModelList, json!({"limit": 1}), None, false, 10_000)
         .expect("request should be submitted");
@@ -80,7 +81,10 @@ fn fake_provider_initializes_exchanges_request_and_routes_notifications() {
                 assert_eq!(result, json!({"models": []}));
                 got_reply = true;
             }
-            ProviderSessionEvent::Inbound(studio_runtime_providers::Inbound::Notification(_)) => {
+            ProviderSessionEvent::Inbound {
+                inbound: studio_runtime_providers::Inbound::Notification(_),
+                cursor: 1,
+            } => {
                 got_notification = true;
             }
             other => panic!("unexpected provider event: {other:?}"),
