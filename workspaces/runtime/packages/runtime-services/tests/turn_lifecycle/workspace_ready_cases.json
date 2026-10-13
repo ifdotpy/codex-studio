@@ -1,0 +1,1822 @@
+[
+  {
+    "name": "None-target-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_running",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "local_mutation",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_ready",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "recovery_required",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-target-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "completed",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_running",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "local_mutation",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_ready",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "recovery_required",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "None-other-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": null,
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "completed",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_running",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "local_mutation",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_ready",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "recovery_required",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-target-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "completed",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "capture_running",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "local_mutation",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "provider_ready",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "recovery_required",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "capture-other-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "capture",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "capture",
+        "phase": "completed",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "capture_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "capture_running",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "local_mutation",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "provider_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "provider_ready",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "recovery_required",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-target-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "completed",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "capture_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "capture_running",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "local_mutation",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "provider_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "provider_ready",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "recovery_required",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "checkpoint-other-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "checkpoint",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "checkpoint",
+        "phase": "completed",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "capture_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "capture_running",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "local_mutation",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "provider_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "provider_ready",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "recovery_required",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-target-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "completed",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "capture_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "capture_running",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "local_mutation",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "provider_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "provider_ready",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "recovery_required",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "restore-other-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "restore",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "restore",
+        "phase": "completed",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "capture_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "capture_running",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "local_mutation",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "provider_pending",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "provider_ready",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "recovery_required",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-target-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "target",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "completed",
+        "cwd": "target",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-capture_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "capture_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-capture_running",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "capture_running",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-local_mutation",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "local_mutation",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-provider_pending",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "provider_pending",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-provider_ready",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "provider_ready",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-recovery_required",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "recovery_required",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  },
+  {
+    "name": "branch-other-completed",
+    "actor": {
+      "id": "target",
+      "cwd": "target"
+    },
+    "agents": [
+      {
+        "id": "other",
+        "cwd": "other",
+        "workspaceOperation": "branch",
+        "workspaceReservationId": "op"
+      }
+    ],
+    "operations": [
+      {
+        "id": "op",
+        "agent": "other",
+        "kind": "branch",
+        "phase": "completed",
+        "cwd": "other",
+        "created": 1.0,
+        "turnId": null
+      }
+    ]
+  }
+]
