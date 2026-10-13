@@ -18,6 +18,7 @@ pub use repositories::analytics::{
     SessionCostError,
 };
 pub use repositories::budget;
+pub use repositories::capability_reads::CapabilityReadsRepository;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };

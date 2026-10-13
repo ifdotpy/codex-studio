@@ -2,6 +2,7 @@ pub mod account_state;
 pub(crate) mod agents;
 pub mod analytics;
 pub mod budget;
+pub mod capability_reads;
 pub(crate) mod checkpoints;
 pub(crate) mod claude_controls;
 pub(crate) mod claude_records;

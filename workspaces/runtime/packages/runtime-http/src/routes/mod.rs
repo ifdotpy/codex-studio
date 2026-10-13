@@ -1,6 +1,7 @@
 mod account_login;
 mod agents_create;
 mod catalog;
+mod catalog_agent;
 mod checkpoints;
 mod claude_controls;
 mod claude_login;
