@@ -502,7 +502,7 @@ stay under the runner temporary directory. The facade job downloads the Just
 version before invoking it.
 
 Current hosted checks run on pull requests and pushes to `main`. The server
-workflow runs the 26 audited automated suites, the bridge suite, and one focused
+workflow runs the 27 audited automated suites, the bridge suite, and one focused
 Python suite; it does not run the whole default server run. Heavy and load-class
 suites are excluded from hosted CI. The audited automation step was restored
 after its timing-sensitive suites were made deterministic in PR #80.
