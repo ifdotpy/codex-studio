@@ -1645,6 +1645,8 @@ def run_suite(
     trace_path = trace_root / f"{path.stem}.jsonl"
     suite_environment = environment.copy()
     suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    # Preserve complete unittest records and HTTP attribution across runner output.
+    suite_environment["CODEX_SERVER_TEST_JOBS"] = "1"
     skipped_for_service = missing_service_tests_for_suite(relative)
     if skipped_for_service:
         suite_environment["STUDIO_HTTP_LEDGER_SKIP_TESTS"] = json.dumps({
@@ -1685,13 +1687,14 @@ def run_suite(
         "failed": sum(case["status"] in {"fail", "error"} for case in cases),
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
-    ran_summary = re.search(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
+    ran_summaries = re.findall(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
+    ran_count = sum(map(int, ran_summaries))
     suite_summary = re.search(
         r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
         log_text,
     )
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
-    if ran_summary is None or suite_summary is None:
+    if not ran_summaries or suite_summary is None:
         raise RuntimeError(f"consumer result summary missing in {relative}")
     expected_reported_counts = {
         "passed": observed_counts["passed"] + int(suite_summary.group(1)),
@@ -1702,13 +1705,13 @@ def run_suite(
     }
     reported_counts = {name: result.get(name, 0) or 0 for name in expected_reported_counts}
     if (
-        sum(observed_counts.values()) != int(ran_summary.group(1))
+        sum(observed_counts.values()) != ran_count
         or expected_reported_counts != reported_counts
     ):
         raise RuntimeError(
             f"consumer result-count mismatch in {relative}: "
             f"parsed={observed_counts}, reported={reported_counts}, "
-            f"expected-reported={expected_reported_counts}, ran={ran_summary.group(1)}"
+            f"expected-reported={expected_reported_counts}, ran={ran_count}"
         )
     requests: list[dict[str, Any]] = []
     if trace_path.exists():
