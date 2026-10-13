@@ -48,6 +48,7 @@ pub mod recovery_history;
 pub mod recovery_policy;
 pub mod recovery_store;
 pub mod remote_transport;
+pub mod resource_notify;
 pub mod rules;
 pub mod scheduler;
 pub mod submit_gates;
