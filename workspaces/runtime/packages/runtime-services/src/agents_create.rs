@@ -1,4 +1,6 @@
-//! Persisted agent rename behavior.
+//! Persisted agent creation and management.
+mod operations;
+pub use operations::*;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
