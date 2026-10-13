@@ -119,7 +119,9 @@ or read the mount table:
   receipt has no result after its attempt ended.
 - `not_imported`: no record; the first layr chat imports the Mac folder.
 
-The sidebar shows the LAYR chip only in the `ready` state; the other states show nothing.
+The sidebar shows the LAYR chip only in the `ready` state, and only while this server has a
+layr chat of the project (`has_layr_chats`): an imported project whose chats run natively gives
+no layr information. The other states show nothing.
 
 Each import attempt removes `import-error.json` when it gets the project lock and
 writes it again if the attempt fails. The project entity changes when an attempt

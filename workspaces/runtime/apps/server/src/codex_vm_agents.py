@@ -114,9 +114,26 @@ def project_vault(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | 
     return vault_view(Path(state_dir), project_layr_id(project)) if state_dir else None
 
 
+def has_layr_chats(runtime: Any, project: Mapping[str, Any]) -> bool:
+    """Whether a chat of this project runs in the VM on this server. layr works for a project
+    only through such chats, so without one the sidebar shows no LAYR chip."""
+    layr_id = project_layr_id(project)
+    # A new layr chat has its workspace mode before its first preparation sets the VM fields.
+    with runtime.read_db() as db:
+        row = db.execute(
+            "SELECT 1 FROM runtime_agents WHERE (json_extract(record,'$.executionMode')='vm' "
+            "OR json_extract(record,'$.workspaceMode')='layr') AND json_extract(record,'$.deletedAt') IS NULL "
+            "AND (json_extract(record,'$.layrProjectId')=? OR json_extract(record,'$.projectId')=? "
+            "OR json_extract(record,'$.hostProjectPath')=? OR json_extract(record,'$.cwd')=? "
+            "OR json_extract(record,'$.cwd') LIKE ?) LIMIT 1",
+            (layr_id, project.get("id"), project.get("path"), project.get("path"),
+             "%/layr/projects/" + layr_id + "/%")).fetchone()
+    return row is not None
+
+
 def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any]:
     readiness = project_readiness(runtime, project)
-    if not readiness:
+    if not readiness or (readiness["state"] == "ready" and not has_layr_chats(runtime, project)):
         return dict(project)
     view = {**project, "layrReadiness": readiness}
     if readiness["state"] == "ready":
