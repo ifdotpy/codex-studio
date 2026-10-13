@@ -663,7 +663,7 @@ mod tests {
 
     #[tokio::test]
     async fn command_receipt_cannot_cancel_a_taken_catalog_event() {
-        let factory = Arc::new(Script(vec![], 0));
+        let factory = Arc::new(Script::new(vec![], 0));
         let mut session = SessionHandle::open(
             factory,
             ProviderHandle::for_account("catalog"),
@@ -733,7 +733,11 @@ mod tests {
             .expect("reader");
     }
 
-    struct Script(Vec<Value>, usize);
+    struct Script {
+        pages: Vec<Value>,
+        flood: usize,
+        panic_on_exit: bool,
+    }
     impl ProviderTaskFactory for Script {
         fn open(
             &self,
@@ -741,8 +745,9 @@ mod tests {
             options: OpenOptions,
             shutdown: Shutdown,
         ) -> OpenFuture<'_> {
-            let pages = self.0.clone();
-            let flood = self.1;
+            let pages = self.pages.clone();
+            let flood = self.flood;
+            let panic_on_exit = self.panic_on_exit;
             Box::pin(async move {
                 let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(LANE_CAPACITY);
                 let (entries, journal) = mpsc::channel(LANE_CAPACITY);
@@ -837,6 +842,9 @@ mod tests {
                         }
                     };
                     tokio::select! { _ = serve => {}, _ = stop.changed() => {} }
+                    if panic_on_exit {
+                        panic!("injected provider task join failure");
+                    }
                     drop(state);
                     TaskExit {
                         result: Ok(()),
@@ -850,9 +858,26 @@ mod tests {
             })
         }
     }
+    impl Script {
+        fn new(pages: Vec<Value>, flood: usize) -> Self {
+            Self {
+                pages,
+                flood,
+                panic_on_exit: false,
+            }
+        }
+
+        fn panics_on_exit(pages: Vec<Value>) -> Self {
+            Self {
+                pages,
+                flood: 0,
+                panic_on_exit: true,
+            }
+        }
+    }
     async fn scripted(pages: Vec<Value>) -> Result<Value, ()> {
         read_session(
-            Arc::new(Script(pages, 0)),
+            Arc::new(Script::new(pages, 0)),
             ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
             Instant::now(),
         )
@@ -962,8 +987,55 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn missing_reply_uses_the_exchange_deadline() {
         let started = Instant::now();
-        assert_eq!(scripted(vec![]).await, Err(()));
+        let service = ModelCatalogService::new(None);
+        let result = read_session_with_shutdown(
+            Arc::new(Script::new(vec![], 0)),
+            ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
+            started,
+            service.0.stop.clone(),
+            service.0.cleanup_error.clone(),
+        )
+        .await;
+        assert_eq!(result, Err(()));
         assert_eq!(started.elapsed(), CATALOG_TIMEOUT);
+        assert!(
+            service
+                .0
+                .cleanup_error
+                .lock()
+                .expect("cleanup report")
+                .is_none()
+        );
+        service
+            .shutdown()
+            .await
+            .expect("request timeout was cleaned up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_task_join_failure_fails_catalog_shutdown() {
+        let service = ModelCatalogService::new(None);
+        let result = read_session_with_shutdown(
+            Arc::new(Script::panics_on_exit(vec![json!({
+                "data": [],
+                "nextCursor": null
+            })])),
+            ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
+            Instant::now(),
+            service.0.stop.clone(),
+            service.0.cleanup_error.clone(),
+        )
+        .await;
+        assert_eq!(result, Err(()));
+        let error = service
+            .shutdown()
+            .await
+            .expect_err("unconfirmed provider cleanup must fail catalog shutdown");
+        assert!(
+            error
+                .to_string()
+                .contains("provider task exited without a cleanup receipt")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1083,7 +1155,7 @@ mod tests {
         let page = json!({"data":[],"nextCursor":null});
         assert_eq!(
             read_session(
-                Arc::new(Script(vec![page.clone()], LANE_CAPACITY * 4)),
+                Arc::new(Script::new(vec![page.clone()], LANE_CAPACITY * 4)),
                 ProviderLaunchSpec::new(
                     vec!["scripted".into()],
                     BTreeMap::new(),
