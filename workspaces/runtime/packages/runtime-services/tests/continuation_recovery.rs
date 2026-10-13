@@ -196,7 +196,8 @@ fn foreign_followup_identity_refuses_and_rolls_back() {
     assert_eq!(read(&store), before);
 }
 
-fn wake_state(store: &RuntimeStore) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
+type WakeState = (Vec<(String, String, String)>, Vec<(String, String)>);
+fn wake_state(store: &RuntimeStore) -> WakeState {
     let db = store.read().expect("reader");
     let mut events = db
         .prepare("SELECT id,status,text FROM runtime_events ORDER BY id")
