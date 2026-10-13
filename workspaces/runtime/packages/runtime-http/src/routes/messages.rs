@@ -5,7 +5,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
-use studio_runtime_services::coordination::{self, CoordinationError, PostMessage};
+use studio_runtime_services::coordination::{self, CoordinationError};
 
 use super::extractors::{ApiJson, QueryParams};
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
@@ -37,6 +37,10 @@ struct MessagePost {
     id: String,
     room: String,
     text: String,
+    #[serde(default = "default_delivery")]
+    delivery: String,
+    #[serde(default)]
+    assets: Vec<Value>,
 }
 
 pub(crate) fn routes() -> RouteGroup {
@@ -130,21 +134,26 @@ async fn post_message(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
     let result = tokio::task::spawn_blocking(move || {
-        let value = store
+        let posted = store
             .transaction_with_error(|transaction| {
-                coordination::post_message(
+                coordination::post_message_with_delivery(
                     transaction,
-                    PostMessage {
+                    coordination::PostManagedMessage {
                         room: &body.room,
                         id: &body.id,
                         text: &body.text,
+                        delivery: &body.delivery,
+                        assets: &body.assets,
                     },
                 )
             })
             .map_err(coordination_error)?;
-        let value =
-            super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(value)?;
-        wake.notify_one();
+        let value = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
+            posted.receipt,
+        )?;
+        if posted.event_inserted {
+            wake.notify_one();
+        }
         Ok::<Value, ApiError>(value)
     })
     .await
@@ -176,6 +185,10 @@ async fn delete_room() -> Result<Json<Value>, ApiError> {
 
 fn default_connected() -> bool {
     true
+}
+
+fn default_delivery() -> String {
+    "queue".to_owned()
 }
 
 fn coordination_error(error: CoordinationError) -> ApiError {
