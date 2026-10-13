@@ -26,7 +26,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/complaints", OperationStatus::Implemented, complaints),
         post(
             "/api/questions/delete",
-            OperationStatus::Implemented,
+            OperationStatus::partial(&QUESTION_ANSWER_DEPENDENCY),
             delete_question,
         ),
         post(
