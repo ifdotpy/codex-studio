@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import hashlib
 import importlib.util
 import json
@@ -14,9 +16,10 @@ import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -47,7 +50,7 @@ def seed_python_agent(backend) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         agent = runtime.create(
             {

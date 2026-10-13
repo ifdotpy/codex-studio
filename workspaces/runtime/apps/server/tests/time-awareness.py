@@ -5,10 +5,10 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -144,7 +144,7 @@ class TimeAwareness(unittest.TestCase):
         json.loads(success["contentItems"][0]["text"])
         self.assertIn("finalized at", error["contentItems"][-1]["text"])
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
         self.assertEqual(success, self.tool(agent))
         self.assertEqual(error, self.tool(agent, "does_not_exist", "clock-error"))
 

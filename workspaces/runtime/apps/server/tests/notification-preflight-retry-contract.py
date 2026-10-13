@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """A preflight busy retry replaces the callback connection before applying work."""
 
+from test_isolation import isolate_supervisor_environment
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import io
 import json
@@ -36,7 +38,7 @@ class NotificationPreflightRetry(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="notification-preflight-retry-")
         self.addCleanup(temporary.cleanup)
         directory = temporary.name
-        runtime = QuietRuntime(Path(directory), server_factory=object)
+        runtime = make_runtime(QuietRuntime, Path(directory), server_factory=object)
         self.addCleanup(runtime.close)
         agent = runtime.create({"name": "Fixture", "cwd": directory, "prompt": ""},
                                draft=True, defer=True)
@@ -158,7 +160,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                 raise AssertionError("test did not release the live scheduler")
 
         with patch.object(Runtime, "schedule", held_schedule):
-            runtime = Runtime(Path(directory), server_factory=object)
+            runtime = make_runtime(Runtime, Path(directory), server_factory=object)
         self.addCleanup(runtime.close)
         self.addCleanup(scheduler_release.set)
         self.assertTrue(scheduler_started.wait(HANG_GUARD_SECONDS))

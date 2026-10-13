@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Native review admission and reservation use isolated Studio databases."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -301,7 +303,7 @@ class AgentReviewContract(unittest.TestCase):
             self.assertEqual(child['status'], 'starting')
             self.assertIsNone(claim(self.runtime, db, child))
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.WorkspaceServer)
         child = self.runtime.agent(child['id'])
         with self.runtime.lock, self.runtime.db() as db:
             resumed = claim(self.runtime, db, child)

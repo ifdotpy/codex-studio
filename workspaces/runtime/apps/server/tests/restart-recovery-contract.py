@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Restart preserves admitted work without replaying unknown operations."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime, runtime_environment
 
 import copy
 import concurrent.futures
@@ -53,9 +55,8 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         native = copy.deepcopy(self.server.native)
         self.runtime.close()
         env = {'CODEX_AGENTS_SUPERVISOR_MODE': '1'} if supervisor else {}
-        with patch.dict(os.environ, env):
-            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
-            self.runtime.supervisor_mode = os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') == '1'
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer, environment_overrides=env)
+        self.runtime.supervisor_mode = os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') == '1'
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.supervisor_mode = self.runtime.supervisor_mode
@@ -95,7 +96,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertTrue(a['autoWake'])
         key = a['restartRecovery']['eventId']
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         with self.runtime.db() as db:
             events = db.execute("SELECT id,status FROM runtime_events WHERE id=?", (key,)).fetchall()
@@ -179,8 +180,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
     def test_startup_opens_pending_accounts_before_runtime_is_exposed_and_records_each_result(self):
         self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
         self.runtime.close()
-        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}):
-            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer, environment_overrides={'CODEX_AGENTS_SUPERVISOR_MODE': '1'})
         self.addCleanup(self.runtime.close)
         claude_agent = copy.deepcopy(self.runtime.agent(self.key))
         claude_agent.update(id=str(uuid.uuid4()), name='Claude account turn', accountKey='claude-local',
@@ -224,8 +224,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
     def test_startup_failed_handle_open_leaves_turn_interrupted_with_reason(self):
         self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
         self.runtime.close()
-        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}):
-            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer, environment_overrides={'CODEX_AGENTS_SUPERVISOR_MODE': '1'})
         self.addCleanup(self.runtime.close)
 
         with patch.object(self.runtime, 'connect', side_effect=RuntimeError('no compatible supervisor')):
@@ -245,16 +244,14 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         def connect(runtime, _account):
             observed.append(runtime)
             return SimpleNamespace(supervisor_reattach_future=pending)
-        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}), \
-                patch.object(fixture.Runtime, 'connect', connect), \
-                patch.object(pending, 'result', side_effect=concurrent.futures.TimeoutError):
+        with patch.object(fixture.Runtime, 'connect', connect), patch.object(pending, 'result', side_effect=concurrent.futures.TimeoutError):
             with self.assertRaisesRegex(RuntimeError, 'restore did not finish before startup'):
-                fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+                make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer, environment_overrides={'CODEX_AGENTS_SUPERVISOR_MODE': '1'})
         self.assertEqual(len(observed), 1)
         self.assertTrue(observed[0].closed)
         self.assertFalse(pending.done())
         self.assertFalse(pending.cancelled())
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.assertEqual(self.runtime.agent(self.key)['status'], 'interrupted')
         self.assertFalse(self.runtime.agent(self.key)['autoWake'])
@@ -497,7 +494,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertTrue(disconnected['disconnectRecovery']['autoWake'])
         native = copy.deepcopy(self.server.native)
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.native = native
@@ -551,7 +548,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             db.execute("UPDATE runtime_events SET status='pending',error=NULL,turn_id=NULL "
                        "WHERE id='failed-preparation-input' AND agent=? AND epoch=?",
                        (self.key, attempt['epoch']))
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         agent = self.runtime.agent(self.key)
         self.assertEqual(agent['status'], 'failed')
@@ -593,7 +590,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(disconnected['disconnectRecovery']['startAttempt']['id'],
                          'preparation-attempt')
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.pending = {}
@@ -629,7 +626,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             self.runtime.put(db, 'agents', a)
         self.runtime.disconnected('default', self.runtime.connection_ids['default'])
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.pending = {}
@@ -718,7 +715,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         with self.runtime.db() as db:self.runtime.put(db,'agents',a)
         self.runtime.stop(self.key,descendants=False)
         self.runtime.close()
-        self.runtime=fixture.Runtime(Path(self.temp.name),fixture.fixture.RecoveryServer)
+        self.runtime=make_runtime(fixture.Runtime, Path(self.temp.name),fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         a=self.runtime.agent(self.key)
         self.assertEqual(a['status'],'paused')
@@ -833,10 +830,12 @@ class RestartContract(fixture.ConnectionRecoveryContract):
 import os,sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
+sys.path.insert(0,str(Path(sys.argv[1]).parent / "tests"))
+from runtime_test_environment import make_runtime
 from codex_runtime import Runtime
 class Quiet(Runtime):
     def schedule(self): pass
-r=Quiet(Path(sys.argv[2]))
+r=make_runtime(Quiet, Path(sys.argv[2]), environment=dict(os.environ))
 a=r.create({'name':'Crash fixture','cwd':sys.argv[2],'prompt':''},draft=True,defer=True)
 with r.db() as db:
     a.update(status='starting',autoWake=True,inFlight=True,
@@ -851,9 +850,10 @@ with r.db() as db:
     os._exit(9)
 """
         child=subprocess.run([sys.executable,'-B','-c',script,
-            str(SERVER_SOURCE_ROOT),str(child_root)],capture_output=True,text=True)
+            str(SERVER_SOURCE_ROOT),str(child_root)],capture_output=True,text=True,
+            env=runtime_environment(child_root))
         self.assertEqual(child.returncode,9,child.stderr)
-        runtime=fixture.Runtime(child_root,fixture.fixture.RecoveryServer)
+        runtime=make_runtime(fixture.Runtime, child_root,fixture.fixture.RecoveryServer)
         self.addCleanup(runtime.close)
         with runtime.db() as db:
             events=db.execute('SELECT id,status FROM runtime_events').fetchall()
@@ -885,7 +885,7 @@ with r.db() as db:
                   'params':{'questions':[{'id':'choice','question':'Which option?'}]}}
         with self.runtime.db() as db:self.runtime.put(db,'requests',question)
         self.runtime.close()
-        self.runtime=fixture.Runtime(Path(self.temp.name),fixture.fixture.RecoveryServer)
+        self.runtime=make_runtime(fixture.Runtime, Path(self.temp.name),fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.assertEqual(self.runtime.answer('local-question',{'answers':{'choice':{'answers':['A']}}}),{'status':'answered'})
         with self.runtime.db() as db:

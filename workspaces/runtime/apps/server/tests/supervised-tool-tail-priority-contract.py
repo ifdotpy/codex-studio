@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Admit supervised tools before a stream tail without crossing durable barriers."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from collections import deque
 import concurrent.futures
@@ -292,7 +294,7 @@ class DurableDispatchContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-supervised-tool-tail-')
         self.addCleanup(self.temp.cleanup)
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
-            self.runtime = Runtime(Path(self.temp.name), NoNativeServer)
+            self.runtime = make_runtime(Runtime, Path(self.temp.name), NoNativeServer)
         self.addCleanup(self.runtime.close)
         self.sink = ResponseSink()
         self.runtime.servers['default'] = self.sink

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """HTTP compression and cache rules with an isolated server and static assets."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import gzip
 from concurrent.futures import ThreadPoolExecutor
@@ -41,7 +43,7 @@ class HttpCacheContract(unittest.TestCase):
         self.web = patch.object(codex_canvas, 'WEB', web)
         self.web.start()
         canvas = codex_canvas.Canvas(root)
-        self.runtime = Runtime(root, server_factory=lambda *_args: None)
+        self.runtime = make_runtime(Runtime, root, server_factory=lambda *_args: None)
         canvas.runtime = self.runtime
         self.server = codex_canvas.make_server(canvas)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

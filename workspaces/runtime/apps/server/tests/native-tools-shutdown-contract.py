@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Catalog writers and retired native processes retain the Runtime lease."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import fcntl
 import importlib.util
@@ -41,7 +43,7 @@ class Server(fixture.FakeServer):
 class Shutdown(unittest.TestCase):
     def test_writer_finishes_before_servers_close_and_lease_release(self):
         with tempfile.TemporaryDirectory() as directory:
-            runtime = fixture.Runtime(Path(directory), Server)
+            runtime = make_runtime(fixture.Runtime, Path(directory), Server)
             current = runtime.connect()
             retired = Server(Path(directory), lambda _: None, lambda _: None, lambda: None)
             runtime._native_tools_retiring = {"old": {"server": retired}, "same": {"server": current}}
@@ -87,7 +89,7 @@ class Shutdown(unittest.TestCase):
 
     def test_unfinished_writer_keeps_the_lease_and_servers(self):
         with tempfile.TemporaryDirectory() as directory:
-            runtime = fixture.Runtime(Path(directory), Server)
+            runtime = make_runtime(fixture.Runtime, Path(directory), Server)
             server = runtime.connect()
             try:
                 with patch.object(codex_native_tools, "wait_updates", side_effect=RuntimeError("Writer still active")):

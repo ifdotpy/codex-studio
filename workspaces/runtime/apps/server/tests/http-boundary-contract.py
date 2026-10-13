@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 _clock = __import__("time")
 _module_import_started = _clock.monotonic()
 
 import base64
 import json
-import os
 import os
 from pathlib import Path
 import statistics
@@ -17,9 +18,11 @@ import unittest
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 from http_backend_harness import (
     HTTP_WAIT_GUARD_SECONDS,
@@ -420,11 +423,9 @@ def seed_catalog_state(backend: BackendProcess) -> None:
             "access_token": f"e30.{claims}.fixture-signature",
         },
     }), encoding="utf-8")
-    from unittest.mock import patch
     from codex_runtime import Runtime
-    with patch.dict(os.environ, backend._environment()):
-        runtime = Runtime(backend.state)
-        runtime.close()
+    runtime = make_runtime(Runtime, backend)
+    runtime.close()
     accounts = backend.state / "accounts"
     accounts.mkdir(parents=True, exist_ok=True)
     (accounts / "registry.json").write_text(json.dumps({

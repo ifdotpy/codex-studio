@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Capacity continuation uses empty input and one durable claim per failed turn."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 from server_test_waits import HANG_GUARD_SECONDS
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
@@ -82,7 +84,7 @@ class CapacityContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.runtime = Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
         self._start_futures = {}
         self._start_condition = threading.Condition()
@@ -341,7 +343,7 @@ class CapacityContract(unittest.TestCase):
         self.runtime.capacity_tick()
         self.assertEqual(len(self.starts()), 2)
         self.runtime.close()
-        self.runtime = Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
         self.assertEqual(self.agent()['capacityRetry']['status'], 'unknown')
         self.retry(retry)
@@ -355,7 +357,7 @@ class CapacityContract(unittest.TestCase):
                                  "AND status='delivered' ORDER BY created LIMIT 1", (self.key,)).fetchone()
         self.assertIsNotNone(receipt)
         self.runtime.close()
-        self.runtime = Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
         original_call = self.server.call
         def exact_native_history(method, params, timeout=60):
@@ -565,7 +567,7 @@ class CapacityContract(unittest.TestCase):
             self.runtime.capacity_save(db, a, retry)
             self.runtime.put(db, 'agents', a)
         self.runtime.close()
-        self.runtime = Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
         self.server.seq = 100
         self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')

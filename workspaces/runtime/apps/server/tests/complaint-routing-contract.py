@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Complaint responsibility, notification, and response identity. No model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -26,7 +28,7 @@ class ComplaintRouting(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.root, f.f.FakeServer)
         self.lead = self.runtime.create({'name':'Lead', 'prompt':'', 'cwd':str(self.root)}, draft=True)
 
     def tearDown(self):
@@ -107,7 +109,7 @@ class ComplaintRouting(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different content'):
             self.respond(other)
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.root, f.f.FakeServer)
         self.assertEqual(self.respond(c), response)
 
     def test_user_response_preserves_stop_boundary(self):

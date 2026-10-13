@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise layr chat callers with an isolated guest and native transport."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -21,6 +22,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('vm-native-fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
@@ -135,7 +137,7 @@ class VmAgents(unittest.TestCase):
         self.project = self.root / 'source'
         self.project.mkdir()
         (self.project / 'file').write_text('base')
-        self.runtime = fixture.f.ControlledRuntime(self.root / 'state', fixture.f.f.FakeServer)
+        self.runtime = make_runtime(fixture.f.ControlledRuntime, self.root / 'state', fixture.f.f.FakeServer)
         self.runtime.catalog = lambda account='default': copy.deepcopy(fixture.f.CATALOG)
         self.guest = Guest(self.root, self.root / 'guest-main')
         self.runtime._linux_vm_client = self.guest
@@ -227,7 +229,7 @@ class VmAgents(unittest.TestCase):
         self.assertEqual(self.sidebar_readiness(), {'state': 'importing'})
         self.runtime.close()
         with patch('codex_linux_workspaces.client', return_value=self.guest):
-            self.runtime = fixture.f.ControlledRuntime(self.root / 'state', fixture.f.f.FakeServer)
+            self.runtime = make_runtime(fixture.f.ControlledRuntime, self.root / 'state', fixture.f.f.FakeServer)
         self.assertEqual(self.sidebar_readiness(), {'state': 'not_imported'})
 
     def test_turn_save_loss_keeps_one_snapshot_and_blocks_next_turn(self):

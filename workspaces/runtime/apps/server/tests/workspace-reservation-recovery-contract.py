@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Checkpoint reservations settle by identity without replaying native input."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 from contextlib import contextmanager
@@ -252,7 +254,7 @@ class ReservationRecovery(unittest.TestCase):
         self.runtime.send(a['id'], 'Continue after snapshot', 'restart-input')
         thread = self.runtime.agent(a['id']).get('threadId')
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
         current = self.runtime.agent(a['id'])
         self.assertEqual(current['status'], 'queued')
         self.assertTrue(current['autoWake'])
@@ -271,7 +273,7 @@ class ReservationRecovery(unittest.TestCase):
         a = self.lead()
         self.agent_update(a, workspaceOperation='checkpoint', status='paused', autoWake=False)
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
         current = self.runtime.agent(a['id'])
         self.assertIsNone(current['workspaceOperation'])
         self.assertFalse(current['autoWake'])

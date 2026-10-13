@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Compare scoped runtime outputs with snapshots captured from base ca123f6."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import json
 import os
@@ -69,7 +71,7 @@ class RuntimeAgentRoomScope(unittest.TestCase):
         spec.loader.exec_module(fixture)
         with tempfile.TemporaryDirectory(prefix="runtime-agent-index-plan-",
                                          dir=os.environ.get("TMPDIR")) as scratch:
-            runtime = Runtime(Path(scratch), fixture.FakeServer)
+            runtime = make_runtime(Runtime, Path(scratch), fixture.FakeServer)
             try:
                 with runtime.db() as db:
                     db.executemany("INSERT INTO runtime_agents(id,record) VALUES (?,?)", (

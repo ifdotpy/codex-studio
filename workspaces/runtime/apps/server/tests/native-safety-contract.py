@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Exercise native safety state and exact-once retry without model inference."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -68,7 +70,7 @@ class Server(fixture.FakeServer):
 class Safety(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), Server)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), Server)
         self.server = self.runtime.connect()
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = a['id']
@@ -230,7 +232,7 @@ class Safety(unittest.TestCase):
         fixture.eventually(lambda: self.server.gate_future is not None)
         original_id = self.receipt()['id']
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), Server)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), Server)
         restarted_server = self.runtime.connect()
         retry = self.runtime.agent(self.key).get('nativeSafetyRetry')
         self.assertEqual(retry['id'], original_id)
@@ -275,7 +277,7 @@ class Safety(unittest.TestCase):
                     if stage != 'unknown':
                         self.runtime.put(db,'safety_retries',op)
                 self.runtime.close()
-                self.runtime = Runtime(Path(self.temp.name), Server)
+                self.runtime = make_runtime(Runtime, Path(self.temp.name), Server)
                 server = self.runtime.connect()
                 recovered = self.runtime.agent(self.key)
                 self.assertEqual(recovered['nativeSafetyRetry']['id'],operation_id)

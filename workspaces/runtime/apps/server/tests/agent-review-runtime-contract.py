@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Native review through Studio tool receipts and dispatch. No model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import copy
@@ -100,10 +102,8 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.root = Path(self.temp.name)
         # Native review reads git history; the reviewer folder must be a repository.
         shutil.copytree(self.repo_template / '.git', self.root / '.git')
-        self.env = patch.dict(os.environ, {'CODEX_HOME': str(self.root / 'home')})
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.runtime_environment = {'CODEX_HOME': str(self.root / 'home')}
+        self.rt = make_runtime(f.ControlledRuntime, self.root / 'state', ReviewServer, environment_overrides=self.runtime_environment)
         self.addCleanup(self.rt.close)
         self.server = self.rt.connect()
         self.parent = self.rt.new_lead({'cwd': str(self.root), 'model': 'test-model'})
@@ -156,7 +156,7 @@ class ReviewRuntimeContract(unittest.TestCase):
 
     def restart_runtime(self):
         self.rt.close()
-        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.rt = make_runtime(f.ControlledRuntime, self.root / 'state', ReviewServer, environment_overrides=self.runtime_environment)
         self.addCleanup(self.rt.close)
         self.server = self.rt.connect()
 
@@ -278,7 +278,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.assertFalse(attempt['submitted'])
         self.assertEqual(self.rt.agent(child['id'])['nativeReview']['status'], 'started')
         self.rt.close()
-        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.rt = make_runtime(f.ControlledRuntime, self.root / 'state', ReviewServer, environment_overrides=self.runtime_environment)
         self.addCleanup(self.rt.close)
         self.server = self.rt.connect()
         child = self.rt.agent(child['id'])

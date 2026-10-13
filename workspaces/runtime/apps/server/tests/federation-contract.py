@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Two-server federation contract tests. All state and HTTP listeners are private."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -9,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -82,7 +84,7 @@ class FederationContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         base = Path(self.temp.name)
         self.roots = [base / "igor", base / "sasha"]
-        self.runtimes = [Runtime(root, runtime_contract.FakeServer) for root in self.roots]
+        self.runtimes = [make_runtime(Runtime, root, runtime_contract.FakeServer) for root in self.roots]
         self.services = [runtime.federation() for runtime in self.runtimes]
         for service in self.services:
             service.start = lambda: None
@@ -383,7 +385,7 @@ class FederationContract(unittest.TestCase):
         self.assertTrue(all(name.startswith("runtime_federation_") for name in added))
         legacy.close()
 
-        fresh_runtime = Runtime(self.roots[0].parent / "never-enabled", runtime_contract.FakeServer)
+        fresh_runtime = make_runtime(Runtime, self.roots[0].parent / "never-enabled", runtime_contract.FakeServer)
         self.runtimes.append(fresh_runtime)
         fresh_service = fresh_runtime.federation()
         lead = fresh_runtime.create({"name": "Unused lead", "cwd": str(self.roots[0]),
@@ -401,7 +403,7 @@ class FederationContract(unittest.TestCase):
     def test_enabled_service_starts_on_init_and_stops_on_failed_init_or_close(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "state"
-            initial = Runtime(root, runtime_contract.FakeServer)
+            initial = make_runtime(Runtime, root, runtime_contract.FakeServer)
             initial.federation().action({"action": "set_enabled", "enabled": True})
             initial.close()
 
@@ -415,13 +417,13 @@ class FederationContract(unittest.TestCase):
 
             with patch.object(FederationService, "start", start_then_fail):
                 with self.assertRaisesRegex(RuntimeError, "fixture failure"):
-                    Runtime(root, runtime_contract.FakeServer)
+                    make_runtime(Runtime, root, runtime_contract.FakeServer)
             self.assertEqual(len(started), 1)
             failed_service = started[0]
             self.assertTrue(failed_service.stop_event.is_set())
             self.assertFalse(failed_service.thread.is_alive())
 
-            runtime = Runtime(root, runtime_contract.FakeServer)
+            runtime = make_runtime(Runtime, root, runtime_contract.FakeServer)
             service = runtime._federation_service
             self.assertIsNotNone(service)
             self.assertTrue(service.thread.is_alive())
@@ -436,7 +438,7 @@ class FederationContract(unittest.TestCase):
         old = self.runtimes[0]
         old.close()
         with patch.object(FederationService, "start", lambda _self: None):
-            self.runtimes[0] = Runtime(self.roots[0], runtime_contract.FakeServer)
+            self.runtimes[0] = make_runtime(Runtime, self.roots[0], runtime_contract.FakeServer)
         self.services[0] = self.runtimes[0].federation()
         self.services[0].start = lambda: None
         self.services[0]._deliver_peer(self.services[0].snapshot()["peers"][0])
@@ -448,7 +450,7 @@ class FederationContract(unittest.TestCase):
         old = self.runtimes[1]
         old.close()
         with patch.object(FederationService, "start", lambda _self: None):
-            self.runtimes[1] = Runtime(self.roots[1], runtime_contract.FakeServer)
+            self.runtimes[1] = make_runtime(Runtime, self.roots[1], runtime_contract.FakeServer)
         self.services[1] = self.runtimes[1].federation()
         self.services[1].start = lambda: None
         self.services[1]._deliver_peer(self.services[1].snapshot()["peers"][0])

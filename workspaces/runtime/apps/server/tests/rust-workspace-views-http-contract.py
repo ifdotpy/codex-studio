@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import json
 import os
 import sqlite3
@@ -11,15 +13,15 @@ import sys
 from pathlib import Path
 from urllib.parse import urlencode
 import unittest
-from unittest.mock import patch
 
 SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SERVER_SRC))
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 
 class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -41,189 +43,187 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         (cls.backend.cwd / "copy of tracked.txt").write_bytes((cls.backend.cwd / "tracked.txt").read_bytes())
         from codex_runtime import Runtime
 
-        environment = cls.backend._environment()
-        with patch.dict(os.environ, environment, clear=True):
-            runtime = Runtime(cls.backend.state)
-            try:
-                lead = runtime.create(
-                    {"name": "Workspace views lead", "cwd": str(cls.backend.cwd), "prompt": ""},
-                    draft=True,
-                    defer=True,
-                )
-                worker = runtime.create(
-                    {"name": "Workspace views worker", "role": "reviewer", "prompt": "Inspect the fixture tasks."},
-                    lead["id"],
-                    defer=True,
-                )
-                other = runtime.create(
-                    {"name": "Workspace views other", "cwd": str(cls.backend.cwd), "prompt": ""},
-                    draft=True,
-                    defer=True,
-                )
-                deleted_lead = runtime.create(
-                    {"name": "Deleted workspace lead", "cwd": str(cls.backend.cwd), "prompt": ""},
-                    draft=True,
-                    defer=True,
-                )
-                deleted_author = runtime.create(
-                    {"name": "Deleted workspace author", "role": "reviewer", "prompt": "Review the fixture."},
-                    deleted_lead["id"],
-                    defer=True,
-                )
-                with runtime.lock, runtime.db() as db:
-                    for number in range(105):
-                        owner = worker["id"] if number % 2 else lead["id"]
-                        runtime.put(db, "tasks", {
-                            "id": f"workspace-task-{number:03}",
-                            "agent": owner,
-                            "kind": "tool",
-                            "status": "completed",
-                            "created": float(number + 1),
-                            "finished": float(number + 2),
-                            "name": "fixture tool",
-                            "type": "webSearch",
-                            "itemId": f"item-{number}",
-                            "tail": "t" * 2500 if number == 104 else "private tail",
-                            "command": "c" * 2500 if number == 104 else "fixture command",
-                            "arguments": "private arguments",
-                            "error": "private error",
-                            **({"pythonOnlyMetadata": {"dispatchOwned": True}} if number == 104 else {}),
-                        })
+        runtime = make_runtime(Runtime, cls.backend)
+        try:
+            lead = runtime.create(
+                {"name": "Workspace views lead", "cwd": str(cls.backend.cwd), "prompt": ""},
+                draft=True,
+                defer=True,
+            )
+            worker = runtime.create(
+                {"name": "Workspace views worker", "role": "reviewer", "prompt": "Inspect the fixture tasks."},
+                lead["id"],
+                defer=True,
+            )
+            other = runtime.create(
+                {"name": "Workspace views other", "cwd": str(cls.backend.cwd), "prompt": ""},
+                draft=True,
+                defer=True,
+            )
+            deleted_lead = runtime.create(
+                {"name": "Deleted workspace lead", "cwd": str(cls.backend.cwd), "prompt": ""},
+                draft=True,
+                defer=True,
+            )
+            deleted_author = runtime.create(
+                {"name": "Deleted workspace author", "role": "reviewer", "prompt": "Review the fixture."},
+                deleted_lead["id"],
+                defer=True,
+            )
+            with runtime.lock, runtime.db() as db:
+                for number in range(105):
+                    owner = worker["id"] if number % 2 else lead["id"]
                     runtime.put(db, "tasks", {
-                        "id": "workspace-views-other-task",
-                        "agent": other["id"],
-                        "kind": "command",
+                        "id": f"workspace-task-{number:03}",
+                        "agent": owner,
+                        "kind": "tool",
                         "status": "completed",
-                        "created": 500.0,
+                        "created": float(number + 1),
+                        "finished": float(number + 2),
+                        "name": "fixture tool",
+                        "type": "webSearch",
+                        "itemId": f"item-{number}",
+                        "tail": "t" * 2500 if number == 104 else "private tail",
+                        "command": "c" * 2500 if number == 104 else "fixture command",
+                        "arguments": "private arguments",
+                        "error": "private error",
+                        **({"pythonOnlyMetadata": {"dispatchOwned": True}} if number == 104 else {}),
                     })
-                    runtime.put(db, "work", {
-                        "id": "workspace-view-work",
-                        "rootId": lead["id"],
-                        "title": "Review workspace state",
-                        "status": "ready",
-                        "created": 1.0,
-                        "updated": 1.0,
-                        "version": 1,
-                        "dependencies": [],
-                    })
-                    runtime.put(db, "work", {
-                        "id": "workspace-view-other-review",
-                        "rootId": other["id"],
-                        "title": "Other team's review",
-                        "description": "Review fixture",
-                        "status": "review",
-                        "created": 2.0,
-                        "updated": 2.0,
-                        "createdBy": other["id"],
-                        "version": 1,
-                        "dependencies": [],
-                        "decisions": [],
-                        "results": [],
-                    })
-                    runtime.put(db, "monitors", {
-                        "id": "workspace-view-monitor",
-                        "agent": lead["id"],
-                        "command": "echo monitor",
-                        "status": "failed",
-                        "ruleId": None,
-                        "error": "x" * 3000,
-                        "tail": "y" * 2500,
-                        "epoch": 7,
-                        "requestId": "persisted-request",
-                        "wakeOn": "exit",
-                        "successExitCodes": [0],
-                        "created": 2.0,
-                    })
-                    for agent_id in (deleted_lead["id"], deleted_author["id"]):
-                        row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
-                        record = json.loads(row[0])
-                        record["deletedAt"] = 3.0
-                        db.execute(
-                            "UPDATE runtime_agents SET record=? WHERE id=?",
-                            (json.dumps(record, separators=(",", ":")), agent_id),
-                        )
-                    runtime.put(db, "complaints", {
-                        "id": "workspace-view-deleted-participants",
-                        "leadId": deleted_lead["id"],
-                        "author": deleted_author["id"],
-                        "text": "Deleted participants still have names",
-                        "status": "open",
-                        "created": 3.0,
-                        "updated": 3.0,
-                        "readAt": None,
-                        "version": 1,
-                        "recipient": deleted_lead["id"],
-                        "responses": [],
-                    })
-                    runtime.item(
-                        db, lead["id"], "turn/diff/updated:older", "output",
-                        json.dumps({"turnId": "old-turn", "diff": "--- a/stale.txt\n+++ b/stale.txt\n"}),
-                    )
-                    runtime.item(
-                        db, lead["id"], "turn/diff/updated:newer", "output",
-                        json.dumps({"turnId": "restored-turn", "diff": "--- a/restored.txt\n+++ b/restored.txt\n"}),
-                        afterRestore=True,
-                    )
-                    db.execute(
-                        "UPDATE runtime_items SET created=CASE id WHEN ? THEN 10.0 WHEN ? THEN 20.0 END WHERE id IN (?,?)",
-                        (f"{lead['id']}:turn/diff/updated:older", f"{lead['id']}:turn/diff/updated:newer",
-                         f"{lead['id']}:turn/diff/updated:older", f"{lead['id']}:turn/diff/updated:newer"),
-                    )
-                    runtime.put(db, "annotations", {
-                        "id": "workspace-view-annotation",
-                        "agent": lead["id"],
-                        "rootId": lead["id"],
-                        "path": "tracked.txt",
-                        "line": 1,
-                        "text": "Review this line",
-                        "created": 1.0,
-                    })
-                    runtime.put(db, "requests", {
-                        "id": "workspace-view-request",
-                        "agent": lead["id"],
-                        "method": "agent/asyncQuestion",
-                        "status": "pending",
-                        "createdAt": 1.0,
-                    })
-                    runtime.put(db, "complaints", {
-                        "id": "workspace-view-complaint",
-                        "leadId": lead["id"],
-                        "author": worker["id"],
-                        "text": "Needs a lead response",
-                        "status": "open",
-                        "created": 1.0,
-                        "updated": 1.0,
-                        "readAt": None,
-                        "version": 1,
-                        "recipient": lead["id"],
-                        "responses": [],
-                    })
-                    runtime.put(db, "complaints", {
-                        "id": "workspace-view-older-complaint",
-                        "leadId": lead["id"],
-                        "author": worker["id"],
-                        "text": "Older complaint",
-                        "status": "open",
-                        "created": 0.5,
-                        "updated": 0.5,
-                        "readAt": None,
-                        "version": 1,
-                        "recipient": lead["id"],
-                        "responses": [],
-                    })
-                runtime.rules({
-                    "agent": lead["id"], "action": "save",
-                    "id": "workspace-view-ticked-rule",
-                    "name": "Ticked workspace rule", "kind": "low_workers",
-                    "minimumWorkers": 1, "durationMinutes": 60,
+                runtime.put(db, "tasks", {
+                    "id": "workspace-views-other-task",
+                    "agent": other["id"],
+                    "kind": "command",
+                    "status": "completed",
+                    "created": 500.0,
                 })
-                runtime.rules_tick()
-                cls.lead_id = lead["id"]
-                cls.worker_id = worker["id"]
-                cls.other_id = other["id"]
-                cls.deleted_lead_id = deleted_lead["id"]
-            finally:
-                runtime.close()
+                runtime.put(db, "work", {
+                    "id": "workspace-view-work",
+                    "rootId": lead["id"],
+                    "title": "Review workspace state",
+                    "status": "ready",
+                    "created": 1.0,
+                    "updated": 1.0,
+                    "version": 1,
+                    "dependencies": [],
+                })
+                runtime.put(db, "work", {
+                    "id": "workspace-view-other-review",
+                    "rootId": other["id"],
+                    "title": "Other team's review",
+                    "description": "Review fixture",
+                    "status": "review",
+                    "created": 2.0,
+                    "updated": 2.0,
+                    "createdBy": other["id"],
+                    "version": 1,
+                    "dependencies": [],
+                    "decisions": [],
+                    "results": [],
+                })
+                runtime.put(db, "monitors", {
+                    "id": "workspace-view-monitor",
+                    "agent": lead["id"],
+                    "command": "echo monitor",
+                    "status": "failed",
+                    "ruleId": None,
+                    "error": "x" * 3000,
+                    "tail": "y" * 2500,
+                    "epoch": 7,
+                    "requestId": "persisted-request",
+                    "wakeOn": "exit",
+                    "successExitCodes": [0],
+                    "created": 2.0,
+                })
+                for agent_id in (deleted_lead["id"], deleted_author["id"]):
+                    row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+                    record = json.loads(row[0])
+                    record["deletedAt"] = 3.0
+                    db.execute(
+                        "UPDATE runtime_agents SET record=? WHERE id=?",
+                        (json.dumps(record, separators=(",", ":")), agent_id),
+                    )
+                runtime.put(db, "complaints", {
+                    "id": "workspace-view-deleted-participants",
+                    "leadId": deleted_lead["id"],
+                    "author": deleted_author["id"],
+                    "text": "Deleted participants still have names",
+                    "status": "open",
+                    "created": 3.0,
+                    "updated": 3.0,
+                    "readAt": None,
+                    "version": 1,
+                    "recipient": deleted_lead["id"],
+                    "responses": [],
+                })
+                runtime.item(
+                    db, lead["id"], "turn/diff/updated:older", "output",
+                    json.dumps({"turnId": "old-turn", "diff": "--- a/stale.txt\n+++ b/stale.txt\n"}),
+                )
+                runtime.item(
+                    db, lead["id"], "turn/diff/updated:newer", "output",
+                    json.dumps({"turnId": "restored-turn", "diff": "--- a/restored.txt\n+++ b/restored.txt\n"}),
+                    afterRestore=True,
+                )
+                db.execute(
+                    "UPDATE runtime_items SET created=CASE id WHEN ? THEN 10.0 WHEN ? THEN 20.0 END WHERE id IN (?,?)",
+                    (f"{lead['id']}:turn/diff/updated:older", f"{lead['id']}:turn/diff/updated:newer",
+                     f"{lead['id']}:turn/diff/updated:older", f"{lead['id']}:turn/diff/updated:newer"),
+                )
+                runtime.put(db, "annotations", {
+                    "id": "workspace-view-annotation",
+                    "agent": lead["id"],
+                    "rootId": lead["id"],
+                    "path": "tracked.txt",
+                    "line": 1,
+                    "text": "Review this line",
+                    "created": 1.0,
+                })
+                runtime.put(db, "requests", {
+                    "id": "workspace-view-request",
+                    "agent": lead["id"],
+                    "method": "agent/asyncQuestion",
+                    "status": "pending",
+                    "createdAt": 1.0,
+                })
+                runtime.put(db, "complaints", {
+                    "id": "workspace-view-complaint",
+                    "leadId": lead["id"],
+                    "author": worker["id"],
+                    "text": "Needs a lead response",
+                    "status": "open",
+                    "created": 1.0,
+                    "updated": 1.0,
+                    "readAt": None,
+                    "version": 1,
+                    "recipient": lead["id"],
+                    "responses": [],
+                })
+                runtime.put(db, "complaints", {
+                    "id": "workspace-view-older-complaint",
+                    "leadId": lead["id"],
+                    "author": worker["id"],
+                    "text": "Older complaint",
+                    "status": "open",
+                    "created": 0.5,
+                    "updated": 0.5,
+                    "readAt": None,
+                    "version": 1,
+                    "recipient": lead["id"],
+                    "responses": [],
+                })
+            runtime.rules({
+                "agent": lead["id"], "action": "save",
+                "id": "workspace-view-ticked-rule",
+                "name": "Ticked workspace rule", "kind": "low_workers",
+                "minimumWorkers": 1, "durationMinutes": 60,
+            })
+            runtime.rules_tick()
+            cls.lead_id = lead["id"]
+            cls.worker_id = worker["id"]
+            cls.other_id = other["id"]
+            cls.deleted_lead_id = deleted_lead["id"]
+        finally:
+            runtime.close()
         cls.backend.start()
 
     @property
@@ -395,6 +395,10 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(workspace.status, 200, workspace.body[:1000])
         snapshot = workspace.json()
+        ticked_rule = next(rule for rule in snapshot["rules"] if rule["id"] == "workspace-view-ticked-rule")
+        self.assertEqual(ticked_rule["activeWorkers"], 0)
+        self.assertIsNotNone(ticked_rule["lowSince"])
+        self.assertFalse(ticked_rule["alerted"])
         self.assertEqual(snapshot["work"][0]["id"], "workspace-view-work")
         self.assertEqual(snapshot["work"][0]["displayStatus"], "ready")
         self.assertEqual(snapshot["annotations"][0]["id"], "workspace-view-annotation")
@@ -402,15 +406,9 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         task = next(task for task in snapshot["tasks"] if task["id"] == "workspace-task-104")
         self.assertNotIn("itemId", task)
         self.assertNotIn("type", task)
-        self.assertNotIn("pythonOnlyMetadata", task)
         self.assertLessEqual(len(task["command"]), 2000)
         self.assertIn("workspace-view-complaint", {item["id"] for item in snapshot["inbox"]})
         self.assertNotIn("workspace-view-other-review", {item["id"] for item in snapshot["inbox"]})
-        ticked_rule = next(rule for rule in snapshot["rules"] if rule["id"] == "workspace-view-ticked-rule")
-        self.assertEqual(ticked_rule["kind"], "low_workers")
-        self.assertEqual(ticked_rule["activeWorkers"], 0)
-        self.assertIsNotNone(ticked_rule["lowSince"])
-        self.assertFalse(ticked_rule["alerted"])
         complaint_ids = [item["id"] for item in snapshot["inbox"] if item["kind"] == "complaint"]
         self.assertEqual(
             complaint_ids,

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import base64
 import hashlib
 import json
@@ -17,10 +19,11 @@ import unittest
 from pathlib import Path
 from urllib.parse import urlencode
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import runtime_environment
 from http_backend_harness import BackendProcess, TimedHTTPContractTest
 
 
@@ -30,9 +33,11 @@ def seed_python_workspace(backend, workspace: Path) -> None:
 import base64, os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
+sys.path.insert(0, {str(source.parent / "tests")!r})
+from runtime_test_environment import make_runtime
 from codex_runtime import Runtime
 
-runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+runtime = make_runtime(Runtime, Path(os.environ["CODEX_AGENTS_STATE_DIR"]), environment=dict(os.environ))
 try:
     cwd = Path({str(workspace)!r})
     common = {{"rootId": "files-contract-live", "epoch": 0, "status": "idle",
@@ -62,7 +67,7 @@ finally:
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=backend._environment(),
+        env=runtime_environment(backend),
         check=True,
         timeout=30,
     )

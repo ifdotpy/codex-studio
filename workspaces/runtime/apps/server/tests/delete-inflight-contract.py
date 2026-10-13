@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Deleting a conversation releases its active native turn slot."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,7 +24,7 @@ class DeleteInflightContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-delete-inflight-")
         self.addCleanup(self.temp.cleanup)
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.FakeServer)
         self._start_futures = {}
         self._start_condition = fixture.fixture.threading.Condition()
         executor = self.runtime.delivery_executor()
@@ -343,7 +347,7 @@ class DeleteInflightContract(unittest.TestCase):
         self.assertGreaterEqual(sum(method == "turn/interrupt" for method, _ in server.calls), 1)
         self.assert_deleted_and_released(agent["id"], baseline)
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.fixture.FakeServer)
         agent = self.runtime.agent(agent["id"])
         self.assertTrue(agent.get("deletedAt"))
         self.assertFalse(agent.get("inFlight"))

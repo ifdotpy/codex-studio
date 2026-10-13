@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Windows contracts for paths used by native worker startup."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import os
 import json
@@ -260,7 +262,7 @@ class WindowsRuntimePathsContract(unittest.TestCase):
                 "overflowX": 0, "overflowY": 0, "totalLines": 1, "visibleLines": 1,
                 "lastVisibleLine": "Ready.", "lastVisibleHeading": None,
             }
-            saved = layout.record_layout(self.Runtime(state), body)
+            saved = layout.record_layout(make_runtime(self.Runtime, state), body)
             self.assertEqual(saved["status"], "fits")
             self.assertEqual(layout.layout_status(state, "worker_1")["status"], "fits")
             feedback = layout.layout_path(state, "worker_1")

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Monitor input waits preserve receipts without holding the runtime lock."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import importlib.util
@@ -98,7 +100,7 @@ class InputServer(fixture.FakeServer):
 class MonitorInputLockContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-monitor-input-')
-        self.runtime = QuietRuntime(Path(self.temp.name), InputServer)
+        self.runtime = make_runtime(QuietRuntime, Path(self.temp.name), InputServer)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()

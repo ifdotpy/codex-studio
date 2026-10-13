@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """User defaults, worker overrides and native execution parameters. No model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import copy
@@ -71,7 +73,7 @@ class WorkerDefaults(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="worker-defaults-")
         self.root = Path(self.tmp.name)
-        self.runtime = ControlledRuntime(self.root, f.FakeServer)
+        self.runtime = make_runtime(ControlledRuntime, self.root, f.FakeServer)
         self.runtime.catalog = lambda account="default": copy.deepcopy(CATALOG)
         self.lead = self.runtime.create(
             {"name": "Lead", "prompt": "", "cwd": str(self.root)}, draft=True
@@ -326,7 +328,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual(old["workerDefaults"]["model"], "worker")
         self.assertEqual(self.worker(parent=new["id"])["effort"], "high")
         self.runtime.close()
-        self.runtime = ControlledRuntime(self.root, f.FakeServer)
+        self.runtime = make_runtime(ControlledRuntime, self.root, f.FakeServer)
         self.assertEqual(
             self.runtime.agent(new["id"])["workerDefaults"], new["workerDefaults"]
         )
