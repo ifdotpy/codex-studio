@@ -99,7 +99,9 @@ final class Host: NSObject, VZVirtualMachineDelegate {
             }
             instanceId = value
         }
-        bootloader.commandLine = "root=/dev/vda rw console=hvc0 ds=nocloud;i=" + instanceId
+        // Read-only first: systemd checks and repairs the root file system, then remounts it per
+        // /etc/fstab. With "rw" here the check never ran, and an ext4 error stayed after a reboot.
+        bootloader.commandLine = "root=/dev/vda ro fsck.repair=yes console=hvc0 ds=nocloud;i=" + instanceId
         configuration.bootLoader = bootloader
         configuration.platform = VZGenericPlatformConfiguration()
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]

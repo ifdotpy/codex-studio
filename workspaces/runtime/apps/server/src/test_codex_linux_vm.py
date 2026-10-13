@@ -165,6 +165,18 @@ class ClientTests(unittest.TestCase):
             with self.assertRaises(vm.LinuxVMError):
                 settings.validate()
 
+    def test_memory_limit_leaves_macos_a_quarter_and_8_gib_on_small_macs(self):
+        self.assertEqual(vm.memory_limit(128 * vm._GIB), 96 * vm._GIB)
+        self.assertEqual(vm.memory_limit(18 * vm._GIB), 10 * vm._GIB)
+        self.assertEqual(vm.memory_limit(16 * vm._GIB), 8 * vm._GIB)
+        self.assertEqual(vm.memory_limit(8 * vm._GIB), 4 * vm._GIB)
+        # The igor-mbp case (hw.memsize 18 GiB): 13.5 GiB is refused, 9 GiB is taken.
+        with patch.object(vm.platform, 'system', return_value='Darwin'), \
+                patch.object(vm, '_run', return_value=str(18 * vm._GIB)):
+            with self.assertRaisesRegex(vm.LinuxVMError, 'leave macOS'):
+                vm.Settings(cpus=1, memoryBytes=14495514624).validate()
+            vm.Settings(cpus=1, memoryBytes=9 * vm._GIB).validate()
+
     def test_sparse_archive_rejects_unsafe_format_and_bound(self):
         archive = self.directory / 'disk.tar.gz'
         with tarfile.open(archive, 'w:gz') as output:
