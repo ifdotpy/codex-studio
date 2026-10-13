@@ -1,6 +1,28 @@
 {
   "$defs": {
     "JsonValue": {},
+    "PersistedSupervisor": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "generation": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generation"
+        }
+      },
+      "title": "PersistedSupervisor",
+      "type": "object"
+    },
     "PersistedToolContent": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -226,6 +248,16 @@
       "title": "Stage",
       "type": "string"
     },
+    "supervisor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedSupervisor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "threadId": {
       "anyOf": [
         {
@@ -236,6 +268,13 @@
         }
       ],
       "title": "Threadid"
+    },
+    "timing": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Timing",
+      "type": "object"
     },
     "tool": {
       "anyOf": [
