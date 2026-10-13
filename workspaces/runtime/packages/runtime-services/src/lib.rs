@@ -23,6 +23,7 @@ pub mod cost_usage;
 pub mod costs;
 pub mod event_write;
 pub mod federation;
+pub mod federation_credentials;
 pub mod federation_delivery;
 pub mod federation_effects;
 pub mod federation_messaging;

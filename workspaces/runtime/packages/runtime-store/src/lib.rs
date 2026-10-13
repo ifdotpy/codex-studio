@@ -44,6 +44,7 @@ pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::federation::FederationRepository;
+pub use repositories::federation_credentials::FederationCredentialsRepository;
 pub use repositories::monitor_runtime;
 pub use repositories::federation_messaging;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};

@@ -21,6 +21,7 @@ use crate::validation::Registry;
 pub struct HttpState {
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -63,6 +64,7 @@ impl HttpState {
         }
         Self {
             account_driver: None,
+            credentials: Arc::default(),
             token,
             workspace_id,
             native_path,
