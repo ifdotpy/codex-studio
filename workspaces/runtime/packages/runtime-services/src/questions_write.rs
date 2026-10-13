@@ -3,9 +3,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, QuestionsWriteRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, Transaction,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -67,12 +66,9 @@ pub fn defer_question(
     let agent_id = record
         .get("agent")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("requests", id))?;
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if agent.id.0 != agent_id {
-        return Err(invalid_stored("agents", agent_id));
-    }
     if event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(QuestionsWriteError::InvalidRequest(
             "This conversation was deleted",
@@ -105,12 +101,9 @@ pub fn delete_question(
     let agent_id = record
         .get("agent")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("requests", id))?;
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if agent.id.0 != agent_id {
-        return Err(invalid_stored("agents", agent_id));
-    }
     if event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(QuestionsWriteError::InvalidRequest(
             "This agent was deleted",
@@ -145,21 +138,16 @@ pub fn submit_complaint(
     lead_id: &str,
     request_id: &str,
     text: &str,
-    signature: &str,
     validate: impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
-    let receipt_id = format!("user:complaint:{request_id}");
-    if let Some(saved) = read_receipt(
-        transaction,
-        &receipt_id,
-        signature,
-        "This complaint id has different content",
-        &validate,
-    )? {
-        return Ok(saved);
+    let actor = stored_agent(transaction, lead_id)?
+        .ok_or(QuestionsWriteError::InvalidRequest("Invalid request"))?;
+    if event_write::truthy(actor.extra.get("deletedAt")) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "This agent was deleted",
+        ));
     }
-    let actor = event_write::checked_agent(transaction, lead_id)?;
-    let lead = AgentRepository::get(transaction, &actor.root_id)?.ok_or(
+    let lead = stored_agent(transaction, &actor.root_id.0)?.ok_or(
         QuestionsWriteError::InvalidRequest("A complaint needs an existing lead"),
     )?;
     if lead.id != lead.root_id || !event_write::truthy(lead.extra.get("isLead")) {
@@ -184,6 +172,18 @@ pub fn submit_complaint(
     )
     .to_string();
     let now = unix_time()?;
+    if let Some(raw) = QuestionsWriteRepository::complaint(transaction, &id)? {
+        let previous = parse_complaint(&raw, &id, &validate)?;
+        if previous.get("text").and_then(Value::as_str) != Some(text)
+            || previous.get("author").and_then(Value::as_str) != Some(USER)
+            || previous.get("leadId").and_then(Value::as_str) != Some(lead.id.0.as_str())
+        {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "This complaint id has different content",
+            ));
+        }
+        return Ok(previous);
+    }
     let record = json!({
         "id": id,
         "leadId": lead.id.0,
@@ -199,7 +199,7 @@ pub fn submit_complaint(
     });
     if !validate(&record) {
         return Err(invalid_stored(
-            "complaints",
+            "runtime_complaints",
             record["id"].as_str().unwrap_or_default(),
         ));
     }
@@ -216,7 +216,6 @@ pub fn submit_complaint(
         message,
         now,
     )?;
-    write_receipt(transaction, &receipt_id, signature, &record)?;
     Ok(record)
 }
 
@@ -234,39 +233,36 @@ pub fn respond_to_complaint(
         signature,
     } = input;
     let receipt_id = format!("user:{request_id}");
-    if let Some(saved) = read_receipt(
+    if let Some(saved) = event_write::read_receipt(
         transaction,
-        &receipt_id,
+        Some(&receipt_id),
         signature,
-        "This request id has different content",
+        "runtime_complaints",
+        complaint_id,
         &validate,
     )? {
         return Ok(saved);
     }
     let raw = QuestionsWriteRepository::complaint(transaction, complaint_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown complaint"))?;
-    let mut complaint: Value =
-        serde_json::from_str(&raw).map_err(|_| invalid_stored("complaints", complaint_id))?;
-    if complaint.get("id").and_then(Value::as_str) != Some(complaint_id) || !validate(&complaint) {
-        return Err(invalid_stored("complaints", complaint_id));
-    }
+    let mut complaint = parse_complaint(&raw, complaint_id, &validate)?;
     let recipient = complaint
         .get("recipient")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("complaints", complaint_id))?
+        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
         .to_owned();
     let author = complaint
         .get("author")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("complaints", complaint_id))?
+        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
         .to_owned();
     let lead_id = complaint
         .get("leadId")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("complaints", complaint_id))?;
+        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?;
     if recipient != USER {
-        let lead = AgentRepository::get(transaction, &AgentId::from(lead_id))?
-            .ok_or_else(|| invalid_stored("agents", lead_id))?;
+        let lead = stored_agent(transaction, lead_id)?
+            .ok_or(QuestionsWriteError::InvalidRequest("Unknown managed agent"))?;
         let answered = complaint
             .get("responses")
             .and_then(Value::as_array)
@@ -308,7 +304,7 @@ pub fn respond_to_complaint(
     });
     complaint["responses"]
         .as_array_mut()
-        .ok_or_else(|| invalid_stored("complaints", complaint_id))?
+        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
         .push(response.clone());
     complaint["status"] = json!(status);
     complaint["updated"] = json!(now);
@@ -317,17 +313,16 @@ pub fn respond_to_complaint(
     }
     complaint["version"] = json!(version + 1);
     if !validate(&complaint) {
-        return Err(invalid_stored("complaints", complaint_id));
+        return Err(invalid_stored("runtime_complaints", complaint_id));
     }
+    let reporter = stored_agent(transaction, &author)?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown managed agent"))?;
     QuestionsWriteRepository::put_complaint(
         transaction,
         complaint_id,
         &event_write::python_json(&complaint),
     )?;
-    let reporter = AgentRepository::get(transaction, &AgentId::from(author))?;
-    if let Some(reporter) =
-        reporter.filter(|agent| !event_write::truthy(agent.extra.get("deletedAt")))
-    {
+    if !event_write::truthy(reporter.extra.get("deletedAt")) {
         let event = json!({
             "complaint_id": complaint_id,
             "responder": USER,
@@ -342,17 +337,8 @@ pub fn respond_to_complaint(
             now,
         )?;
     }
-    write_receipt(transaction, &receipt_id, signature, &complaint)?;
+    event_write::save_receipt(transaction, Some(&receipt_id), signature, &complaint)?;
     Ok(complaint)
-}
-
-pub fn request_signature(value: &Value) -> String {
-    let mut hash = Sha256::new();
-    hash.update(event_write::python_json(value).as_bytes());
-    hash.finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 fn request(
@@ -362,9 +348,10 @@ fn request(
 ) -> Result<Value, QuestionsWriteError> {
     let raw = QuestionsWriteRepository::request(transaction, id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
-    let record: Value = serde_json::from_str(&raw).map_err(|_| invalid_stored("requests", id))?;
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
     if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
-        return Err(invalid_stored("requests", id));
+        return Err(invalid_stored("runtime_requests", id));
     }
     Ok(record)
 }
@@ -376,7 +363,7 @@ fn put_request(
     validate: &impl Fn(&Value) -> bool,
 ) -> Result<(), QuestionsWriteError> {
     if !validate(record) {
-        return Err(invalid_stored("requests", id));
+        return Err(invalid_stored("runtime_requests", id));
     }
     QuestionsWriteRepository::put_request(transaction, id, &event_write::python_json(record))?;
     Ok(())
@@ -411,40 +398,33 @@ fn complaint_message(record: &Value) -> String {
     }))
 }
 
-fn read_receipt(
+fn stored_agent(
     transaction: &Transaction<'_>,
     id: &str,
-    signature: &str,
-    conflict_message: &'static str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Option<Value>, QuestionsWriteError> {
-    let Some(receipt) = EventWriteRepository::receipt(transaction, id)? else {
+) -> Result<Option<AgentRecord>, QuestionsWriteError> {
+    let key = AgentId::from(id);
+    let Some(raw) = AgentRepository::get_raw(transaction, &key)? else {
         return Ok(None);
     };
-    if receipt.signature != signature {
-        return Err(QuestionsWriteError::InvalidRequest(conflict_message));
+    let agent: AgentRecord =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_agents", id))?;
+    if agent.id.0 != id {
+        return Err(invalid_stored("runtime_agents", id));
     }
-    let value: Value = serde_json::from_str(&receipt.result)
-        .map_err(|_| invalid_stored("runtime_operation_receipts", id))?;
-    if !validate(&value) {
-        return Err(invalid_stored("runtime_operation_receipts", id));
-    }
-    Ok(Some(value))
+    Ok(Some(agent))
 }
 
-fn write_receipt(
-    transaction: &Transaction<'_>,
+fn parse_complaint(
+    raw: &str,
     id: &str,
-    signature: &str,
-    result: &Value,
-) -> Result<(), QuestionsWriteError> {
-    EventWriteRepository::put_receipt(
-        transaction,
-        id,
-        signature,
-        &event_write::python_json(result),
-    )?;
-    Ok(())
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<Value, QuestionsWriteError> {
+    let complaint: Value =
+        serde_json::from_str(raw).map_err(|_| invalid_stored("runtime_complaints", id))?;
+    if complaint.get("id").and_then(Value::as_str) != Some(id) || !validate(&complaint) {
+        return Err(invalid_stored("runtime_complaints", id));
+    }
+    Ok(complaint)
 }
 
 fn invalid_stored(object: &'static str, id: &str) -> QuestionsWriteError {

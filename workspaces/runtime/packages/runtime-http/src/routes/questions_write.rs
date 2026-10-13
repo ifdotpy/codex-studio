@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_services::questions_write::{self, ComplaintResponseWrite, QuestionsWriteError};
-use studio_runtime_store::{EntityRow, RuntimeStore, SyncDocumentsRepository, Transaction};
+use studio_runtime_store::{RuntimeStore, Transaction};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -39,7 +39,7 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn answer(
     State(_state): State<HttpState>,
-    ApiJson(_body): ApiJson<Value>,
+    ApiJson(_body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
     Err(
         dependency_unavailable("POST", "/api/answer", &QUESTION_ANSWER_DEPENDENCY)
@@ -49,13 +49,10 @@ async fn answer(
 
 async fn defer_question(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::QuestionDeferBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = field_string(&body, "id")?;
-    let deferred = body
-        .get("deferred")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| ApiError::validation(vec![Value::String("body".into())]))?;
+    let id = body.id;
+    let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let result = write(store, move |transaction| {
@@ -69,9 +66,9 @@ async fn defer_question(
 
 async fn delete_question(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = field_string(&body, "id")?;
+    let id = body.id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let result = write(store, move |transaction| {
@@ -85,73 +82,59 @@ async fn delete_question(
 
 async fn complaints(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::ComplaintBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let request_id = field_string(&body, "id")?;
-    let text = field_string(&body, "text")?;
+    let request_id = body.id.clone();
+    let text = body.text.clone();
     let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or("submit")
-        .to_owned();
-    let lead_id = body
-        .get("lead")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let complaint_id = body
-        .get("complaint_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+        .action
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "submit".to_owned());
+    let lead_id = body.lead.clone().flatten().unwrap_or_default();
+    let complaint_id = body.complaint_id.clone().flatten().unwrap_or_default();
     let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let version = body.get("version").and_then(Value::as_i64).unwrap_or(-1);
+        .status
+        .clone()
+        .flatten()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let version = body.version.flatten().unwrap_or(-1);
     let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let signature = match action.as_str() {
         "submit" => {
-            if lead_id.is_empty() {
+            if lead_id.trim().is_empty() {
                 return Err(ApiError::validation(vec![Value::String(
                     "body.lead".into(),
                 )]));
             }
-            questions_write::request_signature(&json!({
-                "operation":"complaint_submit", "id":request_id, "lead":lead_id, "text":text
-            }))
+            String::new()
         }
         "respond" => {
-            if body.get("complaint_id").and_then(Value::as_str).is_none()
-                || body.get("status").and_then(Value::as_str).is_none()
-                || body.get("version").and_then(Value::as_i64).is_none()
+            if body
+                .complaint_id
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_none()
+                || body.status.as_ref().and_then(Option::as_ref).is_none()
+                || body.version.flatten().is_none()
             {
                 return Err(ApiError::validation(vec![Value::String("body".into())]));
             }
-            questions_write::request_signature(&json!({
-            "operation":"complaint_response", "id":request_id,
-            "complaint_id":body.get("complaint_id"), "text":text,
-            "status":body.get("status"), "version":body.get("version")
-            }))
+            let mut data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
+            data.as_object_mut()
+                .ok_or_else(ApiError::internal)?
+                .insert("operation".to_owned(), json!("complaint_response"));
+            studio_runtime_services::event_write::request_signature(&data)
         }
-        _ => {
-            return Err(ApiError::validation(vec![Value::String(
-                "body.action".into(),
-            )]));
-        }
+        _ => return Err(ApiError::internal()),
     };
     let result = write(store, move |transaction| {
         if action == "submit" {
-            questions_write::submit_complaint(
-                transaction,
-                &lead_id,
-                &request_id,
-                &text,
-                &signature,
-                |record| validators.validate_stored("ComplaintRecordResponse", record),
-            )
+            questions_write::submit_complaint(transaction, &lead_id, &request_id, &text, |record| {
+                validators.validate_stored("ComplaintRecordResponse", record)
+            })
         } else {
             questions_write::respond_to_complaint(
                 transaction,
@@ -178,58 +161,7 @@ async fn write(
     store: Arc<RuntimeStore>,
     operation: impl FnOnce(&Transaction<'_>) -> Result<Value, QuestionsWriteError> + Send + 'static,
 ) -> Result<Value, ApiError> {
-    let before = store.read().map_err(|_| ApiError::internal())?;
-    let before_sequence =
-        SyncDocumentsRepository::entity_sequence(&before).map_err(|_| ApiError::internal())?;
-    drop(before);
-    tokio::task::spawn_blocking(move || {
-        let result = store.transaction_with_error(operation).map_err(api_error)?;
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let entities = SyncDocumentsRepository::entities_after(&connection, before_sequence, 501)
-            .map_err(|_| ApiError::internal())?;
-        let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
-            .map_err(|_| ApiError::internal())?;
-        let sync_after =
-            (entities.len() <= 500 && floor <= before_sequence).then_some(before_sequence);
-        Ok(with_sync_entities(result, entities, sync_after))
-    })
-    .await
-    .map_err(|_| ApiError::internal())?
-}
-
-fn with_sync_entities(
-    mut result: Value,
-    entities: Vec<EntityRow>,
-    sync_after: Option<i64>,
-) -> Value {
-    if entities.is_empty() {
-        return result;
-    }
-    result["_syncEntities"] = Value::Array(
-        entities
-            .iter()
-            .take(500)
-            .map(|row| {
-                json!({
-                    "id": format!("entity:{}:{}", row.collection, row.id),
-                    "seq": row.sequence,
-                    "payload": row.payload,
-                    "_deleted": row.deleted,
-                })
-            })
-            .collect(),
-    );
-    if let Some(sync_after) = sync_after {
-        result["_syncEntitiesAfter"] = json!(sync_after);
-    }
-    result
-}
-
-fn field_string(body: &Value, field: &str) -> Result<String, ApiError> {
-    body.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| ApiError::validation(vec![Value::String(format!("body.{field}"))]))
+    super::sync_delta::write(store, operation, api_error).await
 }
 
 fn generated_receipt(value: Value) -> Result<Value, ApiError> {

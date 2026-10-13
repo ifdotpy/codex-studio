@@ -15,6 +15,7 @@ mod queue_write;
 mod rules;
 mod session;
 mod sync;
+mod sync_delta;
 mod sync_documents;
 mod terminals;
 mod transcript;
