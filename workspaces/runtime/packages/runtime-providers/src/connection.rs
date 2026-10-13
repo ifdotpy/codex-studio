@@ -592,8 +592,7 @@ impl SessionState {
         self.active_threads.clear();
         self.queued_threads.clear();
         let mut actions = Vec::with_capacity(self.pending.len() + 1);
-        for pending in self.pending.values_mut() {
-            pending.deadline_ms = u64::MAX;
+        for pending in self.pending.values() {
             actions.push(Action::Resolve {
                 ticket: pending.ticket.clone(),
                 outcome: RequestOutcome::Unknown,
@@ -616,6 +615,20 @@ impl SessionState {
             return Err(SessionError::Book(BookError::UnknownId));
         }
         self.book.cancel(&ticket.id)?;
+        self.remove_request(ticket)
+    }
+
+    /// Use only with positive evidence that this request was never sent. Unlike
+    /// user cancellation this also retires deadline-unknown and Codex tickets.
+    pub fn reject_unsent(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
+        if ticket.generation != self.generation {
+            return Err(SessionError::StaleGeneration);
+        }
+        self.book.reject_unsent(&ticket.id)?;
+        self.remove_request(ticket)
+    }
+
+    fn remove_request(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
         let Some(pending) = self.pending.remove(&ticket.id) else {
             return Ok(Vec::new());
         };

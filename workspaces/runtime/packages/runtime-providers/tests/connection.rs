@@ -900,3 +900,115 @@ fn arrival_timestamp_classification_is_independent_of_expiry_order() {
         assert_eq!(replies[0], replies[1]);
     }
 }
+
+#[test]
+fn rejecting_unsent_retires_expired_queue_and_releases_next_serialized_request() {
+    for expired in [false, true] {
+        let mut session = state(true);
+        let (first, _) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("first");
+        let (second, actions) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                10,
+                Some("thread".into()),
+                false,
+            )
+            .expect("queued second");
+        assert!(actions.is_empty());
+        let (third, actions) = session
+            .submit(
+                Method::TurnStart,
+                json!({}),
+                0,
+                100,
+                Some("thread".into()),
+                false,
+            )
+            .expect("queued third");
+        assert!(actions.is_empty());
+        if expired {
+            assert_eq!(session.expire(10).1.len(), 1);
+        }
+        assert!(
+            session
+                .reject_unsent(&second)
+                .expect("retire second")
+                .is_empty()
+        );
+        let released = session.reject_unsent(&first).expect("retire first");
+        let writes = outgoing(&released);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0]["id"],
+            serde_json::to_value(&third.id).expect("id")
+        );
+        assert!(
+            session
+                .receive(reply_for_test(second.id))
+                .expect("orphan response")
+                .is_empty()
+        );
+        assert_eq!(session.next_deadline_ms(), Some(100));
+    }
+}
+
+fn reply_for_test(id: RequestId) -> Frame {
+    Frame::Response {
+        id,
+        body: ResponseBody::Result(json!({})),
+        fields: Default::default(),
+    }
+}
+
+#[test]
+fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
+    let mut session = state(false);
+    let (ticket, _) = session
+        .submit(Method::ModelList, json!({}), 0, 10, None, false)
+        .expect("ticket");
+    let mut stale = ticket.clone();
+    stale.generation += 1;
+    assert!(session.reject_unsent(&stale).is_err());
+    let _ = session.expire(10);
+    assert!(
+        session
+            .reject_unsent(&ticket)
+            .expect("retire expired unsent")
+            .is_empty()
+    );
+    assert_eq!(session.next_deadline_ms(), None);
+    assert!(
+        session
+            .receive(reply_for_test(ticket.id))
+            .expect("orphan")
+            .is_empty()
+    );
+}
+
+#[test]
+fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
+    for arrived in [9, 10, 11] {
+        let mut session = state(false);
+        let (ticket, _) = session
+            .submit(Method::ModelList, json!({}), 0, 10, None, false)
+            .expect("ticket");
+        session.transport_lost();
+        let actions = session
+            .receive_at(reply_for_test(ticket.id), arrived)
+            .expect("late evidence");
+        assert!(
+            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))
+        );
+    }
+}

@@ -145,6 +145,13 @@ impl PendingBook {
         Ok(entry.method)
     }
 
+    /// Positive evidence of no send can retire even a deadline-unknown ticket.
+    pub(crate) fn reject_unsent(&mut self, id: &RequestId) -> Result<(), BookError> {
+        self.entries.remove(id).ok_or(BookError::UnknownId)?;
+        self.remember_settled(id.clone(), SettledKind::Cancelled);
+        Ok(())
+    }
+
     fn remember_settled(&mut self, id: RequestId, kind: SettledKind) {
         self.settled_ids.insert(id.clone(), kind);
         self.settled_order.push_back(id);
