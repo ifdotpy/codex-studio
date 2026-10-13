@@ -686,7 +686,12 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
         for key in &state.order.accounts {
-            self.refresh_value(&mut updated, key, true)?;
+            let stored = registry_account(&updated, key)?.clone();
+            if self.refresh_value(&mut updated, key, false)? == AccountStatus::Error {
+                // A listing cannot replace persisted status with an error when
+                // the auth reader could not determine the account's state.
+                *registry_account_mut(&mut updated, key)? = stored;
+            }
         }
         project_snapshot(&updated, &state.order)
     }
