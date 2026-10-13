@@ -4,7 +4,9 @@ use std::process::{Command, Stdio};
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
 fn fixture_parent() -> PathBuf {
-    let path = PathBuf::from("/var/tmp/cs-rust-workspace-ready");
+    let path = std::env::var_os("STUDIO_WORKSPACE_TEST_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/tmp/cs-rust-workspace-ready"));
     std::fs::create_dir_all(&path).expect("isolated fixture parent");
     path
 }
