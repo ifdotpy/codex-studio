@@ -442,7 +442,9 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let mut updated = agent.clone();
     updated.status = AgentStatus::Queued;
     AgentRepository::put(connection, &updated)?;
-    EventWriteRepository::set_agent_sync_status(connection, &updated.id.0, "queued")?;
+    let projection =
+        serde_json::to_value(&updated).map_err(studio_runtime_store::StoreError::from)?;
+    crate::agents_create::publish_agent(connection, &projection)?;
     Ok(())
 }
 

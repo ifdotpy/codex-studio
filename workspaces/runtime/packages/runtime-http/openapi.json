@@ -23101,8 +23101,9 @@
           "id": {
             "anyOf": [
               {
-                "maxLength": 200,
-                "minLength": 1,
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
                 "type": "string"
               },
               {

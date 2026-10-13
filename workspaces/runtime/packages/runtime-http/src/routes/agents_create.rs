@@ -8,7 +8,6 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_services::account_driver::{AccountDriverError, AccountStatus};
 use studio_runtime_services::agents_create::{self, CreateError, RenameError, SettingsError};
 use studio_runtime_services::event_write::python_json;
@@ -18,14 +17,41 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 pub(crate) fn routes() -> RouteGroup {
+    const LEAD_DEPENDENCIES: [Dependency; 5] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("agent-management/empty-chat-reuse"),
+        Dependency::new("project-driver/chat-binding"),
+        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+    ];
+    const AGENT_DEPENDENCIES: [Dependency; 6] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("worker-driver/work-assignment"),
+        Dependency::new("worker-driver/workspace-preparation"),
+        Dependency::new("workspace-state/lead-workspace"),
+    ];
+    const CONFIGURE_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("agent-management/agent-mode-settings")];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("agent-management/conversation-settings")];
     const DELETE_DEPENDENCY: [Dependency; 1] =
         [Dependency::new("agent-management/conversation-termination")];
     RouteGroup::new(vec![
-        post("/api/agents", OperationStatus::Implemented, create_agent),
-        post("/api/configure", OperationStatus::Implemented, configure),
+        post(
+            "/api/agents",
+            OperationStatus::partial(&AGENT_DEPENDENCIES),
+            create_agent,
+        ),
+        post(
+            "/api/configure",
+            OperationStatus::partial(&CONFIGURE_DEPENDENCIES),
+            configure,
+        ),
         post(
             "/api/conversation",
-            OperationStatus::Implemented,
+            OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
             conversation,
         ),
         post(
@@ -33,7 +59,11 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&DELETE_DEPENDENCY),
             delete_conversation,
         ),
-        post("/api/leads", OperationStatus::Implemented, create_lead),
+        post(
+            "/api/leads",
+            OperationStatus::partial(&LEAD_DEPENDENCIES),
+            create_lead,
+        ),
         post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }
@@ -146,9 +176,9 @@ fn rename_error(error: RenameError) -> ApiError {
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires provider-session/title-generation",
         ),
-        RenameError::InvalidStoredObject { object } => ApiError::new(
+        RenameError::InvalidStoredObject { object, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
+            format!("Invalid stored object {object}/{id}"),
         ),
         RenameError::Store(_) => ApiError::internal(),
     }
@@ -158,31 +188,6 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    for field in ["model", "effort", "fast_mode", "daybreak_enabled"] {
-        if body.get(field).is_some_and(|value| !value.is_null()) {
-            return Err(unavailable("provider-session/model-list"));
-        }
-    }
-    if body
-        .get("worker_defaults")
-        .is_some_and(|value| !value.is_null())
-        || body
-            .get("review_defaults")
-            .is_some_and(|value| !value.is_null())
-    {
-        return Err(unavailable("worker-driver/settings-catalog"));
-    }
-    if ["project_id", "project_server_id", "project_folder"]
-        .iter()
-        .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
-    {
-        return Err(unavailable("project-driver/chat-binding"));
-    }
-    if body.get("previous").is_some_and(|value| !value.is_null())
-        || body.get("reuse_empty").and_then(Value::as_bool) == Some(true)
-    {
-        return Err(unavailable("agent-management/empty-chat-reuse"));
-    }
     let workspace_mode =
         body.get("workspaceMode")
             .and_then(Value::as_str)
@@ -191,6 +196,56 @@ async fn create_lead(
             } else {
                 "worktree"
             });
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or(agents_create::new_id().map_err(create_error)?);
+    let signature_cwd = if body.get("cwd").and_then(Value::as_str).is_some() {
+        Some(project_directory(&state, body.get("cwd"))?)
+    } else {
+        None
+    };
+    let signature = lead_signature(&body, workspace_mode, signature_cwd.as_deref());
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let validators = state.validators.clone();
+    let replay = store.read().map_err(|_| ApiError::internal())?;
+    let existing = agents_create::replay_lead(&replay, &id, &signature, |value| {
+        validators.validate_stored("AgentRecordResponse", value)
+    })
+    .map_err(create_error)?;
+    drop(replay);
+    if let Some(existing) = existing {
+        let existing_id = existing
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(ApiError::internal)?
+            .to_owned();
+        let projected = projected_response(&state, &existing_id, existing)?;
+        return Ok(Json(super::generated_json::<
+            crate::generated::AgentResponse,
+        >(projected)?));
+    }
+    for field in ["effort", "fast_mode", "daybreak_enabled"] {
+        if body.get(field).is_some() {
+            return Err(unavailable("provider-session/model-list"));
+        }
+    }
+    if body.get("model").is_some_and(|value| !value.is_null()) {
+        return Err(unavailable("provider-session/model-list"));
+    }
+    if body.get("worker_defaults").is_some() || body.get("review_defaults").is_some() {
+        return Err(unavailable("worker-driver/settings-catalog"));
+    }
+    if ["project_id", "project_server_id", "project_folder"]
+        .iter()
+        .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(unavailable("project-driver/chat-binding"));
+    }
+    if body.get("previous").is_some_and(|value| !value.is_null()) {
+        return Err(unavailable("agent-management/empty-chat-reuse"));
+    }
     if workspace_mode != "worktree" {
         return Err(unavailable("workspace-state/lead-workspace"));
     }
@@ -200,83 +255,30 @@ async fn create_lead(
     let cwd = project_directory(&state, body.get("cwd"))?;
     let account = account_key(&state, body.get("account_key"), &cwd)?;
     refresh_account(&state, &account)?;
-    let id = match body.get("id").and_then(Value::as_str) {
-        Some(id) => id.to_owned(),
-        None => agents_create::new_id().map_err(create_error)?,
-    };
     let yolo = body
         .get("yolo_mode")
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let created = unix_time()?;
-    let request_signature = signature(&body);
-    let record = merge_records([
-        json!({
-          "id": id,
-          "threadId": null,
-          "accountKey": account,
-          "executionSettingsAccountKey": account,
-          "provider": provider(&state, &account),
-          "yoloMode": yolo,
-          "name": "New chat",
-          "prompt": "",
-          "cwd": cwd,
-          "role": "orchestrator",
-          "isLead": true,
-          "needsTitle": true,
-          "parentId": null,
-          "rootId": id,
-          "subagentConcurrencyVersion": 2,
-          "maxAgentsExplicit": false,
-          "model": if provider(&state, &account) == "claude" { "default" } else { DEFAULT_LEAD_MODEL },
-          "effort": "medium",
-          "fastMode": false,
-          "daybreakEnabled": false,
-          "cyberAccessProgram": "standard",
-          "concurrency": DEFAULT_CONCURRENCY,
-          "maxAgents": DEFAULT_MAX_AGENTS.max(DEFAULT_CONCURRENCY + 2),
-          "tokenBudget": null,
-          "status": "idle",
-          "autoWake": true,
-          "epoch": 0,
-          "turnId": null,
-          "inFlight": false,
-          "turnEpoch": 0,
-          "usageResumeEnabled": true,
-          "tokensUsed": 0,
-          "compactions": 0,
-          "compactionsObservedOnly": false,
-          "contextUsage": null,
-          "events": 0,
-          "created": created,
-          "error": null,
-        }),
-        json!({
-          "profileId": null,
-          "profileInstructions": "",
-          "tail": "",
-          "worktree": false,
-          "workspaceMode": workspace_mode,
-          "executionMode": "native",
-          "hostProjectPath": cwd,
-          "layrReady": false,
-          "workspaceInGit": false,
-          "worktreeReady": false,
-          "environment": "host",
-          "imageWorkspace": false,
-          "imageWorkspaceReady": false,
-          "workerDefaults": {"model": null, "effort": null, "fastMode": false, "daybreakEnabled": false, "accountKey": null, "delegationDepth": 1},
-          "reviewDefaults": {"model": null, "effort": null},
-        }),
-        json!({
-          "agentMode": "multi",
-          "agentModeRevision": 0,
-          "agentModeSupported": true,
-          "quickCreate": true,
-          "quickCreateRequest": request_signature,
-          "quickCreateRequestBody": body
-        }),
-    ]);
+    let record = build_agent_record(
+        &id,
+        "New chat",
+        "",
+        &cwd,
+        &account,
+        provider(&state, &account),
+        yolo,
+        "orchestrator",
+        true,
+        "idle",
+        workspace_mode,
+        Some(DEFAULT_CONCURRENCY),
+        DEFAULT_MAX_AGENTS.max(DEFAULT_CONCURRENCY + 2),
+        Value::Null,
+        true,
+        created,
+        Some(signature),
+    );
     persist_created(&state, id, "", record).await.map(Json)
 }
 
@@ -284,6 +286,33 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    if state.store.is_none() && state.account_driver.is_none() {
+        return Err(unavailable("account-driver/unavailable"));
+    }
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or(agents_create::new_id().map_err(create_error)?);
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let validators = state.validators.clone();
+    let replay = store.read().map_err(|_| ApiError::internal())?;
+    if let Some(existing) = agents_create::replay_agent(&replay, &id, &body, |value| {
+        validators.validate_stored("AgentRecordResponse", value)
+    })
+    .map_err(create_error)?
+    {
+        let existing_id = existing
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(ApiError::internal)?
+            .to_owned();
+        let projected = projected_response(&state, &existing_id, existing)?;
+        return Ok(Json(super::generated_json::<
+            crate::generated::AgentResponse,
+        >(projected)?));
+    }
+    drop(replay);
     if body.get("parent").is_some_and(|value| !value.is_null()) {
         return Err(unavailable("worker-driver/workspace-preparation"));
     }
@@ -293,9 +322,8 @@ async fn create_agent(
         "fast_mode",
         "daybreak_enabled",
         "worker_defaults",
-        "profile_id",
     ] {
-        if body.get(field).is_some_and(|value| !value.is_null()) {
+        if body.get(field).is_some() {
             return Err(unavailable(if field == "worker_defaults" {
                 "worker-driver/settings-catalog"
             } else {
@@ -307,8 +335,8 @@ async fn create_agent(
         .get("role")
         .and_then(Value::as_str)
         .unwrap_or("orchestrator");
-    if role != "orchestrator" {
-        return Err(unavailable("worker-driver/work-assignment"));
+    if !matches!(role, "orchestrator" | "reviewer" | "implementer") {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid agent role"));
     }
     let workspace_mode = body
         .get("workspaceMode")
@@ -317,16 +345,40 @@ async fn create_agent(
     if workspace_mode != "worktree" {
         return Err(unavailable("workspace-state/lead-workspace"));
     }
+    if body.get("concurrency").is_some_and(Value::is_null) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Concurrency must be an integer from 0 to 512",
+        ));
+    }
+    if body.get("maxAgents").is_some_and(Value::is_null) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Team size must be an integer from 1 to 1024",
+        ));
+    }
+    if body.get("yolo_mode").is_some_and(Value::is_null) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "yolo_mode must be a boolean",
+        ));
+    }
     if state.account_driver.is_none() {
         return Err(unavailable("account-driver/unavailable"));
+    }
+    if body
+        .get("cwd")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Select an existing project directory",
+        ));
     }
     let cwd = project_directory(&state, body.get("cwd"))?;
     let account = account_key(&state, body.get("account_key"), &cwd)?;
     refresh_account(&state, &account)?;
-    let id = match body.get("id").and_then(Value::as_str) {
-        Some(id) => id.to_owned(),
-        None => agents_create::new_id().map_err(create_error)?,
-    };
     let prompt = body
         .get("prompt")
         .and_then(Value::as_str)
@@ -358,70 +410,31 @@ async fn create_agent(
     };
     let token_budget = body.get("tokenBudget").cloned().unwrap_or(Value::Null);
     let created = unix_time()?;
-    let record = merge_records([
-        json!({
-          "id": id,
-          "threadId": null,
-          "accountKey": account,
-          "executionSettingsAccountKey": account,
-          "provider": provider(&state, &account),
-          "yoloMode": yolo,
-          "name": name,
-          "prompt": prompt,
-          "cwd": cwd,
-          "role": "orchestrator",
-          "isLead": true,
-          "needsTitle": false,
-          "parentId": null,
-          "rootId": id,
-          "subagentConcurrencyVersion": 2,
-          "maxAgentsExplicit": body.get("maxAgents").is_some_and(|v| !v.is_null()),
-          "model": if provider(&state, &account) == "claude" { "default" } else { DEFAULT_LEAD_MODEL },
-          "effort": "medium",
-          "fastMode": false,
-          "daybreakEnabled": false,
-          "cyberAccessProgram": "standard",
-          "concurrency": concurrency,
-          "maxAgents": max_agents,
-          "tokenBudget": token_budget,
-          "status": "queued",
-          "autoWake": true,
-          "epoch": 0,
-          "turnId": null,
-          "inFlight": false,
-          "turnEpoch": 0,
-          "usageResumeEnabled": true,
-          "tokensUsed": 0,
-          "compactions": 0,
-          "compactionsObservedOnly": false,
-          "contextUsage": null,
-          "events": 0,
-          "created": created,
-          "error": null,
-        }),
-        json!({
-          "profileId": null,
-          "profileInstructions": "",
-          "tail": "",
-          "worktree": false,
-          "workspaceMode": workspace_mode,
-          "executionMode": "native",
-          "hostProjectPath": cwd,
-          "layrReady": false,
-          "workspaceInGit": false,
-          "worktreeReady": false,
-          "environment": "host",
-          "imageWorkspace": false,
-          "imageWorkspaceReady": false,
-          "workerDefaults": {"model": null, "effort": null, "fastMode": false, "daybreakEnabled": false, "accountKey": null, "delegationDepth": 1},
-          "reviewDefaults": {"model": null, "effort": null},
-        }),
-        json!({
-          "agentMode": "multi",
-          "agentModeRevision": 0,
-          "agentModeSupported": true
-        }),
-    ]);
+    let mut record = build_agent_record(
+        &id,
+        &name,
+        &prompt,
+        &cwd,
+        &account,
+        provider(&state, &account),
+        yolo,
+        role,
+        role == "orchestrator",
+        "queued",
+        workspace_mode,
+        Some(concurrency),
+        max_agents,
+        token_budget,
+        false,
+        created,
+        None,
+    );
+    if role == "orchestrator" {
+        record["maxAgentsExplicit"] = json!(body.get("maxAgents").is_some());
+    }
+    if let Some(profile_id) = body.get("profile_id") {
+        record["profileId"] = profile_id.clone();
+    }
     persist_created(&state, id, &prompt, record).await.map(Json)
 }
 
@@ -451,18 +464,26 @@ async fn persist_created(
         .map_err(create_error)?;
     let result = with_sync_delta(&store, before, result)?;
     state.event_wake.notify_one();
-    super::generated_json::<crate::generated::AgentResponse>(result)
+    let projected = projected_response(state, &id, result)?;
+    super::generated_json::<crate::generated::AgentResponse>(projected)
 }
 
 async fn configure(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(request): ApiJson<crate::generated::ConfigureRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
     if body.get("concurrency").is_some() {
         if body.get("maxAgents").is_some() || body.get("tokenBudget").is_some() {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Set subagent concurrency separately from team storage and token limits",
+            ));
+        }
+        if body.get("concurrency").is_some_and(Value::is_null) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Subagent concurrency must be an integer from 0 to 512",
             ));
         }
         return Err(unavailable("agent-management/agent-mode-settings"));
@@ -473,7 +494,17 @@ async fn configure(
             "Configure only team storage and token limits",
         ));
     }
-    let id = required_string(&body, "id")?;
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
+    if body.get("maxAgents").is_some_and(Value::is_null) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Team size must be an integer from 1 to 1024",
+        ));
+    }
     let max_agents = body.get("maxAgents").and_then(Value::as_i64);
     let token_budget = body.get("tokenBudget").map(|value| value.as_i64());
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -498,8 +529,9 @@ async fn configure(
 
 async fn conversation(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(request): ApiJson<crate::generated::ConversationRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
     if [
         "cwd",
         "yolo_mode",
@@ -528,7 +560,11 @@ async fn conversation(
     }) {
         return Err(unavailable("agent-management/conversation-settings"));
     }
-    let id = required_string(&body, "id")?;
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
     let expected = body.get("expected_account_key").and_then(Value::as_str);
     let excluded = body
         .get("excluded_account_keys")
@@ -560,9 +596,15 @@ async fn conversation(
         })
         .map_err(settings_error)?;
     let result = with_sync_delta(&store, before, result)?;
+    let result_id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_owned();
+    let projected = projected_response(&state, &result_id, result)?;
     Ok(Json(super::generated_json::<
         crate::generated::AgentResponse,
-    >(result)?))
+    >(projected)?))
 }
 
 async fn delete_conversation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
@@ -707,8 +749,24 @@ fn refresh_account(state: &HttpState, account: &str) -> Result<(), ApiError> {
 }
 
 fn project_directory(state: &HttpState, requested: Option<&Value>) -> Result<String, ApiError> {
+    let expand_home = |value: &str| {
+        if value == "~" || value.starts_with("~/") {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| {
+                    if value == "~" {
+                        home
+                    } else {
+                        home.join(&value[2..])
+                    }
+                })
+                .unwrap_or_else(|| PathBuf::from(value))
+        } else {
+            PathBuf::from(value)
+        }
+    };
     let path = if let Some(requested) = requested.and_then(Value::as_str) {
-        PathBuf::from(requested)
+        expand_home(requested)
     } else if let Some(configured) = std::env::var_os("CODEX_CANVAS_CWD") {
         PathBuf::from(configured)
     } else {
@@ -730,23 +788,105 @@ fn project_directory(state: &HttpState, requested: Option<&Value>) -> Result<Str
     Ok(path.to_string_lossy().into_owned())
 }
 
-fn required_string(body: &Value, field: &str) -> Result<String, ApiError> {
-    body.get(field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ApiError::validation(vec![
-                Value::String("body".into()),
-                Value::String(field.into()),
-            ])
-        })
+fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
+    let mut settings = serde_json::Map::new();
+    settings.insert(
+        "model".into(),
+        body.get("model").cloned().unwrap_or(Value::Null),
+    );
+    settings.insert(
+        "previous".into(),
+        body.get("previous").cloned().unwrap_or(Value::Null),
+    );
+    settings.insert(
+        "workspaceMode".into(),
+        body.get("workspaceMode")
+            .cloned()
+            .unwrap_or_else(|| json!(workspace_mode)),
+    );
+    for field in [
+        "effort",
+        "fast_mode",
+        "daybreak_enabled",
+        "worker_defaults",
+        "review_defaults",
+        "account_key",
+        "reuse_empty",
+        "project_folder",
+        "project_id",
+        "project_server_id",
+        "yolo_mode",
+    ] {
+        if let Some(value) = body.get(field) {
+            settings.insert(field.to_owned(), value.clone());
+        }
+    }
+    if body.get("cwd").and_then(Value::as_str).is_some() {
+        settings.insert("cwd".into(), json!(cwd));
+    }
+    python_json(&Value::Object(settings))
 }
 
-fn signature(body: &Value) -> String {
-    Sha256::digest(python_json(body).as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+#[allow(clippy::too_many_arguments)]
+fn build_agent_record(
+    id: &str,
+    name: &str,
+    prompt: &str,
+    cwd: &str,
+    account: &str,
+    provider: &str,
+    yolo: bool,
+    role: &str,
+    is_lead: bool,
+    status: &str,
+    workspace_mode: &str,
+    concurrency: Option<i64>,
+    max_agents: i64,
+    token_budget: Value,
+    draft: bool,
+    created: f64,
+    quick_create_signature: Option<String>,
+) -> Value {
+    let mut record = merge_records([
+        json!({
+          "id":id,"threadId":null,"accountKey":account,"executionSettingsAccountKey":account,
+          "provider":provider,"yoloMode":yolo,"name":name,"prompt":prompt,"cwd":cwd,
+          "role":role,"isLead":is_lead,"needsTitle":draft,"parentId":null,"rootId":id,
+          "model":if provider == "claude" {"default"} else {DEFAULT_LEAD_MODEL},"effort":"medium",
+          "fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":"standard",
+          "maxAgents":max_agents,"tokenBudget":token_budget,"status":status,"autoWake":true,
+          "epoch":0,"turnId":null,"inFlight":false,"turnEpoch":0,"usageResumeEnabled":true,
+          "tokensUsed":0,"compactions":0,"compactionsObservedOnly":false,"contextUsage":null,
+          "events":0,"created":created,"error":null,"profileId":null,"profileInstructions":""
+        }),
+        json!({
+          "tail":"","worktree":false,"workspaceMode":workspace_mode,"executionMode":"native",
+          "hostProjectPath":cwd,"layrReady":false,"workspaceInGit":false,"worktreeReady":false,
+          "environment":"host","imageWorkspace":false,"imageWorkspaceReady":false,
+          "imageWorkspacePhase":null,"imageWorkspaceRepo":null,"imageWorkspaceSubpath":".",
+          "imageWorkspaceBaseRef":null,"imageWorkspaceHasGit":false,"imageWorkspaceCreatedAt":null,
+          "imageWorkspaceError":null,"workspaceBackend":null,"workspaceModeExplicit":false,
+          "worktreeWarning":null,"workerBaseRef":null,"workerBaseCommit":null,
+          "workerBaseBehindMain":null,"workerBaseMainRef":null
+        }),
+    ]);
+    if let Some(concurrency) = concurrency {
+        record["concurrency"] = json!(concurrency);
+    }
+    if is_lead {
+        record["subagentConcurrencyVersion"] = json!(2);
+        record["maxAgentsExplicit"] = json!(false);
+        record["agentMode"] = json!("multi");
+        record["agentModeRevision"] = json!(0);
+        record["agentModeSupported"] = json!(true);
+        record["workerDefaults"] = json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1});
+        record["reviewDefaults"] = json!({"model":null,"effort":null});
+    }
+    if draft {
+        record["quickCreate"] = json!(true);
+        record["quickCreateRequest"] = json!(quick_create_signature);
+    }
+    record
 }
 
 fn merge_records<const N: usize>(parts: [Value; N]) -> Value {
@@ -787,11 +927,33 @@ fn with_sync_delta(store: &RuntimeStore, after: i64, mut result: Value) -> Resul
     Ok(result)
 }
 
+fn projected_response(state: &HttpState, id: &str, result: Value) -> Result<Value, ApiError> {
+    let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
+    let connection = store.read().map_err(|_| ApiError::internal())?;
+    let raw = connection
+        .query_row(
+            "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|_| ApiError::internal())?;
+    let envelope: Value = serde_json::from_str(&raw).map_err(|_| ApiError::internal())?;
+    let mut projected = envelope
+        .get("value")
+        .cloned()
+        .ok_or_else(ApiError::internal)?;
+    if let Some(object) = projected.as_object_mut() {
+        for field in ["_syncEntities", "_syncEntitiesAfter"] {
+            if let Some(value) = result.get(field) {
+                object.insert(field.to_owned(), value.clone());
+            }
+        }
+    }
+    Ok(projected)
+}
+
 fn unix_time() -> Result<f64, ApiError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
-        .map_err(|_| ApiError::internal())
+    studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())
 }
 
 fn unavailable(dependency: &'static str) -> ApiError {
@@ -817,6 +979,7 @@ fn settings_error(error: SettingsError) -> ApiError {
         SettingsError::UnknownAgent => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
         SettingsError::LeadRequired
         | SettingsError::Deleted
+        | SettingsError::InFlight
         | SettingsError::Conflict
         | SettingsError::Stale => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
         SettingsError::CurrentAccountExcluded => {

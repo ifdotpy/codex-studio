@@ -71,6 +71,38 @@ def rename_state(state: Path, agent_id: str, request_id: str):
         }
 
 
+def normalized_agent(value):
+    result = dict(value)
+    result["id"] = "<agent>"
+    result["rootId"] = "<agent>"
+    result["created"] = 0
+    if "serverId" in result:
+        result["serverId"] = "<server>"
+    return result
+
+
+def python_draft(backend, request):
+    """Create a draft through the Python runtime so Rust can prove migration replay."""
+    backend.stop()
+
+    class QuietRuntime(_fixture.Runtime):
+        def schedule(self):
+            pass
+
+    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    try:
+        created = runtime.new_lead(request)
+        with runtime.db() as database:
+            stored = runtime.agent(created["id"], database)
+            projection = json.loads(database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (created["id"],),
+            ).fetchone()[0])["value"]
+        return {"record": stored, "projection": projection}
+    finally:
+        runtime.close()
+
+
 class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -90,6 +122,38 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }
 
     def test_draft_creation_replays_same_content_and_syncs_python_shape(self):
+        reference_request = {
+            "id": "06c9cf18-bf6e-4d6f-bd38-7a886fb32111",
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        reference = python_draft(self.backend, reference_request)
+        self.backend.start()
+        python_replay = self.backend.request(
+            "POST", "/api/leads", body=reference_request, headers=self.headers()
+        )
+        self.assertEqual(python_replay.status, 200, python_replay.body[:1000])
+        self.assertEqual(python_replay.json()["id"], reference_request["id"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            python_record = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?",
+                (reference_request["id"],),
+            ).fetchone()[0])
+            python_projection = json.loads(database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (reference_request["id"],),
+            ).fetchone()[0])["value"]
+        self.assertEqual(normalized_agent(python_record), normalized_agent(reference["record"]))
+        normalized_projection = normalized_agent(python_projection)
+        expected_projection = normalized_agent(reference["projection"])
+        self.assertEqual(
+            set(normalized_projection),
+            set(expected_projection),
+            f"stored-only={set(normalized_projection) - set(expected_projection)}; "
+            f"runtime-only={set(expected_projection) - set(normalized_projection)}",
+        )
+        self.assertEqual(normalized_projection, expected_projection)
+
         request = {
             "id": "b7f4742c-f61d-4c77-bcfe-51edfc3d17a9",
             "cwd": str(self.backend.cwd),
@@ -117,8 +181,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertTrue(stored_record["quickCreate"])
         self.assertTrue(stored_record["needsTitle"])
         self.assertEqual(stored_record["cwd"], str(self.backend.cwd))
+        self.assertEqual(normalized_agent(stored_record), normalized_agent(reference["record"]))
         self.assertEqual(events, 0)
         self.assertIsNotNone(projection)
+        self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
         replay = self.backend.request(
             "POST", "/api/leads", body=request, headers=self.headers()
         )
@@ -221,7 +287,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         reuse = self.backend.request(
             "POST",
             "/api/leads",
-            body={"reuse_empty": True},
+            body={"reuse_empty": True, "previous": self.agent_id},
             headers=self.headers(),
         )
         self.assertEqual(reuse.status, 501, reuse.body[:1000])
@@ -282,6 +348,13 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], request["id"])
+        explicit_max = self.backend.request(
+            "POST",
+            "/api/agents",
+            body={**request, "maxAgents": 64},
+            headers=self.headers(),
+        )
+        self.assertEqual(explicit_max.status, 400, explicit_max.body[:1000])
         changed = {**request, "prompt": "Different content must not replace the task."}
         before = (agent, event, projection)
         conflict = self.backend.request(

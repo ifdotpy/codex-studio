@@ -45,6 +45,15 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/message-send",
     "federation-driver/rooms",
     "agent-discovery/launcher-status",
+    "account-driver/unavailable",
+    "worker-driver/settings-catalog",
+    "worker-driver/work-assignment",
+    "worker-driver/workspace-preparation",
+    "project-driver/chat-binding",
+    "agent-management/empty-chat-reuse",
+    "agent-management/agent-mode-settings",
+    "agent-management/conversation-settings",
+    "workspace-state/lead-workspace",
 ];
 
 impl Dependency {

@@ -201,7 +201,12 @@ class CreateLeadRequest(ContractModel):
     workspaceMode: Literal["layr", "image", "worktree"] | None = None
     project_id: str | None = Field(default=None, min_length=1, max_length=4096)
     project_server_id: str | None = Field(default=None, min_length=1, max_length=128)
-    id: str | None = Field(default=None, min_length=1, max_length=200)
+    id: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
     previous: str | None = Field(default=None, max_length=200)
     reuse_empty: bool | None = None
     cwd: str | None = None
