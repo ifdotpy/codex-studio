@@ -9,7 +9,6 @@ publish.workspace = true
 axum = { workspace = true }
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
-rusqlite = { workspace = true }
 futures-util = { workspace = true }
 studio-runtime-process = { path = "../../packages/runtime-process" }
 studio-runtime-http = { path = "../../packages/runtime-http" }
