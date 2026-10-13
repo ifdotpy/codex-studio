@@ -23,6 +23,202 @@ JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
 
+# Probe inputs are keyed by the documented HTTP operation so a schema-valid
+# sample can point at records created by the Python runtime seed. Each case may
+# override query/header values and top-level body fields. A value prefixed with
+# "$" names an identifier returned by seed_python_probe_state.
+PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
+    ("GET", "/api/agent-chat"): {
+        "primary": {"query": {"room": "$room"}},
+    },
+    ("GET", "/api/agents/finder-view"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/analytics"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/capabilities"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/changes"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/checkpoints"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/messages"): {
+        "primary": {"query": {"room": "$room"}},
+    },
+    ("GET", "/api/messages/receipts"): {
+        "primary": {"query": {"agent": "$agent", "ids": "$message"}},
+    },
+    ("GET", "/api/panel"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/questions"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/rules"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/session-cost"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/skills"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/tool-requests"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/transcript"): {
+        "primary": {"query": {"id": "$agent"}},
+    },
+    ("GET", "/api/transcript/page"): {
+        "primary": {"query": {"id": "$agent"}},
+    },
+    ("GET", "/api/search/item"): {
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}},
+    },
+    ("GET", "/api/search"): {
+        "primary": {"query": {"q": "ledger-probe"}},
+    },
+    ("GET", "/api/complaint"): {
+        "primary": {"query": {"id": "$complaint"}},
+    },
+    ("GET", "/api/file"): {
+        "primary": {
+            "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "execution-backed workspace refusal",
+            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
+            "expected": "501",
+        }],
+    },
+    ("GET", "/api/file-info"): {
+        "primary": {
+            "query": {"agent": "$agent", "path": "$filePath", "asset": ""},
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "execution-backed workspace refusal",
+            "query": {"agent": "$imageAgent", "path": "$filePath", "asset": ""},
+            "expected": "501",
+        }],
+    },
+    ("GET", "/api/monitor/log"): {
+        "primary": {"query": {"id": "$monitor"}, "header": {"Range": "bytes=0-"}},
+    },
+    ("GET", "/api/terminals/output"): {
+        "primary": {"query": {"id": "$terminal"}},
+    },
+    ("GET", "/api/transcript/item"): {
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}},
+    },
+    ("GET", "/api/transcript/search"): {
+        "primary": {"query": {"id": "$agent", "q": "ledger-probe"}},
+    },
+    ("GET", "/api/workspace/tasks"): {
+        "primary": {"query": {
+            "agent": "$agent", "cursor": "", "before": "",
+        }},
+    },
+    ("GET", "/api/workspace"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/task"): {
+        "primary": {"query": {"id": "$task"}},
+    },
+    ("GET", "/api/plan"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/queue"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/work"): {
+        "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/costs"): {
+        "primary": {"query": {"account_key": "default"}},
+    },
+    ("GET", "/api/desktop"): {
+        "primary": {"query": {"account_key": "default"}},
+    },
+    ("POST", "/api/annotation"): {
+        "primary": {"body": {"agent": "$agent", "path": "$filePath"}},
+    },
+    ("POST", "/api/chats"): {
+        "primary": {"body": {"id": "$chat", "name": "HTTP ledger probe chat", "members": ["$agent"]}},
+    },
+    ("POST", "/api/connections"): {
+        "primary": {"body": {"source": "$agent", "target": "$chat"}},
+    },
+    ("POST", "/api/messages"): {
+        "primary": {"body": {"id": "$message", "room": "$chat"}},
+    },
+    ("POST", "/api/panel/layout"): {
+        "primary": {"body": {
+            "agent": "$agent", "client": "desktop", "sequence": 1,
+            "renderer": "progress-markdown-v2",
+            "revision": "$layoutRevision", "width": 300,
+            "height": 100, "contentWidth": 200, "contentHeight": 50,
+            "overflowX": 0, "overflowY": 0, "totalLines": 1,
+            "visibleLines": 1, "lastVisibleLine": "# HTTP ledger probe",
+            "lastVisibleHeading": "# HTTP ledger probe",
+            "fits": True, "reason": None,
+        }},
+    },
+    ("POST", "/api/plan"): {
+        "primary": {"body": {"agent": "$agent"}},
+    },
+    ("POST", "/api/queue"): {
+        "primary": {"refresh_queue": True, "body": {
+            "agent": "$agent", "action": "reorder", "request_id": "ledger-probe-queue",
+            "ordered_ids": "$queueIds",
+            "expected_revision": "$emptyQueueRevision",
+        }},
+    },
+    ("POST", "/api/rename"): {
+        "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename"}},
+    },
+    ("POST", "/api/rules"): {
+        "primary": {"body": {
+            "agent": "$agent", "name": "HTTP ledger probe rule", "kind": "interval",
+            "command": "echo ledger probe", "text": "Check the probe fixture.",
+        }, "expected": "2xx"},
+        "additional": [{
+            "name": "active-check dependency",
+            "body": {"agent": "$agent", "action": "pause", "id": "$activeRule"},
+            "expected": "501",
+        }],
+    },
+    ("POST", "/api/work"): {
+        "primary": {"body": {"agent": "$agent", "action": "list"}},
+    },
+    ("POST", "/api/sync/drafts"): {
+        "primary": {"body": {"rows": []}, "expected": "2xx"},
+        "additional": [{
+            "name": "non-empty draft dependency",
+            "body": {"rows": [{
+                "newDocumentState": {
+                    "id": "ledger-probe-device:ledger-probe-session",
+                    "payload": "{\"device\":\"ledger-probe-device\",\"session\":\"ledger-probe-session\"}",
+                },
+            }]},
+            "expected": "501",
+        }],
+    },
+    ("GET", "/api/sync/pull"): {
+        "primary": {"query": {"scope": "drafts"}, "expected": "2xx"},
+        "additional": [{
+            "name": "entity pull dependency",
+            "query": {"scope": "state:entities:v1"},
+            "expected": "501",
+        }],
+    },
+}
+
 
 def consumer_suites() -> list[Path]:
     return sorted(
@@ -180,14 +376,27 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
 def seed_python_probe_state(backend: Any) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
     agent_id = "ledger-probe-agent"
+    image_agent_id = "ledger-probe-image-agent"
     task_id = "ledger-probe-task"
     work_id = "ledger-probe-work"
+    complaint_id = "ledger-probe-complaint"
+    room_id = "ledger-probe-room"
+    checkpoint_id = "ledger-probe-checkpoint"
+    item_id = "ledger-probe-item"
+    monitor_id = "ledger-probe-monitor"
+    terminal_id = "ledger-probe-terminal"
+    active_rule_id = "ledger-probe-active-rule"
+    active_monitor_id = "ledger-probe-active-rule-monitor"
+    chat_id = "55555555-5555-4555-8555-555555555555"
+    message_id = "66666666-6666-4666-8666-666666666666"
+    file_path = "ledger-probe.txt"
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
 import os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
+from codex_canvas import Canvas
 
 runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
 try:
@@ -197,8 +406,15 @@ try:
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
         "autoWake": True, "approvalPolicy": "never",
     }}
+    image_agent = {{
+        **agent, "id": {image_agent_id!r}, "rootId": {agent_id!r},
+        "parentId": {agent_id!r}, "name": "HTTP ledger image probe",
+        "isLead": False, "autoWake": False, "workspaceMode": "image",
+        "imageWorkspace": True,
+    }}
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
+        runtime.put(db, "agents", image_agent, sync_rooms=False)
         runtime.put(db, "tasks", {{
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
@@ -214,6 +430,69 @@ try:
             "id": {agent_id!r}, "rootId": {agent_id!r}, "text": "HTTP ledger probe plan",
             "version": 1, "updated": 1.0, "steps": [],
         }}, sync_rooms=False)
+        runtime.put(db, "complaints", {{
+            "id": {complaint_id!r}, "leadId": {agent_id!r}, "author": "user",
+            "text": "HTTP ledger probe complaint", "version": 1, "status": "open",
+            "created": 1.0, "updated": 1.0, "readAt": None,
+            "recipient": "lead", "responses": [],
+        }}, sync_rooms=False)
+        runtime.put(db, "rooms", {{
+            "id": {room_id!r}, "kind": "private", "members": [{agent_id!r}],
+            "updated": 1.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "checkpoints", {{
+            "id": {checkpoint_id!r}, "agent": {agent_id!r}, "rootId": {agent_id!r},
+            "label": "HTTP ledger probe checkpoint", "tree": "probe", "created": 1.0,
+            "items": [], "historyDelta": [],
+        }}, sync_rooms=False)
+        runtime.put(db, "rules", {{
+            "id": {active_rule_id!r}, "agent": {agent_id!r}, "rootId": {agent_id!r},
+            "epoch": 0, "name": "HTTP ledger active rule", "kind": "interval",
+            "status": "active", "intervalSeconds": 60, "nextAt": 1.0, "at": 1.0,
+            "command": "echo ledger probe", "text": "Check the probe fixture.",
+            "created": 1.0, "inFlight": True, "checks": 1, "wakes": 0,
+        }}, sync_rooms=False)
+        runtime.put(db, "monitors", {{
+            "id": {monitor_id!r}, "agent": {agent_id!r}, "epoch": 0,
+            "command": "echo ledger probe", "status": "completed", "created": 1.0,
+            "tail": "probe log", "bytes": 10,
+            "log": str(Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"),
+        }}, sync_rooms=False)
+        runtime.put(db, "monitors", {{
+            "id": {active_monitor_id!r}, "agent": {agent_id!r}, "epoch": 0,
+            "ruleId": {active_rule_id!r}, "command": "echo active rule probe",
+            "status": "running", "created": 1.0, "tail": "probe log", "bytes": 10,
+            "log": str(Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"),
+        }}, sync_rooms=False)
+        runtime.item(db, {agent_id!r}, {item_id!r}, "assistant", "HTTP ledger probe transcript item")
+    file = Path(os.environ["CODEX_CANVAS_CWD"]) / {file_path!r}
+    file.write_text("HTTP ledger probe file\\n", encoding="utf-8")
+    monitor_log = Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"
+    monitor_log.parent.mkdir(parents=True, exist_ok=True)
+    monitor_log.write_bytes(b"probe log!\\n")
+    progress = Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "progress" / {agent_id!r} / "PROGRESS.md"
+    progress.parent.mkdir(parents=True, exist_ok=True)
+    progress.write_text("# HTTP ledger probe\\n", encoding="utf-8")
+    canvas = Canvas(runtime.root)
+    canvas.runtime = runtime
+    canvas.create_chat("HTTP ledger probe chat", [{agent_id!r}], {chat_id!r})
+    from codex_terminals import TerminalManager
+    manager = TerminalManager(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+    try:
+        terminal = manager.create(runtime, {{
+            "id": "ledger-probe-terminal-request", "agent": {agent_id!r},
+            "cols": 100, "rows": 28,
+        }})
+        terminal_id = terminal["id"]
+        manager.append(terminal_id, "HTTP ledger probe terminal output")
+        queue_revision = runtime.queue_action({agent_id!r})["revision"]
+        Path(os.environ["CODEX_AGENTS_STATE_DIR"], "ledger-probe-identifiers.json").write_text(
+            __import__("json").dumps({{
+                "terminal": terminal_id, "emptyQueueRevision": queue_revision,
+            }}), encoding="utf-8"
+        )
+    finally:
+        manager.close()
 finally:
     runtime.close()
 """
@@ -225,30 +504,57 @@ finally:
         check=True,
         timeout=30,
     )
-    return {"agent": agent_id, "task": task_id}
+    progress_metadata = (
+        backend.state / "progress" / agent_id / "PROGRESS.md"
+    ).stat()
+    layout_revision = (
+        f"{progress_metadata.st_dev}:{progress_metadata.st_ino}:"
+        f"{progress_metadata.st_mtime_ns}:{progress_metadata.st_ctime_ns}:"
+        f"{progress_metadata.st_size}"
+    )
+    terminal_identifiers = json.loads(
+        (backend.state / "ledger-probe-identifiers.json").read_text(encoding="utf-8")
+    )
+    terminal_id = terminal_identifiers["terminal"]
+    return {
+        "agent": agent_id,
+        "imageAgent": image_agent_id,
+        "task": task_id,
+        "complaint": complaint_id,
+        "room": room_id,
+        "checkpoint": checkpoint_id,
+        "item": f"{agent_id}:{item_id}",
+        "monitor": monitor_id,
+        "terminal": terminal_id,
+        "queueIds": [],
+        "activeRule": active_rule_id,
+        "chat": chat_id,
+        "message": message_id,
+        "filePath": file_path,
+        "layoutRevision": layout_revision,
+        "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
+    }
 
 
 def valid_probe(
-    method: str, template: str, identifiers: dict[str, str] | None = None
-) -> tuple[str, Any | None]:
+    method: str,
+    template: str,
+    identifiers: dict[str, str] | None = None,
+    probe_case: dict[str, Any] | None = None,
+) -> tuple[str, Any | None, dict[str, str]]:
     document = json.loads(SPEC.read_text(encoding="utf-8"))
     operation = document["paths"][template][method.lower()]
+    overrides = probe_case or {}
+    query_overrides = overrides.get("query", {})
+    header_overrides = overrides.get("header", {})
     path_values: dict[str, Any] = {}
     query_values: list[tuple[str, str]] = []
     for parameter in operation.get("parameters", []):
         schema = resolve_schema(parameter.get("schema", {}), document)
         value = sample_value(schema, document)
         name = parameter["name"]
-        if identifiers and parameter.get("in") in {"path", "query"}:
-            if name in {"agent", "agentId", "agent_id"}:
-                value = identifiers["agent"]
-            elif (
-                name in {"task", "taskId", "task_id"}
-                or (name == "id" and template == "/api/task")
-            ):
-                value = identifiers["task"]
-            elif name == "scope" and template == "/api/sync/pull":
-                value = f"transcript:{identifiers['agent']}"
+        if parameter.get("in") in {"path", "query"} and name in query_overrides:
+            value = resolve_probe_value(query_overrides[name], identifiers)
         if parameter.get("in") == "path":
             path_values[name] = value
         elif parameter.get("in") == "query":
@@ -260,7 +566,26 @@ def valid_probe(
     body_schema = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
     if body_schema:
         body = sample_value(body_schema, document)
-    return path, body
+        body_overrides = resolve_probe_value(overrides.get("body", {}), identifiers)
+        if isinstance(body, dict) and isinstance(body_overrides, dict):
+            body.update(body_overrides)
+    headers = {
+        name: str(resolve_probe_value(value, identifiers))
+        for name, value in header_overrides.items()
+    }
+    return path, body, headers
+
+
+def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
+    if isinstance(value, str) and value.startswith("$"):
+        if identifiers is None:
+            raise ValueError("probe fixture values require seeded identifiers")
+        return identifiers[value[1:]]
+    if isinstance(value, list):
+        return [resolve_probe_value(item, identifiers) for item in value]
+    if isinstance(value, dict):
+        return {key: resolve_probe_value(item, identifiers) for key, item in value.items()}
+    return value
 
 
 def probe_operations(
@@ -286,20 +611,6 @@ def probe_operations(
             token = backend.session["token"]
             rows = []
             for method, template in operations():
-                path, body = valid_probe(method, template, identifiers)
-                headers = {
-                    "X-Canvas-Token": token,
-                    "X-Studio-API-Schema": backend.schema_hash,
-                }
-                if method in JSON_METHODS or method == "DELETE":
-                    headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
-                result = backend.request(
-                    method,
-                    path,
-                    body=body if method in JSON_METHODS else None,
-                    headers=headers,
-                    timeout=2.0,
-                )
                 operation_manifest = manifest.get((method, template))
                 implementation = operation_manifest["status"] if operation_manifest else "unimplemented"
                 dependencies = (
@@ -307,29 +618,98 @@ def probe_operations(
                     if operation_manifest
                     else []
                 )
+                probe_spec = PROBE_CASES.get((method, template), {})
+                primary_case = probe_spec.get("primary", {})
+                cases = [("primary", primary_case)] + [
+                    (case.get("name", f"additional-{index}"), case)
+                    for index, case in enumerate(probe_spec.get("additional", []), start=1)
+                ]
+                observations = []
+                for case_name, probe_case in cases:
+                    if probe_case.get("refresh_queue"):
+                        queue_snapshot = backend.request(
+                            "GET",
+                            f"/api/queue?agent={urllib.parse.quote(identifiers['agent'], safe='')}",
+                            headers={
+                                "X-Canvas-Token": token,
+                                "X-Studio-API-Schema": backend.schema_hash,
+                            },
+                            timeout=2.0,
+                        )
+                        if queue_snapshot.status != 200:
+                            raise RuntimeError(
+                                "could not read seeded queue for conformance probe: "
+                                f"{queue_snapshot.status}"
+                            )
+                        queue_value = json.loads(queue_snapshot.body)
+                        identifiers["emptyQueueRevision"] = queue_value["revision"]
+                        identifiers["queueIds"] = [item["id"] for item in queue_value["items"]]
+                    path, body, header_overrides = valid_probe(
+                        method, template, identifiers, probe_case
+                    )
+                    headers = {
+                        "X-Canvas-Token": token,
+                        "X-Studio-API-Schema": backend.schema_hash,
+                        **header_overrides,
+                    }
+                    if method in JSON_METHODS or method == "DELETE":
+                        headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
+                    result = backend.request(
+                        method,
+                        path,
+                        body=body if method in JSON_METHODS else None,
+                        headers=headers,
+                        timeout=2.0,
+                    )
+                    try:
+                        response_body = json.loads(result.body)
+                    except (ValueError, TypeError):
+                        response_body = None
+                    operation_key = f"{method} {template}"
+                    probe_event = {"operation": operation_key, "body": response_body}
+                    standard_501 = result.status != 501 or valid_501_envelope(probe_event, manifest)
+                    expected = probe_case.get(
+                        "expected", "501" if implementation != "implemented" else "2xx"
+                    )
+                    expected_matches = (
+                        (expected == "501" and result.status == 501 and standard_501)
+                        or (expected == "2xx" and 200 <= result.status < 300)
+                        or (expected == "either" and (200 <= result.status < 300 or result.status == 501 and standard_501))
+                    )
+                    observations.append({
+                        "case": case_name,
+                        "status": result.status,
+                        "expected": expected,
+                        "expectedMatches": expected_matches,
+                        "body": response_body,
+                        "standard501Envelope": standard_501,
+                    })
+                primary = observations[0]
                 schema_header = result.headers.get("x-studio-api-schema")
+                # The final response may belong to an additional probe case;
+                # the schema header is invariant across the operation's cases.
                 schema_header_matches = schema_header == backend.schema_hash
-                try:
-                    response_body = json.loads(result.body)
-                except (ValueError, TypeError):
-                    response_body = None
+                status = primary["status"]
                 operation_key = f"{method} {template}"
-                probe_event = {"operation": operation_key, "body": response_body}
-                standard_501_envelope = result.status != 501 or valid_501_envelope(probe_event, manifest)
-                dependency_response_matches = implementation != "partial" or result.status != 501 or standard_501_envelope
+                standard_501_envelope = primary["standard501Envelope"]
+                dependency_response_matches = (
+                    implementation != "partial" or status != 501 or standard_501_envelope
+                )
                 classification = classify_observation(
-                    result.status,
+                    status,
                     implementation,
                     schema_header_matches,
                     standard_501_envelope,
                     dependency_response_matches,
                 )
+                if not all(observation["expectedMatches"] for observation in observations):
+                    classification = "unexpected"
                 rows.append({
                     "method": method,
                     "path": template,
-                    "status": result.status,
+                    "status": status,
                     "implementation": implementation,
-                    "observedStatus": result.status,
+                    "observedStatus": status,
                     "classification": classification,
                     "covered": bool(successful_assertions.get(operation_key)),
                     "expectedStatus": (
@@ -344,6 +724,7 @@ def probe_operations(
                     "schemaHeaderMatches": schema_header_matches,
                     "standard501Envelope": standard_501_envelope,
                     "dependencyResponseMatches": dependency_response_matches,
+                    "probeCases": observations,
                     "httpAssertions": sorted(planned_assertions.get(operation_key, set())),
                     "observedSuccessfulAssertions": sorted(successful_assertions.get(operation_key, set())),
                 })

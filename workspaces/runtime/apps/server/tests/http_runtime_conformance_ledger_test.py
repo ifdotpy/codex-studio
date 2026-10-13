@@ -26,6 +26,63 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_probe_cases_are_operation_keyed_and_reference_seeded_records(self) -> None:
+        documented = set(ledger.operations())
+        self.assertLessEqual(set(ledger.PROBE_CASES), documented)
+        fixture_keys = {
+            "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
+            "monitor", "terminal", "activeRule", "chat", "message", "filePath",
+            "layoutRevision", "emptyQueueRevision", "queueIds",
+        }
+
+        def references(value):
+            if isinstance(value, str) and value.startswith("$"):
+                return {value[1:]}
+            if isinstance(value, dict):
+                return set().union(*(references(item) for item in value.values()))
+            if isinstance(value, list):
+                return set().union(*(references(item) for item in value))
+            return set()
+
+        for operation, spec in ledger.PROBE_CASES.items():
+            cases = [spec["primary"], *spec.get("additional", [])]
+            for probe_case in cases:
+                with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
+                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "501"})
+                    self.assertLessEqual(references(probe_case), fixture_keys)
+
+    def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
+        panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
+        self.assertEqual(
+            set(panel),
+            {
+                "agent", "client", "sequence", "renderer", "revision", "width",
+                "height", "contentWidth", "contentHeight", "overflowX", "overflowY",
+                "totalLines", "visibleLines", "lastVisibleLine", "lastVisibleHeading",
+                "fits", "reason",
+            },
+        )
+        queue = ledger.PROBE_CASES[("POST", "/api/queue")]["primary"]["body"]
+        self.assertTrue(ledger.PROBE_CASES[("POST", "/api/queue")]["primary"]["refresh_queue"])
+        self.assertEqual(queue["expected_revision"], "$emptyQueueRevision")
+        self.assertEqual(queue["ordered_ids"], "$queueIds")
+
+    def test_partial_operations_with_multiple_request_shapes_check_both_results(self) -> None:
+        for operation in (
+            ("GET", "/api/file"),
+            ("GET", "/api/file-info"),
+            ("GET", "/api/sync/pull"),
+            ("POST", "/api/sync/drafts"),
+            ("POST", "/api/rules"),
+        ):
+            with self.subTest(operation=operation):
+                spec = ledger.PROBE_CASES[operation]
+                self.assertEqual(spec["primary"]["expected"], "2xx")
+                self.assertEqual(
+                    [case["expected"] for case in spec["additional"]],
+                    ["501"],
+                )
+
     def test_classifier_rejects_server_errors_before_allowances(self) -> None:
         case = {"path": "/x", "method": "GET", "label": "known"}
         document = {"paths": {"/x": {"get": {"operationId": "op"}}}}
