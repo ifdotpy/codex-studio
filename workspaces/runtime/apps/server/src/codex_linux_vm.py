@@ -205,12 +205,18 @@ def _provision_info(console: Path) -> dict[str, Any]:
 # The guest prints kernel messages on hvc0 with a time stamp, and the helper clears
 # console.log at each boot, so a match is a panic of the current boot.
 _PANIC = re.compile(r'(?m)(?:^|\[\s*\d+\.\d+\]\s*)Kernel panic - not syncing:[ \t]*([^\r\n]*)')
-# A guest that answered health in this boot and then gave no answer for this many
-# seconds, over at least UNANSWERED_PROBES probes, is dead (codex_linux_vm_watchdog).
+# A guest that answered in this boot and then gave no answer for this many seconds, over
+# at least UNANSWERED_PROBES probes, is unresponsive. That state is shown, never restarted:
+# no answer does not prove death (codex_linux_vm_watchdog).
 UNANSWERED_SECONDS = 180
 UNANSWERED_PROBES = 3
 # A longer gap between two probes (Mac sleep, backend stop) starts a new failing span.
 PROBE_GAP_SECONDS = 90
+# Client.ping: a close without any byte this soon is a full guest service (32 clients) or
+# a full helper (64 channels), not a dead guest. The helper closes a vsock connection that
+# a dead kernel never accepts only after 15 seconds.
+BUSY = 'busy'
+BUSY_CLOSE_SECONDS = 10.0
 _HEALTH_FILE = 'guest-health.json'
 _INTENT_FILE = 'intent.json'
 
@@ -670,7 +676,8 @@ class Client:
                 self._write_intent('running', 'watchdog')
 
     def record_health(self, pid: Any, error: str | None, *, now: float | None = None) -> dict[str, Any]:
-        """Save one health probe of the helper with this PID (one boot)."""
+        """Save one probe of the helper with this PID (one boot): None is an answer, BUSY
+        neither an answer nor a failure, any other text a failure."""
         if type(pid) is not int or not self.state_dir.is_dir():
             return {}
         now = time.time() if now is None else now
@@ -679,32 +686,35 @@ class Client:
             saved = {'helperPid': pid, 'healthyAt': None}
         previous = saved.get('lastProbeAt')
         if error is None:
-            saved.update(healthyAt=now, failingSince=None, failures=0, error=None)
+            saved.update(healthyAt=now, failingSince=None, lastFailureAt=None, failures=0, error=None)
+        elif error == BUSY:
+            saved['busyAt'] = now
         else:
             if (saved.get('failingSince') is None or not isinstance(previous, (int, float))
                     or now - previous > PROBE_GAP_SECONDS):
                 saved.update(failingSince=now, failures=0)
-            saved.update(failures=int(saved.get('failures') or 0) + 1, error=error[:300])
+            saved.update(failures=int(saved.get('failures') or 0) + 1, lastFailureAt=now, error=error[:300])
         saved['lastProbeAt'] = now
         _atomic_json(self.state_dir / _HEALTH_FILE, saved)
         return saved
 
     def _guest_failure(self, host: dict[str, Any], log: str) -> dict[str, Any] | None:
-        """A dead guest behind a helper that still reports running."""
+        """A dead (kernel_panic) or unresponsive (unanswered) guest behind a helper that
+        still reports running."""
         if host.get('state') != 'running':
             return None
         panic = _kernel_panic(log)
         if panic is not None:
             return {'kind': 'kernel_panic', 'reason': panic}
         health = self._read_json(_HEALTH_FILE)
-        since, last = health.get('failingSince'), health.get('lastProbeAt')
+        since, last = health.get('failingSince'), health.get('lastFailureAt')
         if (host.get('pid') is not None and health.get('helperPid') == host.get('pid')
                 and health.get('healthyAt') is not None
                 and isinstance(since, (int, float)) and isinstance(last, (int, float))
                 and int(health.get('failures') or 0) >= UNANSWERED_PROBES
                 and last - since >= UNANSWERED_SECONDS):
             return {'kind': 'unanswered', 'since': since,
-                    'reason': f'The guest has not answered health for {int(last - since)} seconds.'}
+                    'reason': f'The guest has not answered for {int(last - since)} seconds.'}
         return None
 
     def _channel(self, timeout: float, *, guest: bool = False) -> socket.socket:
@@ -777,7 +787,8 @@ class Client:
         failure = self._guest_failure(result, log or '')
         if failure is not None:
             # The helper and its Virtualization process stay alive after a guest panic.
-            result.update(state='failed', helperState='running', error=failure['reason'], guestFailure=failure)
+            state = 'failed' if failure['kind'] == 'kernel_panic' else 'unresponsive'
+            result.update(state=state, helperState='running', error=failure['reason'], guestFailure=failure)
         from codex_linux_vm_watchdog import summary
         watchdog = summary(self.state_dir)
         if watchdog is not None:
@@ -808,14 +819,24 @@ class Client:
             time.sleep(0.1)
 
     def ping(self, timeout: float = 15) -> str | None:
-        """None when the guest service answers, else why not. Any answer counts, also an
-        error: the guest answers this unknown method from its event loop, without the disk,
-        layr or the root broker, which `health` waits for. A transport failure has no code."""
+        """None when the guest service answers, BUSY for a fast close without any byte, else
+        why not. Any byte proves the guest: the service answers this unknown method with an
+        error from its event loop, without the disk, layr or the root broker, which `health`
+        waits for. A full service (32 clients) closes a new connection without a byte."""
+        started = time.monotonic()
         try:
-            self.call('ping', {}, timeout=timeout)
-        except LinuxVMError as error:
-            return None if error.code is not None else str(error)
-        return None
+            with self._channel(timeout, guest=True) as channel:
+                channel.sendall(json.dumps({'id': str(uuid.uuid4()), 'method': 'ping', 'params': {}}).encode() + b'\n')
+                first = channel.recv(1)
+        except socket.timeout:
+            return f'The guest gave no answer in {timeout:g} seconds.'
+        except (LinuxVMError, OSError) as error:
+            return f'The guest connection failed: {error}'
+        if first:
+            return None
+        if time.monotonic() - started < BUSY_CLOSE_SECONDS:
+            return BUSY
+        return 'The guest connection closed without an answer.'
 
     def create(self, settings: Settings | None = None, *, timeout: float = 1500) -> dict[str, Any]:
         if not 0 < timeout <= 3600:
@@ -1022,11 +1043,9 @@ class Client:
                 raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}. Log: {self.state_dir / "helper.log"}')
             state = self.status()
             if state['state'] == 'failed':
-                if (state.get('guestFailure') or {}).get('kind') == 'unanswered' and self.ping(5) is None:
-                    self.record_health(state.get('pid'), None)
-                    continue
                 raise LinuxVMError(f"The Linux VM failed: {state.get('error')}")
-            if state['state'] == 'running':
+            # An unresponsive guest can answer again: health decides, as for a running one.
+            if state['state'] in {'running', 'unresponsive'}:
                 try:
                     health = self.call('health', {}, timeout=min(5, max(0.01, deadline - time.monotonic())))
                 except LinuxVMError:
