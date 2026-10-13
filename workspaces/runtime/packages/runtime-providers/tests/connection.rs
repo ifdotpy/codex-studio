@@ -866,3 +866,37 @@ fn cancelled_book_ids_are_removed_but_never_reused() {
         Err(studio_runtime_providers::BookError::DuplicateId)
     );
 }
+
+#[test]
+fn arrival_timestamp_classification_is_independent_of_expiry_order() {
+    for received_at_ms in [10, 11, 12] {
+        let mut replies = Vec::new();
+        for expire_first in [false, true] {
+            let mut session = state(false);
+            let (ticket, _) = session
+                .submit(Method::ModelList, json!({}), 1, 10, None, false)
+                .expect("request registration");
+            if expire_first {
+                assert_eq!(session.expire(20).1.len(), 1);
+                assert_eq!(session.next_deadline_ms(), None);
+                assert!(session.expire(21).1.is_empty());
+            }
+            let actions = session
+                .receive_at(
+                    Frame::Response {
+                        id: ticket.id,
+                        body: ResponseBody::Result(json!({})),
+                        fields: Default::default(),
+                    },
+                    received_at_ms,
+                )
+                .expect("timestamped response");
+            assert!(matches!(&actions[0], Action::Resolve {
+                outcome: RequestOutcome::Reply { late, .. }, ..
+            } if *late == (received_at_ms >= 11)));
+            replies.push(actions);
+            assert!(session.expire(30).1.is_empty());
+        }
+        assert_eq!(replies[0], replies[1]);
+    }
+}

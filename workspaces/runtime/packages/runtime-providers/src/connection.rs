@@ -453,6 +453,24 @@ impl SessionState {
     }
 
     pub fn receive(&mut self, frame: Frame) -> Result<Vec<Action>, SessionError> {
+        self.receive_inner(frame, None)
+    }
+
+    /// Classify a response using the transport arrival time, even if a timer
+    /// already reported uncertainty while the journal consumer was behind.
+    pub fn receive_at(
+        &mut self,
+        frame: Frame,
+        received_at_ms: u64,
+    ) -> Result<Vec<Action>, SessionError> {
+        self.receive_inner(frame, Some(received_at_ms))
+    }
+
+    fn receive_inner(
+        &mut self,
+        frame: Frame,
+        received_at_ms: Option<u64>,
+    ) -> Result<Vec<Action>, SessionError> {
         if self.lifecycle == Lifecycle::Closed {
             return Ok(Vec::new());
         }
@@ -468,7 +486,10 @@ impl SessionState {
                 let Some(pending) = self.pending.remove(&id) else {
                     return Ok(Vec::new());
                 };
-                let late = matches!(matched, ResponseMatch::Late { .. });
+                let late = received_at_ms.map_or_else(
+                    || matches!(matched, ResponseMatch::Late { .. }),
+                    |received| received >= pending.deadline_ms,
+                );
                 let initialization_failed = pending.ticket.method == Method::Initialize
                     && self.lifecycle == Lifecycle::Initializing
                     && matches!(&body, ResponseBody::Error(_));
@@ -514,14 +535,11 @@ impl SessionState {
         }
         let expired = self
             .pending
-            .iter_mut()
+            .iter()
             .filter_map(|(id, pending)| {
                 (now_ms >= pending.deadline_ms
                     && self.book.state(id) == Some(RequestState::Pending))
-                .then(|| {
-                    pending.deadline_ms = u64::MAX;
-                    id.clone()
-                })
+                .then(|| id.clone())
             })
             .collect::<Vec<_>>();
         if expired.is_empty() {
