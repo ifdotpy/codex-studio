@@ -336,8 +336,8 @@ pub struct ProbePlan {
     pub writes: Vec<(String, Decision)>,
     pub jobs: Vec<ProbeJob>,
 }
-/// Pure scheduler pass. The transaction adapter loads these rows afresh, commits all writes,
-/// then starts jobs outside the transaction. `active_accounts` is owned by that adapter.
+/// Pure scheduler pass. The integrator must load rows under the writer, commit these writes,
+/// then start jobs outside the transaction. It also owns the bounded `active_accounts` set.
 pub fn plan_probes(
     snapshots: &[Snapshot],
     active_accounts: &std::collections::BTreeSet<String>,

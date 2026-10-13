@@ -9069,5 +9069,375 @@
         "_credentialIdentity": "foreign"
       }
     }
+  },
+  {
+    "name": "capacity-create-server-0",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 0
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "serverOverloaded"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-server-3",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 3
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "serverOverloaded"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-server-4",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 4
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "serverOverloaded"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-server-6",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 6
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "serverOverloaded"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-server-7",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 7
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "serverOverloaded"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-network-0",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 0
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "httpConnectionFailed"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-network-3",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 3
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "httpConnectionFailed"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-network-4",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 4
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "httpConnectionFailed"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-network-6",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 6
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "httpConnectionFailed"
+        }
+      }
+    }
+  },
+  {
+    "name": "capacity-create-network-7",
+    "family": "capacity-create",
+    "input": {
+      "agent": {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 1,
+        "status": "failed",
+        "accountKey": "default",
+        "threadId": "thread",
+        "lastCompletedTurn": "turn",
+        "autoWake": true,
+        "nativeFailureHold": true,
+        "cwd": "/fixture",
+        "isLead": true,
+        "capacityRetryCount": 7
+      },
+      "record": null,
+      "ancestors": [],
+      "claims": [],
+      "events": [],
+      "metadata": {},
+      "work": {},
+      "complaints": {},
+      "assets": {}
+    },
+    "args": {
+      "turn": {
+        "id": "turn",
+        "status": "failed",
+        "error": {
+          "codexErrorInfo": "httpConnectionFailed"
+        }
+      }
+    }
   }
 ]

@@ -48,6 +48,7 @@ pub enum Action<'a> {
     Cancel,
     Wait(&'a str),
     Error {
+        attempt: &'a Value,
         reason: &'a str,
         unknown: bool,
     },
@@ -194,7 +195,19 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                 json!({"status":"scheduled","dueAt":now+(WAIT_STEP*waits as f64).min(WAIT_MAX),"waits":waits,"reason":reason}),
             );
         }
-        Action::Error { reason, unknown } => {
+        Action::Error {
+            attempt: receipt,
+            reason,
+            unknown,
+        } => {
+            if receipt != &attempt
+                || text(receipt, "action") != "capacity"
+                || receipt.get("capacityRetryId") != r.get("id")
+                || receipt.get("epoch") != agent.get("epoch")
+                || account(receipt) != account(&agent)
+            {
+                return Ok(Decision::default());
+            }
             patch(
                 &mut r,
                 json!({"status":if unknown{"unknown"}else{"failed"},"dueAt":null,"reason":reason}),
@@ -206,7 +219,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
         } => {
             // The caller's transport receipt must name the persisted claim, epoch and account.
             if text(receipt, "action") != "capacity"
-                || receipt.get("id") != attempt.get("id")
+                || receipt != &attempt
                 || receipt.get("capacityRetryId") != r.get("id")
                 || receipt.get("epoch") != agent.get("epoch")
                 || account(receipt) != account(&agent)

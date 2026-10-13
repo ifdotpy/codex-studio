@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from studio_api.models import ContractModel, JsonValue
+from studio_api.accounts.models import UsageLimitsResponse
 
 Text = Annotated[StrictStr, Field(max_length=1048576)]
 Identity = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
@@ -157,7 +158,12 @@ class WakeWork(OpenRecord):
     decisions: list[WorkDecision] = Field(default_factory=list, max_length=4096)
 
 
+class ContinuationLimitsObservation(UsageLimitsResponse):
+    stale: StrictBool = False
+
+
 class ContinuationSnapshotRecord(ContractModel):
+    limits: ContinuationLimitsObservation | None = None
     agent: ContinuationAgent
     ancestors: list[ContinuationAgent] = Field(default_factory=list, max_length=64)
     claims: list[Identity] = Field(default_factory=list, max_length=4096)
