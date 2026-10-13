@@ -1,11 +1,12 @@
 //! Read persisted rule and owner records for the rules list.
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 
+use crate::StoreResult;
+use crate::records::{AgentId, AgentRecord, MonitorRecord, RuleRecord, Table};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
@@ -15,6 +16,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         },
         TableRequirement {
             name: "runtime_agents",
+            columns: &["id", "record"],
+        },
+        TableRequirement {
+            name: "runtime_monitors",
             columns: &["id", "record"],
         },
     ],
@@ -27,73 +32,28 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct StoredRule {
-    pub id: String,
-    pub record: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StoredAgent {
-    pub id: String,
-    pub record: String,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RulesRepository;
 
 impl RulesRepository {
-    pub fn list(connection: &Connection) -> StoreResult<(Vec<StoredRule>, Vec<StoredAgent>)> {
-        let rules = read_records(connection, "runtime_rules")?
-            .into_iter()
-            .map(|(id, record)| StoredRule { id, record })
-            .collect();
-        let agents = read_records(connection, "runtime_agents")?
-            .into_iter()
-            .map(|(id, record)| StoredAgent { id, record })
-            .collect();
-        Ok((rules, agents))
+    pub fn list(connection: &Connection) -> StoreResult<(Vec<RuleRecord>, Vec<AgentRecord>)> {
+        Ok((
+            Table::<RuleRecord>::new(connection).list()?,
+            Table::<AgentRecord>::new(connection).list()?,
+        ))
     }
 
-    pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<StoredRule>> {
-        connection
-            .query_row(
-                "SELECT id,record FROM runtime_rules WHERE id=?1",
-                [id],
-                |row| {
-                    Ok(StoredRule {
-                        id: row.get(0)?,
-                        record: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(StoreError::from)
+    pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<RuleRecord>> {
+        Table::<RuleRecord>::new(connection).get(&id.to_owned())
     }
 
-    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<StoredAgent>> {
-        connection
-            .query_row(
-                "SELECT id,record FROM runtime_agents WHERE id=?1",
-                [id],
-                |row| {
-                    Ok(StoredAgent {
-                        id: row.get(0)?,
-                        record: row.get(1)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(StoreError::from)
+    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
+        Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
-    pub fn put(transaction: &Transaction<'_>, id: &str, record: &str) -> StoreResult<()> {
-        let value = serde_json::from_str::<Value>(record)?;
-        if value.get("id").and_then(Value::as_str) != Some(id) {
-            return Err(crate::StoreError::SchemaMismatch(
-                "rule record identity does not match its key".to_owned(),
-            ));
-        }
+    pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
+        let id = record.id().as_ref();
+        let value = record.value();
         put_rule_entity(
             transaction,
             id,
@@ -101,38 +61,26 @@ impl RulesRepository {
             value.get("name"),
             false,
         )?;
-        transaction.execute(
-            "INSERT INTO runtime_rules(id,record) VALUES(?1,?2) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, record],
-        )?;
-        Ok(())
+        Table::<RuleRecord>::new(transaction).put(record)
     }
 
     pub fn delete(transaction: &Transaction<'_>, id: &str) -> StoreResult<()> {
         put_rule_entity(transaction, id, None, None, true)?;
-        transaction.execute("DELETE FROM runtime_rules WHERE id=?1", [id])?;
+        Table::<RuleRecord>::new(transaction).delete(&id.to_owned())?;
         Ok(())
     }
 
     pub fn has_active_check(connection: &Connection, rule_id: &str) -> StoreResult<bool> {
-        let has_table: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !has_table {
-            return Ok(false);
-        }
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_monitors \
-                 WHERE json_extract(record,'$.ruleId')=?1 \
-                 AND json_extract(record,'$.status') IN ('running','starting','approval'))",
-                [rule_id],
-                |row| row.get(0),
-            )
-            .map_err(StoreError::from)
+        Ok(Table::<MonitorRecord>::new(connection)
+            .list()?
+            .iter()
+            .any(|monitor| {
+                monitor.get("ruleId").and_then(Value::as_str) == Some(rule_id)
+                    && monitor
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| matches!(status, "running" | "starting" | "approval"))
+            }))
     }
 }
 
@@ -162,18 +110,6 @@ fn put_rule_entity(
     Ok(())
 }
 
-fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
-    let mut statement =
-        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    let rows = statement.query_map(params![], |row| {
-        let id: String = row.get(0)?;
-        let record: String = row.get(1)?;
-        Ok((id, record))
-    })?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{REQUIREMENTS, RulesRepository};
@@ -185,8 +121,8 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\"}');
-             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\"}');
+             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"interval\"}');
+             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"interval\"}');
              INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');",
         )
         .expect("declared tables create");
@@ -195,11 +131,11 @@ mod tests {
         assert_eq!(
             rules
                 .iter()
-                .map(|item| item.id.as_str())
+                .map(|item| item.id().as_str())
                 .collect::<Vec<_>>(),
             ["r2", "r1"]
         );
-        assert_eq!(agents[0].id, "a1");
+        assert_eq!(agents[0].id().0, "a1");
         assert!(
             REQUIREMENTS
                 .tables
@@ -216,6 +152,7 @@ mod tests {
 
     #[test]
     fn rule_mutations_keep_the_renderer_entity_in_the_same_transaction() {
+        use crate::records::RuleRecord;
         use rusqlite::TransactionBehavior;
         use serde_json::json;
 
@@ -234,8 +171,10 @@ mod tests {
                 .expect("writer transaction opens");
             RulesRepository::put(
                 &transaction,
-                "r1",
-                &json!({"id":"r1","agent":"a1","name":"Check"}).to_string(),
+                &RuleRecord::from_value(
+                    json!({"id":"r1","agent":"a1","name":"Check","kind":"interval"}),
+                )
+                .expect("rule has an id"),
             )
             .expect("rule is persisted");
             transaction.commit().expect("rule transaction commits");
@@ -275,13 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn active_check_lookup_is_optional_until_monitors_are_initialized() {
+    fn active_check_lookup_uses_typed_monitor_records() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
-        assert!(!RulesRepository::has_active_check(&db, "r1").expect("missing table is allowed"));
         db.execute_batch(
             "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_monitors VALUES
-                 ('m1','{\"ruleId\":\"r1\",\"status\":\"running\"}');",
+                 ('m1','{\"id\":\"m1\",\"agent\":\"a1\",\"ruleId\":\"r1\",\"status\":\"running\",\"created\":1}');",
         )
         .expect("monitor table creates");
         assert!(RulesRepository::has_active_check(&db, "r1").expect("active check is found"));
