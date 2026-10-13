@@ -5,17 +5,18 @@ use super::{
     manifest::{Dependency, OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, router::HttpState};
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Extension, Json, extract::State, http::StatusCode};
 use serde_json::Value;
+use std::sync::Arc;
+use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
 use studio_runtime_services::{
     event_write,
     monitor_policy::{Input, MonitorError},
     monitor_runtime,
 };
 
-const DEPENDENCIES: [Dependency; 3] = [
+const DEPENDENCIES: [Dependency; 2] = [
     Dependency::new(monitor_runtime::SESSION_DEPENDENCY),
-    Dependency::new(monitor_runtime::RULE_DEPENDENCY),
     Dependency::new("cross-server/remote-events"),
 ];
 
@@ -36,8 +37,18 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn cancel(
     State(state): State<HttpState>,
+    runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<crate::generated::MonitorId>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some(Extension(runtime)) = runtime {
+        return tokio::task::spawn_blocking(move || {
+            runtime.cancel(&body.id, None, event_write::unix_time()?)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map(Json)
+        .map_err(error);
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = super::sync_delta::write(
         store,
@@ -62,6 +73,7 @@ async fn cancel(
 
 async fn input(
     State(state): State<HttpState>,
+    runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     if let Some((pointer, _)) = studio_runtime_schema::first_error("MonitorInput", &body)
@@ -84,6 +96,15 @@ async fn input(
     // Preserve field presence: a resize-only request is different from an empty write.
     let input: Input = serde_json::from_value(body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
+    if let Some(Extension(runtime)) = runtime {
+        return tokio::task::spawn_blocking(move || {
+            runtime.input_http(&id, &input, event_write::unix_time()?)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map(Json)
+        .map_err(error);
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     tokio::task::spawn_blocking(move || {
         monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
@@ -118,6 +139,6 @@ fn error(error: MonitorError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitor_runtime", routes: Some(routes),
-        dependencies: &["provider-session/monitor-commands", "rule-driver/monitor-finish", "cross-server/remote-events"],
+        dependencies: &["provider-session/monitor-commands", "cross-server/remote-events"],
     }
 }

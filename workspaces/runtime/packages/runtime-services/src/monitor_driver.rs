@@ -33,7 +33,7 @@ fn native_sequence(id: &str) -> Result<MutexGuard<'static, ()>, MonitorError> {
 
 pub fn start(
     store: &RuntimeStore,
-    port: &impl MonitorNative,
+    port: &(impl MonitorNative + ?Sized),
     id: &str,
     prepared: &PreparedStart,
     now: f64,
@@ -67,7 +67,7 @@ pub struct InputRequest<'a> {
 
 pub fn input(
     store: &RuntimeStore,
-    port: &impl MonitorNative,
+    port: &(impl MonitorNative + ?Sized),
     request: InputRequest<'_>,
     now: f64,
 ) -> Result<Submission, MonitorError> {
@@ -105,41 +105,18 @@ pub fn input(
 
 pub fn cancel(
     store: &RuntimeStore,
-    port: &impl MonitorNative,
+    port: &(impl MonitorNative + ?Sized),
     id: &str,
     owner: Option<&str>,
     now: f64,
 ) -> Result<Value, MonitorError> {
     let _sequence = native_sequence(id)?;
-    let (mut response, operation) = store.transaction_with(|tx| {
-        let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
-        let decision = monitor_policy::cancel(&snapshot, owner, now)?;
-        let operation = if decision.effects.contains(&Effect::Terminate) {
-            Some(
-                snapshot
-                    .operation()
-                    .cloned()
-                    .ok_or(MonitorError::Unavailable(
-                        monitor_runtime::SESSION_DEPENDENCY,
-                    ))?,
-            )
-        } else {
-            None
-        };
-        monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
-        Ok::<_, MonitorError>((decision.response, operation))
-    })?;
+    let (mut response, operation) =
+        store.transaction_with(|tx| reserve_cancel(tx, id, owner, now))?;
     if let Some(operation) = operation {
         // Intent is already durable. An unknown terminate is not resent by a
         // duplicate cancellation; the eventual exit receipt settles the monitor.
-        let submission = port.submit(
-            &operation,
-            &Effect::Native {
-                identity: format!("monitor-cancel:{id}"),
-                method: "command/exec/terminate",
-                params: json!({"processId":id}),
-            },
-        );
+        let submission = port.submit(&operation, &cancel_effect(id));
         if !matches!(submission, Submission::Accepted) {
             store.transaction_with(|tx| {
                 let (current, actor) = monitor_runtime::snapshot(tx, id)?;
@@ -167,4 +144,39 @@ pub fn cancel(
         }
     }
     Ok(response)
+}
+
+/// P10 calls this in the lifecycle transaction while its retained account owner
+/// serializes start/stop. After commit, submit only the returned exact operation
+/// with `cancel_effect`; replay the lifecycle receipt rather than staging twice.
+pub fn reserve_cancel(
+    tx: &studio_runtime_store::Transaction<'_>,
+    id: &str,
+    owner: Option<&str>,
+    now: f64,
+) -> Result<(Value, Option<Operation>), MonitorError> {
+    let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
+    let decision = monitor_policy::cancel(&snapshot, owner, now)?;
+    let operation = if decision.effects.contains(&Effect::Terminate) {
+        Some(
+            snapshot
+                .operation()
+                .cloned()
+                .ok_or(MonitorError::Unavailable(
+                    monitor_runtime::SESSION_DEPENDENCY,
+                ))?,
+        )
+    } else {
+        None
+    };
+    monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
+    Ok::<_, MonitorError>((decision.response, operation))
+}
+
+pub fn cancel_effect(id: &str) -> Effect {
+    Effect::Native {
+        identity: format!("monitor-cancel:{id}"),
+        method: "command/exec/terminate",
+        params: json!({"processId":id}),
+    }
 }

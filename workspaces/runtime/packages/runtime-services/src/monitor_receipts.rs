@@ -58,7 +58,7 @@ pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, Mo
     }
     let target = path(root, &receipt.key);
     if target.exists() {
-        return read(&target, &receipt.key);
+        return read(&target, Some(&receipt.key));
     }
     let bytes = serde_json::to_vec(receipt).map_err(studio_runtime_store::StoreError::from)?;
     if bytes.len() as u64 > RECEIPT_BYTES {
@@ -73,10 +73,10 @@ pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, Mo
         Err(error) => return Err(MonitorError::Io(error.error)),
     }
     File::open(&directory)?.sync_all()?;
-    read(&target, &receipt.key)
+    read(&target, Some(&receipt.key))
 }
 
-fn read(path: &Path, id: &str) -> Result<ResultReceipt, MonitorError> {
+fn read(path: &Path, id: Option<&str>) -> Result<ResultReceipt, MonitorError> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.len() > RECEIPT_BYTES {
         return Err(MonitorError::Refused("Invalid monitor result file"));
@@ -91,7 +91,7 @@ fn read(path: &Path, id: &str) -> Result<ResultReceipt, MonitorError> {
     let receipt: ResultReceipt = serde_json::from_slice(&bytes)
         .map_err(|_| MonitorError::Refused("Invalid monitor result receipt"))?;
     receipt.validate()?;
-    if receipt.key != id {
+    if id.is_some_and(|id| receipt.key != id) {
         return Err(MonitorError::Refused("Monitor result identity mismatch"));
     }
     Ok(receipt)
@@ -131,10 +131,56 @@ pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(),
     keys.iter()
         .take(64)
         .map(|id| {
-            let result = read(&path(store.root(), id), id)
+            let result = read(&path(store.root(), id), Some(id))
                 .and_then(|receipt| restore(store, &receipt))
                 .and_then(|()| acknowledge(store.root(), id));
             (id.clone(), result)
         })
         .collect()
+}
+
+/// Bounded startup/timer recovery, including receipts for already terminal rows.
+/// A corrupt receipt stops this batch visibly and is retained for diagnosis.
+pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
+    if limit == 0 { return Ok(0); }
+    let directory = store.root().join("monitor-results");
+    match fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(MonitorError::Refused("Invalid monitor result directory"));
+        }
+        Ok(_) => {}
+    }
+    let mut recovered = 0;
+    let mut entries = fs::read_dir(directory)?;
+    for _ in 0..64 {
+        let Some(entry) = entries.next() else {
+            return Ok(recovered);
+        };
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json")
+        {
+            continue;
+        }
+        let receipt = read(&entry.path(), None)?;
+        if entry.path() != path(store.root(), &receipt.key) {
+            return Err(MonitorError::Refused("Monitor result identity mismatch"));
+        }
+        restore(store, &receipt)?;
+        acknowledge(store.root(), &receipt.key)?;
+        recovered += 1;
+        if recovered >= limit.min(64) {
+            return Ok(recovered);
+        }
+    }
+    if entries.next().is_some() {
+        return Err(MonitorError::Refused(
+            "Monitor result directory scan exceeds bound",
+        ));
+    }
+    Ok(recovered)
 }

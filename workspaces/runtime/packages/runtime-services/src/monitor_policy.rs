@@ -51,6 +51,8 @@ pub enum MonitorError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
     Event(#[from] crate::event_write::EventWriteError),
+    #[error(transparent)]
+    Rules(#[from] crate::rules_tick::RulesTickError),
     #[error("monitor file operation failed")]
     Io(#[from] std::io::Error),
 }
@@ -495,6 +497,16 @@ pub fn begin_input(
     if f.input_attempt.is_some() {
         return Err(MonitorError::Refused(
             "The previous monitor input outcome is unknown; do not repeat it",
+        ));
+    }
+    if snapshot
+        .record
+        .pointer("/lastInputAttempt/id")
+        .and_then(Value::as_str)
+        == Some(attempt_id)
+    {
+        return Err(MonitorError::Refused(
+            "Monitor input ticket already settled",
         ));
     }
     let resize = input.rows.is_some() || input.cols.is_some();

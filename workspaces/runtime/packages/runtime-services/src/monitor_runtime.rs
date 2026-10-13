@@ -163,7 +163,7 @@ fn refuse_unavailable(decision: &Decision) -> Result<(), MonitorError> {
             Effect::Terminate | Effect::Native { .. } => {
                 return Err(MonitorError::Unavailable(SESSION_DEPENDENCY));
             }
-            Effect::RuleFinished => return Err(MonitorError::Unavailable(RULE_DEPENDENCY)),
+
             _ => (),
         }
     }
@@ -177,7 +177,14 @@ pub fn apply(
     decision: &Decision,
     now: f64,
 ) -> Result<(), MonitorError> {
-    apply_with_rule(tx, before, actor, decision, now, &UnavailableRules)
+    apply_with_rule(
+        tx,
+        before,
+        actor,
+        decision,
+        now,
+        &crate::rules_tick::MonitorRuleFinish,
+    )
 }
 
 /// The rules adapter implements this using rules_tick::finish_in_transaction.
