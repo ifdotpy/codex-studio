@@ -25,6 +25,7 @@ pub(crate) mod questions_write;
 pub(crate) mod queue_write;
 pub(crate) mod remote_transport;
 pub(crate) mod rules;
+pub mod rules_tick;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
 pub mod system_reads;

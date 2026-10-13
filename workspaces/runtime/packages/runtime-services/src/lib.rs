@@ -53,6 +53,8 @@ pub mod queue_write;
 pub mod relocation;
 pub mod remote_transport;
 pub mod rules;
+pub mod rules_engine;
+pub mod rules_tick;
 pub mod scheduler;
 pub mod sync_documents;
 pub(crate) mod sync_entity_context;

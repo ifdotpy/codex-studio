@@ -60,6 +60,7 @@ pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;
+pub use repositories::rules_tick;
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
 pub use repositories::sync_documents::{
     EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,

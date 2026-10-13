@@ -52,7 +52,7 @@ test-server-shard index count:
 [doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
 test-rust-runtime-corpora:
     @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic)'
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^account_transfer/)'
 
 [doc("Run all three manually classified heavy server suites.")]
@@ -91,3 +91,7 @@ test-rust-monitors-mutations target:
 [doc("Run seeded relocation mutations in an external isolated target directory.")]
 test-rust-relocation-mutations target:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/relocation/mutations.json --filter 'binary(relocation_corpus)'
+
+[doc("Run the rules mutation corpus in an isolated target outside the checkout.")]
+test-rust-rules-mutations target *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/rules_engine/mutations.json --filter 'binary(rules_engine_corpus) or binary(rules_tick_atomic)' {{args}}
