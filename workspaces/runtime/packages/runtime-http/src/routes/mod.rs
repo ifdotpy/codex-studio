@@ -5,6 +5,7 @@ pub(crate) mod manifest;
 mod agents_create;
 mod catalog;
 mod desktop;
+mod insights;
 mod messages;
 mod monitors;
 mod panels;
@@ -53,6 +54,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         workspace_files::routes(),
         workspace_views::routes(),
         desktop::routes(),
+        insights::routes(),
         catalog::routes(),
     ]
 }
