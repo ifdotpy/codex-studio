@@ -45,10 +45,9 @@ test(
       const state = await readTestState(origin);
       const a = state.threads.find((x) => x.name === "Other project");
       const b = state.threads.find((x) => x.name === "Release lead");
-      // `useChatPrefetch.ts:157-175` ranks eligible chats and watches the top
-      // 12 on desktop; `resourceEvents.ts:240-253` aggregates those watchers.
-      // Pin 12 other managed chats so this visible target stays outside baseline.
-      const initialWatchRows = state.threads
+      // Background transcript warming keeps only the top-ranked desktop chat.
+      // Pin one other managed chat so this cold target stays outside that watch.
+      const initialTopWatchRows = state.threads
         .filter(
           (agent) =>
             agent.id !== a.id &&
@@ -56,9 +55,9 @@ test(
             agent.source === "managed" &&
             !agent.archived,
         )
-        .slice(0, 12);
-      assert.equal(initialWatchRows.length, 12);
-      for (const agent of initialWatchRows) agent.pinned = true;
+        .slice(0, 1);
+      assert.equal(initialTopWatchRows.length, 1);
+      for (const agent of initialTopWatchRows) agent.pinned = true;
       Object.assign(a, { pinned: false, updated: 0 });
       page = runnerPage;
       await page.setViewportSize({ width: 1440, height: 960 });
@@ -492,7 +491,7 @@ test(
       assert.equal(
         targetInInitialSubscription,
         false,
-        "The cold target is outside the initial top-12 transcript subscription",
+        "The cold target is outside the single background transcript subscription",
       );
       const priorTargetPulls = requests.filter((item) => item.id === a.id);
       assert.equal(
