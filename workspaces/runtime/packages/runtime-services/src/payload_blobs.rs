@@ -132,6 +132,8 @@ pub fn decide_externalize(
     }
     if !refs.is_empty() {
         record.insert("_payloadBlobs".into(), Value::Object(refs));
+    } else {
+        record.remove("_payloadBlobs");
     }
     Ok(ExternalizeDecision {
         record: Value::Object(record),
@@ -437,11 +439,52 @@ mod tests {
             .join(&hash[..2])
             .join(&hash[2..4])
             .join(hash);
-        std::fs::write(path, b"corrupt").expect("corrupt test file");
+        let mut corrupt = decision.writes[0].bytes.clone();
+        corrupt[0] ^= 1;
+        std::fs::write(path, corrupt).expect("corrupt test file");
         assert!(matches!(
             load_blob(root.path(), reference),
             Err(PayloadBlobError::Integrity)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blob_storage_refuses_symlink_directories_and_targets() {
+        use std::os::unix::fs::symlink;
+
+        let state = tempfile::tempdir().expect("state root");
+        let outside = tempfile::tempdir().expect("outside directory");
+        let decision = decide_externalize("checkpoints", &json!({"items":["x".repeat(70_000)]}))
+            .expect("decision");
+        let hash = &decision.writes[0].sha256;
+        let blob_root = state.path().join("blobs");
+        std::fs::create_dir(&blob_root).expect("blob root");
+        symlink(outside.path(), blob_root.join(&hash[..2])).expect("directory symlink");
+        assert!(write_blobs(state.path(), &decision.writes).is_err());
+        assert_eq!(
+            std::fs::read_dir(outside.path())
+                .expect("outside entries")
+                .count(),
+            0
+        );
+
+        let state = tempfile::tempdir().expect("second state root");
+        let outside = tempfile::tempdir().expect("second outside directory");
+        let decision = decide_externalize("checkpoints", &json!({"items":["y".repeat(70_000)]}))
+            .expect("second decision");
+        let hash = &decision.writes[0].sha256;
+        let target = state
+            .path()
+            .join("blobs")
+            .join(&hash[..2])
+            .join(&hash[2..4])
+            .join(hash);
+        std::fs::create_dir_all(target.parent().expect("target parent")).expect("parents");
+        let outside_file = outside.path().join("payload");
+        std::fs::write(&outside_file, &decision.writes[0].bytes).expect("outside payload");
+        symlink(outside_file, &target).expect("target symlink");
+        assert!(write_blobs(state.path(), &decision.writes).is_err());
     }
 
     #[test]
@@ -452,5 +495,49 @@ mod tests {
         let trimmed = trim_task(&source).expect("trim");
         assert_eq!(trimmed["outputTruncated"], Value::Bool(true));
         assert_eq!(trimmed["outputPreviewOnly"], Value::Bool(true));
+    }
+
+    #[test]
+    fn small_payload_clears_its_old_reference_and_unknown_tables_are_unchanged() {
+        let hash = "a".repeat(64);
+        let small = json!({"items":["small"],"_payloadBlobs":{"items":{"sha256":hash,"size":1,"preview":[]}}});
+        let decision = decide_externalize("checkpoints", &small).expect("decision");
+        assert_eq!(decision.writes.len(), 0);
+        assert!(decision.record.get("_payloadBlobs").is_none());
+
+        let unknown = json!({"items":["x".repeat(70_000)]});
+        let decision = decide_externalize("other", &unknown).expect("decision");
+        assert_eq!(decision.record, unknown);
+        assert!(decision.writes.is_empty());
+    }
+
+    #[test]
+    fn object_and_result_previews_keep_only_the_supported_small_projection() {
+        let value = json!({
+            "success": true,
+            "outcome": "ok",
+            "stage": "done",
+            "private": "x".repeat(70_000),
+            "contentItems": ["first", "second"]
+        });
+        let decision = decide_externalize("tool_requests", &json!({"result": value, "id":"tool"}))
+            .expect("tool request decision");
+        assert_eq!(decision.record["result"]["success"], true);
+        assert_eq!(decision.record["result"]["outcome"], "ok");
+        assert_eq!(decision.record["result"]["stage"], "done");
+        assert!(decision.record["result"].get("private").is_none());
+        assert_eq!(decision.record["result"]["contentItems"], json!(["first"]));
+
+        let source = json!({"contentItems":["small"]});
+        let unchanged = decide_externalize_result(&source).expect("small result");
+        assert_eq!(unchanged.record, source);
+        assert!(unchanged.writes.is_empty());
+        let absent = json!({"success":true});
+        assert_eq!(
+            decide_externalize_result(&absent)
+                .expect("result without content")
+                .record,
+            absent
+        );
     }
 }
