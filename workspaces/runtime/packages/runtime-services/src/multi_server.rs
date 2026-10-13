@@ -14,8 +14,6 @@ pub enum MultiServerError {
     Refused(String),
     #[error("multi-server request conflict: {0}")]
     Conflict(String),
-    #[error("local multi-server credentials are unavailable")]
-    MissingIdentity,
     #[error("multi-server action requires a signed remote request")]
     NeedsSignedRequest,
 }
@@ -24,8 +22,7 @@ pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
     Ok(store.read_transaction(|tx| MultiServerRepository::audit(tx))?)
 }
 
-pub fn snapshot(store: &RuntimeStore) -> Result<Value, MultiServerError> {
-    let identity = read_identity(store)?;
+pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
     Ok(store.read_transaction(|tx| {
         let clients=project_records(tx,"runtime_access_clients")?;
         let discovered=project_records(tx,"runtime_access_discovered")?;
@@ -35,17 +32,21 @@ pub fn snapshot(store: &RuntimeStore) -> Result<Value, MultiServerError> {
             .collect::<Result<Vec<_>,StoreError>>()?;
         let auto_pair=tx.query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1",[],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(1)!=0;
         let local_alias=tx.query_row("SELECT alias FROM runtime_access_local_alias WHERE id=1",[],|r|r.get::<_,String>(0)).optional()?.unwrap_or_else(||"LOC".to_owned());
-        let mut aliases=serde_json::Map::new(); aliases.insert("local".into(),json!(local_alias)); aliases.insert(identity.server_id.clone(),json!(local_alias));
+        let mut aliases=serde_json::Map::new(); aliases.insert("local".into(),json!(local_alias)); aliases.insert(identity["serverId"].as_str().unwrap_or_default().to_owned(),json!(local_alias));
         for c in &clients { if c.get("kind").and_then(Value::as_str)==Some("server") && let (Some(id),Some(alias))=(c.get("id").and_then(Value::as_str),c.get("alias").and_then(Value::as_str)) { aliases.insert(id.into(),json!(alias)); } }
         let mut servers=clients.iter().filter(|v|v.get("kind").and_then(Value::as_str)==Some("server")).cloned().collect::<Vec<_>>();
         for peer in discovered {if !servers.iter().any(|saved|saved.get("id")==peer.get("id")){servers.push(peer);}}
-        let server_identity=json!({"serverId":identity.server_id,"label":identity.label,"origin":null,"publicKey":identity.public_key,"tailscaleUser":null});
-        Ok(json!({"protocol":1,"identity":server_identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
+
+        Ok(json!({"protocol":1,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
     })?)
 }
 
-pub fn manage(store: &RuntimeStore, body: &Value, actor: &str) -> Result<Value, MultiServerError> {
-    let identity = read_identity(store)?;
+pub fn manage(
+    store: &RuntimeStore,
+    identity: &Value,
+    body: &Value,
+    actor: &str,
+) -> Result<Value, MultiServerError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)
@@ -79,7 +80,7 @@ pub fn manage(store: &RuntimeStore, body: &Value, actor: &str) -> Result<Value, 
         match action.as_str() {
             "settings" => { tx.execute("UPDATE runtime_access_settings SET auto_pair=?1 WHERE id=1",[i64::from(auto)])?; audit_write(tx,"local",actor,"settings")?; }
             "revoke" => { let id=body.get("clientId").and_then(Value::as_str).unwrap_or_default(); let mut client=stored(tx,"runtime_access_clients",id)?.ok_or_else(||MultiServerError::Refused("client does not exist".into()))?; if client.get("status").and_then(Value::as_str)!=Some("revoked") { client["status"]=json!("revoked"); client["revoked"]=json!(unix_time()?); tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2",rusqlite::params![client.to_string(),id])?; audit_write(tx,id,actor,"revoke")?; } }
-            "alias" => { let local=server=="local"||server==identity.server_id; if !local {return Err(MultiServerError::NeedsSignedRequest);} else if !valid_alias(&alias) {return Err(MultiServerError::Refused("invalid server alias".into()));} let prior=tx.query_row("SELECT server,alias FROM runtime_access_alias_requests WHERE id=?1",[&request],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?; if let Some((s,a))=prior {if s!="local"||a!=alias{return Err(MultiServerError::Conflict("request ID has different content".into()));}} else {tx.execute("INSERT INTO runtime_access_local_alias VALUES(1,?) ON CONFLICT(id) DO UPDATE SET alias=excluded.alias",[&alias])?;tx.execute("INSERT INTO runtime_access_alias_requests VALUES(?,?,?)",rusqlite::params![request,"local",alias])?;audit_write(tx,"local",actor,"alias")?;} }
+            "alias" => { let local=server=="local"||server==identity["serverId"].as_str().unwrap_or_default(); if !local {return Err(MultiServerError::NeedsSignedRequest);} else if !valid_alias(&alias) {return Err(MultiServerError::Refused("invalid server alias".into()));} let prior=tx.query_row("SELECT server,alias FROM runtime_access_alias_requests WHERE id=?1",[&request],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?; if let Some((s,a))=prior {if s!="local"||a!=alias{return Err(MultiServerError::Conflict("request ID has different content".into()));}} else {tx.execute("INSERT INTO runtime_access_local_alias VALUES(1,?) ON CONFLICT(id) DO UPDATE SET alias=excluded.alias",[&alias])?;tx.execute("INSERT INTO runtime_access_alias_requests VALUES(?,?,?)",rusqlite::params![request,"local",alias])?;audit_write(tx,"local",actor,"alias")?;} }
             "unrevoke" => { let prior=tx.query_row("SELECT client FROM runtime_access_unrevokes WHERE id=?1",[&request],|r|r.get::<_,String>(0)).optional()?; if let Some(saved)=prior {if saved!=target{return Err(MultiServerError::Conflict("request ID selected another server".into()));}} else {let v=stored(tx,"runtime_access_clients",&target)?.ok_or_else(||MultiServerError::Refused("select a revoked server".into()))?;if v.get("status").and_then(Value::as_str)!=Some("revoked")||v.get("kind").and_then(Value::as_str)!=Some("server"){return Err(MultiServerError::Refused("select a revoked server".into()));}tx.execute("DELETE FROM runtime_access_clients WHERE id=?1",[&target])?;tx.execute("DELETE FROM runtime_access_auto_attempts WHERE id=?1",[&target])?;tx.execute("INSERT INTO runtime_access_unrevokes VALUES(?1,?2)",rusqlite::params![request,target])?;audit_write(tx,&target,actor,"unrevoke")?;} }
             _ => return Err(MultiServerError::Refused(format!("unsupported local multi-server action: {action}"))),
         }
@@ -88,14 +89,7 @@ pub fn manage(store: &RuntimeStore, body: &Value, actor: &str) -> Result<Value, 
         let _=(clients,records);
         Ok(())
     })?;
-    snapshot(store)
-}
-
-fn read_identity(
-    store: &RuntimeStore,
-) -> Result<crate::sync_entity_context::LocalIdentity, MultiServerError> {
-    crate::sync_entity_context::local_identity(&store.root().to_string_lossy())?
-        .ok_or(MultiServerError::MissingIdentity)
+    snapshot(store, identity)
 }
 
 fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Value>, StoreError> {
