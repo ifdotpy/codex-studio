@@ -248,10 +248,30 @@ impl TranscriptRepository {
         text: &str,
         index_search: bool,
     ) -> TranscriptStoreResult<()> {
+        if !matches!(
+            record.get("role").and_then(Value::as_str),
+            Some("assistant" | "user" | "system")
+        ) {
+            return Err(invalid_record("runtime_items", id));
+        }
+        Self::put_notification_item(transaction, id, agent, record, created, text, index_search)
+    }
+
+    /// Notification tools additionally write Python's `output` transcript role.
+    /// The existing text writer keeps its narrower accepted role set.
+    pub fn put_notification_item(
+        transaction: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        record: &Value,
+        created: f64,
+        text: &str,
+        index_search: bool,
+    ) -> TranscriptStoreResult<()> {
         if record.get("id").and_then(Value::as_str) != Some(id)
             || !matches!(
                 record.get("role").and_then(Value::as_str),
-                Some("assistant" | "user" | "system")
+                Some("assistant" | "user" | "system" | "output")
             )
         {
             return Err(invalid_record("runtime_items", id));
@@ -292,7 +312,7 @@ impl TranscriptRepository {
                 transaction,
                 id,
                 agent,
-                if record["role"] == "system" {
+                if record["role"] == "system" || record["role"] == "output" {
                     record
                         .get("title")
                         .and_then(Value::as_str)

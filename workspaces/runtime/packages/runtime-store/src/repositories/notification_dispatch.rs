@@ -131,10 +131,28 @@ impl NotificationDispatchRepository {
         agent: &str,
         id: &str,
     ) -> StoreResult<Option<(Value, f64)>> {
+        Self::read_item(transaction, agent, id, false)
+    }
+
+    /// Read a native notice or tool item through the same checked storage boundary.
+    pub fn notification_item(
+        transaction: &Transaction<'_>,
+        agent: &str,
+        id: &str,
+    ) -> StoreResult<Option<(Value, f64)>> {
+        Self::read_item(transaction, agent, id, true)
+    }
+
+    fn read_item(
+        transaction: &Transaction<'_>,
+        agent: &str,
+        id: &str,
+        include_notices: bool,
+    ) -> StoreResult<Option<(Value, f64)>> {
         let item = TranscriptRepository::item(transaction, agent, id)
             .map_err(|error| map_transcript_error(error, "runtime_items", id))?;
         item.map(|item| {
-            validate_item(&item, agent)?;
+            validate_item(&item, agent, include_notices)?;
             let created = transaction
                 .query_row(
                     "SELECT created FROM runtime_items WHERE id=?1 AND agent=?2",
@@ -176,6 +194,28 @@ impl NotificationDispatchRepository {
     ) -> StoreResult<()> {
         TranscriptRepository::put_item(transaction, id, agent, record, created, text, index_search)
             .map_err(|error| map_transcript_error(error, "runtime_items", id))
+    }
+
+    /// Native notifications share transcript persistence and search projection rules.
+    pub fn put_notification_item(
+        transaction: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        record: &Value,
+        created: f64,
+        text: &str,
+        index_search: bool,
+    ) -> StoreResult<()> {
+        TranscriptRepository::put_notification_item(
+            transaction,
+            id,
+            agent,
+            record,
+            created,
+            text,
+            index_search,
+        )
+        .map_err(|error| map_transcript_error(error, "runtime_items", id))
     }
 
     pub fn link_transcript_item_to_event(
@@ -300,14 +340,15 @@ impl NotificationDispatchRepository {
     }
 }
 
-fn validate_item(item: &TranscriptItem, agent: &str) -> StoreResult<()> {
+fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> StoreResult<()> {
     let role = item.record.get("role").and_then(Value::as_str);
     if ["truncated", "streaming"].iter().any(|key| {
         item.record
             .get(key)
             .is_some_and(|value| !value.is_boolean())
     }) || item.record.get("id").and_then(Value::as_str) != Some(item.id.as_str())
-        || !matches!(role, Some("assistant" | "user"))
+        || !(matches!(role, Some("assistant" | "user"))
+            || include_notices && matches!(role, Some("system" | "output")))
         || item
             .record
             .get("text")
