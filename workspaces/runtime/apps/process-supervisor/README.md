@@ -72,21 +72,30 @@ descendant which escaped the process group has exited, or permit signaling an
 unverified process after the recorded root disappears. A missing identity or failed cleanup blocks recovery. Unlike the Python recovery
 path, an uncertain handle remains open in the journal so another restart cannot
 forget that refusal. A replacement spawn is reserved durably even when its prior
-handle was already closed; the old PID identity is removed before spawning. A reused PID is
+handle was already closed; the old PID identity is removed before spawning.
+Recovery retains only the latest 16 audit entries per handle. An operator can
+explicitly acknowledge an unknown handle with the existing `adminCloseHandle`
+action and its exact saved PID, signature and start time (empty string when
+missing). This atomically closes the handle and clears its recovery refusal.
+A recorded live child must still pass identity verification and be stopped;
+missing identity is never invented and an unidentifiable process is never
+signaled. The operator is acknowledging that remaining uncertainty. Receipts
+remain durable; this acknowledgement never resends input. A reused PID is
 never signaled; the old handle is closed with an identity-mismatch reason. A
 spawn interrupted before its identity is committed is deliberately refused as
 unknown ownership. Recovery never claims that an uncertain write was not sent.
 
 The initial cutover has explicit resource guardrails:
 
-| Resource                   | Rust      | Python v1                           | Reason for a lower limit and refusal                                                                                               |
-| -------------------------- | --------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Simultaneous connections   | 512       | No explicit limit                   | Bound socket threads and retained request buffers; `Supervisor connection capacity reached`.                                       |
-| In-memory child handles    | 128       | No explicit limit                   | Bound pipe readers, writers and retained output; `Supervisor child capacity reached`. Existing handles may still reconnect.        |
-| Incoming control frame     | 1 MiB     | 1 MiB on Windows, unlimited on Unix | Match the existing Rust client's transport bound on Unix; `Supervisor frame exceeds the size limit or is incomplete`.              |
-| Buffered output per handle | 256 MiB   | 256 MiB                             | Same journal limit; reading pauses, writes report `Supervisor output journal is full; waiting for backend replay acknowledgement`. |
-| One stdout frame           | 256 MiB   | No explicit limit                   | Avoid an unlimited unterminated line; `Child stdout frame exceeds journal capacity` appears in reader health.                      |
-| Child input deadline       | 5 seconds | No explicit deadline                | A stalled pipe returns `Child input deadline exceeded; durable outcome remains unknown`; accepted input is never resent.           |
+| Resource                   | Rust                                          | Python v1                           | Reason for a lower limit and refusal                                                                                                                                      |
+| -------------------------- | --------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Simultaneous connections   | 512                                           | No explicit limit                   | Bound socket threads and retained request buffers; `Supervisor connection capacity reached`.                                                                              |
+| In-memory child handles    | 128                                           | No explicit limit                   | Bound pipe readers, writers and retained output; `Supervisor child capacity reached`. Existing handles may still reconnect.                                               |
+| Incoming control frame     | 1 MiB                                         | 1 MiB on Windows, unlimited on Unix | Match the existing Rust client's transport bound on Unix; `Supervisor frame exceeds the size limit or is incomplete`.                                                     |
+| SQLite database            | 1 GiB, or the existing size if already larger | No global cap                       | Bound receipts and orphan state without deleting them; `supervisor journal: database or disk is full` rolls back new writes. Oversized existing journals remain readable. |
+| Buffered output per handle | 256 MiB                                       | 256 MiB                             | Same journal limit; reading pauses, writes report `Supervisor output journal is full; waiting for backend replay acknowledgement`.                                        |
+| One stdout frame           | 256 MiB                                       | No explicit limit                   | Avoid an unlimited unterminated line; `Child stdout frame exceeds journal capacity` appears in reader health.                                                             |
+| Child input deadline       | 5 seconds                                     | No explicit deadline                | A stalled pipe returns `Child input deadline exceeded; durable outcome remains unknown`; accepted input is never resent.                                                  |
 
 Capacity and framing refusals never signal existing children. Native identity on
 macOS and Windows transport are named startup refusals in this first cut.
