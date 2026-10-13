@@ -32,6 +32,7 @@ const NODE_REPL_ENV_KEYS: [&str; 9] = [
     "BROWSER_USE_TINYSKY_ENABLED",
     "CODEX_CLI_PATH",
 ];
+
 pub const BROWSER_GUIDANCE: &str = "For browser interaction, use the installed control-chrome skill and its browser-client through node_repl by default. Honor an explicitly requested different browser or tool. Read the native skill before use; it owns setup, permissions, tab lifecycle, and recovery. Report connection failures instead of silently changing the browser-control method. If native Chrome discovery reports no browser, finish the turn after reporting the error; Studio can refresh the connection at an idle boundary. Do not repeat any browser action with an unknown outcome. Dedicated connectors and web search remain appropriate for tasks that do not need browser interaction.";
 
 #[derive(Debug, Error)]
@@ -900,7 +901,7 @@ mod tests {
         let oversized = json!({"status":200,"body":"A".repeat(BODY_BASE64_LIMIT + 1)});
         assert!(matches!(
             cleaned_result(&oversized),
-            Err(BrowserError::Exchange)
+            Err(BrowserError::EncodedBodyLimit)
         ));
     }
 
@@ -947,7 +948,7 @@ mod tests {
             config
                 .overrides
                 .pointer("/mcp_servers/node_repl/env/NODE_REPL_TRUSTED_SERVICES"),
-            Some(&json!("{\"browser\":\"/opt/browser.mjs\"}"))
+            Some(&json!("{\"browser\": \"/opt/browser.mjs\"}"))
         );
         assert_eq!(
             config
