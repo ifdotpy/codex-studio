@@ -10,6 +10,8 @@ mod provider_shared;
 pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
+#[cfg(unix)]
+pub mod stream_child;
 mod transport;
 
 pub use client::SupervisorClient;

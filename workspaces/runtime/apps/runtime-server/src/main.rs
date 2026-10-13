@@ -1,3 +1,5 @@
+#[cfg(unix)]
+mod claude_login;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -86,17 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let state = HttpState::new(
+    let mut state = HttpState::new(
         token,
         workspace_id,
         native_path,
-        state_dir,
+        state_dir.clone(),
         address.port(),
         public_origin,
-        Some(store),
+        Some(store.clone()),
         Some(account_policy),
     )
-    .with_account_driver(account_driver);
+    .with_account_driver(account_driver.clone());
+    #[cfg(unix)]
+    claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;
     let sync_changes = state.sync_changes_handle();
     let app = router(state.clone())?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());

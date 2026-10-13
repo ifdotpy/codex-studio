@@ -62,7 +62,25 @@ const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
+const CLAUDE_ATTEMPT_URI: &str =
+    "https://codex-studio.invalid/persisted-claude-attempt.schema.json";
+const CLAUDE_CONTROL_URI: &str =
+    "https://codex-studio.invalid/persisted-claude-control.schema.json";
+const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-login.schema.json";
+
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (
+        CLAUDE_ATTEMPT_URI,
+        include_bytes!("schemas/persisted-claude-attempt.schema.json"),
+    ),
+    (
+        CLAUDE_CONTROL_URI,
+        include_bytes!("schemas/persisted-claude-control.schema.json"),
+    ),
+    (
+        CLAUDE_LOGIN_URI,
+        include_bytes!("schemas/persisted-claude-login.schema.json"),
+    ),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
@@ -128,6 +146,7 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
@@ -206,6 +225,9 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         validators.insert(name.to_owned(), validator);
     }
     for (name, uri) in [
+        ("PersistedClaudeAttemptRecord", CLAUDE_ATTEMPT_URI),
+        ("PersistedClaudeControlRecord", CLAUDE_CONTROL_URI),
+        ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
