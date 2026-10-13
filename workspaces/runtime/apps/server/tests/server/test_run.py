@@ -202,9 +202,11 @@ class ServerSuiteRunner(unittest.TestCase):
                     with mock.patch.dict(os.environ, inherited, clear=True):
                         environment = RUNNER._suite_environment(ROOT, suite_root)
                     self.assertEqual(environment["CODEX_NODE"], str(tools / "node"))
+                    self.assertEqual(shutil.which("node", path=environment["PATH"]),
+                                     str(suite_root / "tools" / "node"))
                     self.assertNotIn(str(tools), environment["PATH"].split(os.pathsep))
                     result = subprocess.run(
-                        [environment["CODEX_NODE"], "-e", "require('node:crypto').generateKeyPairSync('ed25519')"],
+                        ["node", "-e", "require('node:crypto').generateKeyPairSync('ed25519')"],
                         env=environment, capture_output=True, text=True,
                         timeout=HANG_GUARD_SECONDS,
                     )

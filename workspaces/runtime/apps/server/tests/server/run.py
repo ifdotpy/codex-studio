@@ -940,9 +940,16 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     # Ordinary suites cannot discover inherited provider programs or selectors.
     # Pin the crypto helper before dropping the caller's tool-cache PATH.
     node = environment.get("CODEX_NODE") or shutil.which("node")
+    path_entries = [str(Path(sys.executable).parent), os.defpath]
     if node:
         environment["CODEX_NODE"] = node
-    environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), os.defpath))
+        # JS suites and bridge probes launch "node" by name. Expose only that
+        # executable, never its caller-owned directory (which may hold providers).
+        tools = temp_root / "tools"
+        tools.mkdir()
+        (tools / "node").symlink_to(Path(node).absolute())
+        path_entries.insert(0, str(tools))
+    environment["PATH"] = os.pathsep.join(path_entries)
     for key in tuple(environment):
         if key in {"CODEX_BIN", "CODEX_AGENTS_NATIVE_RUNTIME_PIN", "CLAUDE_BIN",
                    "STUDIO_CLAUDE_BIN", "STUDIO_NODE_BIN", "OPENAI_API_KEY",
