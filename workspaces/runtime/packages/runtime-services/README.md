@@ -195,14 +195,19 @@ The Python account mutation points that a later owner must port are `refresh`,
 `start_login`, `login_receipts`, `cancel_login`, `login_completed`, and
 `set_rate_limits`. This read slice implements none of them.
 
-`GET /api/models` remains unimplemented with dependency
-`provider-session/model-list`. Python connects the account and sends paginated
-`model/list` requests with `limit: 100` (`router.py:176-209`,
-`codex_catalog.py:130-170`); `ModelCatalogCache` is process memory with a
-300-second successful-snapshot TTL and a five-second wait
-(`codex_catalog.py:32-43`). Pending and unavailable replies are HTTP 400
-(`router.py:198-207`). The Rust route stays at 501 until a provider session
-owns connection, pagination, cache, timeout, and pending/unavailable states.
+`GET /api/models` serves the Codex catalog through the Tokio session and a
+temporary stdio process-group attachment. The cache returns pending immediately,
+serves stale values during one refresh, and applies a single exchange deadline
+to initialization and pagination. The process adapter stops and reaps the child
+before a refresh result is published. Claude catalogs retain their named
+`provider-service/claude-model-catalog` dependency. The temporary adapter requires
+Unix; other platforms report the catalog unavailable.
+
+`model_catalog.rs` owns pagination, validation, cache, and pending/unavailable
+states. The async HTTP handler only runs the account snapshot read on the
+blocking pool. `rust-models-http-contract.py` tests pending/cache behavior,
+Python-written account state, and no provider start or registry write on refusal
+against both backends.
 
 The producer test uses Python `AccountStore` writes and the real
 `Runtime.store_rate_limits` → `codex_sync_entities.patch`/`put`/`project` path
@@ -227,8 +232,8 @@ dependency to reproduce that behavior.
 
 `provider_session_task::SessionHandle::open(factory, handle, options, config)`
 validates the recovered book and the actual initialize command before opening
-anything. It returns before socket startup. No routes, account workers, or old
-thread-based session callers use this module yet.
+anything. It returns before attachment startup. The model catalog uses it for
+ephemeral metadata requests.
 
 The handle owns `events: mpsc::Receiver<SessionEvent>`,
 `status: watch::Receiver<SessionStatus>`, and a cloneable `control: SessionControl`.
