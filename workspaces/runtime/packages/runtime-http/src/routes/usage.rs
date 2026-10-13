@@ -15,6 +15,7 @@ use crate::router::HttpState;
 
 const RESET_REDEMPTION: [Dependency; 1] =
     [Dependency::new("account-driver/reset-credit-redemption")];
+const COSTS_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/local-scanner")];
 const CAPACITY_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("event-driver/queue-mutations"),
     Dependency::new("store-bootstrap/capacity-retry-schema"),
@@ -27,7 +28,11 @@ const USAGE_RESUME_DEPENDENCIES: [Dependency; 2] = [
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get("/api/costs", OperationStatus::Implemented, costs),
+        get(
+            "/api/costs",
+            OperationStatus::partial(&COSTS_DEPENDENCIES),
+            costs,
+        ),
         post(
             "/api/limits/reset",
             OperationStatus::partial(&RESET_REDEMPTION),
@@ -230,6 +235,7 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "account-driver/reset-credit-redemption",
+            "costs/local-scanner",
             "event-driver/queue-mutations",
             "store-bootstrap/capacity-retry-schema",
             "store-bootstrap/usage-resume-schema",
