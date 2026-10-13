@@ -1,0 +1,129 @@
+{
+  "corpus": "radio_policy_corpus",
+  "tier": "fast",
+  "case_count": 28,
+  "baseline": {
+    "status": "passed",
+    "exit_code": 0
+  },
+  "mutations": [
+    {
+      "id": "RADIO-M01",
+      "rule": "receipt missing refuses",
+      "witnesses": ["missing-receipt"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 29.886,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-resumed/RADIO-M01-fast.log"
+    },
+    {
+      "id": "RADIO-M02",
+      "rule": "duplicate active receipts refuse ambiguous authorization",
+      "witnesses": ["duplicate-active-receipt"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 31.549,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-resumed/RADIO-M02-fast.log"
+    },
+    {
+      "id": "RADIO-M03",
+      "rule": "direct room has two distinct participants",
+      "witnesses": ["direct-room-duplicate-members"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 16.549,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-resumed/RADIO-M03-fast.log"
+    },
+    {
+      "id": "RADIO-M04",
+      "rule": "peer-team members are projected to distinct eligible leads",
+      "witnesses": ["peer-team-duplicate-members"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 34.782,
+      "run_log": "/var/tmp/cs-rust-radio/mutation-m04b/RADIO-M04-fast.log"
+    },
+    {
+      "id": "RADIO-M05",
+      "rule": "participant transfer or native thread block refuses",
+      "witnesses": ["transferring-recipient", "native-thread-blocked-peer"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 32.043,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M05-fast.log"
+    },
+    {
+      "id": "RADIO-M06",
+      "rule": "participants must be awake and free of native failure holds",
+      "witnesses": ["stopped-recipient", "held-peer"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 27.099,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M06-fast.log"
+    },
+    {
+      "id": "RADIO-M07",
+      "rule": "blocked and stopping rooms refuse admission",
+      "witnesses": ["blocked-room", "stopping-room"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 10.071,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M07-fast.log"
+    },
+    {
+      "id": "RADIO-M08",
+      "rule": "active receipt must name the requesting recipient",
+      "witnesses": ["active-agent-mismatch"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 14.035,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M08-fast.log"
+    },
+    {
+      "id": "RADIO-M09",
+      "rule": "active epoch and existing thread must match agent identity",
+      "witnesses": ["active-epoch-mismatch", "active-thread-mismatch"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 13.543,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M09-fast.log"
+    },
+    {
+      "id": "RADIO-M10",
+      "rule": "first-thread binding matches exact reserved event and epoch",
+      "witnesses": ["binding-wrong-event", "binding-wrong-epoch"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 12.313,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M10-fast.log"
+    },
+    {
+      "id": "RADIO-M11",
+      "rule": "a denied decision has no binding write intent",
+      "witnesses": ["denied-blocked-binding-has-no-rust-write-intent"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 13.761,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M11-fast.log"
+    },
+    {
+      "id": "RADIO-M12",
+      "rule": "attempt thread and compaction identity are preserved",
+      "witnesses": ["binding-wrong-thread"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 7.734,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M12-fast.log"
+    },
+    {
+      "id": "RADIO-M13",
+      "rule": "missing compactions defaults to zero while explicit null remains null",
+      "witnesses": ["missing-compactions-defaults-to-zero-on-binding"],
+      "status": "caught",
+      "test_exit_code": 100,
+      "wall_seconds": 7.6,
+      "run_log": "/var/tmp/cs-rust-radio/mutations-rules/RADIO-M13-fast.log"
+    }
+  ],
+  "measured_at_utc": "2026-10-13T12:38:43+00:00"
+}

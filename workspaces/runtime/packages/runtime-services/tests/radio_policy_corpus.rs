@@ -64,7 +64,15 @@ impl Drop for Oracle {
 }
 
 fn cases() -> Vec<Value> {
-    serde_json::from_str(include_str!("radio_policy/cases.json")).expect("radio case corpus")
+    let mut cases: Vec<Value> =
+        serde_json::from_str(include_str!("radio_policy/cases.json")).expect("fast radio corpus");
+    if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
+        cases.extend(
+            serde_json::from_str::<Vec<Value>>(include_str!("radio_policy/cases-full.json"))
+                .expect("full radio corpus"),
+        );
+    }
+    cases
 }
 
 fn decode_records(value: &Value) -> RadioAuthorizationRecords {
@@ -91,6 +99,19 @@ fn python_denial(value: &str) -> RadioDenial {
     }
 }
 
+fn rust_denial(value: &str) -> RadioDenial {
+    match value {
+        "ambiguous_room_receipt" => RadioDenial::AmbiguousRoomReceipt,
+        "no_active_room_receipt" => RadioDenial::NoActiveRoomReceipt,
+        "participants_no_longer_available" => RadioDenial::ParticipantsNoLongerAvailable,
+        "membership_changed" => RadioDenial::MembershipChanged,
+        "participant_unavailable" => RadioDenial::ParticipantUnavailable,
+        "participant_stopped" => RadioDenial::ParticipantStopped,
+        "turn_no_longer_authorized" => RadioDenial::TurnNoLongerAuthorized,
+        other => panic!("unclassified Rust denial override: {other}"),
+    }
+}
+
 #[test]
 fn radio_turn_decisions_match_python_written_room_records() {
     let mut oracle = Oracle::new();
@@ -101,6 +122,20 @@ fn radio_turn_decisions_match_python_written_room_records() {
         let snapshot = RadioAuthorizationSnapshot::from_records(&input)
             .unwrap_or_else(|error| panic!("{}: {error}", case["name"]));
         let actual = snapshot.authorize_turn(expected["event_id"].as_str().expect("event id"));
+        if let Some(denial) = case["rust_denial"].as_str() {
+            assert!(
+                expected["allowed"].as_bool().expect("Python allow flag"),
+                "{}: Python witness must allow",
+                case["name"]
+            );
+            assert_eq!(
+                actual,
+                RadioTurnDecision::Deny(rust_denial(denial)),
+                "{}: declared fail-closed deviation changed",
+                case["name"]
+            );
+            continue;
+        }
         if expected["allowed"] == true {
             let RadioTurnDecision::Allow { binding } = actual else {
                 panic!("{}: expected allow, got {actual:?}", case["name"]);
@@ -109,6 +144,11 @@ fn radio_turn_decisions_match_python_written_room_records() {
                 serde_json::to_value(binding).expect("binding JSON"),
                 expected["binding"],
                 "{}: first-thread binding differs",
+                case["name"]
+            );
+            assert_eq!(
+                expected["python_bind_side_effect"], expected["binding"],
+                "{}: oracle binding must come from Python's persisted room",
                 case["name"]
             );
         } else {
@@ -121,6 +161,14 @@ fn radio_turn_decisions_match_python_written_room_records() {
                 "{}: denial differs",
                 case["name"]
             );
+            if case["expect_python_bind_side_effect"] == true {
+                assert!(
+                    !expected["python_bind_side_effect"].is_null(),
+                    "{}: Python fixture must demonstrate the denied-bind write",
+                    case["name"]
+                );
+                // A deny variant has no binding field, so the adapter cannot persist it.
+            }
         }
     }
 }
