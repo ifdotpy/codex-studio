@@ -275,6 +275,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_rust_dependency_refusal_writes_nothing(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Python reference backend implements provider settings")
+        previous = self.draft()
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
             before = database.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -298,7 +299,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         reuse = self.backend.request(
             "POST",
             "/api/leads",
-            body={"reuse_empty": True, "previous": self.agent_id},
+            body={"reuse_empty": True, "previous": previous["id"]},
             headers=self.headers(),
         )
         self.assertEqual(reuse.status, 501, reuse.body[:1000])
@@ -797,6 +798,104 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 before = self.write_snapshot()
                 self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
                 self.assertEqual(self.write_snapshot(), before)
+
+    def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
+        self.rust_only()
+        body = self.draft()
+        original = self.stored(body["id"])
+        incomplete = dict(original)
+        incomplete.pop("maxAgents")
+        try:
+            self.save(incomplete)
+            before = self.write_snapshot()
+            result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
+            self.assertIn("runtime_agents/" + body["id"], result["error"])
+            self.assertEqual(self.write_snapshot(), before)
+        finally:
+            self.save(original)
+
+    def test_probe_new_previous_eligibility_and_nonempty_reuse(self):
+        previous = self.draft(yolo_mode=False)
+        original = self.stored(previous["id"])
+        try:
+            for change in ({"deletedAt": 1}, {"isLead": False}):
+                with self.subTest(change=change):
+                    self.save({**original, **change})
+                    before = self.write_snapshot()
+                    self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
+                    self.assertEqual(self.write_snapshot(), before)
+            self.save({**original, "prompt": "This conversation has content"})
+            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True})
+            self.assertNotEqual(result["id"], previous["id"])
+            self.assertEqual(result["cwd"], original["cwd"])
+            self.assertFalse(result["yoloMode"])
+            self.draft(previous="")
+        finally:
+            self.save(original)
+
+    def test_previous_reuse_requires_empty_compatible_workspace_and_provider(self):
+        self.rust_only()
+        previous = self.draft()
+        original = self.stored(previous["id"])
+        try:
+            before = self.write_snapshot()
+            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}, 501)
+            self.assertIn("agent-management/empty-chat-reuse", result["error"])
+            self.assertEqual(self.write_snapshot(), before)
+            for change in ({"layrReady": True}, {"workspaceMode": "image"}, {"provider": "claude"}, {"threadId": "existing-thread"}):
+                with self.subTest(change=change):
+                    self.save({**original, **change})
+                    result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True})
+                    self.assertNotEqual(result["id"], previous["id"])
+        finally:
+            self.save(original)
+
+    def test_probe_new_active_exclusions_keep_nullable_control_presence(self):
+        body = self.draft()
+        original = self.stored(body["id"])
+        try:
+            self.save({**original, "status": "running", "inFlight": True})
+            for field in ("next_turn", "request_id"):
+                before = self.write_snapshot()
+                result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": [], field: None}, 400)
+                self.assertIn("Wait for this turn", result["error"])
+                self.assertEqual(self.write_snapshot(), before)
+        finally:
+            self.save(original)
+
+    def test_probe_new_legacy_replay_explains_missing_intent_without_writes(self):
+        self.rust_only()
+        original = self.stored(self.agent_id)
+        self.assertNotIn("creationIntent", original)
+        before = self.write_snapshot()
+        result = self.post("/api/agents", {"id": self.agent_id, "name": original["name"], "prompt": original["prompt"], "cwd": original["cwd"]}, 400)
+        self.assertIn("No saved creation intent", result["error"])
+        self.assertIn("inspect the existing agent", result["error"])
+        self.assertEqual(self.write_snapshot(), before)
+
+    def test_probe_trim_creation_intent_and_rename_use_python_whitespace(self):
+        self.rust_only()
+        request = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "name": "\u001cName\u001f", "prompt": "\u001dTask\u001e", "workspaceMode": "worktree"}
+        reference = python_draft(self.backend, {**request, "id": str(uuid.uuid4())}, draft=False)
+        self.backend.start()
+        self.post("/api/agents", request)
+        record = self.stored(request["id"])
+        self.assertEqual(normalized_agent(record), normalized_agent(reference["record"]))
+        self.assertEqual(normalized_agent(self.projection(request["id"])), normalized_agent(reference["projection"]))
+        self.assertEqual(record["creationIntent"]["name"], "Name")
+        self.assertEqual(record["creationIntent"]["prompt"], "Task")
+        with database_connection(self.backend.state / "canvas.sqlite3") as db:
+            self.assertEqual(db.execute("SELECT text FROM runtime_events WHERE agent=?", (request["id"],)).fetchall(), [("Task",)])
+        self.post("/api/agents", {**request, "name": "Name", "prompt": "Task"})
+        rename = {"id": request["id"], "request_id": "python-trim-rename", "name": "\u001cRenamed\u001f"}
+        result = self.post("/api/rename", rename)
+        self.assertEqual(result["name"], "Renamed")
+        before = self.write_snapshot()
+        self.assertEqual(self.post("/api/rename", {**rename, "name": "Renamed"})["name"], "Renamed")
+        self.assertEqual(self.write_snapshot(), before)
+        before = self.write_snapshot()
+        self.post("/api/rename", {"id": request["id"], "name": "\u001c\u001f"}, 400)
+        self.assertEqual(self.write_snapshot(), before)
 
     def test_shared_projection_local_server_identity(self):
         body = self.draft()

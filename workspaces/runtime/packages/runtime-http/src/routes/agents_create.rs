@@ -171,6 +171,7 @@ async fn conversation(
     ApiJson(body): ApiJson<generated::ConversationRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request = agents_create::Conversation {
+        non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         settings: body.cwd.is_some()
             || body.yolo_mode.is_some()
             || body.model.is_some()

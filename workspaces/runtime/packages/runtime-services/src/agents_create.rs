@@ -14,6 +14,8 @@ use thiserror::Error;
 pub enum MutationError {
     #[error("This request id has different content")]
     Conflict,
+    #[error("No saved creation intent; inspect the existing agent before creating another")]
+    MissingCreationIntent,
     #[error("This conversation was deleted")]
     Deleted,
     #[error("Unknown managed agent")]
@@ -188,7 +190,10 @@ fn replay_agent(
     if crate::event_write::truthy(record.get("deletedAt")) {
         return Err(CreateError::Deleted);
     }
-    if record.get("creationIntent") != Some(request) {
+    let saved = record
+        .get("creationIntent")
+        .ok_or(CreateError::MissingCreationIntent)?;
+    if saved != request {
         return Err(CreateError::Conflict);
     }
     Ok(Some(record))
@@ -365,6 +370,7 @@ fn update_exclusions(
     id: &str,
     expected_account: Option<&str>,
     excluded: Option<&[String]>,
+    non_defaults: bool,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, SettingsError> {
     let mut record =
@@ -384,7 +390,7 @@ fn update_exclusions(
     }) {
         return Err(SettingsError::Stale);
     }
-    if excluded.is_none()
+    if (excluded.is_none() || non_defaults)
         && (crate::event_write::truthy(record.get("inFlight"))
             || matches!(
                 record.get("status").and_then(Value::as_str),

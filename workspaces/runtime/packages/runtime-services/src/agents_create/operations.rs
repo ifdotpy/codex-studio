@@ -2,7 +2,7 @@
 use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
-use crate::event_write::python_json;
+use crate::event_write::{python_json, python_strip, truthy};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use studio_runtime_store::RuntimeStore;
@@ -64,6 +64,7 @@ pub struct Conversation {
     pub expected_account: Option<String>,
     pub excluded: Option<Vec<String>>,
     pub settings: bool,
+    pub non_defaults: bool,
 }
 
 const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
@@ -97,8 +98,8 @@ fn create(
             .as_object_mut()
             .ok_or(OperationError::Internal)?
             .remove("id");
-        request.intent["prompt"] = json!(request.prompt.trim());
-        request.intent["name"] = json!(request.name.as_deref().unwrap_or("Lead").trim());
+        request.intent["prompt"] = json!(python_strip(&request.prompt));
+        request.intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
         if let Some(cwd) = &requested_cwd {
             request.intent["cwd"] = json!(cwd);
         }
@@ -123,11 +124,7 @@ fn create(
         });
     }
     let read = context.store.read()?;
-    let previous = request
-        .previous
-        .as_deref()
-        .map(|id| load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent))
-        .transpose()?;
+    let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
     let profile = request
         .profile
         .as_deref()
@@ -168,11 +165,6 @@ fn create(
     }
     if request.project_binding {
         return Err(OperationError::Unavailable("project-driver/chat-binding"));
-    }
-    if request.previous.is_some() && request.reuse_empty.unwrap_or(true) {
-        return Err(OperationError::Unavailable(
-            "agent-management/empty-chat-reuse",
-        ));
     }
     if workspace != "worktree" {
         return Err(OperationError::Unavailable(
@@ -217,14 +209,14 @@ fn create(
     } else {
         requested_max_agents.max(concurrency + 2)
     };
-    let prompt = request.prompt.trim();
+    let prompt = python_strip(&request.prompt);
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
     let mut record = build_agent_record(
         &id,
         if draft {
             "New chat"
         } else {
-            request.name.as_deref().unwrap_or("Lead").trim()
+            python_strip(request.name.as_deref().unwrap_or("Lead"))
         },
         prompt,
         &cwd,
@@ -257,6 +249,25 @@ fn create(
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
         }
+        if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
+            && request.reuse_empty.unwrap_or(true)
+            && !truthy(prior.get("layrReady"))
+            && prior
+                .get("workspaceMode")
+                .and_then(Value::as_str)
+                .unwrap_or("worktree")
+                == workspace
+            && prior
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex")
+                == provider(context, &account)
+            && crate::sync_entity_context::agent_view_context(tx, &prior, None)?.empty_lead
+        {
+            return Err(OperationError::Unavailable(
+                "agent-management/empty-chat-reuse",
+            ));
+        }
         refresh_account(context, &account)?;
         Ok(super::create_agent(
             tx, &id, prompt, record, created, validate,
@@ -282,13 +293,21 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
     }
     let max_agents = request.max_agents;
     mutate(context, |tx| {
-        Ok(configure_limits(
+        let result = configure_limits(
             tx,
             &request.id,
             max_agents,
             request.token_budget,
             |schema, value| (context.validate)(schema, value),
-        )?)
+        )?;
+        if !(context.validate)("ConfigureResponse", &result) {
+            return Err(MutationError::InvalidStoredObject {
+                object: "runtime_agents",
+                id: request.id.clone(),
+            }
+            .into());
+        }
+        Ok(result)
     })
 }
 pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Value, OperationError> {
@@ -303,6 +322,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             &request.id,
             request.expected_account.as_deref(),
             request.excluded.as_deref(),
+            request.non_defaults,
             |schema, value| (context.validate)(schema, value),
         )?)
     })
@@ -313,7 +333,7 @@ pub fn rename_operation(
     name: Option<&str>,
     request_id: Option<&str>,
 ) -> Result<Value, OperationError> {
-    let name = name.map(str::trim);
+    let name = name.map(python_strip);
     if name.is_some_and(str::is_empty) {
         return Err(OperationError::Invalid(
             "A name must have 1 to 80 characters",
@@ -332,17 +352,31 @@ pub fn rename_operation(
     })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
-    let name = name
-        .map(|value| python_json(&Value::String(value.to_owned())))
-        .unwrap_or_else(|| "null".to_owned());
-    let body = format!(
-        "{{\"chat\": {}, \"name\": {name}, \"operation\": \"rename\"}}",
-        python_json(&Value::String(id.to_owned()))
-    );
+    let body = python_json(&json!({"chat": id, "name": name, "operation": "rename"}));
     Sha256::digest(body.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn previous_lead(
+    connection: &Connection,
+    id: Option<&str>,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Option<Value>, OperationError> {
+    id.filter(|id| !id.is_empty())
+        .map(|id| {
+            let record =
+                load_agent_value(connection, id, validate)?.ok_or(MutationError::UnknownAgent)?;
+            if !truthy(record.get("isLead")) {
+                return Err(OperationError::Invalid("Select a lead conversation"));
+            }
+            if truthy(record.get("deletedAt")) {
+                return Err(MutationError::Deleted.into());
+            }
+            Ok(record)
+        })
+        .transpose()
 }
 
 fn account_key(
@@ -489,42 +523,19 @@ fn project_directory(value: &str) -> Result<String, OperationError> {
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
-    let mut settings = serde_json::Map::new();
-    settings.insert(
-        "model".into(),
-        body.get("model").cloned().unwrap_or(Value::Null),
-    );
-    settings.insert(
-        "previous".into(),
-        body.get("previous").cloned().unwrap_or(Value::Null),
-    );
-    settings.insert(
-        "workspaceMode".into(),
-        body.get("workspaceMode")
-            .cloned()
-            .unwrap_or_else(|| json!(workspace_mode)),
-    );
-    for field in [
-        "effort",
-        "fast_mode",
-        "daybreak_enabled",
-        "worker_defaults",
-        "review_defaults",
-        "account_key",
-        "reuse_empty",
-        "project_folder",
-        "project_id",
-        "project_server_id",
-        "yolo_mode",
-    ] {
-        if let Some(value) = body.get(field) {
-            settings.insert(field.to_owned(), value.clone());
-        }
+    let mut settings = body.clone();
+    if let Some(fields) = settings.as_object_mut() {
+        fields.remove("id");
+        fields.entry("model").or_insert(Value::Null);
+        fields.entry("previous").or_insert(Value::Null);
+        fields
+            .entry("workspaceMode")
+            .or_insert(json!(workspace_mode));
     }
-    if body.get("cwd").and_then(Value::as_str).is_some() {
-        settings.insert("cwd".into(), json!(cwd));
+    if let Some(cwd) = cwd {
+        settings["cwd"] = json!(cwd);
     }
-    python_json(&Value::Object(settings))
+    python_json(&settings)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -574,11 +585,7 @@ fn build_agent_record(
         record["concurrency"] = json!(concurrency);
     }
     if is_lead {
-        record["subagentConcurrencyVersion"] = json!(2);
         record["maxAgentsExplicit"] = json!(false);
-        record["agentMode"] = json!("multi");
-        record["agentModeRevision"] = json!(0);
-        record["agentModeSupported"] = json!(true);
         record["workerDefaults"] = json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1});
         record["reviewDefaults"] = json!({"model":null,"effort":null});
     }
@@ -610,4 +617,159 @@ fn mutate(
             tx, before, result,
         )?)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
+        let connection = store.read().expect("snapshot connection");
+        let mut tables = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .expect("tables");
+        tables
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("table rows")
+            .map(|name| {
+                let mut rows = connection
+                    .prepare(&format!("SELECT * FROM \"{}\"", name.expect("table")))
+                    .expect("read table");
+                let columns = rows.column_count();
+                rows.query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+                    .expect("rows")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("snapshot")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
+        let root = std::env::temp_dir().join(format!("creation-recheck-{}", new_id().expect("id")));
+        std::fs::create_dir_all(&root).expect("temporary state");
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
+        ))
+        .expect("schema");
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            let connection = Connection::open(root.join(name)).expect("database");
+            connection
+                .execute_batch("PRAGMA journal_mode=WAL;")
+                .expect("WAL");
+            let mut entries = schema[name]["sqlite_master"]
+                .as_array()
+                .expect("schema entries")
+                .clone();
+            entries.sort_by_key(|entry| match entry["type"].as_str() {
+                Some("table") => 0,
+                Some("index") => 1,
+                Some("view") => 2,
+                _ => 3,
+            });
+            for entry in entries {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                        [entry["name"].as_str().expect("object name")],
+                        |row| row.get(0),
+                    )
+                    .expect("schema object lookup");
+                if let Some(sql) = entry["sql"].as_str().filter(|_| !exists) {
+                    connection.execute_batch(sql).expect("schema statement");
+                }
+            }
+        }
+        let store = RuntimeStore::open(Some(&root)).expect("runtime store");
+        for scenario in ["agent", "lead", "previous"] {
+            let intent = if scenario == "agent" {
+                json!({"cwd":root,"name":"Lead","prompt":"Task"})
+            } else {
+                json!({"cwd":root})
+            };
+            let mut record = json!({"id":scenario,"isLead":true,"cwd":root,"status":"idle"});
+            record["creationIntent"] = intent.clone();
+            record["quickCreate"] = json!(true);
+            record["quickCreateRequest"] =
+                json!(lead_signature(&intent, "worktree", root.to_str()));
+            store
+                .transaction(|tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_agents VALUES(?1,?2)",
+                        rusqlite::params![scenario, record.to_string()],
+                    )?;
+                    Ok(())
+                })
+                .expect("seed existing agent");
+            let interleaved = Cell::new(false);
+            let after_interleaving = RefCell::new(None);
+            let validate = |schema: &str, _: &Value| {
+                if schema == "AgentRecordResponse" && !interleaved.replace(true) {
+                    let mut changed = record.clone();
+                    match scenario {
+                        "agent" => changed["creationIntent"]["prompt"] = json!("Another request"),
+                        "lead" => changed["quickCreateRequest"] = json!("{}"),
+                        _ => changed["deletedAt"] = json!(1),
+                    }
+                    store
+                        .transaction(|tx| {
+                            tx.execute(
+                                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                                rusqlite::params![changed.to_string(), scenario],
+                            )?;
+                            Ok(())
+                        })
+                        .expect("concurrent change after initial read");
+                    *after_interleaving.borrow_mut() = Some(snapshot(&store));
+                }
+                true
+            };
+            let context = Context {
+                store: &store,
+                accounts: None,
+                driver: None,
+                validate: &validate,
+            };
+            let request = Creation {
+                id: Some(
+                    if scenario == "previous" {
+                        "new-agent"
+                    } else {
+                        scenario
+                    }
+                    .to_owned(),
+                ),
+                cwd: root.to_str().map(str::to_owned),
+                account: Some("default".to_owned()),
+                prompt: if scenario == "agent" { "Task" } else { "" }.to_owned(),
+                previous: (scenario == "previous").then(|| scenario.to_owned()),
+                reuse_empty: Some(false),
+                intent,
+                ..Creation::default()
+            };
+            let result = if scenario == "agent" {
+                agent(&context, request)
+            } else {
+                lead(&context, request)
+            };
+            assert!(
+                matches!(
+                    result,
+                    Err(OperationError::Create(
+                        MutationError::Conflict | MutationError::Deleted
+                    ))
+                ),
+                "{scenario}: {result:?}"
+            );
+            assert!(interleaved.get());
+            assert_eq!(
+                Some(snapshot(&store)),
+                *after_interleaving.borrow(),
+                "refusal writes nothing after {scenario} interleaving"
+            );
+        }
+        drop(store);
+        std::fs::remove_dir_all(root).expect("remove temporary state");
+    }
 }

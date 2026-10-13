@@ -114,6 +114,7 @@ impl Registry {
             "CheckpointSummary",
             "ComplaintEntityDto",
             "ComplaintRecordResponse",
+            "ConfigureResponse",
             "EdgeEntityDto",
             "EventEntityDto",
             "MonitorEntityDto",
