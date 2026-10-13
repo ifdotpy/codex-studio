@@ -1722,6 +1722,7 @@ mod actor_tests {
             None,
             "create-with-worker-selected",
             WorkWrite::Create(CreateWork {
+                actor_id: "lead".to_owned(),
                 title: "must be refused".to_owned(),
                 description: String::new(),
                 owner: None,
