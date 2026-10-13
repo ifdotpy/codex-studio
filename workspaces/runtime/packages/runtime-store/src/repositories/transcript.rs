@@ -1,14 +1,14 @@
 //! Read-only access to Python-written transcript rows.
 
+use crate::records::{
+    AgentId, AgentRecord, RecordOrder, RecordPredicate, Table, TranscriptItemId,
+    TranscriptItemRecord,
+};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use thiserror::Error;
 
-const CONDITIONAL_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_item_fulltext",
-    columns: &["id", "body"],
-}];
 const LEGACY_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search",
     columns: &["id", "body"],
@@ -20,6 +20,10 @@ const LEGACY_ADDRESS_TABLES: &[TableRequirement] = &[TableRequirement {
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
+        TableRequirement {
+            name: "runtime_item_fulltext",
+            columns: &["id", "body"],
+        },
         TableRequirement {
             name: "runtime_items",
             columns: &["id", "agent", "record", "created"],
@@ -34,10 +38,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         },
     ],
     conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_item_fulltext",
-            tables: CONDITIONAL_TABLES,
-        },
         ConditionalTableRequirement {
             table_exists: "runtime_search",
             tables: LEGACY_TABLES,
@@ -76,17 +76,10 @@ pub struct TranscriptRepository;
 
 impl TranscriptRepository {
     pub fn agent(connection: &Connection, agent: &str) -> TranscriptStoreResult<Option<Value>> {
-        let record = connection
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [agent],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| map_column_error(error, "runtime_agents"))?;
-        record
-            .map(|raw| decode_object(&raw, "runtime_agents"))
-            .transpose()
+        Table::<AgentRecord>::new(connection)
+            .get(&AgentId::from(agent))
+            .map(|record| record.map(|record| record.value()))
+            .map_err(|error| map_store_error(error, "runtime_agents"))
     }
 
     pub fn item(
@@ -94,42 +87,40 @@ impl TranscriptRepository {
         agent: &str,
         id: &str,
     ) -> TranscriptStoreResult<Option<TranscriptItem>> {
-        let item = connection
-            .query_row(
-                "SELECT id,record FROM runtime_items WHERE id=?1 AND agent=?2",
-                params![id, agent],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        Table::<TranscriptItemRecord>::new(connection)
+            .get_matching(
+                &TranscriptItemId::from(id),
+                Some(RecordPredicate::PhysicalAgentEquals(agent)),
             )
-            .optional()
-            .map_err(|error| map_column_error(error, "runtime_items"))?;
-        item.map(|(id, raw)| {
-            Ok(TranscriptItem {
-                id,
-                record: decode_object(&raw, "runtime_items")?,
+            .map(|item| {
+                item.map(|item| TranscriptItem {
+                    id: item.id().as_ref().to_owned(),
+                    record: item.value().clone(),
+                })
             })
-        })
-        .transpose()
+            .map_err(|error| map_store_error(error, "runtime_items"))
     }
 
     pub fn items_for_agent(
         connection: &Connection,
         agent: &str,
     ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
-        let mut statement = connection.prepare(
-            "SELECT id,record FROM runtime_items WHERE agent=?1 ORDER BY created DESC,id DESC",
-        )?;
-        let rows = statement.query_map([agent], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let mut items = Vec::new();
-        for row in rows {
-            let (id, raw) = row.map_err(|error| map_column_error(error, "runtime_items"))?;
-            let record = decode_object(&raw, "runtime_items")?;
-            if visible(&record) {
-                items.push(TranscriptItem { id, record });
-            }
-        }
-        Ok(items)
+        Table::<TranscriptItemRecord>::new(connection)
+            .list_matching(
+                Some(RecordPredicate::PhysicalAgentEquals(agent)),
+                RecordOrder::PhysicalCreatedDescIdDesc,
+            )
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| visible(record.value()))
+                    .map(|record| TranscriptItem {
+                        id: record.id().as_ref().to_owned(),
+                        record: record.value().clone(),
+                    })
+                    .collect()
+            })
+            .map_err(|error| map_store_error(error, "runtime_items"))
     }
 
     pub fn event_text(
@@ -152,18 +143,16 @@ impl TranscriptRepository {
         connection: &Connection,
         item: &TranscriptItem,
     ) -> TranscriptStoreResult<Option<String>> {
-        if table_exists(connection, "runtime_item_fulltext")? {
-            let full = connection
-                .query_row(
-                    "SELECT body FROM runtime_item_fulltext WHERE id=?1",
-                    [&item.id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()
-                .map_err(|error| map_column_error(error, "runtime_item_fulltext"))?;
-            if let Some(Some(full)) = full {
-                return Ok(Some(full));
-            }
+        let full = connection
+            .query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [&item.id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| map_column_error(error, "runtime_item_fulltext"))?;
+        if let Some(Some(full)) = full {
+            return Ok(Some(full));
         }
         if item.record.get("truncated").and_then(Value::as_bool) == Some(true)
             && table_exists(connection, "runtime_search")?
@@ -245,21 +234,19 @@ impl TranscriptRepository {
     }
 }
 
-fn decode_object(raw: &str, object: &'static str) -> TranscriptStoreResult<Value> {
-    let value: Value =
-        serde_json::from_str(raw).map_err(|_| TranscriptStoreError::InvalidStoredObject(object))?;
-    if !value.is_object() {
-        return Err(TranscriptStoreError::InvalidStoredObject(object));
-    }
-    Ok(value)
-}
-
 fn table_exists(connection: &Connection, table: &str) -> TranscriptStoreResult<bool> {
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [table],
         |row| row.get(0),
     )?)
+}
+
+fn map_store_error(error: crate::StoreError, object: &'static str) -> TranscriptStoreError {
+    match error {
+        crate::StoreError::Sqlite(error) => TranscriptStoreError::Sqlite(error),
+        _ => TranscriptStoreError::InvalidStoredObject(object),
+    }
 }
 
 fn map_column_error(error: rusqlite::Error, object: &'static str) -> TranscriptStoreError {
