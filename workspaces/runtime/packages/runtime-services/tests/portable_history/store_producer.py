@@ -1,6 +1,7 @@
 """Create a disposable Python runtime state for the Rust archive writer."""
 
 import json
+import os
 import pathlib
 import sys
 
@@ -11,6 +12,10 @@ install_guard()
 
 SERVER = pathlib.Path(sys.argv[1])
 ROOT = pathlib.Path(sys.argv[2])
+for variable, name in (("HOME", "home"), ("CODEX_HOME", "codex"), ("CLAUDE_CONFIG_DIR", "claude")):
+    directory = ROOT / name
+    directory.mkdir()
+    os.environ[variable] = str(directory)
 sys.path.insert(0, str(SERVER))
 
 from codex_canvas import Canvas  # noqa: E402
@@ -27,6 +32,7 @@ class QuietRuntime(Runtime):
 Canvas(ROOT)
 TerminalManager(ROOT)
 runtime = QuietRuntime(ROOT, lambda *_args, **_kwargs: None)
+assert runtime.accounts.base_home.is_relative_to(ROOT), "fixture owns its provider home"
 agent = runtime.create(
     {"name": "portable history fixture", "cwd": str(ROOT), "prompt": "synthetic"},
     defer=True,
