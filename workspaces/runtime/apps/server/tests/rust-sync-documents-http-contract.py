@@ -30,6 +30,32 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             prepare_sync_store_for_rust_contract(cls.backend, seed_python_rows=True)
         cls._prepare_python_entity_tombstone()
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust storage validation")
+    def test_sync_and_chat_refuse_agent_missing_epoch_without_projection_writes(self):
+        import sqlite3
+        from codex_sync_entities import register_functions
+
+        actor={"id":"invalid-epoch-agent","rootId":"invalid-epoch-agent","status":"idle",
+               "isLead":True,"name":"Malformed agent","cwd":str(self.backend.cwd)}
+        room={"id":"invalid-epoch-room","kind":"private","members":[actor["id"]]}
+        with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
+            register_functions(db)
+            for table, row in (("runtime_agents",actor),("runtime_rooms",room)):
+                db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(row["id"],json.dumps(row)))
+        before=sync_state_snapshot(self.backend.state)
+        try:
+            for path in ("/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+                         "/api/agent-chat?room="+room["id"]):
+                response=self.backend.request("GET",path,headers=self._common_headers())
+                self.assertEqual(response.status,500,response.body)
+                self.assertIn("runtime_agents/"+actor["id"],response.json()["error"])
+                self.assertEqual(sync_state_snapshot(self.backend.state),before)
+        finally:
+            with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
+                register_functions(db)
+                for table,row in (("runtime_rooms",room),("runtime_agents",actor)):
+                    db.execute(f"DELETE FROM {table} WHERE id=?",(row["id"],))
+
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_entity_seeding_matches_python_for_persisted_state_and_is_idempotent(self) -> None:
         import sqlite3
@@ -71,12 +97,12 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "records": {
                 "runtime_agents": [
                     [agent_a, {"id": agent_a, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_a, "name": "First lead", "cwd": project_path, "status": "idle",
+                     "rootId": agent_a, "epoch": 1, "name": "First lead", "cwd": project_path, "status": "idle",
                      "overview": {"task": "stale lead overview"}}],
                     [agent_b, {"id": agent_b, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_b, "name": None, "cwd": project_path + "/.", "status": "idle"}],
+                     "rootId": agent_b, "epoch": 1, "name": None, "cwd": project_path + "/.", "status": "idle"}],
                     [worker_id, {"id": worker_id, "kind": "agent", "isLead": False,
-                     "parentId": agent_a, "rootId": agent_a, "name": "Worker", "cwd": project_path,
+                     "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Worker", "cwd": project_path,
                      "status": "completed", "prompt": "Python view task", "lastAnswer": "done",
                      "lastCompletedTurn": "turn-view", "turnId": "", "threadId": "thread-view",
                      "nativeRelease": {"id": "release-request", "phase": "released",
@@ -85,7 +111,7 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                      "nativeStatus": {"phase": "safety", "message": "m" * 3000},
                      "nativeThreadBlock": {"threadId": "thread-view", "error": {"message": "blocked"}}}],
                     [turn_error_id, {"id": turn_error_id, "kind": "agent", "isLead": False,
-                     "parentId": agent_a, "rootId": agent_a, "name": "Turn error worker",
+                     "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Turn error worker",
                      "status": "idle", "threadId": "thread-error", "turnId": "",
                      "nativeTurnError": {"turnId": "", "error": {
                          "codexErrorInfo": "misalignmentPolicyViolation", "message": "blocked"}}}],
@@ -545,7 +571,7 @@ with canvas.connect() as db:
             database.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?,?)",
                 (invalid_projection_id, json.dumps({
-                    "id": invalid_projection_id,
+                    "id": invalid_projection_id, "rootId": invalid_projection_id, "epoch": 1, "status": "idle",
                     "name": "Invalid native release",
                     "nativeRelease": {"phase": [], "resetPending": False},
                 })),
@@ -581,8 +607,8 @@ with canvas.connect() as db:
         live_owner = "sync-window-live-owner"
         old_monitor = "sync-window-old-live-monitor"
         rows = [
-            (deleted_owner, json.dumps({"id": deleted_owner, "deletedAt": 1})),
-            (live_owner, json.dumps({"id": live_owner, "status": "idle"})),
+            (deleted_owner, json.dumps({"id": deleted_owner, "rootId": deleted_owner, "epoch": 1, "status": "idle", "deletedAt": 1})),
+            (live_owner, json.dumps({"id": live_owner, "rootId": live_owner, "epoch": 1, "status": "idle"})),
         ]
         rows.extend(
             (f"sync-window-terminal-{index}", json.dumps({

@@ -154,24 +154,15 @@ fn exists_for_agent(
     Ok(transaction.query_row(&sql, [agent_id], |row| row.get(0))?)
 }
 
-pub(crate) fn room_view_context(
-    transaction: &Transaction<'_>,
-    record: &Value,
-    agents: &[Value],
-) -> StoreResult<RoomViewContext> {
-    RoomDirectory::with_agents(transaction, agents.to_vec())?.for_room(transaction, record, true)
-}
-
+/// Schema-validated snapshot; only the database loader can construct its contents.
 pub(crate) struct RoomDirectory {
-    pub(crate) agents: Vec<Value>,
-    pub(crate) projects: Vec<Value>,
+    agents: Vec<Value>,
+    projects: Vec<Value>,
     peers: Vec<Value>,
 }
 impl RoomDirectory {
     pub(crate) fn load(tx: &Transaction<'_>) -> Result<Self, studio_runtime_store::StoreError> {
-        Self::with_agents(tx, records::all(tx, "runtime_agents")?)
-    }
-    fn with_agents(tx: &Transaction<'_>, agents: Vec<Value>) -> StoreResult<Self> {
+        let agents = records::all(tx, "runtime_agents")?;
         let projects = records::all(tx, "runtime_projects")?;
         let mut peers = Vec::new();
         for project in &projects {
@@ -215,6 +206,12 @@ impl RoomDirectory {
             projects,
             peers,
         })
+    }
+    pub(crate) fn agents(&self) -> &[Value] {
+        &self.agents
+    }
+    pub(crate) fn projects(&self) -> &[Value] {
+        &self.projects
     }
     pub(crate) fn for_room(
         &self,

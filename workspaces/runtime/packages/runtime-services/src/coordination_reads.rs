@@ -26,67 +26,54 @@ pub fn delivery_receipts(
         crate::event_write::EventWriteError::Store(error) => CoordinationError::Store(error),
         _ => CoordinationError::InvalidRequest("Unknown or deleted managed agent"),
     })?;
-    let mut events = connection.prepare(
-        "SELECT e.id,e.status,e.error,m.record FROM runtime_events e
+    let mut statement = connection.prepare(
+        "SELECT e.id,e.status,e.error,m.record,i.id,i.record FROM runtime_events e
         LEFT JOIN runtime_event_meta m ON m.id=e.id
+        LEFT JOIN runtime_items i ON i.agent=e.agent AND i.id=COALESCE(
+            CASE WHEN json_valid(m.record) THEN json_extract(m.record,'$.transcriptItemId') END,
+            e.agent || ':' || e.id)
         WHERE e.agent=?1 AND e.kind='user' AND e.id IN (SELECT value FROM json_each(?2))",
     )?;
-    let selected = events
+    let items = statement
         .query_map(rusqlite::params![agent, json!(ids).to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })?
         .map(|row| {
-            let (id, status, error, raw) = row?;
-            let event = records::validate(
+            let (id, status, error, metadata, item_id, item) = row?;
+            let mut event = records::validate(
                 "runtime_events",
                 &id,
                 json!({"id":id,"status":status,"error":error}),
             )?;
-            let metadata = raw
-                .map(|raw| records::decode("runtime_event_meta", &id, &raw))
+            if let Some(raw) = metadata {
+                records::decode("runtime_event_meta", &id, &raw)?;
+            }
+            let item = item_id
+                .zip(item)
+                .map(|(key, raw)| {
+                    records::decode("runtime_items", &key, &raw).map(|value| (key, value))
+                })
                 .transpose()?;
-            let item_id = metadata
-                .as_ref()
-                .and_then(|m| m["transcriptItemId"].as_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("{agent}:{id}"));
-            Ok::<_, studio_runtime_store::StoreError>((event, item_id))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let ids = selected.iter().map(|(_, id)| id).collect::<Vec<_>>();
-    let mut statement = connection.prepare("SELECT id,record FROM runtime_items WHERE agent=?1 AND id IN (SELECT value FROM json_each(?2))")?;
-    let items = statement
-        .query_map(rusqlite::params![agent, json!(ids).to_string()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .map(|row| {
-            let (id, raw) = row?;
-            let item = records::decode("runtime_items", &id, &raw)?;
-            Ok((id, item))
-        })
-        .collect::<Result<BTreeMap<_, _>, studio_runtime_store::StoreError>>()?;
-    let items = selected
-        .into_iter()
-        .map(|(mut event, item_id)| {
-            let materialized = items.get(&item_id).is_some_and(|item| {
-                (item_id == format!("{agent}:{}", event["id"].as_str().unwrap_or_default())
+            event["materialized"] = json!(item.is_some_and(|(key, item)| {
+                (key == format!("{agent}:{id}")
                     && item["role"] == "user"
                     && item.get("inputs").is_none())
                     || item["inputs"]
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .any(|input| input["id"] == event["id"] && input["kind"] == "user")
-            });
-            event["materialized"] = json!(materialized);
-            event
+                        .any(|input| input["id"] == id && input["kind"] == "user")
+            }));
+            Ok(event)
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, studio_runtime_store::StoreError>>()?;
     Ok(json!({"agent":agent,"items":items}))
 }
 
@@ -104,12 +91,12 @@ pub fn chat_read(
     let context = RoomDirectory::load(connection)?;
     let (room, room_ids) = if let Some(root_id) = room_id.strip_prefix("feed:") {
         let root = context
-            .agents
+            .agents()
             .iter()
             .find(|a| a["id"] == root_id && a["isLead"] == true && !truthy(a.get("deletedAt")))
             .ok_or(CoordinationError::InvalidRequest("Team is unavailable"))?;
         let members = context
-            .agents
+            .agents()
             .iter()
             .filter(|a| a["rootId"] == root_id && !truthy(a.get("deletedAt")))
             .filter_map(|a| a["id"].as_str())
@@ -131,7 +118,7 @@ pub fn chat_read(
             .query_map(
                 rusqlite::params![
                     json!(members).to_string(),
-                    json!(context.projects).to_string(),
+                    json!(context.projects()).to_string(),
                     json!(rooms).to_string(),
                     root_id
                 ],
@@ -183,7 +170,7 @@ pub fn chat_read(
         (room, vec![room_id.to_owned()])
     };
     let mut names = context
-        .agents
+        .agents()
         .iter()
         .filter_map(|a| Some((a["id"].as_str()?.to_owned(), a["name"].clone())))
         .collect::<BTreeMap<_, _>>();
