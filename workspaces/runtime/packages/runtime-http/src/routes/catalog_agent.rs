@@ -156,8 +156,7 @@ async fn capabilities(
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(invalid_stored_agent)?;
-    let now = Instant::now();
-    if let Some(cached) = state.capabilities_cache.get(agent_id, now) {
+    if let Some(cached) = state.capabilities_cache.get(agent_id, Instant::now()) {
         return Ok(Json(super::generated_json::<
             crate::generated::CapabilitiesResponse,
         >(cached)?));
@@ -186,40 +185,55 @@ async fn capabilities(
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
     let mut result = capabilities_base(agent_id, &capability_agent, managed, observed, at);
-    let responses = studio_runtime_services::catalog_reads::provider_exchange(
-        state.native_path.as_deref().map(Path::new),
-        &account.home,
-        account.key != "default",
-        vec![
-            ProviderRequest {
-                method: "skills/list".to_owned(),
-                params: json!({"cwds":[cwd],"forceReload":true}),
-            },
-            ProviderRequest {
-                method: "mcpServerStatus/list".to_owned(),
-                params: json!({"threadId":agent.get("threadId"),"limit":100}),
-            },
-        ],
-        DISCOVERY_TIMEOUT,
-    )
-    .await;
-    match responses {
-        Ok(responses) => {
-            for (index, label) in ["skills", "servers"].into_iter().enumerate() {
-                match responses.get(index) {
-                    Some(Ok(response)) => apply_capability_result(&mut result, label, response),
-                    _ => append_capability_error(&mut result, label, "Provider request failed"),
+    let cache = std::sync::Arc::clone(&state.capabilities_cache);
+    let native_path = state.native_path.clone();
+    let home = account.home;
+    let isolated = account.key != "default";
+    let cwd = cwd.to_owned();
+    let thread_id = agent.get("threadId").cloned();
+    let result = cache
+        .get_or_fetch(agent_id, || async move {
+            let responses = studio_runtime_services::catalog_reads::provider_exchange(
+                native_path.as_deref().map(Path::new),
+                &home,
+                isolated,
+                vec![
+                    ProviderRequest {
+                        method: "skills/list".to_owned(),
+                        params: json!({"cwds":[cwd],"forceReload":true}),
+                    },
+                    ProviderRequest {
+                        method: "mcpServerStatus/list".to_owned(),
+                        params: json!({"threadId":thread_id,"limit":100}),
+                    },
+                ],
+                DISCOVERY_TIMEOUT,
+            )
+            .await;
+            match responses {
+                Ok(responses) => {
+                    for (index, label) in ["skills", "servers"].into_iter().enumerate() {
+                        match responses.get(index) {
+                            Some(Ok(response)) => {
+                                apply_capability_result(&mut result, label, response)
+                            }
+                            _ => append_capability_error(
+                                &mut result,
+                                label,
+                                "Provider request failed",
+                            ),
+                        }
+                    }
+                }
+                Err(_) => {
+                    append_capability_error(&mut result, "skills", "Provider request failed");
+                    append_capability_error(&mut result, "servers", "Provider request failed");
                 }
             }
-        }
-        Err(_) => {
-            append_capability_error(&mut result, "skills", "Provider request failed");
-            append_capability_error(&mut result, "servers", "Provider request failed");
-        }
-    }
-    state
-        .capabilities_cache
-        .insert(agent_id.to_owned(), result.clone(), now);
+            result
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
     Ok(Json(super::generated_json::<
         crate::generated::CapabilitiesResponse,
     >(result)?))

@@ -3,6 +3,7 @@
 use crate::provider_session_task::{RequestSpec, SessionHandle, SessionOutcome, WriteOutcome};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -279,22 +280,7 @@ async fn read_requests(
     requests: Vec<ProviderRequest>,
     timeout: Duration,
 ) -> Result<Vec<Result<Value, ()>>, ()> {
-    while session.status.borrow().initialization
-        != studio_runtime_process::provider_seam::InitializationStatus::Ready
-    {
-        tokio::select! {
-            status = session.status.changed() => status.map_err(|_| ())?,
-            event = session.events.recv() => {
-                let event = event.ok_or(())?;
-                if let Some(journal) = event.journal {
-                    session.control.settled(journal.cursor).await.map_err(|_| ())?;
-                }
-                if event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::GenerationClosed { .. })) {
-                    return Err(());
-                }
-            }
-        }
-    }
+    await_ready(session).await?;
     let deadline = started + timeout;
     let mut tickets = Vec::with_capacity(requests.len());
     let mut results = vec![None; requests.len()];
@@ -414,35 +400,76 @@ async fn read_requests(
 
 /// Per-agent in-memory cache for capabilities discovery results.
 #[derive(Default)]
-pub struct CapabilitiesCache(Mutex<HashMap<String, (Instant, Value)>>);
+pub struct CapabilitiesCache(Mutex<HashMap<String, std::sync::Arc<CapabilityEntry>>>);
+
+#[derive(Default)]
+struct CapabilityEntry {
+    value: tokio::sync::OnceCell<Value>,
+    expires_at: Mutex<Option<Instant>>,
+}
 
 impl CapabilitiesCache {
     pub fn get(&self, agent: &str, now: Instant) -> Option<Value> {
-        let key = agent.to_owned();
-        let mut cache = self.0.lock().ok()?;
-        let (expires, value) = cache.get(&key)?;
-        if *expires <= now {
-            cache.remove(&key);
-            return None;
+        let cache = self.0.lock().ok()?;
+        let entry = cache.get(agent)?;
+        if entry
+            .expires_at
+            .lock()
+            .ok()?
+            .is_some_and(|expires| expires > now)
+        {
+            return entry.value.get().cloned();
         }
-        Some(value.clone())
+        None
     }
 
-    pub fn insert(&self, agent: String, value: Value, now: Instant) {
-        let Ok(mut cache) = self.0.lock() else {
-            return;
+    /// Cache one consumer's discovery and share an in-flight miss with concurrent requests.
+    pub async fn get_or_fetch<F, Fut>(&self, agent: &str, fetch: F) -> Result<Value, ()>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Value>,
+    {
+        let now = Instant::now();
+        let expires_at = now + CACHE_TTL;
+        let entry = {
+            let mut cache = self.0.lock().map_err(|_| ())?;
+            cache.retain(|_, entry| {
+                entry
+                    .expires_at
+                    .lock()
+                    .map_or(false, |expires| expires.is_none_or(|expires| expires > now))
+            });
+            if let Some(entry) = cache.get(agent) {
+                entry.clone()
+            } else {
+                if cache.len() >= MAX_CACHE_ENTRIES {
+                    let oldest =
+                        cache
+                            .iter()
+                            .filter_map(|(key, entry)| {
+                                entry.expires_at.lock().ok().and_then(|expires| {
+                                    expires.map(|expires| (key.clone(), expires))
+                                })
+                            })
+                            .min_by_key(|(_, expires)| *expires)
+                            .map(|(key, _)| key);
+                    if let Some(oldest) = oldest {
+                        cache.remove(&oldest);
+                    } else {
+                        return Err(());
+                    }
+                }
+                let entry = std::sync::Arc::new(CapabilityEntry::default());
+                cache.insert(agent.to_owned(), entry.clone());
+                entry
+            }
         };
-        cache.retain(|_, (expires, _)| *expires > now);
-        if !cache.contains_key(&agent)
-            && cache.len() >= MAX_CACHE_ENTRIES
-            && let Some(oldest) = cache
-                .iter()
-                .min_by_key(|(_, (expires, _))| *expires)
-                .map(|(key, _)| key.clone())
-        {
-            cache.remove(&oldest);
+        let value = entry.value.get_or_init(fetch).await.clone();
+        let mut expiry = entry.expires_at.lock().map_err(|_| ())?;
+        if expiry.is_none() {
+            *expiry = Some(expires_at);
         }
-        cache.insert(agent, (now + CACHE_TTL, value));
+        Ok(value)
     }
 }
 
@@ -459,7 +486,10 @@ pub fn skills_for_cwd(cwd: &str, response: &Value) -> Result<Value, &'static str
         if group.get("cwd").and_then(Value::as_str) != Some(cwd) {
             continue;
         }
-        if let Some(items) = group.get("errors").and_then(Value::as_array) {
+        if let Some(error_value) = group.get("errors") {
+            let items = error_value
+                .as_array()
+                .ok_or("The provider returned an invalid skill catalog")?;
             errors.extend(items.iter().filter_map(|item| {
                 let message = item
                     .get("message")
@@ -470,9 +500,12 @@ pub fn skills_for_cwd(cwd: &str, response: &Value) -> Result<Value, &'static str
                     .map(str::to_owned)
             }));
         }
-        let Some(items) = group.get("skills").and_then(Value::as_array) else {
+        let Some(skill_value) = group.get("skills") else {
             continue;
         };
+        let items = skill_value
+            .as_array()
+            .ok_or("The provider returned an invalid skill catalog")?;
         for item in items {
             if item.get("enabled") == Some(&Value::Bool(false)) {
                 continue;
@@ -735,6 +768,17 @@ mod tests {
             Some(json!({"kind":"native","path":"/repo"}))
         );
         assert_eq!(host_finder_view(&json!({"executionMode":"vm"})), None);
+        assert_eq!(
+            skills_for_cwd(
+                "/repo",
+                &json!({"data":[{"cwd":"/repo","errors":null,"skills":[{"name":"hidden","path":"/hidden"}]}]})
+            ),
+            Err("The provider returned an invalid skill catalog")
+        );
+        assert_eq!(
+            skills_for_cwd("/repo", &json!({"data":[{"cwd":"/repo","skills":null}]})),
+            Err("The provider returned an invalid skill catalog")
+        );
     }
 
     #[test]
@@ -775,13 +819,43 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn discovery_cache_is_consumer_scoped_and_expires_at_thirty_seconds() {
-        let cache = CapabilitiesCache::default();
-        let now = Instant::now();
-        cache.insert("agent-a".into(), json!({"servers":[]}), now);
-        assert_eq!(cache.get("agent-a", now), Some(json!({"servers":[]})));
-        assert_eq!(cache.get("agent-b", now), None);
-        assert_eq!(cache.get("agent-a", now + Duration::from_secs(30)), None);
+    async fn discovery_cache_coalesces_per_consumer_and_expires_at_thirty_seconds() {
+        let cache = std::sync::Arc::new(CapabilitiesCache::default());
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut requests = Vec::new();
+        for _ in 0..16 {
+            let cache = std::sync::Arc::clone(&cache);
+            let calls = std::sync::Arc::clone(&calls);
+            requests.push(tokio::spawn(async move {
+                cache
+                    .get_or_fetch("agent-a", || async move {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        json!({"servers":[]})
+                    })
+                    .await
+                    .expect("coalesced discovery")
+            }));
+        }
+        for request in requests {
+            assert_eq!(request.await.expect("cache task"), json!({"servers":[]}));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            cache.get("agent-a", Instant::now()),
+            Some(json!({"servers":[]}))
+        );
+        assert_eq!(cache.get("agent-b", Instant::now()), None);
+        let other = cache
+            .get_or_fetch("agent-b", || async { json!({"other":true}) })
+            .await;
+        assert_eq!(other, Ok(json!({"other":true})));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(cache.get("agent-a", Instant::now()), None);
+        let refreshed = cache
+            .get_or_fetch("agent-a", || async { json!({"refreshed":true}) })
+            .await;
+        assert_eq!(refreshed, Ok(json!({"refreshed":true})));
     }
 
     #[tokio::test(start_paused = true)]
@@ -908,6 +982,36 @@ mod tests {
         )
         .await
         .expect("scripted refusal completes");
+        assert_eq!(result, None);
+        let calls = requests.lock().expect("script request list");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2]["method"], "thread/backgroundTerminals/list");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scripted_cancel_refuses_a_different_item_with_the_same_process_id() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let factory = Arc::new(Script {
+            responses: vec![json!({"data":[{"itemId":"item-b","processId":"44"}]})],
+            requests: Arc::clone(&requests),
+        });
+        let launch = ProviderLaunchSpec::new(
+            vec!["scripted-provider".into()],
+            BTreeMap::new(),
+            "/var/tmp".into(),
+        );
+        let result = crate::provider_exchange::run_with_factory(
+            factory, launch, Instant::now(),
+            crate::provider_exchange::ExchangeSpec {
+                timeout: Duration::from_secs(5),
+                shutdown: Shutdown::default(),
+                initialize_operation: OperationId("scripted-cancel-item-mismatch-init".into()),
+                initialize_params: json!({"clientInfo":{"name":"scripted","version":"1"},"capabilities":{"experimentalApi":true}}),
+            },
+            |session, started| Box::pin(cancel_terminal_in_session(
+                session, started, Some("thread-a".into()), "item-a".into(), "44".into(), Duration::from_secs(5),
+            )),
+        ).await.expect("scripted refusal completes");
         assert_eq!(result, None);
         let calls = requests.lock().expect("script request list");
         assert_eq!(calls.len(), 3);
