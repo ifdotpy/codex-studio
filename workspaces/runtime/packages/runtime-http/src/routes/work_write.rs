@@ -105,7 +105,7 @@ async fn commit(
                 )
             })
             .map_err(work_items::write_error)?;
-        if result.changed || result.event_inserted {
+        if result.event_inserted {
             wake.notify_one();
         }
         Ok(result.record)

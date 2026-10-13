@@ -1,25 +1,10 @@
-//! Synchronous fanout for committed changes at the HTTP boundary.
+//! Latest-value fanout for committed changes at the HTTP boundary.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-type Listener = Arc<dyn Fn() + Send + Sync + 'static>;
+use tokio::sync::watch;
+
 pub const MAX_SAFE_REVISION: i64 = 9_007_199_254_740_991;
-
-struct HubState {
-    epoch: String,
-    revision: i64,
-    closed: bool,
-    next_listener_id: u64,
-    listeners: BTreeMap<u64, Listener>,
-}
-
-/// A process-local, post-commit change signal shared by route writers and SSE clients.
-#[derive(Clone)]
-pub struct ChangeNotificationHub {
-    state: Arc<Mutex<HubState>>,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChangeSnapshot {
@@ -28,10 +13,10 @@ pub struct ChangeSnapshot {
     pub closed: bool,
 }
 
-/// Removes one callback from its hub when the associated client disconnects.
-pub struct ChangeSubscription {
-    state: Weak<Mutex<HubState>>,
-    listener_id: Option<u64>,
+/// A process-local post-commit change publisher backed by Tokio watch.
+#[derive(Clone)]
+pub struct ChangeNotificationHub {
+    sender: watch::Sender<ChangeSnapshot>,
 }
 
 impl Default for ChangeNotificationHub {
@@ -42,97 +27,35 @@ impl Default for ChangeNotificationHub {
 
 impl ChangeNotificationHub {
     pub fn new() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(HubState {
-                epoch: process_epoch(),
-                revision: 0,
-                closed: false,
-                next_listener_id: 0,
-                listeners: BTreeMap::new(),
-            })),
-        }
+        let (sender, _) = watch::channel(ChangeSnapshot {
+            epoch: process_epoch(),
+            revision: 0,
+            closed: false,
+        });
+        Self { sender }
     }
 
     pub fn snapshot(&self) -> ChangeSnapshot {
-        let state = self.lock();
-        ChangeSnapshot {
-            epoch: state.epoch.clone(),
-            revision: state.revision,
-            closed: state.closed,
-        }
+        self.sender.borrow().clone()
     }
 
-    /// Register a non-blocking wake callback and capture the revision atomically.
-    pub fn subscribe(
-        &self,
-        listener: impl Fn() + Send + Sync + 'static,
-    ) -> (ChangeSnapshot, ChangeSubscription) {
-        let listener: Listener = Arc::new(listener);
-        let (snapshot, listener_id) = {
-            let mut state = self.lock();
-            let snapshot = ChangeSnapshot {
-                epoch: state.epoch.clone(),
-                revision: state.revision,
-                closed: state.closed,
-            };
-            let listener_id = if state.closed {
-                None
-            } else {
-                let listener_id = state.next_listener_id;
-                state.next_listener_id = state.next_listener_id.saturating_add(1);
-                state.listeners.insert(listener_id, Arc::clone(&listener));
-                Some(listener_id)
-            };
-            (snapshot, listener_id)
-        };
-
-        if snapshot.closed {
-            listener();
-        }
-
-        (
-            snapshot,
-            ChangeSubscription {
-                state: Arc::downgrade(&self.state),
-                listener_id,
-            },
-        )
+    /// Subscribe at the current revision. Each receiver tracks its own cursor.
+    pub fn subscribe(&self) -> watch::Receiver<ChangeSnapshot> {
+        self.sender.subscribe()
     }
 
-    /// Broadcast one successful post-commit write to every active subscriber.
+    /// Publish a successful store commit or progress-file change.
     pub fn notify_one(&self) {
-        let listeners = {
-            let mut state = self.lock();
-            if state.closed {
-                return;
+        self.sender.send_modify(|snapshot| {
+            if !snapshot.closed {
+                snapshot.revision = snapshot.revision.saturating_add(1).min(MAX_SAFE_REVISION);
             }
-            state.revision = state.revision.saturating_add(1).min(MAX_SAFE_REVISION);
-            state.listeners.values().cloned().collect::<Vec<_>>()
-        };
-        for listener in listeners {
-            listener();
-        }
+        });
     }
 
-    /// Wake active streams and prevent later writes from publishing new revisions.
+    /// Wake active streams and prevent later writes from publishing revisions.
     pub fn close(&self) {
-        let listeners = {
-            let mut state = self.lock();
-            if state.closed {
-                return;
-            }
-            state.closed = true;
-            state.listeners.values().cloned().collect::<Vec<_>>()
-        };
-        for listener in listeners {
-            listener();
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HubState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.sender.send_modify(|snapshot| snapshot.closed = true);
     }
 }
 
@@ -144,18 +67,39 @@ fn process_epoch() -> String {
     format!("{:x}-{:x}", std::process::id(), started)
 }
 
-impl Drop for ChangeSubscription {
-    fn drop(&mut self) {
-        let Some(listener_id) = self.listener_id else {
-            return;
-        };
-        let Some(state) = self.state.upgrade() else {
-            return;
-        };
-        state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .listeners
-            .remove(&listener_id);
+#[cfg(test)]
+mod tests {
+    use super::{ChangeNotificationHub, MAX_SAFE_REVISION};
+
+    #[test]
+    fn receivers_observe_latest_revision_without_a_bounded_queue() {
+        let hub = ChangeNotificationHub::new();
+        let mut first = hub.subscribe();
+        let mut second = hub.subscribe();
+
+        hub.notify_one();
+        hub.notify_one();
+        hub.notify_one();
+
+        assert_eq!(first.borrow_and_update().revision, 3);
+        assert_eq!(second.borrow_and_update().revision, 3);
+        assert!(!first.has_changed().expect("hub sender remains open"));
+        assert!(!second.has_changed().expect("hub sender remains open"));
+    }
+
+    #[test]
+    fn revisions_saturate_and_closed_hubs_ignore_later_writes() {
+        let hub = ChangeNotificationHub::new();
+        hub.sender
+            .send_modify(|snapshot| snapshot.revision = MAX_SAFE_REVISION);
+        hub.notify_one();
+        assert_eq!(hub.snapshot().revision, MAX_SAFE_REVISION);
+
+        let mut receiver = hub.subscribe();
+        hub.close();
+        hub.notify_one();
+
+        assert!(receiver.borrow_and_update().closed);
+        assert_eq!(receiver.borrow().revision, MAX_SAFE_REVISION);
     }
 }

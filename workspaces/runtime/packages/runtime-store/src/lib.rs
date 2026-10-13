@@ -10,7 +10,7 @@ pub use repositories::account_state;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub use rusqlite::{Connection, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
@@ -101,6 +101,7 @@ pub struct RuntimeStore {
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
     version_reader: Mutex<Connection>,
+    commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl RuntimeStore {
@@ -131,6 +132,7 @@ impl RuntimeStore {
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
             version_reader: Mutex::new(version_reader),
+            commit_notifier: Mutex::new(None),
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
@@ -142,6 +144,27 @@ impl RuntimeStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Install the process-local notification fired after each successful write commit.
+    pub fn set_commit_notifier(&self, notifier: impl Fn() + Send + Sync + 'static) {
+        let mut slot = self
+            .commit_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(Arc::new(notifier));
+    }
+
+    fn notify_commit(&self) {
+        let notifier = self
+            .commit_notifier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        if let Some(notifier) = notifier {
+            notifier();
+        }
     }
 
     /// Run one durable transaction while holding the sole serialized writer.
@@ -171,6 +194,7 @@ impl RuntimeStore {
                 transaction
                     .commit()
                     .map_err(StoreError::CommitOutcomeUnknown)?;
+                self.notify_commit();
                 Ok(value)
             }
             Err(error) => {

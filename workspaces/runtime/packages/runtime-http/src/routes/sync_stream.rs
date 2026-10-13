@@ -1,6 +1,6 @@
 //! HTTP adapter for the protocol-3 sync event stream.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,15 +13,13 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
-use studio_runtime_services::change_notifications::{
-    ChangeNotificationHub, ChangeSubscription, MAX_SAFE_REVISION,
-};
-use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
-use tokio::sync::Notify;
+use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
+use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
+use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
-use super::manifest::{OperationStatus, RouteGroup, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
@@ -29,13 +27,29 @@ use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 const MAX_RESOURCE_QUERY_BYTES: usize = 65_536;
 const MAX_RESOURCE_COUNT: usize = 256;
 const RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
+static STREAM_DEPENDENCIES: &[Dependency] = &[
+    Dependency::new("provider-session/app-server"),
+    Dependency::new("usage-policy/token-rates"),
+];
+#[cfg(windows)]
+static WINDOWS_STREAM_DEPENDENCIES: &[Dependency] = &[
+    Dependency::new("provider-session/app-server"),
+    Dependency::new("resource-policy/windows-file-identity"),
+    Dependency::new("usage-policy/token-rates"),
+];
 
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![get(
-        "/api/sync/stream",
-        OperationStatus::Implemented,
-        sync_stream,
-    )])
+    RouteGroup::new(vec![get("/api/sync/stream", stream_status(), sync_stream)])
+}
+
+#[cfg(windows)]
+fn stream_status() -> OperationStatus {
+    OperationStatus::partial(WINDOWS_STREAM_DEPENDENCIES)
+}
+
+#[cfg(not(windows))]
+fn stream_status() -> OperationStatus {
+    OperationStatus::partial(STREAM_DEPENDENCIES)
 }
 
 async fn sync_stream(
@@ -81,16 +95,27 @@ async fn sync_stream(
         Some(store) => store,
         None => return ApiError::internal().into_response(),
     };
-    let hub = Arc::clone(&state.event_wake);
-    let wake = Arc::new(Notify::new());
-    let wake_for_hub = Arc::clone(&wake);
-    let (subscription_snapshot, subscription) = hub.subscribe(move || {
-        // Notify stores at most one permit: slow clients coalesce into a later
-        // full invalidation frame instead of accumulating an unbounded queue.
-        wake_for_hub.notify_one();
-    });
+    let change_hub = Arc::clone(&state.sync_changes);
+    let mut changes = change_hub.subscribe();
+    let subscription_snapshot = changes.borrow_and_update().clone();
+    let progress_agents = match active_panel_agents(Arc::clone(&store), &resources).await {
+        Ok(agents) => agents,
+        Err(error) => return error.into_response(),
+    };
+    let progress_watch =
+        match watch_progress_files(store.root(), &progress_agents, (*change_hub).clone()) {
+            Ok(watch) => watch,
+            Err(_) => {
+                return ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Resource stream is unavailable; reconnect to retry.",
+                )
+                .into_response();
+            }
+        };
 
-    let initial_entity_sequence = match read_entity_sequence(store.clone(), &resources).await {
+    let initial_entity_sequence = match read_entity_sequence(Some(store.clone()), &resources).await
+    {
         Ok(sequence) => sequence,
         Err(error) => return error.into_response(),
     };
@@ -124,16 +149,55 @@ async fn sync_stream(
         last_revision: subscription_snapshot.revision,
         resources,
         entity_sequence: initial_entity_sequence,
-        store,
-        hub,
-        wake,
-        _subscription: subscription,
+        store: Some(store),
+        changes,
+        _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
             Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
+}
+
+async fn active_panel_agents(
+    store: Arc<RuntimeStore>,
+    resources: &[Value],
+) -> Result<Vec<String>, ApiError> {
+    let agents = resources
+        .iter()
+        .filter(|resource| resource.get("kind").and_then(Value::as_str) == Some("panel"))
+        .filter_map(|resource| resource.get("agentId").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    if agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    tokio::task::spawn_blocking(move || {
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        let mut active = Vec::new();
+        for id in agents {
+            let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                .map_err(|_| ApiError::internal())?;
+            if agent.is_some_and(|agent| !agent.extra.get("deletedAt").is_some_and(json_truthy)) {
+                active.push(id);
+            }
+        }
+        Ok(active)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -164,7 +228,7 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
 }
 
 async fn read_entity_sequence(
-    store: Arc<RuntimeStore>,
+    store: Option<Arc<RuntimeStore>>,
     resources: &[Value],
 ) -> Result<i64, ApiError> {
     if !resources
@@ -173,6 +237,7 @@ async fn read_entity_sequence(
     {
         return Ok(0);
     }
+    let store = store.ok_or_else(ApiError::internal)?;
     let sequence = tokio::task::spawn_blocking(move || {
         let connection = store.read()?;
         SyncDocumentsRepository::entity_sequence(&connection)
@@ -193,10 +258,9 @@ struct ResourceStream {
     last_revision: i64,
     resources: Vec<Value>,
     entity_sequence: i64,
-    store: Arc<RuntimeStore>,
-    hub: Arc<ChangeNotificationHub>,
-    wake: Arc<Notify>,
-    _subscription: ChangeSubscription,
+    store: Option<Arc<RuntimeStore>>,
+    changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
+    _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
 
@@ -210,8 +274,13 @@ async fn next_frame(
     loop {
         let snapshot = tokio::select! {
             biased;
-            _ = state.wake.notified() => state.hub.snapshot(),
-            _ = state.heartbeat.tick() => state.hub.snapshot(),
+            changed = state.changes.changed() => {
+                if changed.is_err() {
+                    return None;
+                }
+                state.changes.borrow_and_update().clone()
+            },
+            _ = state.heartbeat.tick() => state.changes.borrow().clone(),
         };
         if snapshot.closed {
             return None;
@@ -315,34 +384,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::FutureExt;
+    use studio_runtime_services::change_notifications::ChangeNotificationHub;
 
     #[tokio::test]
-    async fn slow_client_wake_coalesces_and_reports_the_latest_revision() {
+    async fn overflow_is_recovered_by_next_frame_with_the_latest_full_resource_event() {
         let hub = ChangeNotificationHub::new();
-        let wake = Arc::new(Notify::new());
-        let wake_for_hub = Arc::clone(&wake);
-        let (_, _subscription) = hub.subscribe(move || wake_for_hub.notify_one());
-
+        let mut changes = hub.subscribe();
+        let baseline = changes.borrow_and_update().clone();
+        let state = ResourceStream {
+            initial: VecDeque::new(),
+            workspace_id: "workspace".to_owned(),
+            epoch: baseline.epoch,
+            last_revision: baseline.revision,
+            resources: vec![json!({"kind": "panel", "agentId": "agent-a"})],
+            entity_sequence: 0,
+            store: None,
+            changes,
+            _progress_watch: None,
+            heartbeat: interval_at(
+                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            ),
+        };
         hub.notify_one();
         hub.notify_one();
-        wake.notified().await;
+        hub.notify_one();
 
-        assert!(wake.notified().now_or_never().is_none());
-        assert_eq!(hub.snapshot().revision, 2);
+        let (event, state) = next_frame(state).await.expect("change frame");
+        assert_eq!(state.last_revision, 3);
+        let response = Sse::new(stream::iter([event])).into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE body");
+        let frame = String::from_utf8(body.to_vec()).expect("UTF-8 SSE frame");
+        assert!(frame.contains("id: 3"), "{frame}");
+        assert!(frame.contains("\"reason\":\"overflow\""), "{frame}");
+        assert!(frame.contains("\"revision\":3"), "{frame}");
     }
 
     #[tokio::test]
-    async fn shutdown_wakes_client_and_marks_stream_closed() {
+    async fn shutdown_closes_a_watch_receiver() {
         let hub = ChangeNotificationHub::new();
-        let wake = Arc::new(Notify::new());
-        let wake_for_hub = Arc::clone(&wake);
-        let (_, _subscription) = hub.subscribe(move || wake_for_hub.notify_one());
-        let pending = wake.notified();
-
+        let changes = hub.subscribe();
+        let baseline = changes.borrow().clone();
+        let state = ResourceStream {
+            initial: VecDeque::new(),
+            workspace_id: "workspace".to_owned(),
+            epoch: baseline.epoch,
+            last_revision: baseline.revision,
+            resources: Vec::new(),
+            entity_sequence: 0,
+            store: None,
+            changes,
+            _progress_watch: None,
+            heartbeat: interval_at(
+                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            ),
+        };
+        let pending = next_frame(state);
         hub.close();
-        pending.await;
-
-        assert!(hub.snapshot().closed);
+        assert!(pending.await.is_none());
     }
 }

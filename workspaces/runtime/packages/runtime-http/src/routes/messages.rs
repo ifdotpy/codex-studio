@@ -92,16 +92,13 @@ async fn create_chat(
     ApiJson(body): ApiJson<ChatCreate>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let wake = state.event_wake;
     let result = tokio::task::spawn_blocking(move || {
         let value = store
             .transaction_with_error(|transaction| {
                 coordination::create_chat(transaction, &body.id, &body.name, &body.members)
             })
             .map_err(coordination_error)?;
-        let value = super::generated_json::<crate::generated::ChatCreated>(value)?;
-        wake.notify_one();
-        Ok::<Value, ApiError>(value)
+        super::generated_json::<crate::generated::ChatCreated>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -113,16 +110,13 @@ async fn connect_chat(
     ApiJson(body): ApiJson<Connection>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let wake = state.event_wake;
     let result = tokio::task::spawn_blocking(move || {
         let value = store
             .transaction_with_error(|transaction| {
                 coordination::connect_chat(transaction, &body.source, &body.target, body.connected)
             })
             .map_err(coordination_error)?;
-        let value = super::generated_json::<crate::generated::ChatReceipt>(value)?;
-        wake.notify_one();
-        Ok::<Value, ApiError>(value)
+        super::generated_json::<crate::generated::ChatReceipt>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
