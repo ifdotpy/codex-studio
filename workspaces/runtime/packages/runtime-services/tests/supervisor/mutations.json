@@ -1,0 +1,82 @@
+[
+  {
+    "id": "cursor-lower",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
+        "after": "cursor > self.record.sequence"
+      }
+    ]
+  },
+  {
+    "id": "cursor-upper",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
+        "after": "cursor < self.record.acknowledged"
+      }
+    ]
+  },
+  {
+    "id": "receipt-content",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if prior.record.digest != digest {",
+        "after": "if false && prior.record.digest != digest {"
+      }
+    ]
+  },
+  {
+    "id": "output-capacity",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if buffered >= HANDLE_LIMIT {",
+        "after": "if buffered > HANDLE_LIMIT {"
+      }
+    ]
+  },
+  {
+    "id": "event-generation",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "if state.generation() != generation {",
+        "after": "if false && state.generation() != generation {"
+      }
+    ]
+  },
+  {
+    "id": "commit-before-effects",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "tx.commit()?;",
+        "after": "tx.rollback()?;"
+      }
+    ]
+  },
+  {
+    "id": "ack-prefix",
+    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+    "edits": [
+      {
+        "before": "DELETE FROM events WHERE handle=? AND sequence<=?",
+        "after": "DELETE FROM events WHERE handle=? AND sequence<?"
+      }
+    ]
+  },
+  {
+    "id": "receipt-visible-before-ack",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "edits": [
+      {
+        "before": "if seq <= current.record.acknowledged =>",
+        "after": "if true || seq <= current.record.acknowledged =>"
+      }
+    ]
+  }
+]

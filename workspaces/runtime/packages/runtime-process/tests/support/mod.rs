@@ -98,8 +98,16 @@ impl SupervisorProcess {
         );
         let stderr_path = state.0.join("supervisor-stderr.log");
         let log = File::create(&stderr_path).unwrap();
-        let child = Command::new(python)
-            .arg(SUPERVISOR)
+        let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
+            .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into));
+        let mut command = if let Some(binary) = binary {
+            Command::new(binary)
+        } else {
+            let mut command = Command::new(python);
+            command.arg(SUPERVISOR);
+            command
+        };
+        let child = command
             .arg("--state")
             .arg(&state.0)
             .envs(child_environment(&state.0))
