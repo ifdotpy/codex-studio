@@ -3,12 +3,14 @@
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace

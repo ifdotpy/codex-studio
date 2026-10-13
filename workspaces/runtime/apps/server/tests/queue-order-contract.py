@@ -4,17 +4,16 @@
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import HANG_GUARD_SECONDS
 
 import base64
 import importlib.util
 import json
-from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch

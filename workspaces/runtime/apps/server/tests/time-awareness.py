@@ -2,14 +2,13 @@
 """Clock metadata stays stable across delivery, queue changes, retries, and restart."""
 
 # Support direct execution without runner-provided PYTHONPATH.
-from runtime_test_environment import make_runtime
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 

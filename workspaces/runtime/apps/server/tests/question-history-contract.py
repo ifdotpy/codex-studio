@@ -2,17 +2,16 @@
 """Question history, exact answer receipts and deferral without live model calls."""
 
 from test_isolation import isolate_supervisor_environment
-from runtime_test_environment import make_runtime
 
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 isolate_supervisor_environment()
 
 import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import unittest
 

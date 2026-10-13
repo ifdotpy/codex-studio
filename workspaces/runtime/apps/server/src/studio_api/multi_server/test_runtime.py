@@ -7,7 +7,6 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 from runtime_test_environment import make_runtime
 
 from codex_multi_server import MultiServerService

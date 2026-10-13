@@ -12,8 +12,6 @@ from types import SimpleNamespace
 from typing import Callable, cast
 from unittest.mock import Mock
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 from runtime_test_environment import make_runtime
 
 from fastapi import FastAPI

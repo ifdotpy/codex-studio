@@ -18,6 +18,7 @@ from collections import defaultdict
 from typing import Any, Iterator
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
 
 ROOT = Path(__file__).resolve().parents[5]

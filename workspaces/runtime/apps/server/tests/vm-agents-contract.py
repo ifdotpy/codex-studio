@@ -3,7 +3,6 @@
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 import base64
 import copy
@@ -23,6 +22,7 @@ from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('vm-native-fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)

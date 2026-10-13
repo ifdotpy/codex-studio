@@ -17,9 +17,9 @@ import unittest
 
 
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from runtime_test_environment import make_runtime
 
 from codex_runtime import Runtime  # noqa: E402
 

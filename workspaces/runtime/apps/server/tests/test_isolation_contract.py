@@ -13,10 +13,8 @@ isolate_supervisor_environment()
 import ast
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
-import sys
 import tempfile
 import threading
 import unittest
@@ -183,6 +181,12 @@ if True:
     allowed.write_text("safe")
     assert allowed.read_text() == "safe"
     subprocess.run([sys.executable, "-c", "pass"], check=True)
+    tools = home / ".cache" / "hostedtoolcache"
+    tools.mkdir(parents=True)
+    python = tools / "python"
+    python.symlink_to(sys.executable)
+    subprocess.run([str(python), "-c", "import pathlib"], check=True)
+    guard.check_path(home / ".local" / "lib" / "python3.14" / "site-packages")
     print(json.dumps(guard.counters), flush=True)
     # Audit hooks cannot be removed: let the OS reclaim this test subprocess's
     # fixture; the parent TemporaryDirectory owns the surrounding scratch area.
@@ -275,6 +279,85 @@ if True:
                 second.close()
                 first.close()
             self.assertEqual(dict(os.environ), original)
+
+    def test_ci_tool_paths_survive_without_inheriting_the_callers_path(self):
+        from unittest.mock import patch
+        import shutil
+        from codex_runtime import Runtime
+        from runtime_test_environment import make_runtime
+
+        node = os.environ.get("CODEX_NODE") or shutil.which("node")
+        self.assertIsNotNone(node, "Node is required for Runtime crypto")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tools = root / "hostedtoolcache" / "node" / "bin"
+            tools.mkdir(parents=True)
+            (tools / "node").symlink_to(node)
+            for explicit in (False, True):
+                with self.subTest(explicit_node=explicit):
+                    inherited = {
+                        "PATH": str(tools), "HOME": str(root / "runner"),
+                        "CODEX_AGENTS_PYTHON": sys.executable,
+                        "LD_LIBRARY_PATH": str(root / "hostedtoolcache" / "python" / "lib"),
+                        "LC_CTYPE": "C.UTF-8", "UNRECOGNIZED_SETTING": "hostile",
+                    }
+                    if explicit:
+                        inherited.update(CODEX_NODE=str(tools / "node"), PATH="/missing")
+                    with patch.dict(os.environ, inherited, clear=True):
+                        runtime = make_runtime(Runtime, root / str(explicit))
+                        try:
+                            self.assertTrue(runtime.paired_access().local_server_id)
+                            self.assertEqual(os.environ["CODEX_NODE"], str(tools / "node"))
+                            self.assertEqual(os.environ["CODEX_AGENTS_PYTHON"], sys.executable)
+                            self.assertEqual(os.environ["LD_LIBRARY_PATH"], inherited["LD_LIBRARY_PATH"])
+                            self.assertEqual(os.environ["LC_CTYPE"], inherited["LC_CTYPE"])
+                            self.assertNotIn(str(tools), os.environ["PATH"].split(os.pathsep))
+                            self.assertNotIn("UNRECOGNIZED_SETTING", os.environ)
+                        finally:
+                            runtime.close()
+
+    def test_hostile_provider_home_and_path_are_never_read_or_executed(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            decoy = root / "decoy"
+            decoy.mkdir()
+            auth = decoy / "auth.json"
+            auth.write_text('{"marker": "must remain unread"}')
+            program = decoy / "codex"
+            marker = root / "executed"
+            program.write_text("#!/bin/sh\ntouch " + str(marker) + "\n")
+            program.chmod(0o755)
+            baseline = 1_000_000_000_000_000_000
+            for path in (auth, program):
+                os.utime(path, ns=(baseline, baseline))
+            env = {**os.environ,
+                   "CODEX_HOME": str(decoy), "PATH": str(decoy),
+                   "CODEX_NODE": os.environ.get("CODEX_NODE") or shutil.which("node"),
+                   "STUDIO_TEST_FORBIDDEN_ROOTS": str(decoy),
+                   "STUDIO_TEST_GUARD_REPORT": str(root / "guard.jsonl"),
+                   "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+            code = """from pathlib import Path
+import sys
+from runtime_test_environment import make_runtime
+from codex_runtime import Runtime
+runtime = make_runtime(Runtime, Path(sys.argv[1]))
+try:
+    assert runtime.paired_access().local_server_id
+finally:
+    runtime.close()
+"""
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", code, str(root / "state")],
+                env=env, capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual([path.stat().st_atime_ns for path in (auth, program)],
+                             [baseline, baseline])
+            reports = [json.loads(line) for line in (root / "guard.jsonl").read_text().splitlines()]
+            self.assertTrue(reports)
+            self.assertEqual(sum(report["blocked"] for report in reports), 0)
 
     def test_runtime_environment_strips_inherited_provider_settings(self):
         from unittest.mock import patch

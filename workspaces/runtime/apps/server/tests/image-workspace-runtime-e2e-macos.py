@@ -3,7 +3,6 @@
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -13,6 +12,7 @@ import shutil
 import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import wait_for_condition as wait_for
 import tempfile
 import threading

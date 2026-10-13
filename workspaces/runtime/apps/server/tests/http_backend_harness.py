@@ -165,6 +165,10 @@ class BackendProcess:
         environment = {
             key: value for key, value in os.environ.items()
             if key in {"LANG", "LC_ALL", "SYSTEMROOT", "WINDIR",
+                       # Preserve Python subprocess text encoding independently of LANG.
+                       "LC_CTYPE",
+                       # setup-python needs its shared-library directory on Linux.
+                       "LD_LIBRARY_PATH",
                        "STUDIO_TEST_FORBIDDEN_ROOTS", "STUDIO_TEST_GUARD_REPORT"}
             or key.startswith("GIT_CONFIG_")
         }
@@ -200,9 +204,10 @@ class BackendProcess:
         if self.supervisor_protocol:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
+        # Keep the equipped interpreter when this factory is called from system Python.
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             values["CODEX_AGENTS_PYTHON"] = os.environ.get(
-                "STUDIO_HTTP_BACKEND_PYTHON", sys.executable
+                "STUDIO_HTTP_BACKEND_PYTHON", os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
             )
         executable = getattr(self, "_provider_executable", None)
         # Never expose caller-installed provider candidates to the test backend.
@@ -222,7 +227,7 @@ class BackendProcess:
             raise RuntimeError("The backend child PATH exposes a Claude executable")
         # The backend starts Node helpers (the Ed25519 service). Name the caller's
         # Node explicitly instead of exposing the caller's PATH.
-        node = shutil.which("node", path=os.defpath)
+        node = os.environ.get("CODEX_NODE") or shutil.which("node")
         if node:
             values["CODEX_NODE"] = node
         environment.update(values)

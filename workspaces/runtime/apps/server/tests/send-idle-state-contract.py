@@ -3,7 +3,6 @@
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 import importlib.util
 from pathlib import Path
@@ -11,6 +10,7 @@ import sys
 import tempfile
 import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from runtime_test_environment import make_runtime
 import unittest
 from server_test_waits import HANG_GUARD_SECONDS
 from unittest.mock import patch

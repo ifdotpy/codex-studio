@@ -4,11 +4,11 @@
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 from server_test_waits import HANG_GUARD_SECONDS
 
 import copy
@@ -17,12 +17,10 @@ import importlib.util
 import shutil
 import subprocess
 import shutil
-import sys
 import tempfile
 import threading
 import types
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(

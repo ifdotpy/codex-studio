@@ -17,11 +17,12 @@ from pathlib import Path
 
 
 isolate_supervisor_environment()
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
-import sys
 sys.path.insert(0, str(SERVER_SOURCE))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 

@@ -14,10 +14,8 @@ from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 import importlib.util
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
-import sys
 import tarfile
 import tempfile
 import textwrap
@@ -109,7 +107,7 @@ def seed_with_revision(revision: str, state: Path) -> None:
     """)
     subprocess.run([sys.executable, "-B", "-c", seed, str(source), str(state)],
                    check=True, cwd=ROOT, capture_output=True, text=True,
-                   env={**runtime_environment(state), "PYTHONPATH": str(Path(__file__).parent)})
+                   env={**runtime_environment(state), "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")})
     # This contract covers the other resumable upgrades. The retired analytics
     # file copy is tested separately as an explicit startup refusal.
     with sqlite3.connect(state / "canvas.sqlite3") as db:

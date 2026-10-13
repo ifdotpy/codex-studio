@@ -20,6 +20,7 @@ sys.path.insert(0, str(SERVER_SRC))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 
 

@@ -938,6 +938,10 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
         environment[f"GIT_CONFIG_KEY_{index}"] = key
         environment[f"GIT_CONFIG_VALUE_{index}"] = value
     # Ordinary suites cannot discover inherited provider programs or selectors.
+    # Pin the crypto helper before dropping the caller's tool-cache PATH.
+    node = environment.get("CODEX_NODE") or shutil.which("node")
+    if node:
+        environment["CODEX_NODE"] = node
     environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), os.defpath))
     for key in tuple(environment):
         if key in {"CODEX_BIN", "CODEX_AGENTS_NATIVE_RUNTIME_PIN", "CLAUDE_BIN",
