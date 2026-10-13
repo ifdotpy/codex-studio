@@ -333,6 +333,14 @@ record_newtype!(
     query = None
 );
 record_newtype!(
+    WorkspaceOperationRecord,
+    String,
+    table = "runtime_workspace_operations",
+    schema = "PersistedWorkspaceOperationRecord",
+    key = PayloadId,
+    query = JsonAgent
+);
+record_newtype!(
     RuleRecord,
     String,
     table = "runtime_rules",

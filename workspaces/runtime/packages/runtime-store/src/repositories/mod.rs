@@ -25,6 +25,7 @@ pub(crate) mod usage;
 pub(crate) mod voice;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
+pub mod workspace_operations;
 pub mod workspace_ready;
 pub(crate) mod workspace_views;
 

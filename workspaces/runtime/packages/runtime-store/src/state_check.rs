@@ -11,6 +11,7 @@ use crate::records::{
     AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, EventMetadataRecord,
     GraphAgentRecord, JsonRecord, MonitorRecord, PlanRecord, RequestRecord, RuleRecord, TaskRecord,
     TerminalRecord, TranscriptAssetRecord, TranscriptItemRecord, UsageResumeRecord, WorkItemRecord,
+    WorkspaceOperationRecord,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -56,6 +57,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<TerminalRecord>(&connection)?,
             check_table::<UsageResumeRecord>(&connection)?,
             check_table::<WorkItemRecord>(&connection)?,
+            check_table::<WorkspaceOperationRecord>(&connection)?,
             check_table::<RuleRecord>(&connection)?,
             check_table::<TranscriptItemRecord>(&connection)?,
             check_table::<TranscriptAssetRecord>(&connection)?,

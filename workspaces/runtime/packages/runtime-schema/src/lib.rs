@@ -62,6 +62,21 @@ const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
+const WORKSPACE_OPERATION_URI: &str =
+    "https://codex-studio.invalid/persisted-workspace-operation-record.schema.json";
+const WORKSPACE_OPERATION: &[u8] =
+    include_bytes!("schemas/persisted-workspace-operation-record.schema.json");
+
+const WORKSPACE_CHECKPOINT_AGENT_URI: &str =
+    "https://codex-studio.invalid/workspace-checkpoint-agent-record.schema.json";
+const WORKSPACE_CHECKPOINT_AGENT: &[u8] =
+    include_bytes!("schemas/workspace-checkpoint-agent-record.schema.json");
+
+const WORKSPACE_CHECKPOINT_HISTORY_URI: &str =
+    "https://codex-studio.invalid/workspace-checkpoint-history-record.schema.json";
+const WORKSPACE_CHECKPOINT_HISTORY: &[u8] =
+    include_bytes!("schemas/workspace-checkpoint-history-record.schema.json");
+
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
@@ -79,6 +94,12 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (TERMINAL_RECORD_URI, TERMINAL_RECORD),
     (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
     (WORK_ITEM_RECORD_URI, WORK_ITEM_RECORD),
+    (WORKSPACE_CHECKPOINT_AGENT_URI, WORKSPACE_CHECKPOINT_AGENT),
+    (
+        WORKSPACE_CHECKPOINT_HISTORY_URI,
+        WORKSPACE_CHECKPOINT_HISTORY,
+    ),
+    (WORKSPACE_OPERATION_URI, WORKSPACE_OPERATION),
     (RULE_RECORD_URI, RULE_RECORD),
     (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (PROFILE_RECORD_URI, PROFILE_RECORD),
@@ -128,6 +149,7 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_workspace_operations" => "PersistedWorkspaceOperationRecord",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
@@ -208,7 +230,16 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     for (name, uri) in [
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
+        ("PersistedWorkspaceOperationRecord", WORKSPACE_OPERATION_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        (
+            "WorkspaceCheckpointAgentRecord",
+            WORKSPACE_CHECKPOINT_AGENT_URI,
+        ),
+        (
+            "WorkspaceCheckpointHistoryRecord",
+            WORKSPACE_CHECKPOINT_HISTORY_URI,
+        ),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedTaskRecord", TASK_RECORD_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),

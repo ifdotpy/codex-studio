@@ -8,6 +8,9 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.workspace_operation_models import (
+    PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
+)
 
 
 def _unicode_scalar(value: str) -> str:
@@ -269,7 +272,6 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
-
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
@@ -287,8 +289,11 @@ STATE_SCHEMA_MODELS = {
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
+    "workspace-checkpoint-agent-record.schema.json": WorkspaceCheckpointAgentRecord,
+    "workspace-checkpoint-history-record.schema.json": WorkspaceCheckpointHistoryRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
 }
 
