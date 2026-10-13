@@ -1,6 +1,87 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "PersistedRuleLaunchIntent": {
+      "additionalProperties": false,
+      "description": "Exact request reserved before handing a rule command to the monitor driver.",
+      "properties": {
+        "accountKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountkey"
+        },
+        "agentId": {
+          "title": "Agentid",
+          "type": "string"
+        },
+        "checkNumber": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Checknumber",
+          "type": "integer"
+        },
+        "command": {
+          "maxLength": 12000,
+          "title": "Command",
+          "type": "string"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "liveness": {
+          "title": "Liveness",
+          "type": "boolean"
+        },
+        "monitorId": {
+          "title": "Monitorid",
+          "type": "string"
+        },
+        "ruleId": {
+          "title": "Ruleid",
+          "type": "string"
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Threadid"
+        },
+        "timeoutMs": {
+          "maximum": 86400000,
+          "minimum": 1000,
+          "title": "Timeoutms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ruleId",
+        "checkNumber",
+        "agentId",
+        "epoch",
+        "accountKey",
+        "threadId",
+        "monitorId",
+        "command",
+        "timeoutMs",
+        "liveness"
+      ],
+      "title": "PersistedRuleLaunchIntent",
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
@@ -226,6 +307,16 @@
         }
       ],
       "title": "Laststallfinished"
+    },
+    "launchIntent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedRuleLaunchIntent"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "livenessCommand": {
       "maxLength": 12000,

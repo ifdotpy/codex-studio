@@ -5,19 +5,26 @@ use std::process::Command;
 use serde_json::{Value, json};
 use studio_runtime_services::rules_engine::{CheckResult, RuleCheck};
 use studio_runtime_services::rules_tick::{
-    CheckSubmission, LocalRuleFiles, RuleEvent, RuleFiles, RuleMonitor, RulesTickError,
-    UnavailableMonitor, event_in_transaction, finish, finish_in_transaction, recover_batch,
-    tick_batch,
+    CheckReconciliation, CheckSubmission, LocalRuleFiles, RuleEvent, RuleFiles, RuleMonitor,
+    RulesTickError, UnavailableMonitor, event_in_transaction, finish, finish_in_transaction,
+    recover_batch, submit_check, tick_batch,
 };
 use studio_runtime_store::{RuleRecord, RulesRepository, RuntimeStore, StoreError};
 use tempfile::TempDir;
 
 const NOW: f64 = 1_800_000_000.0;
 
+fn temporary_state() -> TempDir {
+    match std::env::var_os("RULES_TEST_TMPDIR") {
+        Some(root) => tempfile::tempdir_in(root).expect("owned test state root"),
+        None => tempfile::tempdir().expect("test state"),
+    }
+}
+
 struct Template(TempDir);
 impl Template {
     fn new() -> Self {
-        let root = tempfile::tempdir().expect("isolated template");
+        let root = temporary_state();
         let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python required");
         let output = Command::new(python)
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"))
@@ -33,7 +40,7 @@ impl Template {
         Self(root)
     }
     fn clone_state(&self) -> TempDir {
-        let state = tempfile::tempdir().expect("isolated state");
+        let state = temporary_state();
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {
             std::fs::copy(self.0.path().join(name), state.path().join(name))
                 .expect("copy closed template");
@@ -158,7 +165,7 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
                 .expect("remove failpoint");
             drop(store);
             let store = RuntimeStore::open(Some(state.path())).expect("reopen after rollback");
-            recover_batch(&store, 0, NOW).expect("recover");
+            recover_batch(&store, 0, NOW, &UnavailableMonitor).expect("recover");
             tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
                 .expect("retry uncommitted tick");
             assert_eq!(
@@ -187,7 +194,8 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
         drop(monitor);
         drop(store);
         let store = RuntimeStore::open(Some(state.path())).expect("restart");
-        recover_batch(&store, 0, NOW + 120.0).expect("recovery holds unknown check");
+        recover_batch(&store, 0, NOW + 120.0, &UnavailableMonitor)
+            .expect("recovery holds unknown check");
         assert_eq!(rule(&store)["status"], "paused");
         assert_eq!(rule(&store)["restartCheck"]["monitorId"], check.monitor_id);
         let monitor = CapturingMonitor {
@@ -389,4 +397,194 @@ fn local_metadata_reports_size_timestamp_and_missing_file() {
             .expect("missing file"),
         None
     );
+}
+
+struct CrashBeforeLaunch;
+impl RuleMonitor for CrashBeforeLaunch {
+    fn available(&self) -> bool {
+        true
+    }
+    fn launch(&self, _check: &RuleCheck) -> CheckSubmission {
+        // The adapter committed the intent, but no monitor or transport has run.
+        std::process::exit(71)
+    }
+    fn cancel(&self, _id: &str) -> Result<(), RulesTickError> {
+        Ok(())
+    }
+}
+
+struct DurableMonitor<'a> {
+    store: &'a RuntimeStore,
+    unknown: bool,
+    deliveries: std::cell::Cell<usize>,
+}
+impl RuleMonitor for DurableMonitor<'_> {
+    fn available(&self) -> bool {
+        true
+    }
+    fn reconcile(&self, check: &RuleCheck) -> CheckReconciliation {
+        if self.unknown {
+            return CheckReconciliation::Unknown;
+        }
+        let row = studio_runtime_store::MonitorsRepository::get(
+            &self.store.read().expect("read monitor"),
+            &check.monitor_id,
+        )
+        .expect("monitor row");
+        match row {
+            None => CheckReconciliation::NotSubmitted,
+            Some(row)
+                if row.value()["check"] == serde_json::to_value(check).expect("check JSON") =>
+            {
+                CheckReconciliation::Submitted
+            }
+            Some(_) => CheckReconciliation::Unknown,
+        }
+    }
+    fn launch(&self, check: &RuleCheck) -> CheckSubmission {
+        assert!(!self.unknown, "unknown outcome must never resend");
+        let record = json!({"id":check.monitor_id,"agent":check.agent_id,"ruleId":check.rule_id,"status":"running","check":check});
+        let inserted = self
+            .store
+            .transaction(|tx| {
+                Ok(tx.execute(
+                    "INSERT OR IGNORE INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                    rusqlite::params![check.monitor_id, record.to_string()],
+                )?)
+            })
+            .expect("reserve durable fake monitor");
+        self.deliveries.set(self.deliveries.get() + inserted);
+        assert_eq!(self.reconcile(check), CheckReconciliation::Submitted);
+        CheckSubmission::Accepted
+    }
+    fn cancel(&self, _id: &str) -> Result<(), RulesTickError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
+    const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
+    if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {
+        let store =
+            RuntimeStore::open(Some(std::path::Path::new(&path))).expect("child opens state");
+        if rule(&store)["kind"] == "event" {
+            let (_, checks) = store
+                .transaction_with::<_, RulesTickError>(|tx| {
+                    event_in_transaction(
+                        tx,
+                        RuleEvent {
+                            agent_id: "owner",
+                            kind: "child_result",
+                            text: "child finished",
+                            key: "event-crash",
+                            now: NOW,
+                        },
+                        0,
+                        true,
+                    )
+                })
+                .expect("child event transaction");
+            submit_check(&store, &checks[0], NOW, &CrashBeforeLaunch).expect("child event launch");
+        } else {
+            tick_batch(&store, 0, NOW, &LocalRuleFiles, &CrashBeforeLaunch).expect("child tick");
+        }
+        panic!("crash boundary was not reached");
+    }
+    let template = Template::new();
+    for kind in ["interval", "event"] {
+        for state_kind in [
+            CheckReconciliation::NotSubmitted,
+            CheckReconciliation::Submitted,
+            CheckReconciliation::Unknown,
+        ] {
+            let state = template.clone_state();
+            {
+                let store = RuntimeStore::open(Some(state.path())).expect("seed");
+                change(
+                    &store,
+                    json!({"kind":kind,"event":"worker_completed","command":"printf fixture"}),
+                );
+            }
+            let child = Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", CASE, "--nocapture"])
+                .env("RULES_CRASH_BEFORE_LAUNCH", state.path())
+                .output()
+                .expect("crash process");
+            assert_eq!(
+                child.status.code(),
+                Some(71),
+                "{}",
+                String::from_utf8_lossy(&child.stderr)
+            );
+            let store = RuntimeStore::open(Some(state.path())).expect("reopen committed WAL");
+            assert_eq!(rule(&store)["inFlight"], true);
+            let check: RuleCheck = serde_json::from_value(rule(&store)["launchIntent"].clone())
+                .expect("exact intent committed before launch");
+            assert!(events(&store).is_empty());
+            let monitor = DurableMonitor {
+                store: &store,
+                unknown: state_kind == CheckReconciliation::Unknown,
+                deliveries: std::cell::Cell::new(0),
+            };
+            if state_kind == CheckReconciliation::Submitted {
+                monitor.launch(&check);
+            }
+            let report = recover_batch(&store, 0, NOW + 1.0, &monitor).expect("reconcile startup");
+            assert_eq!(
+                report.launched,
+                usize::from(state_kind == CheckReconciliation::NotSubmitted)
+            );
+            if state_kind == CheckReconciliation::Unknown {
+                assert_eq!(rule(&store)["status"], "paused");
+                assert!(
+                    rule(&store)["error"]
+                        .as_str()
+                        .expect("visible hold")
+                        .contains("Outcome unknown")
+                );
+                assert_eq!(monitor.deliveries.get(), 0);
+            } else {
+                assert_eq!(rule(&store)["status"], "active");
+                assert_eq!(monitor.deliveries.get(), 1);
+                assert_eq!(
+                    recover_batch(&store, 0, NOW + 2.0, &monitor)
+                        .expect("repeat recovery")
+                        .launched,
+                    0
+                );
+                // Even a duplicate postcommit caller cannot send an already reserved identity twice.
+                assert!(
+                    submit_check(&store, &check, NOW + 2.0, &monitor)
+                        .expect("idempotent monitor boundary")
+                );
+                assert_eq!(monitor.deliveries.get(), 1);
+            }
+            assert!(
+                finish(
+                    &store,
+                    &check,
+                    CheckResult {
+                        code: Some(0),
+                        error: None,
+                        output: "done"
+                    },
+                    NOW + 3.0
+                )
+                .expect("exact completion")
+            );
+            assert!(rule(&store).get("launchIntent").is_none());
+            assert_eq!(events(&store).len(), 1);
+            assert_eq!(
+                recover_batch(&store, 0, NOW + 4.0, &monitor)
+                    .expect("completed intent absent")
+                    .launched,
+                0
+            );
+            assert!(
+                !submit_check(&store, &check, NOW + 4.0, &monitor)
+                    .expect("stale postcommit caller")
+            );
+        }
+    }
 }
