@@ -80,11 +80,8 @@ impl CoordinationRepository {
             python_string(target)
         );
         use sha2::{Digest, Sha256};
-        Sha256::digest(encoded.as_bytes())
-            .iter()
-            .take(12)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        let digest = Sha256::digest(encoded.as_bytes());
+        data_encoding::HEXLOWER.encode(&digest[..12])
     }
 
     pub fn group(connection: &rusqlite::Connection, id: &str) -> StoreResult<Option<ChatGroup>> {

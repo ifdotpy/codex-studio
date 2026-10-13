@@ -9,7 +9,6 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::error::{ApiError, error_response, with_api_headers};
@@ -331,14 +330,7 @@ pub(crate) async fn response_safety(
                 };
             }
         };
-        let digest = Sha256::digest(&body);
-        let etag = format!(
-            "\"{}\"",
-            digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
+        let etag = format!("\"{}\"", studio_runtime_store::sha256_hex(&body));
         let not_modified = if_none_match.iter().any(|value| {
             value.split(',').any(|candidate| {
                 let candidate = candidate.trim();

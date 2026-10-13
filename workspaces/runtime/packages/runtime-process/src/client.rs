@@ -146,7 +146,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
             .as_object_mut()
             .ok_or_else(|| SupervisorError::InvalidFrame("request must be an object".into()))?;
         object.insert("requestId".into(), Value::from(request_id));
-        object.insert("action".into(), Value::from(action.wire_name()));
+        object.insert("action".into(), Value::from(action.to_string()));
         if !matches!(
             action,
             SupervisorAction::Health

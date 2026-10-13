@@ -211,10 +211,10 @@ make a network request. Run it with
 ### Account driver process boundary
 
 The account driver's Claude metadata reader runs `claude auth status --json`
-with an eight-second timeout. On timeout it kills and waits for the direct CLI
-child. It does not kill descendants as a process group; that behavior can
-switch to process-group termination when the supervisor work adds that support.
-The command's output is parsed in memory and is never logged.
+with an eight-second timeout. `process-wrap` places the command in a POSIX
+process group, so timeout and output-limit termination cover its child
+processes as well. Windows retains direct-child termination and is outside this
+Rust cutover. The command's output is parsed in memory and is never logged.
 On macOS, Rust currently reports the named reason
 `macos-passive-auth-unavailable` and leaves the previous account status
 unchanged. Python can read passive Keychain authentication through its

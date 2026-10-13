@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 const OPENAPI_DOCUMENT: &[u8] = include_bytes!("../openapi.json");
 const DOCUMENTATION_KEYS: [&str; 4] = ["description", "summary", "examples", "externalDocs"];
@@ -153,12 +152,7 @@ pub fn canonical_openapi_bytes() -> Vec<u8> {
 
 /// Hash the human-readable authority after applying canonicalizer-v3 rules.
 pub fn api_schema_hash() -> &'static str {
-    SCHEMA_HASH.get_or_init(|| {
-        Sha256::digest(canonical_openapi_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    })
+    SCHEMA_HASH.get_or_init(|| studio_runtime_store::sha256_hex(&canonical_openapi_bytes()))
 }
 
 /// Return all method/path pairs from the committed OpenAPI authority.

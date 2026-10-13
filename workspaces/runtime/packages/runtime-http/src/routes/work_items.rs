@@ -287,35 +287,22 @@ fn required_string<'a>(body: &'a Value, field: &str) -> Result<&'a str, ApiError
 }
 
 fn request_signature(body: &Value) -> Result<String, ApiError> {
-    use sha2::{Digest, Sha256};
-
     let bytes = serde_json::to_vec(body).map_err(|_| ApiError::internal())?;
-    let digest = Sha256::digest(bytes);
-    let mut signature = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut signature, "{byte:02x}").map_err(|_| ApiError::internal())?;
-    }
-    Ok(signature)
+    Ok(studio_runtime_store::sha256_hex(&bytes))
 }
 
 pub(crate) fn python_operation_signature(body: &Value) -> Result<String, ApiError> {
-    use sha2::{Digest, Sha256};
     let mut value = body.clone();
     let object = value.as_object_mut().ok_or_else(ApiError::internal)?;
     object.entry("agent").or_insert(Value::Null);
     let canonical = studio_runtime_services::event_write::python_json(&value);
-    let digest = Sha256::digest(canonical.as_bytes());
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(studio_runtime_store::sha256_hex(canonical.as_bytes()))
 }
 
 pub(crate) fn work_request_signature(agent: &str, body: &Value) -> Result<String, ApiError> {
-    use sha2::{Digest, Sha256};
-
     let value = json!({"agent": agent, "actor": null, "body": body});
     let canonical = event_write::python_json(&value);
-    let digest = Sha256::digest(canonical.as_bytes());
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(studio_runtime_store::sha256_hex(canonical.as_bytes()))
 }
 
 pub(crate) fn write_error(error: EventWriteError) -> ApiError {

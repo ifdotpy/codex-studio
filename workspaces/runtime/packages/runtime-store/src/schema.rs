@@ -200,14 +200,8 @@ pub(crate) fn register_python_trigger_functions(connection: &Connection) -> Stor
 }
 
 pub fn sha256_hex(value: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(value);
-    let mut result = String::with_capacity(digest.len() * 2);
-    for byte in digest.iter() {
-        result.push(char::from(HEX[usize::from(byte >> 4)]));
-        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    result
+    data_encoding::HEXLOWER.encode(&digest)
 }
 
 fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_json::Error> {
