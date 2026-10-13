@@ -740,7 +740,9 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIsNone(saved_retry["dueAt"])
         self.assertNotIn("capacityRetry", saved_agent)
         self.assertNotIn("capacityRetryCount", saved_agent)
-        self.assertNotIn("startAttempt", saved_agent)
+        # The Python dispatcher may already have claimed the new message and
+        # written its own attempt; only the retry's unsubmitted attempt must be gone.
+        self.assertNotEqual((saved_agent.get("startAttempt") or {}).get("capacityRetryId"), retry_id)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_managed_send_projection_failure_rolls_back_and_does_not_publish_event(self):
