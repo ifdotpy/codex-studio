@@ -5,8 +5,9 @@ use crate::{error::ApiError, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
 use studio_runtime_services::tool_requests::{self, Action, ToolRequestError};
-const DEPENDENCIES: [Dependency; 3] = [
+const DEPENDENCIES: [Dependency; 4] = [
     Dependency::new("multi-server/move-receipt"),
+    Dependency::new("multi-server/project-location-receipt"),
     Dependency::new("payload-store/tool-request-recovery"),
     Dependency::new("store-bootstrap/tool-request-schema"),
 ];
@@ -95,6 +96,6 @@ fn error(error: ToolRequestError) -> ApiError {
 
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
-        name:"tool_requests", routes:Some(routes), dependencies:&["multi-server/move-receipt","payload-store/tool-request-recovery","store-bootstrap/tool-request-schema"],
+        name:"tool_requests", routes:Some(routes), dependencies:&["multi-server/move-receipt","multi-server/project-location-receipt","payload-store/tool-request-recovery","store-bootstrap/tool-request-schema"],
     }
 }

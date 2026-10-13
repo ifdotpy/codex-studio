@@ -177,6 +177,7 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         ("runtime_operation_receipts", "result"),
         ("runtime_projects", "record"),
         ("runtime_rooms", "record"),
+        ("runtime_server_outbox", "id"),
         ("runtime_tool_request_aliases", "request"),
         ("runtime_tool_requests", "record"),
         ("runtime_tool_results", "result"),
