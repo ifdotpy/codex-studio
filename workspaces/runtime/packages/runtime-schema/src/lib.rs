@@ -27,6 +27,8 @@ const CHECKPOINT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-checkpoint-record.schema.json";
 const MONITOR_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-monitor-record.schema.json";
+const MONITOR_RESULT_URI: &str =
+    "https://codex-studio.invalid/persisted-monitor-result.schema.json";
 const TERMINAL_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-terminal-record.schema.json";
 const USAGE_RESUME_RECORD_URI: &str =
@@ -53,6 +55,7 @@ const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.s
 const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
 const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
 const MONITOR_RECORD: &[u8] = include_bytes!("schemas/persisted-monitor-record.schema.json");
+const MONITOR_RESULT: &[u8] = include_bytes!("schemas/persisted-monitor-result.schema.json");
 const TERMINAL_RECORD: &[u8] = include_bytes!("schemas/persisted-terminal-record.schema.json");
 const USAGE_RESUME_RECORD: &[u8] =
     include_bytes!("schemas/persisted-usage-resume-record.schema.json");
@@ -76,6 +79,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
     (MONITOR_RECORD_URI, MONITOR_RECORD),
+    (MONITOR_RESULT_URI, MONITOR_RESULT),
     (TERMINAL_RECORD_URI, TERMINAL_RECORD),
     (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
     (WORK_ITEM_RECORD_URI, WORK_ITEM_RECORD),
@@ -187,6 +191,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "CheckpointsResponse",
         "ComplaintRecordResponse",
         "JsonObjectResponse",
+        "MonitorEntityDto",
+        "MonitorInput",
         "MonitorRecordResponse",
         "PlanView",
         "ProfileRecord",
@@ -217,6 +223,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
         ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
+        ("PersistedMonitorResult", MONITOR_RESULT_URI),
         ("PersistedTerminalRecord", TERMINAL_RECORD_URI),
         ("PersistedUsageResumeRecord", USAGE_RESUME_RECORD_URI),
         ("PersistedWorkItemRecord", WORK_ITEM_RECORD_URI),

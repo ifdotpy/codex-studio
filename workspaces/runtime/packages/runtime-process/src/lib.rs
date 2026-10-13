@@ -3,6 +3,8 @@
 mod client;
 mod ports;
 mod protocol;
+#[cfg(unix)]
+pub mod stream_child;
 mod transport;
 
 pub use client::SupervisorClient;

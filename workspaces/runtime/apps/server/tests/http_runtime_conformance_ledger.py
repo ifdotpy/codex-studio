@@ -279,6 +279,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "501",
         }],
     },
+    ("POST", "/api/monitor/cancel"): {
+        "primary": {"body": {"id": "$monitor"}, "expected": "2xx"},
+    },
+    ("POST", "/api/monitor/input"): {
+        "primary": {"body": {"id": "$monitor", "text": ""}, "expected": "400"},
+    },
     ("GET", "/api/monitor/log"): {
         "primary": {"query": {"id": "$monitor"}, "header": {"Range": "bytes=0-"}},
     },
