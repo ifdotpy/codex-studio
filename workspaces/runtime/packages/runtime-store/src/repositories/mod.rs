@@ -1,23 +1,44 @@
 pub mod account_state;
 pub(crate) mod agents;
+pub(crate) mod coordination;
+pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
+pub(crate) mod monitors;
+pub(crate) mod profiles;
+pub(crate) mod questions_reads;
+pub(crate) mod queue_write;
 pub(crate) mod rules;
+pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
+pub(crate) mod terminals;
+pub(crate) mod transcript;
 pub(crate) mod work_items;
+pub(crate) mod workspace_files;
+pub(crate) mod workspace_views;
 
 use crate::schema::SchemaRequirements;
 
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &agents::REQUIREMENTS,
     &account_state::REQUIREMENTS,
+    &coordination::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
+    &event_write::REQUIREMENTS,
+    &queue_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
+    &monitors::REQUIREMENTS,
+    &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,
+    &questions_reads::REQUIREMENTS,
+    &scheduler::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
+    &terminals::REQUIREMENTS,
+    &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
+    &workspace_files::REQUIREMENTS,
 ];
 
 #[cfg(test)]

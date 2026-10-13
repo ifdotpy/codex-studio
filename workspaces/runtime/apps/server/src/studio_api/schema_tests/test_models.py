@@ -4,12 +4,20 @@ from __future__ import annotations
 import unittest
 from enum import StrEnum
 from typing import Annotated
+from typing import cast
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import Field, ValidationError
 
-from studio_api.models import ContractModel, ContractStrEnum, ErrorResponse, JsonValue, ResponseModel
+from studio_api.models import (
+    ContractModel,
+    ContractStrEnum,
+    ErrorResponse,
+    JsonValue,
+    ResponseModel,
+    document_model_defaults,
+)
 
 
 class Action(ContractStrEnum):
@@ -24,6 +32,12 @@ class Body(ContractModel):
 
 class ExtensiblePayload(ContractModel):
     value: JsonValue
+
+
+class DefaultBody(ContractModel):
+    required: str
+    optional: str | None = None
+    values: list[str] = Field(default_factory=list)
 
 
 class ModelContractTests(unittest.TestCase):
@@ -59,6 +73,19 @@ class ModelContractTests(unittest.TestCase):
         error_types = {issue["type"] for issue in captured.exception.errors()}
         self.assertIn("extra_forbidden", error_types)
         self.assertIn("int_type", error_types)
+
+    def test_json_schema_documents_concrete_defaults_without_changing_validation(self) -> None:
+        schema = DefaultBody.model_json_schema()
+        document = cast(
+            dict[str, JsonValue],
+            {"components": {"schemas": {"DefaultBody": schema}}},
+        )
+        document_model_defaults(document, [DefaultBody])
+        properties = schema["properties"]
+        self.assertEqual(properties["optional"]["default"], None)
+        self.assertNotIn("default", properties["required"])
+        self.assertEqual(properties["values"]["default"], [])
+        self.assertEqual(DefaultBody.model_validate({"required": "value"}).optional, None)
 
     def test_json_value_accepts_json_values_and_rejects_non_finite_numbers(self) -> None:
         accepted = ExtensiblePayload.model_validate(

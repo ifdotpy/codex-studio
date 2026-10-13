@@ -154,7 +154,7 @@ class QueueEditBody(OperationBody):
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
     expectedText: StrictStr | None = None
-    text: StrictStr
+    text: StrictStr = Field(max_length=32000)
 
     @model_validator(mode="after")
     def has_message_identity(self) -> QueueEditBody:
@@ -193,15 +193,15 @@ QueueBody = Annotated[
 
 
 class PlanBody(OperationBody):
-    text: StrictStr
+    text: StrictStr = Field(max_length=64000)
     version: SafeInt
 
 
 class AnnotationBody(OperationBody):
-    path: StrictStr
-    line: SafeInt
-    text: StrictStr
-    turnId: StrictStr | None = None
+    path: StrictStr = Field(max_length=4096)
+    line: SafeInt = Field(ge=1)
+    text: StrictStr = Field(min_length=1, max_length=32000)
+    turnId: StrictStr | None = Field(default=None, max_length=200)
 
 
 class OrganizationBody(ContractModel):
@@ -224,7 +224,7 @@ class ReadStateBody(ContractModel):
 
 
 class MessageBody(ContractModel):
-    id: StrictStr
+    id: StrictStr = Field(pattern=r"^[a-f0-9-]{36}$")
     room: StrictStr
     text: StrictStr
 
@@ -235,7 +235,7 @@ class ManagedMessageBody(MessageBody):
 
 
 class ChatCreateBody(ContractModel):
-    id: StrictStr
+    id: StrictStr = Field(pattern=r"^[a-f0-9-]{36}$")
     name: StrictStr = Field(min_length=1, max_length=100)
     members: list[StrictStr] = Field(max_length=100)
 

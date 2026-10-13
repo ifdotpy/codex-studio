@@ -17,6 +17,8 @@
 
 ## Pattern
 
+Transcript search uses Unicode lowercase matching, so `ß` and `SS` do not match as Python casefold would.
+
 A service module separates pure decisions from effects. Pure functions take
 snapshots and explicit clocks and return decisions; they are tested directly.
 Effects go through the store's repositories or through a narrow port trait
@@ -25,11 +27,42 @@ declared in the module, with an in-memory fake for tests. A route module in
 service inside `tokio::task::spawn_blocking`, and converts the result or error
 to the response DTO.
 
+Event writes persist durable pending or cancelled rows and signal the shared HTTP wake handle after commit.
+Event consumption (scheduler) is a separate service and a cutover gate.
+Active event-rule delivery (`rule-driver/event-rules`) is also a separate service and cutover gate.
+
 Dependency direction:
 
 ```text
 operations ← store, providers, process ← services ← http ← runtime-server
 ```
+
+Profile text uses Rust `trim()`; it intentionally does not emulate Python `str.strip()` for U+001C–U+001F.
+
+## Progress panel files
+
+The progress panel operations mirror the Python file checks: progress and agent
+directories must be ordinary directories
+(`workspaces/runtime/apps/server/src/codex_progress.py:22-57`); the progress
+file must be a regular file and is bounded and checked for a stable read
+(`workspaces/runtime/apps/server/src/codex_progress.py:115-149`); layout files
+are checked as regular files before and after opening
+(`workspaces/runtime/apps/server/src/codex_progress_layout.py:36-59`). Layout
+writes flush the temporary file and recheck the progress revision before
+replacement (`workspaces/runtime/apps/server/src/codex_progress_layout.py:203-231`).
+This Rust implementation uses ordinary path operations and does not use
+anchored `openat` access. On Windows, progress
+read and layout write report the named 501 dependency
+`resource-policy/windows-file-identity` until compatible file identity support
+is implemented.
+
+The workspace file service resolves relative paths under the agent's `cwd`.
+It also accepts absolute paths and follows symlinks without checking that the
+resolved file stays inside `cwd`, matching Python's existing
+[`workspace_path`](../../apps/server/src/codex_workspace.py#L567-L572)
+rule. Keep this behavior deliberate; tightening it requires a separate
+compatibility decision. The service pins it in
+`workspace_files::tests::local_file_metadata_and_content_follow_symlinks`.
 
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
@@ -165,3 +198,16 @@ The producer test uses Python `AccountStore` writes and the real
 inside a disposable root and SQLite database. It does not start a provider or
 make a network request. Run it with
 `cargo nextest run -p studio-runtime-services --test account_policy_differential`.
+
+### Account driver process boundary
+
+The account driver's Claude metadata reader runs `claude auth status --json`
+with an eight-second timeout. On timeout it kills and waits for the direct CLI
+child. It does not kill descendants as a process group; that behavior can
+switch to process-group termination when the supervisor work adds that support.
+The command's output is parsed in memory and is never logged.
+On macOS, Rust currently reports the named reason
+`macos-passive-auth-unavailable` and leaves the previous account status
+unchanged. Python can read passive Keychain authentication through its
+Security.framework helper; this slice does not add platform APIs or a new
+dependency to reproduce that behavior.

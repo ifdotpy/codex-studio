@@ -49,7 +49,7 @@ def operations() -> list[tuple[str, str]]:
 def appendix_http_assertions(
     known_operations: set[str],
 ) -> dict[str, set[str]]:
-    """Resolve the plan's 23 H witnesses to named test methods."""
+    """Validate named appendix witnesses and return the HTTP witnesses."""
     plan = ROOT / "docs/plans/rust-runtime-work-breakdown.md"
     text = plan.read_text(encoding="utf-8").split("<!-- operation-map -->", 1)[1]
     witnesses: dict[str, set[str]] = defaultdict(set)
@@ -57,16 +57,16 @@ def appendix_http_assertions(
         if not line.startswith("| `"):
             continue
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) < 8 or cells[6] != "H":
+        if len(cells) < 8:
             continue
         operation = cells[0].strip("`")
-        if operation not in known_operations:
-            continue
         witness = cells[7].strip("`")
-        match = re.fullmatch(r"T/([^:]+):(\d+)", witness)
-        if match is None:
+        if not witness.startswith("T/"):
             continue
-        relative, line_number_text = match.groups()
+        match = re.fullmatch(r"T/([^:]+)::([A-Za-z_][A-Za-z0-9_.]*)", witness)
+        if match is None:
+            raise ValueError(f"plan witness {witness} must name a test with file::test_name")
+        relative, test_name = match.groups()
         source_path = TESTS / relative
         module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         source_tests: set[str] = set()
@@ -77,61 +77,18 @@ def appendix_http_assertions(
                 current = [*ancestors, node.name]
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name.startswith("test_"):
-                    source_tests.add(f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join([*ancestors, node.name])}")
+                    source_tests.add(".".join([*ancestors, node.name]))
                 current = [*ancestors, node.name]
             for child in ast.iter_child_nodes(node):
                 collect_test_ids(child, current)
 
         collect_test_ids(module, [])
-        line_number = int(line_number_text)
-        candidates: list[tuple[list[str], int]] = []
-        enclosing_functions: list[str] = []
-
-        def find_test(node: ast.AST, ancestors: list[str]) -> None:
-            start = getattr(node, "lineno", 0)
-            end = getattr(node, "end_lineno", start)
-            if not isinstance(node, ast.Module) and not start <= line_number <= end:
-                return
-            current = ancestors
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                current = [*ancestors, node.name]
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    enclosing_functions.append(node.name)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                    candidates.append((current, end - start))
-            for child in ast.iter_child_nodes(node):
-                find_test(child, current)
-
-        find_test(module, [])
-        selected = [min(candidates, key=lambda candidate: candidate[1])[0]] if candidates else []
-        helper = enclosing_functions[-1] if enclosing_functions else None
-        if not selected and helper is not None:
-            def find_helper_callers(node: ast.AST, ancestors: list[str]) -> None:
-                current = ancestors
-                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    current = [*ancestors, node.name]
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                        calls_helper = any(
-                            isinstance(call, ast.Call)
-                            and ((isinstance(call.func, ast.Name) and call.func.id == helper)
-                                 or (isinstance(call.func, ast.Attribute) and call.func.attr == helper))
-                            for call in ast.walk(node)
-                        )
-                        if calls_helper:
-                            selected.append(current)
-                for child in ast.iter_child_nodes(node):
-                    find_helper_callers(child, current)
-            find_helper_callers(module, [])
-        if not selected:
+        if test_name not in source_tests:
             raise ValueError(f"plan witness {witness} does not resolve to a named test")
-        resolved = {
-            f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join(names)}"
-            for names in selected
-        }
-        missing = resolved - source_tests
-        if missing:
-            raise ValueError(f"plan witness {witness} resolves to missing test IDs: {sorted(missing)}")
-        witnesses[operation].update(resolved)
+        if cells[6] == "H" and operation in known_operations:
+            witnesses[operation].add(
+                f"workspaces/runtime/apps/server/tests/{relative}::__main__.{test_name}"
+            )
     return witnesses
 
 

@@ -1,6 +1,7 @@
 //! Read-only projections of startup-loaded account and usage state.
 
 use serde::Deserialize;
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -65,9 +66,92 @@ struct RegistryDocument {
 }
 
 #[derive(Default)]
-struct RegistryOrder {
-    accounts: Vec<String>,
-    logins: Vec<String>,
+pub(crate) struct RegistryOrder {
+    pub(crate) accounts: Vec<String>,
+    pub(crate) logins: Vec<String>,
+}
+
+pub(crate) fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (String, String)> {
+    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
+        || !studio_runtime_store::account_state::persisted_document_within_bounds(bytes)
+    {
+        return Err(("/".to_owned(), "resourceLimit".to_owned()));
+    }
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|_| ("/".to_owned(), "invalid JSON".to_owned()))?;
+    match registry_violation(&value) {
+        Ok(Some((pointer, _keyword))) => {
+            return Err((pointer, "schema validation failed".to_owned()));
+        }
+        Err(()) => return Err(("/".to_owned(), "schema validation failed".to_owned())),
+        Ok(None) => {}
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let order = RegistryOrder::deserialize(&mut deserializer)
+        .map_err(|_| ("/".to_owned(), "invalid registry order".to_owned()))?;
+    Ok((value, order))
+}
+
+pub(crate) fn encode_registry(value: &Value, order: &RegistryOrder) -> Result<Vec<u8>, ()> {
+    let Some(root) = value.as_object() else {
+        return Err(());
+    };
+    let Some(accounts) = root.get("accounts").and_then(Value::as_object) else {
+        return Err(());
+    };
+    let logins = root.get("logins").and_then(Value::as_object);
+    let mut output = Vec::new();
+    let mut serializer = serde_json::Serializer::new(&mut output);
+    let mut map = serializer.serialize_map(Some(root.len())).map_err(|_| ())?;
+    for (key, field) in root {
+        match key.as_str() {
+            "accounts" => map.serialize_entry(
+                key,
+                &OrderedRegistryMap {
+                    values: accounts,
+                    keys: &order.accounts,
+                },
+            ),
+            "logins" => map.serialize_entry(
+                key,
+                &OrderedRegistryMap {
+                    values: logins.ok_or(())?,
+                    keys: &order.logins,
+                },
+            ),
+            _ => map.serialize_entry(key, field),
+        }
+        .map_err(|_| ())?;
+    }
+    map.end().map_err(|_| ())?;
+    Ok(output)
+}
+
+struct OrderedRegistryMap<'a> {
+    values: &'a Map<String, Value>,
+    keys: &'a [String],
+}
+
+impl Serialize for OrderedRegistryMap<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.values.len()))?;
+        let mut emitted = HashSet::new();
+        for key in self.keys {
+            if let Some(value) = self.values.get(key) {
+                map.serialize_entry(key, value)?;
+                emitted.insert(key);
+            }
+        }
+        for (key, value) in self.values {
+            if !emitted.contains(key) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 impl<'de> Deserialize<'de> for RegistryOrder {
@@ -86,7 +170,11 @@ impl<'de> Deserialize<'de> for RegistryOrder {
                 M: serde::de::MapAccess<'de>,
             {
                 let mut result = RegistryOrder::default();
+                let mut seen = HashSet::new();
                 while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom("duplicate registry field"));
+                    }
                     match key.as_str() {
                         "accounts" => result.accounts = map.next_value_seed(KeysSeed)?,
                         "logins" => result.logins = map.next_value_seed(KeysSeed)?,
@@ -120,7 +208,11 @@ impl<'de> serde::de::DeserializeSeed<'de> for KeysSeed {
                 M: serde::de::MapAccess<'de>,
             {
                 let mut keys = Vec::new();
+                let mut seen = HashSet::new();
                 while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom("duplicate registry key"));
+                    }
                     map.next_value::<serde::de::IgnoredAny>()?;
                     keys.push(key);
                 }
@@ -295,25 +387,10 @@ fn project_registry(bytes: Option<&[u8]>) -> Result<AccountsSnapshot, AccountPol
     let Some(bytes) = bytes else {
         return Err(registry_error("/", "registry is absent"));
     };
-    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
-        || !studio_runtime_store::account_state::persisted_document_within_bounds(bytes)
-    {
-        return Err(registry_error("/", "size or nesting limit exceeded"));
-    }
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| registry_error("/", "invalid JSON"))?;
-    match registry_violation(&value) {
-        Ok(Some((pointer, _keyword))) => {
-            return Err(registry_error(&pointer, "schema validation failed"));
-        }
-        Err(()) => return Err(registry_error("/", "schema validation failed")),
-        Ok(None) => {}
-    }
+    let (value, order) = decode_registry(bytes)
+        .map_err(|(pointer, _reason)| registry_error(&pointer, "schema validation failed"))?;
     let registry: RegistryDocument =
         serde_json::from_value(value).map_err(|_| registry_error("/", "typed decoding failed"))?;
-    let mut order_de = serde_json::Deserializer::from_slice(bytes);
-    let order = RegistryOrder::deserialize(&mut order_de)
-        .map_err(|_| registry_error("/", "invalid registry order"))?;
     let mut accounts = Vec::new();
     let mut archived = Vec::new();
     let mut known = HashSet::new();

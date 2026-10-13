@@ -190,7 +190,7 @@ class ProtocolFixturesContract(unittest.TestCase):
         )
         self.assertEqual(lead.status, 200, lead.body[:1000])
         lead_id = lead.json()["id"]
-        message_id = "protocol-fixture-message"
+        message_id = "10000000-0000-4000-8000-000000000105"
         sent = backend.request(
             "POST", "/api/messages",
             body={"id": message_id, "room": lead_id, "text": "Run the recorded protocol frames.",

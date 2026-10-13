@@ -291,6 +291,34 @@ class HistoryRouteTests(unittest.TestCase):
         self.assertEqual(missing_id.status_code, 200)
         self.assertEqual(self.context.canvas.calls[-1], "")
 
+    def test_transcript_search_query_constraints_are_in_the_shared_contract(self) -> None:
+        with patch(
+            "codex_transcript_history.search_history",
+            return_value={"results": [], "truncated": False},
+        ) as search:
+            valid = self.client.get(
+                "/api/transcript/search",
+                params={"id": "agent-1", "q": "\x1c\x1d"},
+            )
+            self.assertEqual(valid.status_code, 200)
+            search.assert_called_once_with(
+                self.context.runtime, "agent-1", "\x1c\x1d", "100"
+            )
+            search.reset_mock()
+            invalid = [
+                self.client.get("/api/transcript/search", params={"id": "agent-1"}),
+                *(
+                    self.client.get(
+                        "/api/transcript/search", params={"id": "agent-1", "q": query}
+                    )
+                    for query in ("", "x" * 501)
+                ),
+            ]
+            for response in invalid:
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"], "Invalid request")
+            search.assert_not_called()
+
     def test_checkpoint_reads_and_writes_use_explicit_responses(self) -> None:
         checkpoints = self.client.get("/api/checkpoints?agent=agent-1")
         self.assertTrue(self.context.send_options[-1]["etag"])

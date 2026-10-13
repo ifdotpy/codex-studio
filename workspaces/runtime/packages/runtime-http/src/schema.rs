@@ -63,6 +63,17 @@ pub(crate) fn matching_template<'a>(
         .find_map(|(_, template)| path_matches(template, path).then_some(template))
 }
 
+pub(crate) fn operation_has_etag(method: &str, template: &str) -> bool {
+    document()
+        .pointer(&format!(
+            "/paths/{}/{}",
+            template.replace('~', "~0").replace('/', "~1"),
+            method.to_ascii_lowercase()
+        ))
+        .and_then(|operation| operation.pointer("/responses/200/headers/ETag"))
+        .is_some()
+}
+
 fn document() -> &'static Value {
     DOCUMENT.get_or_init(|| {
         serde_json::from_slice(OPENAPI_DOCUMENT).expect("committed OpenAPI document is valid JSON")

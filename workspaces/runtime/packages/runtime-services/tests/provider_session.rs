@@ -365,7 +365,7 @@ fn lost_reply_is_unknown_and_is_not_retried() {
 fn reply_after_deadline_is_reported_as_late_evidence() {
     let mut session = connect("late");
     let ticket = session
-        .send_request(Method::ModelList, json!({}), None, false, 0)
+        .send_request(Method::ModelList, json!({}), None, false, 10)
         .expect("request should be submitted once");
     assert_eq!(
         receive_result(&mut session)

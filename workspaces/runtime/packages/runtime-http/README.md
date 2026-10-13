@@ -43,6 +43,12 @@ rejected with a 400 error and query location. Integer query values use ASCII
 decimal digits only; number values use JSON number syntax;
 boolean values are exactly `true` or `false`. OpenAPI cannot express the global
 unknown-name rule, so validators must apply this extension to every operation.
+
+The `/api/workspace/tasks` `cursor` and `before` query parameters are currently
+documented as strings because they carry JSON-encoded cursor objects. Their
+decoded shapes follow Python's `TaskFeedCursor` and `TaskFeedBeforeCursor`
+models in `studio_api/work/models.py`; keep the Rust decoder aligned until the
+OpenAPI document can describe and validate these encoded cursor shapes.
 JSON Schema considers an integral
 decimal such as `1.0` an integer, while Python's strict request models reject
 that JSON body representation; current JavaScript clients serialize integral
