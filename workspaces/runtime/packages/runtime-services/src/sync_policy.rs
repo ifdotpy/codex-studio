@@ -278,7 +278,7 @@ fn retire_if_live(
     Ok(())
 }
 
-fn maintain_task_window(
+pub(crate) fn maintain_task_window(
     transaction: &Transaction<'_>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
