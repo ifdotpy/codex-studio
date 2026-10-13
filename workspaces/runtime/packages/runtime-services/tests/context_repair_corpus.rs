@@ -114,6 +114,54 @@ fn context_repair_python_decisions_and_batch_receipts() {
     }
 }
 #[test]
+fn context_repair_unwritten_start_outcomes_are_located() {
+    let data = corpus(None);
+    assert_eq!(
+        data["outcomes"]["written"],
+        json!(["accepted", "not_applied", "preparing"])
+    );
+    for case in data["outcomes"]["malformed"]
+        .as_array()
+        .expect("outcome corpus")
+    {
+        // Python's loose consumer accepts these, but none is emitted by a writer.
+        assert_eq!(
+            case["expected"],
+            json!([{"id":"event","decision":"delivered","turnId":"native-turn"}])
+        );
+        let result = NativeHistory::from_records(
+            identity(),
+            "thread".into(),
+            case["turns"].as_array().expect("turns").clone(),
+            Some("idle".into()),
+            vec![],
+        );
+        assert!(
+            matches!(
+                result,
+                Err(RepairError::Invalid("history.turn.startOutcome"))
+            ),
+            "{}",
+            case["name"]
+        );
+    }
+    for outcome in [json!(true), json!(3), json!([]), json!({})] {
+        let mut turn = data["recurring"][0]["turns"][0].clone();
+        turn["startOutcome"] = outcome;
+        assert!(matches!(
+            NativeHistory::from_records(
+                identity(),
+                "thread".into(),
+                vec![turn],
+                Some("idle".into()),
+                vec![]
+            ),
+            Err(RepairError::Invalid("history.turn.startOutcome"))
+        ));
+    }
+}
+
+#[test]
 fn context_repair_refuses_changed_scope_and_ambiguous_receipts() {
     let corpus = corpus(None);
     let base = &corpus["recurring"][0];

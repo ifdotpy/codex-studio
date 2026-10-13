@@ -358,11 +358,21 @@ impl NativeHistory {
             return Err(RepairError::Invalid("history.bounds"));
         }
         for turn in &turns {
+            // Python's native projection writes accepted; the Claude bridge
+            // additionally writes preparing/not_applied. Failed is a turn status,
+            // never a startOutcome. Legacy history may omit this field or use null.
+            if !turn["startOutcome"].is_null()
+                && !matches!(
+                    turn["startOutcome"].as_str(),
+                    Some("accepted" | "preparing" | "not_applied")
+                )
+            {
+                return Err(RepairError::Invalid("history.turn.startOutcome"));
+            }
             if !turn.is_object()
-                || ["startOutcome", "clientUserMessageId"].iter().any(|field| {
-                    turn.get(*field)
-                        .is_some_and(|v| !v.is_null() && !v.is_string())
-                })
+                || turn
+                    .get("clientUserMessageId")
+                    .is_some_and(|v| !v.is_null() && !v.is_string())
                 || turn
                     .get("id")
                     .is_some_and(|id| !id.is_null() && !id.is_string())
@@ -445,7 +455,8 @@ pub fn decide(snapshot: &RecoverySnapshot, history: &NativeHistory) -> Vec<Input
         match turn["startOutcome"].as_str() {
             Some("preparing") => preparing.extend(ids),
             Some("not_applied") => rejected.extend(ids),
-            None | Some("accepted") => {
+            // The checked constructor admits only accepted, absent or null here.
+            _ => {
                 for id in ids {
                     found
                         .entry(id)
@@ -453,7 +464,6 @@ pub fn decide(snapshot: &RecoverySnapshot, history: &NativeHistory) -> Vec<Input
                         .push(turn["id"].as_str().unwrap_or_default().to_owned());
                 }
             }
-            _ => preparing.extend(ids),
         }
     }
     for batch in &snapshot.batches {

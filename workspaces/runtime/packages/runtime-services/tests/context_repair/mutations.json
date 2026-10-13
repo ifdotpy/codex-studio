@@ -163,5 +163,16 @@
       }
     ],
     "witness": "stopped and changed waiter stays held"
+  },
+  {
+    "id": "CR16",
+    "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
+    "edits": [
+      {
+        "before": "if !turn[\"startOutcome\"].is_null()",
+        "after": "if false"
+      }
+    ],
+    "witness": "Unwritten startOutcome failed must be a located malformed-history error, never a silent wait or delivery"
   }
 ]
