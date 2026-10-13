@@ -8,6 +8,7 @@ pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod federation;
 pub(crate) mod messages;
+pub mod monitor_runtime;
 pub(crate) mod monitors;
 pub(crate) mod multi_server;
 pub(crate) mod profiles;

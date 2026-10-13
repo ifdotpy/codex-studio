@@ -27,6 +27,8 @@ const CHECKPOINT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-checkpoint-record.schema.json";
 const MONITOR_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-monitor-record.schema.json";
+const MONITOR_RESULT_URI: &str =
+    "https://codex-studio.invalid/persisted-monitor-result.schema.json";
 const TERMINAL_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-terminal-record.schema.json";
 const USAGE_RESUME_RECORD_URI: &str =
@@ -98,6 +100,7 @@ const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.s
 const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
 const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
 const MONITOR_RECORD: &[u8] = include_bytes!("schemas/persisted-monitor-record.schema.json");
+const MONITOR_RESULT: &[u8] = include_bytes!("schemas/persisted-monitor-result.schema.json");
 const TERMINAL_RECORD: &[u8] = include_bytes!("schemas/persisted-terminal-record.schema.json");
 const USAGE_RESUME_RECORD: &[u8] =
     include_bytes!("schemas/persisted-usage-resume-record.schema.json");
@@ -136,6 +139,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (MESSAGE_EVENT_URI, MESSAGE_EVENT),
     (MONITOR_RECORD_URI, MONITOR_RECORD),
+    (MONITOR_RESULT_URI, MONITOR_RESULT),
     (OPERATION_RESULT_URI, OPERATION_RESULT),
     (PLAN_RECORD_URI, PLAN_RECORD),
     (PROFILE_RECORD_URI, PROFILE_RECORD),
@@ -282,6 +286,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "CheckpointsResponse",
         "ComplaintRecordResponse",
         "JsonObjectResponse",
+        "MonitorEntityDto",
+        "MonitorInput",
         "MonitorRecordResponse",
         "PlanView",
         "ProfileRecord",
@@ -312,6 +318,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
         ("PersistedMessageEvent", MESSAGE_EVENT_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
+        ("PersistedMonitorResult", MONITOR_RESULT_URI),
         ("PersistedOperationResult", OPERATION_RESULT_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),
         ("PersistedProfileRecord", PROFILE_RECORD_URI),

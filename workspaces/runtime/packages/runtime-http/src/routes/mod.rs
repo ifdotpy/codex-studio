@@ -10,6 +10,7 @@ mod insights;
 pub(crate) mod manifest;
 mod messages;
 mod models;
+mod monitor_runtime;
 mod monitors;
 mod multi_server;
 mod panels;

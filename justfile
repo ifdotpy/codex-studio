@@ -81,3 +81,11 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+[doc("Run the full Rust monitor differential corpus and store-boundary matrix.")]
+test-rust-runtime-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services --test monitor_corpus --test monitor_recovery
+
+[doc("Run seeded monitor mutations in an external isolated target directory.")]
+test-rust-monitors-mutations target:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/monitors/mutations.json --filter 'binary(/monitor_(corpus|recovery)/)'
