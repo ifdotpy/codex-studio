@@ -20,6 +20,7 @@ pub(crate) mod tasks;
 pub(crate) mod terminals;
 pub(crate) mod transcript;
 pub(crate) mod usage;
+pub(crate) mod voice;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
 pub(crate) mod workspace_views;
