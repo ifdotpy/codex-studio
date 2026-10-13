@@ -31,9 +31,7 @@ assert fixture_spec.loader is not None
 fixture_spec.loader.exec_module(fixture)
 
 
-def seed_queue(backend: object) -> str:
-    backend.stop()
-
+def seed_queue(backend: object) -> tuple[str, list[str]]:
     class QuietRuntime(fixture.Runtime):
         def schedule(self):
             pass
@@ -44,7 +42,7 @@ def seed_queue(backend: object) -> str:
             "name": "Queue write contract",
             "cwd": str(backend.cwd),
             "prompt": "Seed Python-written queue events for the HTTP contract.",
-            "autoWake": True,
+            "autoWake": False,
         }, defer=True)
         agent.update(autoWake=True, status="idle")
         with runtime.db() as database:
@@ -53,21 +51,21 @@ def seed_queue(backend: object) -> str:
             "agent": agent["id"], "name": "queue-attachment.txt",
             "base64": base64.b64encode(b"queue attachment").decode(),
         })
-        backend.queue_ids = [f"queue-{uuid.uuid4().hex[:8]}-{index}" for index in range(3)]
+        queue_ids = [f"queue-{uuid.uuid4().hex[:8]}-{index}" for index in range(3)]
         with runtime.db() as database:
             for index in range(3):
-                runtime.enqueue(database, agent, "user", f"Message {index}", backend.queue_ids[index])
+                runtime.enqueue(database, agent, "user", f"Message {index}", queue_ids[index])
             metadata = json.loads(database.execute(
-                "SELECT record FROM runtime_event_meta WHERE id=?", (backend.queue_ids[0],)
+                "SELECT record FROM runtime_event_meta WHERE id=?", (queue_ids[0],)
             ).fetchone()[0])
             metadata["assets"] = [asset["id"]]
             database.execute(
                 "UPDATE runtime_event_meta SET record=? WHERE id=?",
-                (json.dumps(metadata), backend.queue_ids[0]),
+                (json.dumps(metadata), queue_ids[0]),
             )
             agent.update(autoWake=False, status="idle")
             runtime.put(database, "agents", agent)
-        return agent["id"]
+        return agent["id"], queue_ids
     finally:
         runtime.close()
 
@@ -99,6 +97,15 @@ def normalized_state(state: Path):
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND (name LIKE 'runtime_%' OR name LIKE 'sync_%') ORDER BY name"
         )]
+        # Python queue_action advances these scheduler-only generations while
+        # the Rust queue contract leaves agent records alone. Compare durable
+        # queue rows, event metadata, receipts, and sync projections instead.
+        scheduler_tables = {
+            "runtime_agent_record_generation",
+            "runtime_scheduler_agent_change_state",
+            "runtime_scheduler_agent_changes",
+        }
+        tables = [table for table in tables if table not in scheduler_tables]
         for table in tables:
             columns = [row[1] for row in database.execute(f'PRAGMA table_info("{table}")')]
             rows = []
@@ -180,14 +187,27 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
-        cls.agent_id = seed_queue(cls.backend)
+        cls.backend.stop()
+        fixture_counts = {
+            "test_each_action_matches_python_rows_and_receipt_replay_is_read_only": 5,
+            "test_failure_after_first_write_rolls_back_every_table": 1,
+            "test_malformed_stored_records_name_their_table_and_id": 1,
+            "test_original_text_length_limit_and_python_strip_boundaries": 1,
+            "test_reads_python_written_queue_and_applies_durable_mutations": 1,
+            "test_reorder_ties_remain_before_the_system_event_boundary": 1,
+            "test_stale_and_invalid_mutations_leave_state_unchanged": 1,
+            "test_z_first_and_send_now_move_the_requested_message": 1,
+        }
+        cls.fixtures = {
+            method: [seed_queue(cls.backend) for _ in range(count)]
+            for method, count in fixture_counts.items()
+        }
         cls.backend.start()
 
     def setUp(self) -> None:
         super().setUp()
-        self.agent_id = seed_queue(self.backend)
-        self.queue_ids = self.backend.queue_ids
-        self.backend.start()
+        self.fixture_sets = self.fixtures[self._testMethodName]
+        self.agent_id, self.queue_ids = self.fixture_sets[0]
 
     def headers(self):
         return {
@@ -210,12 +230,9 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ("send_now", {"index": 2}),
             ("reorder", {"order": [2, 1, 0]}),
         ]
-        for action, fields in actions:
+        for fixture_index, (action, fields) in enumerate(actions):
             with self.subTest(action=action):
-                self.backend.stop()
-                self.agent_id = seed_queue(self.backend)
-                self.queue_ids = self.backend.queue_ids
-                self.backend.start()
+                self.agent_id, self.queue_ids = self.fixture_sets[fixture_index]
                 current = self.get_queue()
                 self.assertEqual(current.status, 200, current.body[:1000])
                 fields = dict(fields)
@@ -412,9 +429,6 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     database.execute(sql)
                 database.commit()
 
-        self.backend.stop()
-        self.agent_id = seed_queue(self.backend)
-        self.backend.start()
         broken_body = {
             "agent": self.agent_id, "action": "cancel", "request_id": "broken-receipt",
             "message_id": self.queue_ids[0],
