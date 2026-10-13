@@ -1,0 +1,50 @@
+[
+  {
+    "id": "C1",
+    "description": "stale connection cannot requeue frozen input",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_input_recovery.rs",
+    "edits": [
+      {
+        "before": "            && self.attempt.connection_id.as_deref() == Some(self.transport.connection_id.as_str())\n",
+        "after": ""
+      }
+    ],
+    "witnesses": ["stale connection cannot requeue frozen input"]
+  },
+  {
+    "id": "C2",
+    "description": "durable submitted code is never written twice",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_login.rs",
+    "edits": [
+      {
+        "before": "        if self.code_submitted() || !self.active() {",
+        "after": "        if !self.active() {"
+      }
+    ],
+    "witnesses": ["durable submitted code is never written twice"]
+  },
+  {
+    "id": "C3",
+    "description": "submitted control without receipt remains unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_controls.rs",
+    "edits": [
+      {
+        "before": "            if saved.get(\"provider\").is_none_or(Value::is_null) && op.submitted == Some(true) {",
+        "after": "            if false && saved.get(\"provider\").is_none_or(Value::is_null) && op.submitted == Some(true) {"
+      }
+    ],
+    "witnesses": ["submitted control without receipt remains unknown"]
+  },
+  {
+    "id": "C4",
+    "description": "4097 character code rejected",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_login.rs",
+    "edits": [
+      {
+        "before": "    if code.chars().count() <= 4096 && printable.is_match(code) {",
+        "after": "    if printable.is_match(code) {"
+      }
+    ],
+    "witnesses": ["4097 character code rejected"]
+  }
+]
