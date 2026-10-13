@@ -38,19 +38,13 @@ struct ComplaintAuthority {
     pub lead_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct PeerProject {
-    pub resolved_path: String,
-    pub teams: Vec<Vec<String>>,
-}
-
 #[derive(Clone, Debug)]
 pub struct AuthorizationSnapshot {
     recipient_id: String,
     agents: BTreeMap<String, AgentAuthority>,
     rooms: BTreeMap<String, RoomAuthority>,
     complaints: BTreeMap<String, ComplaintAuthority>,
-    projects: BTreeMap<String, PeerProject>,
+    projects: BTreeMap<String, Vec<Vec<String>>>,
     events: Vec<EventSnapshot>,
 }
 
@@ -129,12 +123,10 @@ impl AuthorizationSnapshot {
         };
         lead(left)
             && lead(right)
-            && self.projects.get(path).is_some_and(|project| {
-                project.resolved_path == path
-                    && project
-                        .teams
-                        .iter()
-                        .any(|team| team.contains(&left.id) && team.contains(&right.id))
+            && self.projects.get(path).is_some_and(|teams| {
+                teams
+                    .iter()
+                    .any(|team| team.contains(&left.id) && team.contains(&right.id))
             })
     }
 
@@ -404,13 +396,9 @@ impl AuthorizationSnapshot {
                     teams.push(members);
                 }
             }
-            snapshot.projects.insert(
-                key.clone(),
-                PeerProject {
-                    resolved_path: path,
-                    teams,
-                },
-            );
+            if path == *key {
+                snapshot.projects.insert(key.clone(), teams);
+            }
         }
         for event in &rows.events {
             // Python treats invalid/non-object event payloads as empty objects.
@@ -499,15 +487,20 @@ impl<T: Serialize> Serialize for StoredField<T> {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionSettings {
-    pub model: String,
+    #[serde(default)]
+    pub model: StoredField<String>,
     #[serde(default)]
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "StoredField::is_missing")]
     pub native_effort: StoredField<String>,
-    #[serde(default)]
-    pub fast_mode: bool,
-    #[serde(default)]
-    pub daybreak_enabled: bool,
+    #[serde(default = "default_false")]
+    pub fast_mode: Option<bool>,
+    #[serde(default = "default_false")]
+    pub daybreak_enabled: Option<bool>,
+}
+
+fn default_false() -> Option<bool> {
+    Some(false)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -610,13 +603,12 @@ pub struct CatalogObservation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FreezePatch {
-    pub expected: ExecutionSnapshot,
     pub execution_settings_account_key: StoredField<String>,
-    pub consume_pending: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionSelection {
+    pub expected: ExecutionSnapshot,
     pub settings: ExecutionSettings,
     pub freeze: Option<FreezePatch>,
     /// Must still match the cache/profile identity at commit, even on fixed retries.
@@ -647,34 +639,30 @@ impl ExecutionSelection {
         {
             return Err(ExecutionDenial::CatalogExpired);
         }
+        let mut current = ExecutionSnapshot::from_record(record, account.clone())
+            .map_err(|_| ExecutionDenial::SettingsChanged)?;
+        if self.catalog_precondition.is_none() {
+            current.account.generation = self.expected.account.generation;
+        }
+        if current != self.expected {
+            return Err(ExecutionDenial::SettingsChanged);
+        }
         let Some(patch) = &self.freeze else {
             return Ok(record.clone());
         };
-        let current = ExecutionSnapshot::from_record(record, account.clone())
-            .map_err(|_| ExecutionDenial::SettingsChanged)?;
-        if current != patch.expected {
-            return Err(ExecutionDenial::SettingsChanged);
-        }
         let mut result = record.clone();
         let object = result
             .as_object_mut()
             .ok_or(ExecutionDenial::SettingsChanged)?;
-        if patch.consume_pending {
-            let pending = patch
-                .expected
-                .pending
-                .as_ref()
-                .ok_or(ExecutionDenial::SettingsChanged)?;
+        if let Some(pending) = &self.expected.pending {
             object.extend(pending.stored.clone());
+            object.remove("pendingSettings");
+            object.remove("pendingSettingsAccountKey");
         } else if patch.execution_settings_account_key
-            != patch.expected.execution_settings_account_key
+            != self.expected.execution_settings_account_key
         {
             object.insert("effort".into(), json!(self.settings.effort));
             object.insert("nativeEffort".into(), json!(self.settings.native_effort));
-        }
-        if patch.consume_pending {
-            object.remove("pendingSettings");
-            object.remove("pendingSettingsAccountKey");
         }
         match &patch.execution_settings_account_key {
             StoredField::Missing => {}
@@ -693,10 +681,10 @@ impl ExecutionSelection {
         Ok(result)
     }
 
-    /// The provider consumes explicit service tier and optional native effort.
+    /// Immediate frozen-record projection. Preparation must resolve a missing
+    /// native effort before the consumer computes the final provider parameters.
     pub fn provider_settings(&self) -> Value {
-        let mut params =
-            json!({"serviceTier": if self.settings.fast_mode { "priority" } else { "default" }});
+        let mut params = json!({"serviceTier": if self.settings.fast_mode == Some(true) { "priority" } else { "default" }});
         if let Some(effort) = self
             .settings
             .native_effort
@@ -739,14 +727,18 @@ pub fn validate_execution(
     fallback_effort: bool,
 ) -> Result<(Option<String>, Option<String>), ExecutionDenial> {
     use ExecutionDenial as D;
+    let model = settings
+        .model
+        .value_or(None)
+        .map(String::as_str)
+        .ok_or(D::ModelUnavailable)?;
     let info = catalog
         .models
         .iter()
         .find(|row| {
             !row.hidden
-                && !settings.model.trim().is_empty()
-                && (row.model == settings.model
-                    || row.resolved_model.as_ref() == Some(&settings.model))
+                && !model.trim().is_empty()
+                && (row.model == model || row.resolved_model.as_deref() == Some(model))
         })
         .ok_or(D::ModelUnavailable)?;
     let mut effort = settings.effort.clone();
@@ -763,7 +755,7 @@ pub fn validate_execution(
             return Err(D::EffortUnsupported);
         }
     }
-    if settings.fast_mode && !info.priority {
+    if settings.fast_mode == Some(true) && !info.priority {
         return Err(D::FastModeUnsupported);
     }
     Ok((
@@ -802,7 +794,6 @@ pub fn select_execution(
     } else {
         None
     };
-    let consume_pending = !current.settings_fixed && current.pending.is_some();
     if !current.settings_fixed {
         if let Some(pending) = &current.pending {
             if current
@@ -830,15 +821,17 @@ pub fn select_execution(
             account = StoredField::Value(current.account.account_key.clone());
         }
     }
-    if settings.daybreak_enabled {
+    if settings.model.is_missing() {
+        return Err(D::ModelUnavailable);
+    }
+    if settings.daybreak_enabled != Some(false) {
         return Err(D::DaybreakUnsupported);
     }
-    let freeze = (!current.settings_fixed).then(|| FreezePatch {
-        expected: current.clone(),
+    let freeze = (!current.settings_fixed).then_some(FreezePatch {
         execution_settings_account_key: account,
-        consume_pending,
     });
     Ok(ExecutionSelection {
+        expected: current.clone(),
         settings,
         freeze,
         catalog_precondition,

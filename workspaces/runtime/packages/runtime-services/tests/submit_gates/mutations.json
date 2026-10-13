@@ -89,8 +89,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
     "edits": [
       {
-        "before": "if settings.fast_mode && !info.priority {",
-        "after": "if false && settings.fast_mode && !info.priority {"
+        "before": "if settings.fast_mode == Some(true) && !info.priority {",
+        "after": "if false && settings.fast_mode == Some(true) && !info.priority {"
       }
     ],
     "witnesses": ["fast-denied"]
@@ -245,8 +245,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
     "edits": [
       {
-        "before": "project.resolved_path == path",
-        "after": "!project.resolved_path.is_empty()"
+        "before": "if path == *key {",
+        "after": "if true {"
       }
     ],
     "witnesses": ["peer-project-path-mismatch"]
@@ -317,8 +317,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
     "edits": [
       {
-        "before": "if settings.daybreak_enabled {",
-        "after": "if false && settings.daybreak_enabled {"
+        "before": "if settings.daybreak_enabled != Some(false) {",
+        "after": "if false && settings.daybreak_enabled != Some(false) {"
       }
     ],
     "witnesses": ["daybreak-refusal"]
@@ -353,8 +353,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
     "edits": [
       {
-        "before": "(row.model == settings.model\n                    || row.resolved_model.as_ref() == Some(&settings.model))",
-        "after": "(row.model == settings.model\n                    || true || row.resolved_model.as_ref() == Some(&settings.model))"
+        "before": "(row.model == model || row.resolved_model.as_deref() == Some(model))",
+        "after": "(row.model == model || true || row.resolved_model.as_deref() == Some(model))"
       }
     ],
     "witnesses": ["invalid-model-missing"]
@@ -449,8 +449,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
     "edits": [
       {
-        "before": "if self.settings.fast_mode { \"priority\" } else { \"default\" }",
-        "after": "if false && self.settings.fast_mode { \"priority\" } else { \"default\" }"
+        "before": "if self.settings.fast_mode == Some(true) { \"priority\" } else { \"default\" }",
+        "after": "if false && self.settings.fast_mode == Some(true) { \"priority\" } else { \"default\" }"
       }
     ],
     "witnesses": ["fast-supported"]
@@ -538,5 +538,53 @@
       }
     ],
     "witnesses": ["unchanged"]
+  },
+  {
+    "id": "SG46",
+    "description": "skip selected-record check on fixed retry",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if current != self.expected {",
+        "after": "if self.freeze.is_some() && current != self.expected {"
+      }
+    ],
+    "witnesses": ["fixed-race-daybreakEnabled"]
+  },
+  {
+    "id": "SG47",
+    "description": "require unused catalog generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "current.account.generation = self.expected.account.generation;",
+        "after": "let _ignored = self.expected.account.generation;"
+      }
+    ],
+    "witnesses": ["unneeded-generation-race"]
+  },
+  {
+    "id": "SG48",
+    "description": "reject nullable stored boolean",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if row.account_key != account.account_key {",
+        "after": "if row.settings.fast_mode.is_none() || row.account_key != account.account_key {"
+      }
+    ],
+    "witnesses": ["nullable-fastMode-pending-False"]
+  },
+  {
+    "id": "SG49",
+    "description": "ignore enclosing Python control flow",
+    "file": "workspaces/runtime/packages/runtime-services/tests/submit_gates/oracle.py",
+    "edits": [
+      {
+        "before": "assert actual == expected,",
+        "after": "assert True,"
+      }
+    ],
+    "witnesses": ["oracle_boundaries_and_separate_preparation_default"]
   }
 ]

@@ -21,6 +21,8 @@ if "--guard-test" in sys.argv:
 
 import ast
 import copy
+import contextlib
+import hashlib
 import json
 import sqlite3
 
@@ -36,6 +38,18 @@ from codex_daybreak import turn_program
 _tree = ast.parse((SERVER / "codex_runtime.py").read_text())
 _runtime = next(n for n in _tree.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
 _start = next(n for n in _runtime.body if isinstance(n, ast.FunctionDef) and n.name == "start")
+_prepare = next(n for n in _runtime.body if isinstance(n, ast.FunctionDef) and n.name == "prepare_locked")
+
+
+def check_boundaries(start, prepare):
+    # Include enclosing control flow and statement order, not just extracted nodes.
+    for node, expected in ((start, "78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca"),
+                           (prepare, "3d2ce92df593b4597882e2315e7753e5b09ba8f74f33653dd358616400b43eb6")):
+        actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+        assert actual == expected, "Runtime control flow changed: re-derive the submit-gates oracle boundaries before updating the digest"
+
+
+check_boundaries(_start, _prepare)
 _freeze = [n for n in ast.walk(_start) if isinstance(n, ast.If)
            and ast.unparse(n.test) == "not attempt.get('settingsFixed')"]
 assert len(_freeze) == 1, "Runtime.start freeze boundary changed"
@@ -66,9 +80,13 @@ class Host:
     validate_execution = staticmethod(Runtime.validate_execution)
 
     def __init__(self, db, catalog=None):
-        self.db, self.catalog_value = db, catalog
+        self.connection, self.catalog_value = db, catalog
+        self.lock = contextlib.nullcontext()
         self.loaded = {"recipient"}
         self.writes = 0
+
+    def db(self):
+        return contextlib.nullcontext(self.connection)
 
     def catalog(self, account):
         if self.catalog_value is None:
@@ -158,15 +176,48 @@ provider_settings = compile_block("provider_settings", ["a"],
 def execution(case, db):
     insert(db, "agents", "recipient", case["current"])
     host = Host(db, catalog_value(case.get("catalog")))
-    current = host.agent("recipient", db)
     observed = copy.deepcopy(case.get("observed", case["current"]))
     validated = revalidate(host, observed, observed.get("accountKey", "default"),
         observed.get("executionSettingsAccountKey", observed.get("accountKey", "default")))
+    if "commit_record" in case:
+        db.execute("UPDATE runtime_agents SET record=? WHERE id='recipient'",
+                   (json.dumps(case["commit_record"]),))
+    current = host.agent("recipient", db)
     freeze(host, db, current, current.get("startAttempt") or {}, validated)
     turn_program(host, current)
     after = host.agent("recipient", db)
     return {"allowed": True, "record_after": after, "provider_settings": provider_settings(after),
             "freeze": bool(host.writes), "invalidated_loaded": "recipient" not in host.loaded}
+
+
+# Evidence for the separate preparation consumer, not part of freeze parity.
+_prepare_effort = [n for n in ast.walk(_prepare) if isinstance(n, ast.If)
+                   and ast.unparse(n.test) == "'nativeEffort' not in a"]
+assert len(_prepare_effort) == 1, "preparation effort boundary changed"
+prepare_effort = compile_block("prepare_effort", ["self", "a"], _prepare_effort)
+
+
+def preparation_effort(case, db):
+    insert(db, "agents", "recipient", case["current"])
+    host = Host(db, catalog_value(case.get("catalog")))
+    host.loaded.clear()
+    prepare_effort(host, host.agent("recipient", db))
+    after = host.agent("recipient", db)
+    return {"allowed": True, "record_after": after, "provider_settings": provider_settings(after)}
+
+
+def boundary_guard(case, db):
+    class WrapFreeze(ast.NodeTransformer):
+        def visit_If(self, node):
+            if ast.unparse(node.test) == "not attempt.get('settingsFixed')":
+                return ast.If(test=ast.Constant(False), body=[node], orelse=[])
+            return self.generic_visit(node)
+    changed = WrapFreeze().visit(copy.deepcopy(_start))
+    try:
+        check_boundaries(changed, _prepare)
+    except AssertionError:
+        return {"allowed": True}
+    raise AssertionError("oracle accepted a changed enclosing freeze guard")
 
 
 def validation(case, db):
@@ -194,7 +245,8 @@ def run(case):
         records = authorization_records(case, db) if case["gate"] == "authorization" else None
         try:
             result = {"authorization": authorization, "execution": execution, "budget": budget,
-                      "validation": validation}[case["gate"]](case, db)
+                      "validation": validation, "preparation-effort": preparation_effort,
+                      "boundary-guard": boundary_guard}[case["gate"]](case, db)
         except (ValueError, TypeError, KeyError) as error:
             result = {"allowed": False, "message": str(error)}
         if records is not None:

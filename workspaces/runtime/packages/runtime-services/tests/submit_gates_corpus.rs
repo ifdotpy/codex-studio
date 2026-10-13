@@ -139,7 +139,7 @@ fn rust(case: &Value, records: Option<&Value>) -> Value {
                     ) {
                         Ok(after) => {
                             json!({"allowed":true,"record_after":after,"provider_settings":selection.provider_settings(),
-                            "freeze":selection.freeze.is_some(),"invalidated_loaded":selection.freeze.as_ref().is_some_and(|p| p.consume_pending)})
+                            "freeze":selection.freeze.is_some(),"invalidated_loaded":selection.freeze.is_some() && selection.expected.pending.is_some()})
                         }
                         Err(error) => rejection(error),
                     }
@@ -310,9 +310,37 @@ fn submit_gates_python_corpus() {
 fn malformed_settings_fail_closed_at_typed_boundary() {
     let fixtures: Value =
         serde_json::from_str(include_str!("submit_gates/cases.json")).expect("fixtures");
-    for value in [json!(null), json!("yes"), json!(0), json!({})] {
+    for value in [json!("yes"), json!(0), json!({})] {
         let mut case = fixtures["seeds"]["execution"].clone();
         case["current"]["fastMode"] = value;
         assert_eq!(rust(&case, None)["allowed"], false);
     }
+}
+
+#[test]
+fn oracle_boundaries_and_separate_preparation_default() {
+    let mut oracle = Oracle::new();
+    assert_eq!(
+        oracle.call(&json!({"gate":"boundary-guard"})),
+        json!({"allowed":true})
+    );
+    let fixtures: Value =
+        serde_json::from_str(include_str!("submit_gates/cases.json")).expect("fixtures");
+    let mut case = fixtures["seeds"]["execution"].clone();
+    case["gate"] = json!("preparation-effort");
+    case["current"]
+        .as_object_mut()
+        .expect("record")
+        .remove("nativeEffort");
+    let prepared = oracle.call(&case);
+    assert_eq!(prepared["record_after"]["nativeEffort"], "medium");
+    assert_eq!(
+        prepared["provider_settings"],
+        json!({"serviceTier":"default","effort":"medium"})
+    );
+    case["current"]["nativeEffort"] = Value::Null;
+    assert_eq!(
+        oracle.call(&case)["provider_settings"],
+        json!({"serviceTier":"default"})
+    );
 }

@@ -4472,6 +4472,841 @@
           "value": null
         }
       ]
+    },
+    {
+      "name": "fixed-race-daybreakEnabled",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_record",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": true,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        }
+      ],
+      "deviation": "settings-changed"
+    },
+    {
+      "name": "fixed-race-fastMode",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_record",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": true,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        }
+      ],
+      "deviation": "settings-changed"
+    },
+    {
+      "name": "fixed-race-nativeEffort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_record",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "high",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        }
+      ],
+      "deviation": "settings-changed"
+    },
+    {
+      "name": "fixed-race-model",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_record",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "other",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        }
+      ],
+      "deviation": "settings-changed"
+    },
+    {
+      "name": "fixed-race-accountKey",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_record",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "other",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": true
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        }
+      ],
+      "deviation": "settings-changed"
+    },
+    {
+      "name": "unneeded-generation-race",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
+            },
+            "executionSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "saved-pending-generation-race",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
+            },
+            "executionSettingsAccountKey": "account",
+            "pendingSettings": {
+              "fastMode": true
+            },
+            "pendingSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        },
+        {
+          "path": "/commit_profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy-null-repaired-by-saved-pending",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": null,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
+            },
+            "executionSettingsAccountKey": "account",
+            "pendingSettings": {
+              "model": "model",
+              "effort": null,
+              "nativeEffort": "medium",
+              "fastMode": true,
+              "daybreakEnabled": false
+            },
+            "pendingSettingsAccountKey": "account"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": {
+            "account_key": "account",
+            "generation": 7,
+            "lifetime": 30,
+            "models": [
+              {
+                "model": "model",
+                "resolved_model": "alias",
+                "hidden": false,
+                "supported_efforts": ["low", "medium", "high"],
+                "default_effort": "medium",
+                "priority": true
+              }
+            ],
+            "home": "/disposable/catalog",
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "nullable-model-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/model",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-model-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/model",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-model",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/model",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-effort-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-effort-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-effort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-nativeEffort-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/nativeEffort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-nativeEffort-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/nativeEffort",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-nativeEffort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/nativeEffort",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-fastMode-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/fastMode",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-fastMode-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/fastMode",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-fastMode",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/fastMode",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-daybreakEnabled-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/daybreakEnabled",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-daybreakEnabled-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/daybreakEnabled",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-daybreakEnabled",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/daybreakEnabled",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-pendingSettingsAccountKey-pending-False",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "nullable-pendingSettingsAccountKey-pending-True",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": null
+        },
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "optional-absent-pendingSettingsAccountKey",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "nullable-fastMode-race-with-false",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": null,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
+            },
+            "executionSettingsAccountKey": "old"
+          }
+        },
+        {
+          "path": "/observed",
+          "value": {
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
+            },
+            "executionSettingsAccountKey": "old"
+          }
+        }
+      ]
     }
   ],
   "matrix": {
