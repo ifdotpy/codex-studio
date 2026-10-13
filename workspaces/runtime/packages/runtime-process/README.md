@@ -183,7 +183,8 @@ not currently in the dependency graph.
 `ProviderTaskFactory::open(handle, OpenOptions, Shutdown) -> OpenFuture` is
 object-safe as `Arc<dyn ProviderTaskFactory>` without async-trait. The caller
 resolves launch configuration outside the executor and validates session recovery
-before opening. The factory validates initialization and wire size, then returns
+before opening. The session validates its actual prepared initialize command;
+the factory validates launch configuration and wire size, then returns
 `ProviderAttachment` before connecting. Use `ProviderHandle::for_account` for the
 one supervisor-owned child; the account registry still owns attachment admission.
 
@@ -203,7 +204,9 @@ command and `Receipt`; `Receipt::receive` distinguishes `Written`,
 belong to the caller. Use `initialized_operation(&handle, generation)` for the shared
 Python-compatible initialized identity. A lost receipt terminates the attachment;
 there is no reconnect, flush, or automatic resend surface. A closed receipt is
-Unknown. The supervisor may have committed a write before returning an error, so
+Unknown. Successful write receipts have an observation handshake: the adapter
+waits for Receipt.receive or shutdown before serving the next command; abandoning
+a buffered receipt or its receive future closes the attachment. The supervisor may have committed a write before returning an error, so
 remote write errors are conservatively Unknown too.
 
 The session stage retains its single `SessionState` and owns initialize and
@@ -215,6 +218,8 @@ Use `SessionState::next_deadline_ms()` as the session's deadline authority.
 Process startup replay while waiting for readiness instead of draining it into
 another queue. Commit a contiguous durable prefix before sending ACK; the adapter
 never sends ACK itself, including for the launch spec's recovered handled cursor.
+Terminal EOF stops next queries but keeps ACK admission until the final delivered
+prefix settles or the caller explicitly shuts down.
 
 `TaskExit::recovery_needed` identifies incomplete initialization separately from
 socket cleanup, including a generation when known. Persist it before declaring
@@ -225,8 +230,9 @@ completion. Retained-child environment checks run in at most four owned blocking
 jobs per factory; shutdown reaps an already-started job. Linux `/proc` identity
 verification is required; other Unix platforms refuse reattach before open.
 
-The old thread adapter and session remain unmodified in behavior until the
-session and account driver use this seam and independent review approves cutover.
+The old thread adapter and session remain available, with the shared initialized
+identity correction applying to both adapters. Independent review and caller
+migration are required before cutover.
 These stages add no production caller wiring or live-model verification. Remove
 the old byte-stream workers only when those callers have migrated.
 

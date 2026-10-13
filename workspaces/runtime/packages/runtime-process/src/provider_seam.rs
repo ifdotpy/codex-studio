@@ -31,7 +31,10 @@ impl SessionClock {
         Self(origin)
     }
     pub fn now_ms(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
+        self.millis_at(tokio::time::Instant::now())
+    }
+    pub(crate) fn millis_at(&self, at: tokio::time::Instant) -> u64 {
+        u64::try_from(at.saturating_duration_since(self.0).as_millis()).unwrap_or(u64::MAX)
     }
     pub fn instant_at(&self, milliseconds: u64) -> tokio::time::Instant {
         self.0 + std::time::Duration::from_millis(milliseconds)
@@ -148,7 +151,7 @@ impl Receipt {
             .await
             .unwrap_or(CommandReceipt::Unknown);
         if let Some(observation) = self.observation.take() {
-            let _ = observation.send(());
+            let _ignored = observation.send(());
         }
         result
     }

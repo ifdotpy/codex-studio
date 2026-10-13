@@ -133,6 +133,7 @@ struct Rpc<S> {
     stream: BufReader<S>,
     sequence: u64,
     started: bool,
+    received_at: Instant,
 }
 impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
     async fn exchange(&mut self, bytes: &[u8]) -> Result<String, AdapterError> {
@@ -168,6 +169,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
             frame.extend_from_slice(&available[..count]);
             self.stream.consume(count);
             if complete {
+                self.received_at = Instant::now();
                 return String::from_utf8(frame)
                     .map_err(|_| SupervisorError::InvalidFrame("invalid UTF-8".into()).into());
             }
@@ -249,6 +251,7 @@ impl AdapterTask {
             stream: BufReader::new(socket),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         let handshake = serialize_frame(&handshake_request(&self.identity, false))?;
         let reply = interruptible(&mut self.stop, rpc.exchange(&handshake)).await?;
@@ -399,7 +402,7 @@ impl AdapterTask {
                     let result: NextResult = rpc.call(SupervisorAction::Next, CursorRequest {
                         handle: self.open.handle.clone(), cursor, extra: Default::default(),
                     }, &mut self.stop).await?;
-                    let received_at_ms = self.clock.now_ms();
+                    let received_at_ms = self.clock.millis_at(rpc.received_at);
                     if let Some(event) = result.event {
                         if event.sequence <= cursor {
                             // A stale replay cannot be delivered twice or create a hot loop.
@@ -654,7 +657,7 @@ async fn reap_environment_job<T>(
         biased;
         _ = cancelled(stop) => {
             job.abort();
-            let _ = job.await;
+            let _ignored = job.await;
             Err(AdapterError::Cancelled)
         }
         result = &mut job => result.map_err(|_| AdapterError::TaskFailed),

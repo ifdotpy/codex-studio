@@ -55,6 +55,7 @@ async fn shutdown_interrupts_pending_socket_write() {
             }),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         rpc.call::<_, WriteResult>(
             SupervisorAction::Write,
@@ -80,6 +81,7 @@ async fn rpc_absolute_deadline_expires_without_new_input() {
             }),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         rpc.call::<_, WriteResult>(
             SupervisorAction::Write,
@@ -131,10 +133,11 @@ impl AsyncRead for FragmentProbe {
         let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
         self.received += buffer.filled().len() - before;
         // A second read poll after the fragment proves Rpc consumed its buffer.
-        if result.is_pending() && self.received > 0 {
-            if let Some(consumed) = self.consumed.take() {
-                let _ = consumed.send(());
-            }
+        if result.is_pending()
+            && self.received > 0
+            && let Some(consumed) = self.consumed.take()
+        {
+            let _ignored = consumed.send(());
         }
         result
     }
@@ -171,6 +174,7 @@ async fn shutdown_interrupts_partial_response_without_restart() {
             stream: BufReader::new(client),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         rpc.call::<_, WriteResult>(
             SupervisorAction::Write,
@@ -266,6 +270,7 @@ async fn sole_next_pause_is_exact_and_sticky_stop_never_waits_for_it() {
             stream: BufReader::new(socket),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         actor.serve(&mut rpc, EventCursor(0)).await
     });
@@ -311,6 +316,7 @@ async fn cancellation_before_send_is_not_sent_and_missing_receipt_is_unknown() {
         }),
         sequence: 0,
         started: false,
+        received_at: Instant::now(),
     };
     shutdown.cancel();
     actor
@@ -369,6 +375,7 @@ async fn journal_arrival_clock_is_sampled_before_consumer_admission() {
             stream: BufReader::new(socket),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         actor.serve(&mut rpc, EventCursor(0)).await
     });
@@ -405,6 +412,7 @@ async fn abandoned_buffered_write_receipt_or_receive_future_fences_attachment() 
                 stream: BufReader::new(socket),
                 sequence: 0,
                 started: false,
+                received_at: Instant::now(),
             };
             actor.command(&mut rpc, command, EventCursor(0)).await
         });
@@ -502,6 +510,7 @@ async fn response_mapping_capacity_refuses_before_send_and_prunes_all_settled_en
             stream: BufReader::new(socket),
             sequence: 0,
             started: false,
+            received_at: Instant::now(),
         };
         for id in 1..=MAX_PENDING_RESPONSES as u64 {
             let receipt = actor
