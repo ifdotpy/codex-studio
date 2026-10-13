@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{EventWriteRepository, QueueEvent, QueueEventId, StoreError, StoreResult};
+use crate::{EventWriteRepository, QueueEvent, QueueEventId, StoreError, StoreResult, truthy};
 
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
@@ -68,9 +68,18 @@ impl SchedulerRepository {
             || agent.status != AgentStatus::Queued
             || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
             || agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-            || agent.extra.get("nativeFailureHold").is_some_and(truthy)
-            || agent.extra.get("remoteWorker").is_some_and(truthy)
-            || agent.extra.get("remoteAnchor").is_some_and(truthy)
+            || agent
+                .extra
+                .get("nativeFailureHold")
+                .is_some_and(|value| truthy(Some(value)))
+            || agent
+                .extra
+                .get("remoteWorker")
+                .is_some_and(|value| truthy(Some(value)))
+            || agent
+                .extra
+                .get("remoteAnchor")
+                .is_some_and(|value| truthy(Some(value)))
         {
             return Ok(None);
         }
@@ -229,7 +238,10 @@ impl SchedulerRepository {
             && agent.status == AgentStatus::Starting
             && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
             && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
-            && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
+            && !agent
+                .extra
+                .get("nativeFailureHold")
+                .is_some_and(|value| truthy(Some(value)))
             && agent
                 .extra
                 .get("startAttempt")
@@ -501,7 +513,7 @@ fn select_turn_batch(
                 == Some("after_turn")
                 || meta
                     .and_then(|value| value.get("sendNow"))
-                    .is_some_and(truthy));
+                    .is_some_and(|value| truthy(Some(value))));
         if composer_input && has_composer_input {
             break;
         }

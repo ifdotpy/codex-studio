@@ -19,7 +19,6 @@ pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRep
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use rusqlite::{Connection, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
