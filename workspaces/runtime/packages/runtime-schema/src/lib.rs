@@ -76,6 +76,10 @@ const OPERATION_RESULT_URI: &str =
     "https://codex-studio.invalid/persisted-operation-result.schema.json";
 const OPERATION_RESULT: &[u8] = include_bytes!("schemas/persisted-operation-result.schema.json");
 
+const PROJECT_LOCATION_OUTBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-project-location-outbox.schema.json";
+const PROJECT_LOCATION_OUTBOX: &[u8] =
+    include_bytes!("schemas/persisted-project-location-outbox.schema.json");
 const MESSAGE_EVENT_URI: &str = "https://codex-studio.invalid/persisted-message-event.schema.json";
 const MESSAGE_EVENT: &[u8] = include_bytes!("schemas/persisted-message-event.schema.json");
 const TOOL_ALIAS_URI: &str = "https://codex-studio.invalid/persisted-tool-alias.schema.json";
@@ -135,6 +139,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (OPERATION_RESULT_URI, OPERATION_RESULT),
     (PLAN_RECORD_URI, PLAN_RECORD),
     (PROFILE_RECORD_URI, PROFILE_RECORD),
+    (PROJECT_LOCATION_OUTBOX_URI, PROJECT_LOCATION_OUTBOX),
     (PROJECT_RECORD_URI, PROJECT_RECORD),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (ROOM_RECORD_URI, ROOM_RECORD),
@@ -225,6 +230,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_requests" => "PersistedRequestRecord",
         "runtime_rooms" => "PersistedRoomRecord",
         "runtime_rules" => "PersistedRuleRecord",
+        "runtime_server_outbox" => "PersistedProjectLocationOutbox",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_tool_request_aliases" => "PersistedToolAlias",
         "runtime_tool_requests" => "PersistedToolRequestRecord",
@@ -309,6 +315,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedOperationResult", OPERATION_RESULT_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),
         ("PersistedProfileRecord", PROFILE_RECORD_URI),
+        (
+            "PersistedProjectLocationOutbox",
+            PROJECT_LOCATION_OUTBOX_URI,
+        ),
         ("PersistedProjectRecord", PROJECT_RECORD_URI),
         ("PersistedRequestRecord", REQUEST_RECORD_URI),
         ("PersistedRoomRecord", ROOM_RECORD_URI),
