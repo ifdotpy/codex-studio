@@ -1,0 +1,30 @@
+[
+  { "name": "ready-peer-team" },
+  { "name": "direct-room", "direct": true },
+  { "name": "stopped-recipient", "auto_wake": false },
+  { "name": "stopped-peer", "peer_auto_wake": false },
+  { "name": "held-recipient", "native_failure_hold": true },
+  { "name": "transferring-peer", "peer_account_transfer_id": "transfer-1" },
+  {
+    "name": "native-thread-blocked-peer",
+    "peer_native_thread_block": { "reason": "pending" }
+  },
+  { "name": "revoked-peer-team", "peer_cwd": "/other-project" },
+  { "name": "blocked-room", "status": "blocked" },
+  { "name": "stopping-room", "status": "stopping" },
+  { "name": "missing-receipt", "active": false },
+  { "name": "first-thread-binding", "bind_thread": true },
+  {
+    "name": "binding-wrong-event",
+    "bind_thread": true,
+    "attempt_event": "other-event"
+  },
+  { "name": "binding-wrong-epoch", "bind_thread": true, "attempt_epoch": 9 },
+  { "name": "active-thread-mismatch", "active_thread_id": "other-thread" },
+  { "name": "active-agent-mismatch", "active_agent_id": "b" },
+  {
+    "name": "compactions-null-binding",
+    "bind_thread": true,
+    "compactions": null
+  }
+]
