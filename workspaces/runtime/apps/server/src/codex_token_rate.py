@@ -15,6 +15,7 @@ MAX_RATE = 1000.0
 MAX_RATE_ENTRIES = 1024
 TOKEN_RATE_EXPIRY_SECONDS = 90
 TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
+TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0
 _logged_implausible_correction = False
 NON_TOOLS = {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction', 'compactionSnapshot'}
 
@@ -201,6 +202,7 @@ class TokenRates:
         self._last_published_snapshot = None
         self._publication_timer = None
         self._publication_dirty = False
+        self._publication_scheduled = False
 
     def _publish_if_changed(self):
         if self.state_dir is None:
@@ -209,40 +211,72 @@ class TokenRates:
         # one timer replaces a per-event full snapshot/serialization. Intermediate
         # samples are intentionally skipped, while the next publication contains
         # the current complete snapshot.
+        schedule = False
         with self._publication_lock:
             self._publication_dirty = True
-            if self._publication_timer is None:
-                timer = threading.Timer(TOKEN_RATE_PUBLICATION_DELAY_SECONDS,
-                                        self._flush_publication)
-                timer.daemon = True
-                self._publication_timer = timer
-                timer.start()
+            if not self._publication_scheduled:
+                self._publication_scheduled = True
+                schedule = True
+        if schedule:
+            self._schedule_publication(TOKEN_RATE_PUBLICATION_DELAY_SECONDS)
+
+    def _schedule_publication(self, delay):
+        timer = threading.Timer(delay, self._flush_publication)
+        timer.daemon = True
+        with self._publication_lock:
+            self._publication_timer = timer
+        try:
+            timer.start()
+        except Exception:
+            with self._publication_lock:
+                self._publication_timer = None
+                self._publication_scheduled = False
+            logging.getLogger(__name__).exception('Unable to schedule token-rate publication')
 
     def _flush_publication(self):
         with self._publication_lock:
             self._publication_timer = None
             if not self._publication_dirty:
+                self._publication_scheduled = False
                 return
             self._publication_dirty = False
-            # Mutators release self.lock before marking publication dirty. Take a
-            # coherent snapshot here, outside the event path, then publish without
-            # holding the state lock. Hub code must not call back into TokenRates.
+        # Keep the scheduling lock out of snapshotting, serialization and hub
+        # publication so event producers can mark a newer snapshot dirty.
+        published = False
+        try:
             with self.lock:
                 current = self.workspace_snapshot()
             if current == self._last_published_snapshot:
+                published = True
+            else:
+                from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
+
+                rates = {agent_id: TokenRateValue(**value)
+                         for agent_id, value in current['rates'].items()}
+                teams = {root_id: {agent_id: TokenRateValue(**value)
+                                   for agent_id, value in team.items()}
+                         for root_id, team in current['teams'].items()}
+                snapshot = TokenRateSnapshot(rates=rates, teams=teams)
+                from studio_api.sync.resources.hub import publish_token_rates
+
+                if not publish_token_rates(self.state_dir, snapshot):
+                    raise RuntimeError('token-rate resource hub did not accept the snapshot')
+                self._last_published_snapshot = current
+                published = True
+        except Exception:
+            logging.getLogger(__name__).exception('Unable to publish token-rate snapshot')
+
+        with self._publication_lock:
+            if not published:
+                self._publication_dirty = True
+            if not self._publication_dirty:
+                self._publication_scheduled = False
                 return
-            from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
-
-            rates = {agent_id: TokenRateValue(**value)
-                     for agent_id, value in current['rates'].items()}
-            teams = {root_id: {agent_id: TokenRateValue(**value)
-                               for agent_id, value in team.items()}
-                     for root_id, team in current['teams'].items()}
-            snapshot = TokenRateSnapshot(rates=rates, teams=teams)
-            from studio_api.sync.resources.hub import publish_token_rates
-
-            publish_token_rates(self.state_dir, snapshot)
-            self._last_published_snapshot = current
+        # Retain one scheduled worker while new events arrive. A failed publish
+        # retries at a fixed interval, bounding both memory and retry frequency.
+        delay = (TOKEN_RATE_PUBLICATION_DELAY_SECONDS if published
+                 else TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+        self._schedule_publication(delay)
 
     def _schedule_expiry(self, key, agent_id, turn):
         timer = threading.Timer(TOKEN_RATE_EXPIRY_SECONDS, self._expire, (key, agent_id, turn))

@@ -17,6 +17,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -32,6 +33,92 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_event_producer_does_not_wait_for_snapshot_publication(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, _delay, callback):
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_publish(_root, _snapshot):
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError('publication was not released')
+            return True
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates', side_effect=blocked_publish):
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                flush = threading.Thread(target=DeferredTimer.instances[0].fire)
+                flush.start()
+                self.assertTrue(entered.wait(2))
+
+                event_done = threading.Event()
+                event = threading.Thread(target=lambda: (
+                    rates.stream('item/agentMessage/delta', {
+                        'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                    }, 'a', 'c', 1), event_done.set()))
+                event.start()
+                try:
+                    self.assertTrue(event_done.wait(.5), 'event waited for publication lock')
+                finally:
+                    release.set()
+                    flush.join(2)
+                    event.join(2)
+                self.assertFalse(flush.is_alive())
+                self.assertFalse(event.is_alive())
+                self.assertEqual(len(DeferredTimer.instances), 2)
+
+    def test_failed_publication_retains_dirty_state_for_bounded_retry(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=[False, True]) as publish:
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                DeferredTimer.instances[0].fire()
+
+                self.assertEqual(publish.call_count, 1)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                self.assertEqual(DeferredTimer.instances[1].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+                self.assertTrue(rates._publication_dirty)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(publish.call_count, 2)
+            self.assertFalse(rates._publication_dirty)
+            self.assertFalse(rates._publication_scheduled)
+
     def test_workspace_publication_coalesces_events_into_latest_bounded_snapshot(self):
         class DeferredTimer:
             instances = []
@@ -55,7 +142,7 @@ class RateContract(unittest.TestCase):
             published = []
             with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
                     patch('studio_api.sync.resources.hub.publish_token_rates',
-                          side_effect=lambda _root, snapshot: published.append(snapshot)), \
+                          side_effect=lambda _root, snapshot: (published.append(snapshot), True)[1]), \
                     patch.object(rates, 'workspace_snapshot', wraps=rates.workspace_snapshot) as snapshot:
                 rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
                 for _ in range(25):
