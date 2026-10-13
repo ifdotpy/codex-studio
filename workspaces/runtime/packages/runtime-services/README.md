@@ -67,6 +67,9 @@ compatibility decision. The service pins it in
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
 
+Git changes use `std::process::Command` to preserve the Python runtime's system-Git status and patch output without a Git-library dependency.
+`gix 0.89.0` (MIT/Apache-2.0; 199 normal dependency-tree entries; 9.8s clean check) and `git2 0.21.0` (MIT/Apache-2.0; 7 entries; 8.5s including libgit2 build) can inspect status and diffs but require custom rendering and can change CLI output.
+
 ## Account registry and limits read contract
 
 This slice loads the persisted account registry and workspace limits once at
