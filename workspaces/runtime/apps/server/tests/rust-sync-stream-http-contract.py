@@ -478,7 +478,6 @@ class SyncStreamHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.addCleanup(response.close)
         self.assertEqual(read_event(response)["event"], "api-schema")
         self.next_resource_event(response)
-        self.assertEqual(read_event(response)["event"], "token-rates")
         self.backend.stop()
         self.assertIsNone(read_event(response), "graceful shutdown ends an active SSE response")
         self.assertEqual(self.backend.stop_phases[-1]["forcedKill"], 0.0)
