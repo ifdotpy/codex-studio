@@ -1985,6 +1985,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-process",
  "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",

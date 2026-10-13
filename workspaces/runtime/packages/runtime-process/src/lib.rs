@@ -28,6 +28,10 @@ pub use protocol::*;
 #[cfg(unix)]
 pub use pty_host::{LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan};
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
+pub use pty_host::{
+    LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
+    terminal_environment_from,
+};
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]

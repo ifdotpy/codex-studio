@@ -18,7 +18,7 @@ const READ_CHUNK: usize = 16 * 1024;
 
 pub type NotificationCallback = Arc<dyn Fn(TerminalNotification) + Send + Sync>;
 pub type IdentityCallback =
-    Arc<dyn Fn(&str, &PtyIdentity) -> Result<(), SessionError> + Send + Sync>;
+    Arc<dyn Fn(&str, Option<&PtyIdentity>) -> Result<(), SessionError> + Send + Sync>;
 
 struct LiveTerminal {
     session: PtySession,
@@ -164,6 +164,7 @@ impl PtyTerminalSession {
     }
 
     fn close_one(&self, id: &str) -> Result<(), SessionError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let live = self
             .sessions
             .lock()
@@ -172,7 +173,10 @@ impl PtyTerminalSession {
         if let Some(mut live) = live {
             let close_failed = self.host.close(live.session).is_err();
             let reader_failed = live.reader.take().is_some_and(|reader| {
-                match live.reader_done.recv_timeout(Duration::from_secs(2)) {
+                match live
+                    .reader_done
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                {
                     Ok(()) => reader.join().is_err(),
                     Err(_) => {
                         drop(reader);
@@ -269,6 +273,9 @@ impl TerminalSession for PtyTerminalSession {
     }
 
     fn cleanup_orphan(&self, identity: &Value) -> Result<bool, SessionError> {
+        if identity.is_null() {
+            return Ok(false);
+        }
         let identity = serde_json::from_value::<PtyIdentity>(identity.clone())
             .map_err(|_| SessionError::Rejected)?;
         cleanup_persisted_identity(&identity)
@@ -332,12 +339,16 @@ fn field_u16(value: &Value, name: &str) -> Result<u16, SessionError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::process::Command;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::PtyTerminalSession;
+    use crate::terminal_driver::prepared_python;
     use crate::terminal_driver::{TerminalEvent, TerminalNotification, TerminalSession};
 
     fn terminal_cwd() -> TempDir {
@@ -529,42 +540,97 @@ mod tests {
     }
 
     #[test]
-    fn child_environment_does_not_inherit_server_only_variables() {
-        let server_only = std::env::var("STUDIO_TERMINAL_SERVER_ONLY")
-            .expect("test runner sets the server-only variable");
-        assert_eq!(server_only, "must-not-leak");
+    fn terminal_child_environment_key_set_matches_python_launch_path() {
         let cwd = terminal_cwd();
-        let adapter = PtyTerminalSession::new();
-        let (sender, receiver) = mpsc::channel::<TerminalNotification>();
-        adapter.set_notification_callback(std::sync::Arc::new(move |event| {
-            let _send_result = sender.send(event);
-        }));
-        adapter
-            .send_request(
-                "spawn-env",
-                "process/spawn",
-                json!({
-                    "processHandle":"env-session",
-                    "cwd":cwd.path(),
-                    "command":["/bin/sh","-c","/usr/bin/env; pwd"],
-                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
-                    "size":{"cols":100,"rows":28}
-                }),
-            )
-            .expect("spawn env");
-        let mut output = Vec::new();
-        while let TerminalEvent::Output(bytes) = receiver.recv().expect("env event").event {
-            output.extend(bytes);
+        let source =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = prepared_python::prepared_python(&source);
+        for supervisor in [false, true] {
+            let base = BTreeMap::from([
+                ("HOME".into(), "/home/test-user".into()),
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("SSH_AUTH_SOCK".into(), "/tmp/ssh-agent.sock".into()),
+                ("DISPLAY".into(), ":42".into()),
+                ("XDG_CONFIG_HOME".into(), "/home/test-user/.config".into()),
+                ("CODEX_HOME".into(), "/home/test-user/.codex".into()),
+                ("OPENAI_API_KEY".into(), "redacted-test-value".into()),
+                ("CODEX_API_KEY".into(), "redacted-test-value".into()),
+                ("CODEX_AGENTS_BACKEND_ID".into(), "server-only".into()),
+                ("CODEX_NODE".into(), "/server/node".into()),
+                ("STUDIO_TERMINAL_SERVER_ONLY".into(), "inherited".into()),
+                (
+                    "CODEX_AGENTS_SUPERVISOR_MODE".into(),
+                    if supervisor { "1" } else { "0" }.into(),
+                ),
+            ]);
+            let terminal_home = cwd.path().join("terminal-home");
+            let rust_env = studio_runtime_process::terminal_environment_from(
+                &base,
+                &terminal_home,
+                supervisor,
+            );
+            let mut python_command = Command::new(python.as_os_str());
+            python_command.env_clear().envs(&base)
+                .arg("-c")
+                .arg("import json, os, subprocess; home=os.environ.pop('TERMINAL_PRIVATE_HOME'); env=os.environ.copy(); env['CODEX_HOME']=home; env.pop('OPENAI_API_KEY',None); env.pop('CODEX_API_KEY',None); names=('CODEX_HOME','OPENAI_API_KEY','CODEX_API_KEY'); overlay={k:os.environ[k] for k in names if k in os.environ}; overlay.update(TERM='xterm-256color',COLORTERM='truecolor'); env.update(overlay);\nif os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE')=='1':\n  [env.pop(k,None) for k in ('CODEX_AGENTS_BACKEND_ID','CODEX_RUNTIME_LOCK_METRICS','CODEX_AGENTS_PROVIDER_CAPTURE','CODEX_AGENTS_PROVIDER_CAPTURE_FILE','CODEX_NODE')]\nr=subprocess.run(['/usr/bin/env','-0'],env=env,check=True,capture_output=True); print(json.dumps(sorted(x.split(b'=',1)[0].decode() for x in r.stdout.split(b'\\0') if x)))")
+                .env("TERMINAL_PRIVATE_HOME", &terminal_home);
+            let python_output = python_command
+                .output()
+                .expect("run Python environment oracle");
+            assert!(python_output.status.success(), "Python oracle starts");
+            let python_keys: BTreeSet<String> =
+                serde_json::from_slice(&python_output.stdout).expect("Python key set only");
+
+            let adapter = PtyTerminalSession::new();
+            let (sender, receiver) = mpsc::channel::<TerminalNotification>();
+            adapter.set_notification_callback(std::sync::Arc::new(move |event| {
+                let _sent = sender.send(event);
+            }));
+            adapter
+                .send_request(
+                    "spawn-env-parity",
+                    "process/spawn",
+                    json!({
+                        "processHandle": if supervisor {"env-supervised"} else {"env-normal"},
+                        "cwd":cwd.path(), "command":["/usr/bin/env","-0"],
+                        "env":rust_env, "size":{"cols":100,"rows":28}
+                    }),
+                )
+                .expect("spawn env probe");
+            let mut bytes = Vec::new();
+            while let TerminalEvent::Output(chunk) =
+                receiver.recv().expect("environment child event").event
+            {
+                bytes.extend(chunk);
+            }
+            let rust_keys: BTreeSet<String> = bytes
+                .split(|byte| *byte == 0)
+                .filter(|pair| !pair.is_empty())
+                .filter_map(|pair| {
+                    let mut fields = pair.splitn(2, |byte| *byte == b'=');
+                    fields
+                        .next()
+                        .and_then(|key| std::str::from_utf8(key).ok())
+                        .map(str::to_owned)
+                })
+                .collect();
+            assert_eq!(
+                rust_keys, python_keys,
+                "shell key set differs (supervisor={supervisor})"
+            );
+            assert!(
+                rust_keys.contains("HOME")
+                    && rust_keys.contains("PATH")
+                    && rust_keys.contains("SSH_AUTH_SOCK")
+            );
+            assert!(rust_keys.contains("STUDIO_TERMINAL_SERVER_ONLY"));
+            if supervisor {
+                assert!(
+                    !rust_keys.contains("CODEX_AGENTS_BACKEND_ID")
+                        && !rust_keys.contains("CODEX_NODE")
+                );
+            }
         }
-        let output = String::from_utf8(output).expect("environment output is UTF-8");
-        assert!(output.lines().any(|line| line == "TERM=xterm-256color"));
-        assert!(output.lines().any(|line| line == "COLORTERM=truecolor"));
-        assert!(!output.contains("STUDIO_TERMINAL_SERVER_ONLY"));
-        assert!(
-            output
-                .lines()
-                .any(|line| line == cwd.path().to_string_lossy())
-        );
     }
 
     #[cfg(target_os = "linux")]
@@ -577,7 +643,7 @@ mod tests {
         adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
         let (identity_sender, identity_receiver) = mpsc::channel();
         adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
-            let _send_result = identity_sender.send(identity.clone());
+            let _send_result = identity_sender.send(identity.expect("Linux identity").clone());
             Ok(())
         }));
         adapter
@@ -617,7 +683,7 @@ mod tests {
             let _send_result = sender.send(event);
         }));
         adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
-            let _send_result = identity_sender.send(identity.clone());
+            let _send_result = identity_sender.send(identity.expect("Linux identity").clone());
             Ok(())
         }));
         adapter
@@ -681,5 +747,35 @@ mod tests {
         }
         close_result.expect("close and reap session groups");
         assert!(remains, "background process group survived terminal close");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn close_has_a_bounded_deadline_when_the_terminal_ignores_term() {
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        adapter
+            .send_request(
+                "spawn-term-resistant",
+                "process/spawn",
+                json!({
+                    "processHandle":"term-resistant",
+                    "cwd":cwd.path(),
+                    "command":["/bin/sh","-c","trap '' TERM; exec /bin/cat"],
+                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("spawn TERM-resistant child");
+        let began = std::time::Instant::now();
+        adapter
+            .send_request(
+                "close-term-resistant",
+                "process/kill",
+                json!({"processHandle":"term-resistant"}),
+            )
+            .expect("KILL and reap TERM-resistant child");
+        assert!(began.elapsed() < Duration::from_secs(3));
     }
 }
