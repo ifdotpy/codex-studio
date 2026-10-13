@@ -221,6 +221,7 @@ impl ProviderTaskFactory for WireFactory {
                 active.fetch_sub(1, Ordering::SeqCst);
                 TaskExit {
                     result: Ok(()),
+                    cleanup_error: None,
                     recovery_needed: None,
                 }
             });
