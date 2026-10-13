@@ -86,7 +86,7 @@ impl OperationStatus {
         reason = "partial route slices use this to bind 501 behavior"
     )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
-        matches!(self, Self::Partial { dependencies: declared } if declared == dependencies)
+        matches!(self, Self::Partial { dependencies: declared } if dependencies.iter().all(|dependency| declared.contains(dependency)))
     }
 }
 
