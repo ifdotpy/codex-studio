@@ -10,7 +10,7 @@ pub(crate) struct CommitGuard {
     token: crate::workspace_ready::ReadyToken,
     resources: PreparationResources,
     thread: thread::Snapshot,
-    compiler_dependencies: Value,
+    compiler_snapshot: Option<turn::PreparationSnapshot>,
     state_root: std::path::PathBuf,
 }
 pub(crate) struct RequestPreparation {
@@ -153,6 +153,17 @@ fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, Wor
     }
     Ok(record)
 }
+fn catalog_pending() -> WorkerError {
+    WorkerError::PreparationPending("model-catalog/refresh-pending".into())
+}
+fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
+    match error {
+        gates::ExecutionDenial::CatalogRequired | gates::ExecutionDenial::CatalogExpired => {
+            catalog_pending()
+        }
+        _ => refusal(error.to_string()),
+    }
+}
 pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -165,13 +176,11 @@ pub(crate) fn admit(
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
             gates::select_execution(&observed, &observed, observation.as_ref(), Instant::now())
-                .map_err(|e| refusal(e.to_string()))?;
+                .map_err(catalog_admission_error)?;
         // Python resolves absent nativeEffort against the account catalog before
         // preparing a thread. Explicit null remains a deliberate provider default.
         if matches!(selected.settings.native_effort, gates::StoredField::Missing) {
-            let catalog = observation
-                .as_ref()
-                .ok_or_else(|| refusal("model-catalog/fresh-observation-required".into()))?;
+            let catalog = observation.as_ref().ok_or_else(catalog_pending)?;
             let (effort, native) = gates::validate_execution(&selected.settings, catalog, false)
                 .map_err(|e| refusal(e.to_string()))?;
             selected.settings.effort = effort;
@@ -281,12 +290,12 @@ pub(crate) fn prepare_ready(
             prepared_intent.thread_id = snapshot.actor.thread_id.clone();
             Ok::<_, WorkerError>((snapshot, turn_snapshot, events, prepared_intent))
         })?;
-    let guard = CommitGuard {
+    let mut guard = CommitGuard {
         selection,
         token,
         resources: resources.clone(),
         thread: snapshot.clone(),
-        compiler_dependencies: compiler_dependencies(&turn_snapshot, &events)?,
+        compiler_snapshot: None,
         state_root: store.root().to_path_buf(),
     };
     if method == Method::ThreadResume {
@@ -346,6 +355,7 @@ pub(crate) fn prepare_ready(
         }
         Err(e) => return Err(refusal(e.to_string())),
     };
+    guard.compiler_snapshot = Some(turn_snapshot.clone());
     let mut params = thread::turn_params(
         &snapshot,
         &thread::TurnInput {
@@ -398,18 +408,6 @@ pub(crate) fn prepare_ready(
         guard,
     })
 }
-// Compare every compiler input under the submission transaction. Adapter-owned
-// timestamps and artifact paths are not database dependencies.
-fn compiler_dependencies(
-    snapshot: &turn::PreparationSnapshot,
-    events: &[turn::Event],
-) -> Result<Value, WorkerError> {
-    let mut snapshot = snapshot.clone();
-    snapshot.prepared_at = 0.0;
-    snapshot.operation_id.clear();
-    snapshot.artifact_paths.clear();
-    serde_json::to_value((&snapshot, events)).map_err(|_| invalid("compiler snapshot"))
-}
 fn continuation_gate(snapshot: &thread::Snapshot, attempt: &str) -> Result<(), WorkerError> {
     match thread::plan(snapshot, attempt, "continuation-admission") {
         thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
@@ -444,15 +442,27 @@ pub(crate) fn commit(
         frozen["effort"] = current["effort"].clone();
         frozen["nativeEffort"] = current["nativeEffort"].clone();
     }
-    let (current_submission, current_events) = submission_snapshot(
-        tx,
-        &guard.resources,
-        &current,
-        &context.intent,
-        &guard.state_root,
-    )?;
-    if compiler_dependencies(&current_submission, &current_events)? != guard.compiler_dependencies {
-        return Err(refusal("turn-preparation/snapshot-changed".into()));
+    if let (Some(baseline), Some(compiled)) = (&guard.compiler_snapshot, &context.compiled) {
+        let (mut current_submission, current_events) = submission_snapshot(
+            tx,
+            &guard.resources,
+            &current,
+            &context.intent,
+            &guard.state_root,
+        )?;
+        // Recompile with the exact operation, clock and verified artifact paths.
+        // The compiler's manifest and output record the effective dependencies;
+        // unrelated worker state must not invalidate a non-lead submission.
+        current_submission.prepared_at = baseline.prepared_at;
+        current_submission.operation_id = baseline.operation_id.clone();
+        current_submission.artifact_paths = baseline.artifact_paths.clone();
+        let recompiled = turn::compile(&current_submission, &current_events)
+            .map_err(|e| refusal(e.to_string()))?;
+        if serde_json::to_value(recompiled).map_err(|_| invalid("compiler result"))?
+            != serde_json::to_value(compiled).map_err(|_| invalid("compiler result"))?
+        {
+            return Err(refusal("turn-preparation/snapshot-changed".into()));
+        }
     }
     let current = thread_snapshot(
         tx,

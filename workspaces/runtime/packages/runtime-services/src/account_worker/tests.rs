@@ -276,6 +276,14 @@ impl Peer {
         worker
     }
     async fn open_worker(&self, bridge: StoreBridge) -> AccountHandle {
+        self.open_worker_with_resources(bridge, test_resources().unwrap())
+            .await
+    }
+    async fn open_worker_with_resources(
+        &self,
+        bridge: StoreBridge,
+        resources: preparation::PreparationResources,
+    ) -> AccountHandle {
         start_account_worker(
             bridge,
             "default".into(),
@@ -298,7 +306,7 @@ impl Peer {
                 request_id_prefix: None,
                 recovered: vec![],
             },
-            test_resources().unwrap(),
+            resources,
         )
         .await
         .unwrap()

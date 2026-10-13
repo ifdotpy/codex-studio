@@ -159,6 +159,17 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
                 for field in ("record", "payload", "result"):
                     if field in record and record[field] is not None:
                         record[field] = json.loads(record[field])
+                if tables == TABLES and table == "runtime_operation_receipts" and record["id"] == "account-worker:account:default:attempt:turn/start:submitted":
+                    # Rust's extra transport receipt has no Python row. Validate
+                    # its binding before applying the existing rust_receipts class;
+                    # the Rust caller also asserts exact params, manifest and ticket.
+                    receipt = record["result"]
+                    assert record["signature"] == "submitted"
+                    assert receipt["request"]["operation"] == receipt["context"]["operation"] == "account:default:attempt:turn/start"
+                    assert receipt["request"]["method"] == receipt["context"]["method"] == "turn/start"
+                    assert receipt["context"]["compiled"]["actor_id"] == receipt["context"]["intent"]["agent_id"] == "agent"
+                    assert receipt["context"]["compiled"]["event_ids"] == [e["id"] for e in receipt["context"]["intent"]["events"]]
+                    record["result"] = "<validated-account-worker-submission>"
                 if tables == TABLES and table == "runtime_operation_receipts" and record["id"].startswith("provider-submission:"):
                     item_row = db.execute("SELECT agent,record,created FROM runtime_items WHERE json_extract(record,'$.role')='user'").fetchone()
                     agent, item_raw, created = item_row
@@ -261,6 +272,9 @@ def capture_submission(runtime, *, stop="submitted"):
         return result
 
     def submit(*args, **kwargs):
+        assert len(args) == 3
+        _, method, params = args
+        captured["nativeRequest"] = copy.deepcopy({"method":method,"params":params})
         captured["submission"] = copy.deepcopy(kwargs)
         raise Captured()
 
@@ -376,6 +390,7 @@ def seed(runtime, case):
 
 def transition(runtime, case):
     runtime.corpus_result = None
+    runtime.corpus_native_request = None
     agent = runtime.agent("agent")
     attempt = copy.deepcopy(agent.get("startAttempt", {}))
     action = case["transition"]
@@ -425,6 +440,8 @@ def transition(runtime, case):
         captured = capture_submission(runtime)
         inputs = captured["kwargs"]["inputs"]
         runtime.corpus_preparation = {"itemId":"agent:" + inputs[0]["id"],"baseText":runtime.model_event_text(inputs),"fullText":captured["args"][3]}
+        runtime.corpus_native_request = captured["nativeRequest"]
+        assert captured["submission"]["operation_id"] == "turn:agent:event:attempt:attempt"
         runtime.corpus_result = {"boundary":"before_provider_submission"}
     elif action.startswith("interrupt_"):
         class InterruptProvider:
@@ -498,7 +515,7 @@ class LifecycleCases:
             with self.runtime.db() as db:
                 db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
         after = snapshot(self.runtime.root)
-        return {"before":before, "after":after, "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
+        return {"before":before, "after":after, "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None)),"nativeRequest":getattr(self.runtime,"corpus_native_request",None)}
 
     def close(self):
         if self.runtime is not None:

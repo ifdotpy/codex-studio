@@ -1,4 +1,12 @@
 //! Both sides start from a committed Python-written database, never a Rust snapshot.
+//! Submission uses the worker pipeline and production store::submitted, comparing
+//! the complete native method/params plus the extra Rust transport receipt.
+//! The oracle starts with a loaded thread: resume transport is covered by worker
+//! matrix scenario 0 (normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement).
+//! Fresh thread transport and authenticated manifest promotion are covered by
+//! scenario 16 (new_thread_freezes_settings_and_accepts_context); independent artifact
+//! creation is covered by scenario 17 (child_result_materializes_before_submission).
+//! SessionControl's actual wire/ACK and restart behavior remain worker tests.
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
@@ -89,7 +97,20 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }
             let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None),prepared_python::prepared_python(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"))).map_err(|e|e.to_string())?;
             let prepared=prepare_turn(store,&resources,&intent,1).map_err(|e|e.to_string())?;
-            prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).map(|v|json!(v)).map_err(|e|e.to_string())
+            if case["transition"] == "submission" {
+                assert_eq!(prepared.native_request(),case["nativeRequest"],"{}: native method and params",case["id"]);
+            }
+            let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).map_err(|e|e.to_string())?;
+            if submitted {
+                let db=store.read().map_err(|e|e.to_string())?;
+                let receipt=studio_runtime_store::EventWriteRepository::receipt(&db,"account-worker:account:default:attempt:turn/start:submitted").map_err(|e|e.to_string())?.expect("production account-worker submission receipt");
+                let receipt:Value=serde_json::from_str(&receipt.result).expect("receipt JSON");
+                assert_eq!(receipt["request"],json!({"id":"ticket","generation":1,"method":"turn/start","operation":"account:default:attempt:turn/start","thread":"thread","lightweight":false,"deadline":60000,"unknown":false,"remoteId":null}));
+                assert_eq!(receipt["context"]["compiled"]["provider_inputs"],prepared.native_request()["params"]["input"]);
+                assert_eq!(receipt["context"]["intent"]["events"][0]["id"],"event");
+                assert_eq!(receipt["context"]["compiled"]["manifest"],receipt["context"]["compiled"]["metadata_patches"]["event"]["contextManifest"]);
+            }
+            Ok(json!(submitted))
         },
         "accepted" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
@@ -480,7 +501,7 @@ fn python_written_turn_lifecycle_corpus() {
             .expect("nested hold restoration");
         }
         let mut prepared_case = case.clone();
-        prepared_case["preparationRoot"] = expected["pythonRoot"].clone();
+        prepared_case["nativeRequest"] = expected["nativeRequest"].clone();
         let case = &prepared_case;
         let first = apply(&store, case);
         let mut error = first.as_ref().err().cloned();

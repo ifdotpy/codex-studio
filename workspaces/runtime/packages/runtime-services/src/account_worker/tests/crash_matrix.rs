@@ -36,6 +36,7 @@ async fn scenario(index: usize) {
         19 => scenario_workspace_pending_reuses_reserved_attempt().await,
         20 => preparation_review::scenario_completed_repair_and_missing_complaint_deliver().await,
         21 => preparation_review::scenario_late_context_change_refuses_submission().await,
+        22 => preparation_review::scenario_sibling_completion_does_not_refuse_non_lead().await,
         _ => unreachable!(),
     }
 }
@@ -224,7 +225,7 @@ async fn every_scenario_recovers_at_every_bridge_boundary() {
     // Each scenario owns a paused clock; a deadline advance cannot affect peers.
     let slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut tasks = tokio::task::JoinSet::new();
-    for index in 0..22 {
+    for index in 0..23 {
         if std::env::var("MATRIX_SCENARIO")
             .ok()
             .is_some_and(|value| value != index.to_string())
