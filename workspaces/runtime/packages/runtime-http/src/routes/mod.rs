@@ -8,6 +8,7 @@ mod desktop;
 mod messages;
 mod monitors;
 mod panels;
+mod projects;
 mod questions_reads;
 mod queue_read;
 mod queue_write;
@@ -46,6 +47,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         terminals::routes(),
         monitors::routes(),
         panels::routes(),
+        projects::routes(),
         transcript::routes(),
         work_items::routes(),
         messages::routes(),

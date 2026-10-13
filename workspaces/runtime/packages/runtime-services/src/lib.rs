@@ -14,6 +14,7 @@ pub mod coordination;
 pub mod event_write;
 pub mod panels;
 pub mod progress_panel;
+pub mod projects;
 pub mod provider_session;
 pub mod questions_reads;
 pub mod queue_write;

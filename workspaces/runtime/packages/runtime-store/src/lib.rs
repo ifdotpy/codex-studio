@@ -26,6 +26,7 @@ pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepos
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
+pub use repositories::projects::ProjectsRepository;
 pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
