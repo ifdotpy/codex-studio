@@ -191,6 +191,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "PlanView",
         "ProfileRecord",
         "QueueItem",
+        "RenameServer",
         "QuestionEntry",
         "QuestionHistory",
         "RequestRecordResponse",

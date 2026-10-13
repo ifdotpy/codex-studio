@@ -71,6 +71,24 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.snapshot()
         self.assertEqual(self.rows(), rows)
 
+    def test_b_label_schema_matches_python_name_policy(self):
+        from codex_multi_server import AccessError, MultiServerService
+        cases = json.loads((Path(__file__).parent / "fixtures/rust-federation-credentials/names.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                try:
+                    MultiServerService.validate_name(case["label"])
+                    accepted = True
+                except AccessError:
+                    accepted = False
+                self.assertEqual(accepted, case["valid"])
+                before, digest = self.rows(), self.file_digest()
+                response = self.name("corpus-" + case["name"], case["label"])
+                self.assertEqual(response.status, 200 if accepted else 400, response.body[:500])
+                if not accepted:
+                    self.assertEqual(self.rows(), before)
+                    self.assertEqual(self.file_digest(), digest)
+
     def test_b_rename_replay_conflict_and_refusal_do_not_write(self):
         keys_before = json.loads((self.backend.state / "multi-server/identity.json").read_text())
         result = self.name("local-name", "Local café")
