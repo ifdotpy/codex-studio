@@ -163,11 +163,9 @@ async fn post_message(
             })
             .map_err(coordination_error)?;
         let value = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
-            posted.receipt,
+            posted.receipt.clone(),
         )?;
-        if posted.event_inserted {
-            wake.notify_one();
-        }
+        posted.notify_committed(&wake);
         Ok::<Value, ApiError>(value)
     })
     .await

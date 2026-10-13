@@ -142,6 +142,16 @@ pub struct PostMessageResult {
     pub event_inserted: bool,
 }
 
+impl PostMessageResult {
+    /// Call only after the accepting transaction commits. Replays carry no new
+    /// work and must not signal the consumer again.
+    pub fn notify_committed(&self, wake: &tokio::sync::Notify) {
+        if self.event_inserted {
+            wake.notify_one();
+        }
+    }
+}
+
 /// The caller owns the transaction and publishes only after commit.
 pub fn post_message_with_admission(
     transaction: &Transaction<'_>,
@@ -209,7 +219,11 @@ fn post_managed_message(
             ));
         }
         return Ok(PostMessageResult {
-            receipt: json!({"id": input.id, "status": event.status, "error": event.error}),
+            receipt: studio_runtime_store::system_reads::validate(
+                "runtime_events",
+                input.id,
+                json!({"id": input.id, "status": event.status, "error": event.error}),
+            )?,
             event_inserted: false,
         });
     }
@@ -423,7 +437,14 @@ fn capacity_reset(
             &agent.id.0,
             &id,
         )? {
-            Some(true) => {}
+            Some(true) => {
+                // Python capacity_save refreshes this clock when manual input
+                // replaces the retry, even if no provider turn was submitted.
+                transaction.execute(
+                    "UPDATE runtime_capacity_retries SET record=json_set(record,'$.updatedAt',?1) WHERE id=?2 AND agent=?3",
+                    rusqlite::params![crate::event_write::unix_time().map_err(event_write_error)?, id, agent.id.0],
+                )?;
+            }
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
             None => {
                 return Err(CoordinationError::RequiresDependency(
@@ -523,7 +544,7 @@ pub fn post_message(
         room: input.room.to_owned(),
         author: "user".to_owned(),
         text: text.to_owned(),
-        at: unix_time()?,
+        at: crate::event_write::unix_time().map_err(event_write_error)?,
         deliveries: serde_json::to_string(&Value::Object(deliveries.into_iter().collect()))
             .map_err(|_| CoordinationError::InvalidRequest("Invalid message delivery state"))?,
     };
@@ -861,7 +882,7 @@ fn invalid_stored(object: &'static str, id: &str) -> CoordinationError {
     }
 }
 
-fn event_write_error(error: crate::event_write::EventWriteError) -> CoordinationError {
+pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> CoordinationError {
     use crate::event_write::EventWriteError;
     match error {
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
@@ -887,13 +908,6 @@ fn event_write_error(error: crate::event_write::EventWriteError) -> Coordination
             CoordinationError::InvalidRequest("system clock is before the Unix epoch")
         }
     }
-}
-
-fn unix_time() -> Result<f64, CoordinationError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_secs_f64())
-        .map_err(|_| CoordinationError::InvalidRequest("system clock is before the Unix epoch"))
 }
 
 #[cfg(test)]

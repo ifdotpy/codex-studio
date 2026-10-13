@@ -108,15 +108,13 @@ impl MessageAdmission for PreparedAdmission {
                 ));
             }
             let mut blocker = json!({"agentId":id,"operation":operation});
-            if let Some(id) = other.extra.get("workspaceReservationId").and_then(Value::as_str)
-                && let Some(record) = studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, id)?
+            if let Some(id) = other
+                .extra
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                && let Some(record) =
+                    studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
             {
-                if record.get("id").and_then(Value::as_str) != Some(id)
-                    || studio_runtime_schema::first_error("PersistedWorkspaceOperationRecord", &record)
-                        .map_err(|_| CoordinationError::InvalidStored { object: "runtime_workspace_operations", id: id.to_owned() })?.is_some()
-                {
-                    return Err(CoordinationError::InvalidStored { object: "runtime_workspace_operations", id: id.to_owned() });
-                }
                 for key in ["phase", "created", "turnId"] {
                     blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
                 }

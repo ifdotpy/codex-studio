@@ -120,5 +120,133 @@
       "workspaceOperation": "checkpoint"
     },
     "steps": [{}]
+  },
+  {
+    "name": "changed-recipient",
+    "others": [
+      {
+        "id": "other",
+        "rootId": "other"
+      }
+    ],
+    "steps": [
+      {},
+      {
+        "room": "other"
+      }
+    ]
+  },
+  {
+    "name": "deleted-recipient",
+    "agent": {
+      "deletedAt": 1.0
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "child-allowed",
+    "others": [
+      {
+        "id": "root",
+        "rootId": "root",
+        "concurrency": 16
+      }
+    ],
+    "agent": {
+      "rootId": "root",
+      "isLead": false,
+      "parentId": "root"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "child-disabled",
+    "others": [
+      {
+        "id": "root",
+        "rootId": "root",
+        "concurrency": 0
+      }
+    ],
+    "agent": {
+      "rootId": "root",
+      "isLead": false,
+      "parentId": "root"
+    },
+    "steps": [{}],
+    "existingDifference": "Inherited event_write::assert_delegation error omits the final period from codex_agent_modes.assert_delegation; behavior is the same.",
+    "rustResults": [
+      {
+        "error": "Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent"
+      }
+    ]
+  },
+  {
+    "name": "native-failure-hold-cleared",
+    "agent": {
+      "nativeFailureHold": true,
+      "status": "failed"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "native-thread-hold",
+    "agent": {
+      "threadId": "thread",
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "message": "policy",
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "safety-retry-hold",
+    "agent": {
+      "nativeSafetyRetry": {
+        "stage": "turns",
+        "epoch": 0,
+        "accountKey": "default"
+      }
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capacity-reset",
+    "capacity": {
+      "id": "retry",
+      "status": "scheduled",
+      "dueAt": 100,
+      "updatedAt": 1
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capacity-unsubmitted-attempt",
+    "agent": {
+      "startAttempt": {
+        "capacityRetryId": "retry",
+        "submitted": false
+      },
+      "inFlight": true
+    },
+    "capacity": {
+      "id": "retry",
+      "status": "scheduled",
+      "dueAt": 100,
+      "updatedAt": 1
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capture-starts-after-preparation",
+    "steps": [
+      {
+        "startOperation": "capture"
+      }
+    ]
   }
 ]

@@ -140,6 +140,37 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(retained.json()["messages"], history.json()["messages"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "located Rust storage errors")
+    def test_corrupt_replay_and_operation_report_the_stored_row(self):
+        body = {"id": "09090909-0909-0909-0909-090909090909", "room": self.agent, "text": "replay"}
+        self.assertEqual(self.request("POST", "/api/messages", body).status, 200)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+            from codex_sync_entities import register_functions
+            register_functions(db)
+            db.execute("UPDATE runtime_events SET status='corrupt' WHERE id=?", (body["id"],))
+        before = no_write_snapshot(self.backend.state)
+        response = self.request("POST", "/api/messages", body)
+        self.assertEqual(response.status, 500, response.body)
+        self.assertEqual(response.json()["error"], "Invalid stored object runtime_events/" + body["id"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+            register_functions(db)
+            db.execute("UPDATE runtime_events SET status='pending' WHERE id=?", (body["id"],))
+            db.execute("DROP INDEX IF EXISTS runtime_workspace_operation_phase")
+            db.execute("DROP INDEX IF EXISTS runtime_workspace_operation_agent_phase")
+            db.execute("INSERT INTO runtime_workspace_operations VALUES('broken-operation','{broken')")
+        _fixture.update_agent(self.backend, self.agent, {"workspaceOperation": "capture", "workspaceReservationId": "broken-operation"})
+        try:
+            before = no_write_snapshot(self.backend.state)
+            response = self.request("POST", "/api/messages", {**body, "id": "10101010-1010-1010-1010-101010101010"})
+            self.assertEqual(response.status, 500, response.body)
+            self.assertEqual(response.json()["error"], "Invalid stored object runtime_workspace_operations/broken-operation")
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
+        finally:
+            _fixture.update_agent(self.backend, self.agent, {}, remove=("workspaceOperation", "workspaceReservationId"))
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                db.execute("DELETE FROM runtime_workspace_operations WHERE id='broken-operation'")
+
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "named Rust dependencies")
     def test_unavailable_admission_never_writes_an_event(self):
         for fields, dependency in (({"tokenBudget": 0}, "budget-policy/message-admission"),
