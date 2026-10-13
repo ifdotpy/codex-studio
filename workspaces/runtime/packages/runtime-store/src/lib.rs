@@ -1,5 +1,6 @@
 mod bootstrap;
 mod feature_schema;
+mod multi_server_state_check;
 mod path;
 mod records;
 mod repositories;
@@ -17,11 +18,14 @@ pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,
 };
+pub use repositories::analytics_capture;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
 pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};
-pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
+pub use repositories::remote_transport::{
+    AccessNonceOutcome, OutboundReservation, RemoteTransportRepository,
+};
 pub use repositories::system_reads;
 
 use std::fs::{File, OpenOptions};
@@ -45,6 +49,7 @@ pub use records::{
 };
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::context_repair::ContextRepairRepository;
+pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::federation::FederationRepository;

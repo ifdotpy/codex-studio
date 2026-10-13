@@ -1,0 +1,80 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "agentId": {
+      "title": "Agentid",
+      "type": "string"
+    },
+    "at": {
+      "minimum": 0,
+      "title": "At",
+      "type": "number"
+    },
+    "finishedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finishedat"
+    },
+    "firstOutputAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Firstoutputat"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "startedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Startedat"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "terminalSource": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Terminalsource"
+    }
+  },
+  "required": [
+    "id",
+    "agentId",
+    "at",
+    "startedAt",
+    "finishedAt",
+    "firstOutputAt",
+    "status"
+  ],
+  "title": "AnalyticsTurn",
+  "type": "object"
+}

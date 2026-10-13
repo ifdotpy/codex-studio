@@ -297,7 +297,11 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_paired_revoked_and_discovered_directory_selection(self):
         path=self.backend.state / "canvas.sqlite3"
         for table,identity,record,expected in (("runtime_access_clients","paired",{"kind":"server","status":"paired"},501),("runtime_access_clients","revoked",{"kind":"server","status":"revoked","revoked":1.0},403),("runtime_access_discovered","discovered",{"status":"discovered"},501)):
-            with sqlite3.connect(path) as db:db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(identity,json.dumps({"id":identity,**record})))
+            # Complete storage rows match Python's pairing/discovery writers;
+            # the directory consumer only selects their pairing fields.
+            stored={"id":identity,"clientId":identity,"kind":"server","label":identity,
+                    "created":1.0,"publicKey":"fixture-key",**record}
+            with sqlite3.connect(path) as db:db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(identity,json.dumps(stored)))
             response=self.backend.request("GET","/api/directories?"+urlencode({"server":identity,"path":str(self.root)}),headers=self.headers())
             self.assertEqual(response.status,expected,response.body)
             if identity=="discovered":self.assertIn("discovery-pairing",response.json()["error"])

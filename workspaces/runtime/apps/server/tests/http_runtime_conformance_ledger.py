@@ -202,6 +202,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/directories"): {
         "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
     },
+    ("GET", "/api/import"): {
+        "primary": {
+            "query": {"account_key": "default"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
+    ("POST", "/api/import"): {
+        "primary": {
+            "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
     ("GET", "/api/messages"): {
         "primary": {"query": {"room": "$room"}},
     },
@@ -252,7 +268,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
     ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
     ("GET", "/api/search/item"): {
-        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
         "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
@@ -1277,7 +1293,7 @@ def probe_operations(
     from http_backend_harness import BackendProcess, HttpResult
 
     with tempfile.TemporaryDirectory(
-        prefix="rust-http-ledger-", dir=DEFAULT_CACHE
+        prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
         backend = BackendProcess(scratch, claude_bin=None)

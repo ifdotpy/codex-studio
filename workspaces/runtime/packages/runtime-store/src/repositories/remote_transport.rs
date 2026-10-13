@@ -65,6 +65,14 @@ pub enum OutboundReservation {
     Redacted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessNonceOutcome {
+    Accepted,
+    Replay,
+    ClientLimit,
+    PairingLimit,
+}
+
 pub struct RemoteTransportRepository;
 
 impl RemoteTransportRepository {
@@ -105,7 +113,7 @@ impl RemoteTransportRepository {
         )? == 1)
     }
 
-    /// Consume a multi-server nonce as part of the caller's immediate transaction.
+    /// Compatibility wrapper preserving all existing callers' bool outcome.
     pub fn consume_access_nonce(
         transaction: &Transaction<'_>,
         client_id: &str,
@@ -113,6 +121,23 @@ impl RemoteTransportRepository {
         now: i64,
         unpaired_attempt: bool,
     ) -> StoreResult<bool> {
+        Ok(Self::consume_access_nonce_outcome(
+            transaction,
+            client_id,
+            nonce,
+            now,
+            unpaired_attempt,
+        )? == AccessNonceOutcome::Accepted)
+    }
+
+    /// Consume a multi-server nonce as part of the caller's immediate transaction.
+    pub fn consume_access_nonce_outcome(
+        transaction: &Transaction<'_>,
+        client_id: &str,
+        nonce: &str,
+        now: i64,
+        unpaired_attempt: bool,
+    ) -> StoreResult<AccessNonceOutcome> {
         let stale_before = now.saturating_sub(NONCE_RETENTION_SECONDS);
         transaction.execute(
             "DELETE FROM runtime_access_nonces WHERE created < ?1",
@@ -127,7 +152,7 @@ impl RemoteTransportRepository {
                 |row| row.get(0),
             )?;
             if unpaired >= MULTI_SERVER_MAX_UNPAIRED_NONCES {
-                return Ok(false);
+                return Ok(AccessNonceOutcome::PairingLimit);
             }
         }
         let retained: i64 = transaction.query_row(
@@ -136,12 +161,12 @@ impl RemoteTransportRepository {
             |row| row.get(0),
         )?;
         if retained >= MULTI_SERVER_MAX_RETAINED_NONCES {
-            return Ok(false);
+            return Ok(AccessNonceOutcome::ClientLimit);
         }
-        Ok(transaction.execute(
+        Ok(if transaction.execute(
             "INSERT OR IGNORE INTO runtime_access_nonces(client,nonce,created) VALUES(?1,?2,?3)",
             params![client_id, nonce, now],
-        )? == 1)
+        )? == 1 { AccessNonceOutcome::Accepted } else { AccessNonceOutcome::Replay })
     }
 
     /// Reserve or recover an outbound request without changing its identity.
