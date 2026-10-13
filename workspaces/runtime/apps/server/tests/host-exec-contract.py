@@ -623,7 +623,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
 
     def test_reviewer_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "vm"})
-        with patch("codex_linux_workspaces.client") as client:
+        with patch("codex_linux_workspaces.client") as client, patch("codex_host_exec.ensure_service") as ensured:
             for action in ("execute", "status", "cancel"):
                 with self.subTest(action=action), self.assertRaises(PermissionError):
                     run_tool(runtime, {"id": "agent", "role": "reviewer"},
@@ -634,6 +634,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                 result = run_tool(runtime, {"id": "agent", "cwd": "/line", "role": role},
                                   {"action": "execute", "command": "true"}, "tool")
                 self.assertEqual(result["state"], "done")
+            # Each command first checks the Mac service: a VM start was the only check before.
+            ensured.assert_called_with(client.return_value.state_dir)
 
 
 if __name__ == "__main__":
