@@ -10,6 +10,11 @@ use studio_runtime_services::provider_binaries::{
 
 #[test]
 fn provider_version_core_matches_the_python_oracle_corpus() {
+    assert!(
+        parse_version("1.2.3-2").expect("numeric prerelease parses")
+            < parse_version("1.2.3-beta.1").expect("text prerelease parses"),
+        "numeric prerelease identifiers sort before text identifiers"
+    );
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");
     let corpus_path = manifest.join("tests/fixtures/provider-binary-versions.json");
