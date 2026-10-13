@@ -115,6 +115,21 @@ impl TranscriptRepository {
         connection: &Connection,
         agent: &str,
     ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
+        Self::items_for_agent_with_restore(connection, agent, false)
+    }
+
+    pub fn items_for_agent_including_restored(
+        connection: &Connection,
+        agent: &str,
+    ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
+        Self::items_for_agent_with_restore(connection, agent, true)
+    }
+
+    fn items_for_agent_with_restore(
+        connection: &Connection,
+        agent: &str,
+        include_restored: bool,
+    ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
         let mut statement = connection.prepare(
             "SELECT id,record FROM runtime_items WHERE agent=?1 ORDER BY created DESC,id DESC",
         )?;
@@ -125,7 +140,7 @@ impl TranscriptRepository {
         for row in rows {
             let (id, raw) = row.map_err(|error| map_column_error(error, "runtime_items"))?;
             let record = decode_object(&raw, "runtime_items")?;
-            if visible(&record) {
+            if include_restored || visible(&record) {
                 items.push(TranscriptItem { id, record });
             }
         }
