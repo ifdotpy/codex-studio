@@ -4,8 +4,8 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 
 use crate::records::{
-    EventMetadataRecord, JsonRecord, QueueEventId, Table, TaskId, TranscriptAssetId,
-    TranscriptAssetRecord, WorkItemRecord,
+    AgentId, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
+    TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
 };
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -56,6 +56,12 @@ pub struct StoredQueueEvent {
     pub error: Option<String>,
     pub metadata: Option<Value>,
     pub valid: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredRecord {
+    pub id: String,
+    pub record: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -134,18 +140,29 @@ impl WorkItemsRepository {
         Ok(())
     }
 
-    pub fn work(connection: &Connection) -> StoreResult<Vec<Value>> {
-        Ok(Table::<WorkItemRecord>::new(connection)
+    pub fn work(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
+        Table::<WorkItemRecord>::new(connection)
             .list()?
             .into_iter()
-            .map(|record| record.value().clone())
-            .collect())
+            .map(|record| {
+                Ok(StoredRecord {
+                    id: record.id().as_ref().to_owned(),
+                    record: Some(serde_json::to_string(record.value())?),
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()
     }
 
-    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        Ok(Table::<crate::PlanRecord>::new(connection)
-            .get(&crate::AgentId::from(id))?
-            .map(|record| record.value().clone()))
+    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<StoredRecord>> {
+        Table::<PlanRecord>::new(connection)
+            .get(&AgentId::from(id))?
+            .map(|record| {
+                Ok::<_, StoreError>(StoredRecord {
+                    id: id.to_owned(),
+                    record: Some(serde_json::to_string(record.value())?),
+                })
+            })
+            .transpose()
     }
 
     pub fn queue(

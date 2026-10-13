@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::event_write::request_signature as receipt_signature;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use studio_runtime_store::{RuntimeStore, StoreError, TerminalRecord, TerminalsRepository};
 use thiserror::Error;
 
@@ -663,63 +663,6 @@ fn new_id() -> Result<String, TerminalError> {
         &hex[16..20],
         &hex[20..]
     ))
-}
-
-fn receipt_signature(value: &Value) -> String {
-    fn quote(text: &str) -> String {
-        let mut out = String::from("\"");
-        for ch in text.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                '\u{8}' => out.push_str("\\b"),
-                '\u{c}' => out.push_str("\\f"),
-                ch if ch < ' ' => out.push_str(&format!("\\u{:04x}", ch as u32)),
-                ch if ch as u32 > 0x7f => {
-                    let code = ch as u32;
-                    if code <= 0xffff {
-                        out.push_str(&format!("\\u{code:04x}"));
-                    } else {
-                        let code = code - 0x10000;
-                        out.push_str(&format!(
-                            "\\u{:04x}\\u{:04x}",
-                            0xd800 + (code >> 10),
-                            0xdc00 + (code & 0x3ff)
-                        ));
-                    }
-                }
-                ch => out.push(ch),
-            }
-        }
-        out.push('"');
-        out
-    }
-    let json = value
-        .as_object()
-        .map(|object| {
-            format!(
-                "{{{}}}",
-                object
-                    .iter()
-                    .map(|(key, value)| {
-                        let value = value
-                            .as_str()
-                            .map(quote)
-                            .unwrap_or_else(|| value.to_string());
-                        format!("{}: {value}", quote(key))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
-        .unwrap_or_else(|| value.to_string());
-    Sha256::digest(json.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 #[cfg(test)]

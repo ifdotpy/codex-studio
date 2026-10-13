@@ -7,13 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use jsonschema::Validator;
+use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
-use studio_runtime_schema::{
-    JsonSchemaRegistry as SchemaRegistry, OPENAPI_URI, registry_for_document,
-};
 
 const OPENAPI: &[u8] = include_bytes!("../openapi.json");
+const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +60,8 @@ struct OperationValidator {
 pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
     preference_field: Option<Validator>,
+    stored_schemas: Arc<BTreeMap<String, Validator>>,
+    definitions: Arc<Map<String, Value>>,
 }
 
 #[derive(Debug)]
@@ -110,6 +110,33 @@ impl Registry {
                 operation_id: "push_preferences_api_sync_preferences_post".to_owned(),
                 message: error.to_string(),
             })?;
+        let mut stored_schemas = BTreeMap::new();
+        for name in [
+            "AgentRecordResponse",
+            "AnnotationReceipt",
+            "CheckpointSummary",
+            "ComplaintRecordResponse",
+            "MonitorEntityDto",
+            "MonitorRecordResponse",
+            "PlanView",
+            "QueueItem",
+            "RequestRecordResponse",
+            "RuleRecordResponse",
+            "TaskDetailResponse",
+            "TaskEntityDto",
+            "TranscriptAsset",
+            "WorkItem",
+        ] {
+            let validator = jsonschema::options()
+                .with_registry(&schema_registry)
+                .with_pattern_options(jsonschema::PatternOptions::regex())
+                .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/{name}")}))
+                .map_err(|error| CompileError {
+                    operation_id: name.to_owned(),
+                    message: error.to_string(),
+                })?;
+            stored_schemas.insert(name.to_owned(), validator);
+        }
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
@@ -140,6 +167,8 @@ impl Registry {
         Ok(Self {
             operations: Arc::new(compiled),
             preference_field: Some(preference_field),
+            stored_schemas: Arc::new(stored_schemas),
+            definitions,
         })
     }
 
@@ -289,6 +318,79 @@ impl Registry {
         self.preference_field
             .as_ref()
             .is_some_and(|validator| validator.is_valid(value))
+    }
+
+    pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
+        self.stored_schemas
+            .get(schema)
+            .is_some_and(|validator| validator.is_valid(value))
+    }
+
+    pub(crate) fn valid_stored_record(&self, schema: &str, id: &str, value: &Value) -> bool {
+        self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
+        let value = serde_json::from_str(raw).ok()?;
+        self.validate_stored(schema, &value).then_some(value)
+    }
+
+    pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
+        let properties = self
+            .definitions
+            .get(schema)?
+            .get("properties")?
+            .as_object()?;
+        let source = value.as_object()?;
+        Some(Value::Object(
+            source
+                .iter()
+                .filter(|(key, _)| properties.contains_key(*key))
+                .map(|(key, value)| (key.clone(), bound_display_value(value, key, 200)))
+                .collect(),
+        ))
+    }
+}
+
+fn bound_display_value(value: &Value, key: &str, list_limit: usize) -> Value {
+    match value {
+        Value::String(text) => {
+            let limit = match key {
+                "overview" => 9000,
+                "error" | "tail" | "description" | "command" | "query" => 2000,
+                "text" | "lastAnswer" => 4000,
+                _ => 12000,
+            };
+            Value::String(text.chars().take(limit).collect())
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .take(list_limit)
+                .map(|item| bound_display_value(item, "", list_limit))
+                .collect(),
+        ),
+        Value::Object(items) => Value::Object(
+            items
+                .iter()
+                .map(|(name, item)| {
+                    (
+                        name.clone(),
+                        bound_display_value(
+                            item,
+                            name,
+                            if name == "sidebarOrder" {
+                                10_000
+                            } else {
+                                list_limit
+                            },
+                        ),
+                    )
+                })
+                .collect(),
+        ),
+        value => value.clone(),
     }
 }
 
@@ -744,7 +846,15 @@ fn body_schema_uri(method: &str, path: &str) -> String {
 }
 
 fn schema_registry(document: &Value) -> Result<SchemaRegistry<'_>, String> {
-    registry_for_document(document)
+    SchemaRegistry::new()
+        .draft(Draft::Draft202012)
+        .add(
+            OPENAPI_URI,
+            jsonschema::Resource::from_contents(document.clone()),
+        )
+        .map_err(|error| error.to_string())?
+        .prepare()
+        .map_err(|error| error.to_string())
 }
 
 fn validate_part(part: &Part, value: &mut Value) -> Result<(), LocatedError> {
@@ -951,6 +1061,8 @@ mod tests {
         let registry = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
+            stored_schemas: Arc::new(BTreeMap::new()),
+            definitions: Arc::new(serde_json::Map::new()),
         };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
@@ -1174,6 +1286,8 @@ mod tests {
                 },
             )])),
             preference_field: None,
+            stored_schemas: Arc::new(BTreeMap::new()),
+            definitions: Arc::new(serde_json::Map::new()),
         };
         let valid = registry
             .validate_route(
@@ -1365,6 +1479,8 @@ mod tests {
         let arrays = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
+            stored_schemas: Arc::new(BTreeMap::new()),
+            definitions: Arc::new(serde_json::Map::new()),
         };
         let validated = arrays
             .validate(
@@ -1481,6 +1597,23 @@ mod tests {
         );
         let opaque = json!({"$ref":"#/components/schemas/JsonValue"});
         assert!(check_safe_integer_bounds(&document, &opaque, "/body/payload", "send").is_ok());
+    }
+
+    #[test]
+    fn persisted_record_schemas_validate_full_values_without_number_coercion() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let complaint = r#"{"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9007199254740992}"#;
+        assert!(
+            registry
+                .validated_stored("ComplaintRecordResponse", complaint)
+                .is_none()
+        );
+
+        let checkpoint = r#"{"id":"p","agent":"lead","created":1,"extension":9007199254740993}"#;
+        let value = registry
+            .validated_stored("CheckpointSummary", checkpoint)
+            .expect("valid extension record retains its integer");
+        assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
     }
 
     #[test]

@@ -3,10 +3,14 @@ pub(crate) mod agents;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
+pub(crate) mod federation;
 pub(crate) mod messages;
 pub(crate) mod monitors;
+pub(crate) mod multi_server;
 pub(crate) mod profiles;
+pub(crate) mod projects;
 pub(crate) mod questions_reads;
+pub(crate) mod questions_write;
 pub(crate) mod queue_write;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
@@ -14,6 +18,7 @@ pub(crate) mod sync_documents;
 pub(crate) mod tasks;
 pub(crate) mod terminals;
 pub(crate) mod transcript;
+pub(crate) mod usage;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
 pub(crate) mod workspace_views;
@@ -45,7 +50,6 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::Value;
     use serde_json::json;
-    use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
     use sync_documents::SyncDocumentsRepository;
@@ -141,7 +145,7 @@ mod tests {
             .map(|registration| registration.repository.to_owned())
             .collect::<Vec<_>>();
         assert_eq!(registered_modules, requirement_modules);
-        assert_eq!(registrations.len(), 18);
+        assert_eq!(registrations.len(), 24);
         assert!(registered_modules.windows(2).all(|pair| pair[0] < pair[1]));
     }
 

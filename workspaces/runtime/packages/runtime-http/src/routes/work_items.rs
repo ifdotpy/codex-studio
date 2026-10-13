@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError, PlanWrite};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, StoredRecord, WorkItemsRepository,
 };
 
 use crate::error::ApiError;
@@ -48,13 +48,14 @@ pub(crate) async fn work(
 }
 
 pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
-    read_agent(state, agent_id, |connection, agent, _validators| {
+    read_agent(state, agent_id, |connection, agent, validators| {
         let records = WorkItemsRepository::work(connection).map_err(|error| match error {
             studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                 invalid_stored(table, &id)
             }
             _ => ApiError::internal(),
         })?;
+        let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
         Ok(work_policy::work_list(&agent.root_id.0, &records))
     })
     .await
@@ -83,14 +84,27 @@ pub(crate) async fn plan(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
-    read_agent(state, agent_id, |connection, agent, _validators| {
-        let record =
+    read_agent(state, agent_id, |connection, agent, validators| {
+        let stored =
             WorkItemsRepository::plan(connection, &agent.id.0).map_err(|error| match error {
                 studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                     invalid_stored(table, &id)
                 }
                 _ => ApiError::internal(),
             })?;
+        let record = match stored {
+            None => None,
+            Some(row) => {
+                if row.id != agent.id.0 {
+                    return Err(invalid_stored("runtime_plans", &row.id));
+                }
+                let value = record_value("runtime_plans", &row)?;
+                if !validators.valid_stored_record("PlanView", &row.id, &value) {
+                    return Err(invalid_stored("runtime_plans", &row.id));
+                }
+                Some(value)
+            }
+        };
         Ok(work_policy::plan_view(
             &agent.id.0,
             &agent.root_id.0,
@@ -123,6 +137,39 @@ where
     .map_err(|_| ApiError::internal())?
 }
 
+fn stored_values(
+    object: &'static str,
+    schema: &str,
+    records: Vec<StoredRecord>,
+    validators: &Registry,
+    remove_path: bool,
+) -> Result<Vec<Value>, ApiError> {
+    records
+        .into_iter()
+        .map(|row| {
+            let mut value = record_value(object, &row)?;
+            if remove_path {
+                value
+                    .as_object_mut()
+                    .expect("record is object")
+                    .remove("path");
+            }
+            if !validators.valid_stored_record(schema, &row.id, &value) {
+                return Err(invalid_stored(object, &row.id));
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiError> {
+    serde_json::from_str(
+        row.record
+            .as_deref()
+            .ok_or_else(|| invalid_stored(object, &row.id))?,
+    )
+    .map_err(|_| invalid_stored(object, &row.id))
+}
 fn query_string(query: &QueryParams, name: &str) -> Result<String, ApiError> {
     query
         .typed_value(name)

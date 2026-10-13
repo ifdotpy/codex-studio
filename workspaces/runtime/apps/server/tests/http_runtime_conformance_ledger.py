@@ -3,16 +3,19 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from collections import defaultdict
-from typing import Any
+from typing import Any, Iterator
 
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -41,7 +44,79 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/changes"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {
+            "query": {"agent": "$agent"}, "query_omit": ["scope"], "expected": "2xx",
+        },
+        "additional": [{
+            "name": "image execution dependency",
+            "query": {"agent": "$agent"},
+            "query_omit": ["scope"],
+            "fixture_mutations": {"agent_execution_mode": "vm"},
+            "restore": ["agent_record"],
+            "expected": "501",
+            "expected_error": "Not implemented: requires workspace-state/image-execution",
+        }],
+    },
+    ("GET", "/api/federation"): {
+        "primary": {
+            "expected": "404",
+            "reason": "The local federation management route has no GET counterpart.",
+        },
+    },
+    ("GET", "/api/federation/v1/message"): {
+        "primary": {
+            "expected": "404",
+            "reason": "Federation message delivery is POST-only.",
+        },
+    },
+    ("GET", "/api/federation/v1/pair"): {
+        "primary": {
+            "expected": "404",
+            "reason": "Federation pairing is POST-only.",
+        },
+    },
+    ("GET", "/api/federation/v1/pull"): {
+        "primary": {
+            "expected": "404",
+            "reason": "Federation state pull is POST-only.",
+        },
+    },
+    ("GET", "/api/federation/v1/status"): {
+        "primary": {
+            "expected": "404",
+            "reason": "Signed federation status is POST-only.",
+        },
+    },
+    ("GET", "/api/models"): {
+        "primary": {
+            "query": {"account_key": "default"},
+            "query_omit": ["workers", "retry"],
+            "expected": "2xx",
+            "wait_for_success": True,
+        },
+        "additional": [{
+            "name": "Claude catalog dependency",
+            "query": {"account_key": "$claudeAccount"},
+            "query_omit": ["workers", "retry"],
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-service/claude-model-catalog",
+        }],
+    },
+    ("GET", "/api/multi-server"): {
+        "primary": {"expected": "2xx"},
+        "additional": [{
+            "name": "local identity dependency",
+            "fixture_mutations": {"remove_identity": True},
+            "restore": ["identity_file"],
+            "expected": "501",
+            "expected_error": "Not implemented: requires server-credentials/local-identity",
+        }],
+    },
+    ("GET", "/api/multi-server/v1/pair"): {
+        "primary": {
+            "expected": "404",
+            "reason": "The pairing callback accepts POST only.",
+        },
     },
     ("GET", "/api/checkpoints"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -155,7 +230,124 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"source": "$agent", "target": "$chat"}},
     },
     ("POST", "/api/messages"): {
-        "primary": {"body": {"id": "$message", "room": "$chat"}},
+        "primary": {
+            "body": {"id": "$message", "room": "$chat", "text": "Ledger message"},
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "attachment payload dependency",
+            "body": {
+                "id": "77777777-7777-4777-8777-777777777777",
+                "room": "$agent", "text": "", "assets": [{"name": "pending"}],
+            },
+            "expected": "501",
+            "expected_error": "Not implemented: requires payload-store/uploads",
+        }],
+    },
+    ("POST", "/api/complaints"): {
+        "primary": {
+            "body": {
+                "id": "ledger-probe-complaint-submit", "lead": "$agent",
+                "text": "Please review the ledger probe.",
+            },
+            "expected": "2xx",
+        },
+    },
+    ("POST", "/api/federation"): {
+        "primary": {"body": {"action": "status"}, "replace_body": True, "expected": "2xx"},
+        "additional": [{
+            "name": "federation invitation dependency",
+            "body": {"action": "create_invite", "label": "Ledger probe"},
+            "replace_body": True,
+            "expected": "501",
+            "expected_error": (
+                "Not implemented: requires remote-transport/tailscale-identity, "
+                "federation-credentials/key-generation"
+            ),
+        }],
+    },
+    ("POST", "/api/limits/reset"): {
+        "primary": {
+            "body": {
+                "account_key": "default", "account_id": "fixture-account",
+                "credit_id": "ledger-probe-credit", "request_id": "88888888-8888-4888-8888-888888888888",
+            },
+            "expected": "501",
+            "expected_error": "Not implemented: requires account-driver/reset-credit-redemption",
+            "assert_no_write": True,
+            "reason": "redemption is never performed or simulated in tests",
+        },
+    },
+    ("POST", "/api/multi-server"): {
+        "primary": {
+            "body": {"action": "settings", "autoPair": False, "requestId": "ledger-probe-settings"},
+            "replace_body": True,
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "signed invite dependency",
+            "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
+            "replace_body": True,
+            "expected": "501",
+            "expected_error": (
+                "Not implemented: requires remote-transport/owner-lookup, "
+                "federation-credentials/private-key"
+            ),
+        }],
+    },
+    ("POST", "/api/peer-teams"): {
+        "primary": {
+            "body": {
+                "action": "delete", "path": "$projectPath", "expected_revision": 0,
+                "team_id": "11111111-1111-4111-8111-111111111111",
+                "request_id": "ledger-probe-peer-delete",
+            },
+            "replace_body": True,
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "peer radio dependency",
+            "body": {
+                "action": "radio", "radio_action": "create", "path": "$projectPath",
+                "request_id": "ledger-probe-peer-radio", "name": "Ledger probe",
+                "participants": [
+                    {"account_key": "default", "model": "fixture-model"},
+                    {"account_key": "default", "model": "fixture-model-2"},
+                ],
+            },
+            "replace_body": True,
+            "expected": "501",
+            "expected_error": "Not implemented: requires workspace-state/peer-radio",
+        }],
+    },
+    ("POST", "/api/projects"): {
+        "primary": {
+            "body": {"action": "register", "path": "$projectPath", "name": "Ledger project"},
+            "replace_body": True,
+            "expected": "2xx",
+        },
+        "additional": [{
+            "name": "cross-server project registration dependency",
+            "body": {"action": "register", "path": "$projectPath", "name": "Remote project", "server": "remote"},
+            "replace_body": True,
+            "expected": "501",
+            "expected_error": "Not implemented: requires cross-server-driver/project-registration",
+        }],
+    },
+    ("POST", "/api/questions/defer"): {
+        "primary": {
+            "body": {"id": "$question", "deferred": True},
+            "expected": "2xx",
+        },
+    },
+    ("POST", "/api/questions/delete"): {
+        "primary": {"body": {"id": "$questionDelete"}, "expected": "2xx"},
+        "additional": [{
+            "name": "provider-owned question answer dependency",
+            "body": {"id": "$providerQuestion"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/question-answer",
+        }],
     },
     ("POST", "/api/panel/layout"): {
         "primary": {"body": {
@@ -410,7 +602,7 @@ try:
         **agent, "id": {image_agent_id!r}, "rootId": {agent_id!r},
         "parentId": {agent_id!r}, "name": "HTTP ledger image probe",
         "isLead": False, "autoWake": False, "workspaceMode": "image",
-        "imageWorkspace": True,
+        "imageWorkspace": True, "executionMode": "vm",
     }}
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
@@ -429,6 +621,16 @@ try:
         runtime.put(db, "plans", {{
             "id": {agent_id!r}, "rootId": {agent_id!r}, "text": "HTTP ledger probe plan",
             "version": 1, "updated": 1.0, "steps": [],
+        }}, sync_rooms=False)
+        runtime.put(db, "requests", {{
+            "id": "ledger-probe-question", "agent": {agent_id!r}, "epoch": 0,
+            "method": "agent/asyncQuestion", "status": "pending", "createdAt": 1.0,
+            "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
+        }}, sync_rooms=False)
+        runtime.put(db, "requests", {{
+            "id": "ledger-probe-provider-question", "agent": {agent_id!r}, "epoch": 0,
+            "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
+            "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id": {complaint_id!r}, "leadId": {agent_id!r}, "author": "user",
@@ -528,11 +730,16 @@ finally:
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
+        "question": "ledger-probe-question",
+        "questionDelete": "ledger-probe-question",
+        "providerQuestion": "ledger-probe-provider-question",
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
         "layoutRevision": layout_revision,
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
+        "projectPath": str(backend.cwd),
+        "claudeAccount": "claude-ledger",
     }
 
 
@@ -553,6 +760,8 @@ def valid_probe(
         schema = resolve_schema(parameter.get("schema", {}), document)
         value = sample_value(schema, document)
         name = parameter["name"]
+        if parameter.get("in") == "query" and name in overrides.get("query_omit", []):
+            continue
         if parameter.get("in") in {"path", "query"} and name in query_overrides:
             value = resolve_probe_value(query_overrides[name], identifiers)
         if parameter.get("in") == "path":
@@ -565,9 +774,9 @@ def valid_probe(
     body = None
     body_schema = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
     if body_schema:
-        body = sample_value(body_schema, document)
         body_overrides = resolve_probe_value(overrides.get("body", {}), identifiers)
-        if isinstance(body, dict) and isinstance(body_overrides, dict):
+        body = body_overrides if overrides.get("replace_body") else sample_value(body_schema, document)
+        if not overrides.get("replace_body") and isinstance(body, dict) and isinstance(body_overrides, dict):
             body.update(body_overrides)
     headers = {
         name: str(resolve_probe_value(value, identifiers))
@@ -586,6 +795,56 @@ def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
     if isinstance(value, dict):
         return {key: resolve_probe_value(item, identifiers) for key, item in value.items()}
     return value
+
+
+@contextmanager
+def probe_fixture_state(
+    backend: Any,
+    identifiers: dict[str, str],
+    probe_case: dict[str, Any],
+) -> Iterator[None]:
+    """Apply a keyed probe's shared-state mutation and always restore it."""
+    mutations = probe_case.get("fixture_mutations", {})
+    restore = set(probe_case.get("restore", []))
+    if ("agent_execution_mode" in mutations) != ("agent_record" in restore):
+        raise ValueError("agent execution mode probe mutations must declare agent_record restoration")
+    if ("remove_identity" in mutations) != ("identity_file" in restore):
+        raise ValueError("identity file probe mutations must declare identity_file restoration")
+
+    agent_record: dict[str, Any] | None = None
+    identity_file: tuple[Path, bytes, int] | None = None
+    try:
+        if "agent_execution_mode" in mutations:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (identifiers["agent"],),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded ledger agent is missing")
+                agent_record = json.loads(row[0])
+                changed = {**agent_record, "executionMode": mutations["agent_execution_mode"]}
+                connection.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (json.dumps(changed), identifiers["agent"]),
+                )
+        if "remove_identity" in mutations:
+            path = backend.state / "multi-server" / "identity.json"
+            identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
+            path.unlink()
+        yield
+    finally:
+        try:
+            if agent_record is not None:
+                with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                    connection.execute(
+                        "UPDATE runtime_agents SET record=? WHERE id=?",
+                        (json.dumps(agent_record), identifiers["agent"]),
+                    )
+        finally:
+            if identity_file is not None:
+                path, content, mode = identity_file
+                path.write_bytes(content)
+                path.chmod(mode)
 
 
 def probe_operations(
@@ -654,25 +913,49 @@ def probe_operations(
                     }
                     if method in JSON_METHODS or method == "DELETE":
                         headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
-                    result = backend.request(
-                        method,
-                        path,
-                        body=body if method in JSON_METHODS else None,
-                        headers=headers,
-                        timeout=2.0,
+                    database_before = (
+                        sqlite_snapshot(backend.state / "canvas.sqlite3")
+                        if probe_case.get("assert_no_write") else None
                     )
+                    with probe_fixture_state(backend, identifiers, probe_case):
+                        result = backend.request(
+                            method,
+                            path,
+                            body=body if method in JSON_METHODS else None,
+                            headers=headers,
+                            timeout=2.0,
+                        )
                     try:
                         response_body = json.loads(result.body)
                     except (ValueError, TypeError):
                         response_body = None
                     operation_key = f"{method} {template}"
-                    probe_event = {"operation": operation_key, "body": response_body}
+                    probe_event = {
+                        "operation": operation_key,
+                        "body": response_body,
+                        "expected_error": probe_case.get("expected_error"),
+                    }
+                    if probe_case.get("wait_for_success") and not 200 <= result.status < 300:
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline and not 200 <= result.status < 300:
+                            time.sleep(0.05)
+                            result = backend.request(method, path, headers=headers, timeout=2.0)
+                            try:
+                                response_body = json.loads(result.body)
+                            except (ValueError, TypeError):
+                                response_body = None
+                        probe_event["body"] = response_body
                     standard_501 = result.status != 501 or valid_501_envelope(probe_event, manifest)
+                    no_write = (
+                        database_before is None
+                        or database_before == sqlite_snapshot(backend.state / "canvas.sqlite3")
+                    )
                     expected = probe_case.get(
                         "expected", "501" if implementation != "implemented" else "2xx"
                     )
                     expected_matches = (
                         (expected == "501" and result.status == 501 and standard_501)
+                        or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
                         or (expected == "2xx" and 200 <= result.status < 300)
                         or (expected == "either" and (200 <= result.status < 300 or result.status == 501 and standard_501))
                     )
@@ -683,6 +966,8 @@ def probe_operations(
                         "expectedMatches": expected_matches,
                         "body": response_body,
                         "standard501Envelope": standard_501,
+                        "noWrite": no_write,
+                        **({"reason": probe_case["reason"]} if "reason" in probe_case else {}),
                     })
                 primary = observations[0]
                 schema_header = result.headers.get("x-studio-api-schema")
@@ -702,7 +987,11 @@ def probe_operations(
                     standard_501_envelope,
                     dependency_response_matches,
                 )
+                if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
+                    classification = "implemented"
                 if not all(observation["expectedMatches"] for observation in observations):
+                    classification = "unexpected"
+                if not all(observation["noWrite"] for observation in observations):
                     classification = "unexpected"
                 rows.append({
                     "method": method,
@@ -743,6 +1032,11 @@ def seed_catalog_state(backend: Any) -> None:
             "default": {
                 "id": "default", "home": str(backend.codex_home), "label": "Codex",
                 "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
+                "status": "ready",
+            },
+            "claude-ledger": {
+                "id": "claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
+                "source": "ledger fixture", "provider": "claude", "accountId": "claude:ledger",
                 "status": "ready",
             },
         },
@@ -954,7 +1248,23 @@ def run_suite(
     }
 
 
+def sqlite_snapshot(path: Path) -> tuple[Any, ...]:
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        return tuple(
+            (
+                table[0],
+                tuple(sorted(connection.execute(f'SELECT * FROM "{table[0]}"').fetchall(), key=repr)),
+            )
+            for table in tables
+        )
+
+
 def valid_501_envelope(event: dict[str, Any], manifest: dict[tuple[str, str], dict[str, Any]]) -> bool:
+    if event.get("expected_error"):
+        return event.get("body") == {"error": event["expected_error"]}
     operation = event.get("operation")
     if operation:
         method, path = operation.split(" ", 1)

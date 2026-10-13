@@ -68,6 +68,12 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 impl AgentRepository {
+    pub fn get_raw(connection: &Connection, id: &AgentId) -> StoreResult<Option<String>> {
+        Ok(Table::<AgentRecord>::new(connection)
+            .get_with_raw(id)?
+            .map(|(_, raw)| raw))
+    }
+
     pub fn get(connection: &Connection, id: &AgentId) -> StoreResult<Option<AgentRecord>> {
         Table::<AgentRecord>::new(connection).get(id)
     }

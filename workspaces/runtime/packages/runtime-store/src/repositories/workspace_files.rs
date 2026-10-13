@@ -6,6 +6,9 @@ use crate::StoreResult;
 use crate::records::{Table, TranscriptAssetId, TranscriptAssetRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 
+/// Compatibility name for callers that used the pre-typed asset wrapper.
+pub type StoredWorkspaceAsset = TranscriptAssetRecord;
+
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",

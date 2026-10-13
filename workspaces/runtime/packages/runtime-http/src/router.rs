@@ -27,6 +27,7 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
+    pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
@@ -43,6 +44,8 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
+        let model_catalog =
+            studio_runtime_services::model_catalog::ModelCatalogService::new(native_path.clone());
         Self {
             token,
             workspace_id,
@@ -53,6 +56,7 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
+            model_catalog,
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }

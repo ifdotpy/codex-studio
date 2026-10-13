@@ -136,6 +136,15 @@ macro_rules! stored_string_enum {
             Other(String),
         }
 
+        impl $name {
+            pub fn as_str(&self) -> &str {
+                match self {
+                    $(Self::$variant => $value,)+
+                    Self::Other(value) => value,
+                }
+            }
+        }
+
         impl Serialize for $name {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
@@ -163,13 +172,6 @@ macro_rules! stored_string_enum {
                 match value {
                     $($value => Self::$variant,)+
                     _ => Self::Other(value.to_owned()),
-                }
-            }
-
-            pub fn as_str(&self) -> &str {
-                match self {
-                    $(Self::$variant => $value,)+
-                    Self::Other(value) => value,
                 }
             }
         }
@@ -459,6 +461,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             connection,
             record: PhantomData,
         }
+    }
+
+    pub(crate) fn decode_stored(&self, row_id: &str, encoded: &str) -> StoreResult<R> {
+        decode_record::<R>(row_id, encoded)
     }
 
     pub fn get(&self, id: &R::Id) -> StoreResult<Option<R>> {

@@ -15,6 +15,7 @@ pub(crate) fn registered_dependencies() -> Vec<&'static str> {
         .flat_map(|registration| registration.dependencies.iter().copied())
         .collect::<Vec<_>>();
     names.sort_unstable();
+    names.dedup();
     names
 }
 
@@ -85,7 +86,7 @@ impl OperationStatus {
         reason = "partial route slices use this to bind 501 behavior"
     )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
-        matches!(self, Self::Partial { dependencies: declared } if declared == dependencies)
+        matches!(self, Self::Partial { dependencies: declared } if dependencies.iter().all(|dependency| declared.contains(dependency)))
     }
 }
 

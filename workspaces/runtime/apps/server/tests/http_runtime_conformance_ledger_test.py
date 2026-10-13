@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -32,7 +35,8 @@ class LedgerTraceContract(unittest.TestCase):
         fixture_keys = {
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
-            "layoutRevision", "emptyQueueRevision", "queueIds",
+            "layoutRevision", "emptyQueueRevision", "queueIds", "question",
+            "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
         }
 
         def references(value):
@@ -48,8 +52,94 @@ class LedgerTraceContract(unittest.TestCase):
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "501"})
+                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "404", "501"})
                     self.assertLessEqual(references(probe_case), fixture_keys)
+                    if probe_case.get("expected") == "404":
+                        self.assertTrue(probe_case.get("reason"))
+
+    def test_reset_credit_probe_is_single_named_refusal_without_redemption(self) -> None:
+        reset = ledger.PROBE_CASES[("POST", "/api/limits/reset")]
+        self.assertEqual(set(reset), {"primary"})
+        self.assertEqual(reset["primary"]["expected"], "501")
+        self.assertTrue(reset["primary"]["assert_no_write"])
+        self.assertEqual(
+            reset["primary"]["reason"],
+            "redemption is never performed or simulated in tests",
+        )
+
+    def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
+        for operation in (
+            ("GET", "/api/changes"),
+            ("GET", "/api/models"),
+            ("GET", "/api/multi-server"),
+            ("POST", "/api/federation"),
+            ("POST", "/api/messages"),
+            ("POST", "/api/multi-server"),
+            ("POST", "/api/peer-teams"),
+            ("POST", "/api/projects"),
+            ("POST", "/api/questions/delete"),
+        ):
+            with self.subTest(operation=operation):
+                spec = ledger.PROBE_CASES[operation]
+                self.assertEqual(spec["primary"]["expected"], "2xx")
+                refusals = spec.get("additional", [])
+                self.assertTrue(refusals)
+                self.assertTrue(all(case["expected"] == "501" for case in refusals))
+                self.assertTrue(all(case.get("expected_error") for case in refusals))
+
+    def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
+        identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
+        changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
+        changes_path, _, _ = ledger.valid_probe(
+            "GET", "/api/changes", identifiers, changes,
+        )
+        self.assertEqual(changes_path, "/api/changes?agent=lead-agent")
+        self.assertEqual(changes["fixture_mutations"]["agent_execution_mode"], "vm")
+        self.assertIn("agent_record", changes["restore"])
+
+        models = ledger.PROBE_CASES[("GET", "/api/models")]["additional"][0]
+        models_path, _, _ = ledger.valid_probe("GET", "/api/models", identifiers, models)
+        self.assertEqual(models_path, "/api/models?account_key=claude-account")
+
+    def test_probe_fixture_restore_runs_when_the_probe_raises(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-probe-restore-") as scratch:
+            state = Path(scratch)
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute(
+                    "INSERT INTO runtime_agents VALUES(?, ?)",
+                    ("lead-agent", json.dumps({"id": "lead-agent", "executionMode": "host"})),
+                )
+            identity_path = state / "multi-server" / "identity.json"
+            identity_path.parent.mkdir()
+            identity_path.write_bytes(b'{"serverId":"local"}')
+            identity_path.chmod(0o600)
+            case = {
+                "fixture_mutations": {
+                    "agent_execution_mode": "vm", "remove_identity": True,
+                },
+                "restore": ["agent_record", "identity_file"],
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(
+                    SimpleNamespace(state=state), {"agent": "lead-agent"}, case,
+                ):
+                    self.assertFalse(identity_path.exists())
+                    with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                        changed = json.loads(connection.execute(
+                            "SELECT record FROM runtime_agents WHERE id='lead-agent'",
+                        ).fetchone()[0])
+                    self.assertEqual(changed["executionMode"], "vm")
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(identity_path.read_bytes(), b'{"serverId":"local"}')
+            self.assertEqual(identity_path.stat().st_mode & 0o777, 0o600)
+            with sqlite3.connect(state / "canvas.sqlite3") as connection:
+                restored = json.loads(connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id='lead-agent'",
+                ).fetchone()[0])
+            self.assertEqual(restored["executionMode"], "host")
 
     def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
         panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]

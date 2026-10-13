@@ -109,6 +109,21 @@ impl TranscriptRepository {
         connection: &Connection,
         agent: &str,
     ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
+        Self::items_for_agent_with_restore(connection, agent, false)
+    }
+
+    pub fn items_for_agent_including_restored(
+        connection: &Connection,
+        agent: &str,
+    ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
+        Self::items_for_agent_with_restore(connection, agent, true)
+    }
+
+    fn items_for_agent_with_restore(
+        connection: &Connection,
+        agent: &str,
+        include_restored: bool,
+    ) -> TranscriptStoreResult<Vec<TranscriptItem>> {
         Table::<TranscriptItemRecord>::new(connection)
             .list_matching(
                 Some(RecordPredicate::PhysicalAgentEquals(agent)),
@@ -117,7 +132,7 @@ impl TranscriptRepository {
             .map(|records| {
                 records
                     .into_iter()
-                    .filter(|record| visible(record.value()))
+                    .filter(|record| include_restored || visible(record.value()))
                     .map(|record| TranscriptItem {
                         id: record.id().as_ref().to_owned(),
                         record: record.value().clone(),
