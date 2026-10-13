@@ -1,5 +1,6 @@
 """Compare terminal actions using the production Python manager and SQLite rows."""
 import concurrent.futures
+import itertools
 import json
 import uuid
 from pathlib import Path
@@ -77,7 +78,8 @@ def backup(source_root, destination):
 
 
 def main():
-    codex_terminals.time.time = lambda: 1700000000.25
+    clock_ticks = itertools.count()
+    codex_terminals.time.time = lambda: 1700000000.25 + next(clock_ticks)
     uuid.uuid4 = lambda: uuid.UUID("f48d7c00-0000-4000-8000-000000000001")
     canvas = Canvas(root)
     manager = TerminalManager(root)

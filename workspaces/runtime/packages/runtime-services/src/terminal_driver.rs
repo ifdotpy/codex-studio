@@ -828,6 +828,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
@@ -1013,8 +1014,10 @@ mod tests {
         TerminalDriver::new(state.store.as_ref().expect("store").clone(), session)
     }
 
+    static ACTION_CLOCK_TICK: AtomicU64 = AtomicU64::new(0);
+
     fn action_clock() -> f64 {
-        1_700_000_000.25
+        1_700_000_000.25 + ACTION_CLOCK_TICK.fetch_add(1, Ordering::SeqCst) as f64
     }
 
     fn action_id() -> Result<String, TerminalError> {
@@ -2335,6 +2338,9 @@ mod tests {
     #[test]
     fn python_terminal_action_differential_compares_all_returns_and_rows() {
         use crate::agents_create;
+
+        // Python's manager advances its clock once while recovering the seeded running row.
+        ACTION_CLOCK_TICK.store(1, Ordering::SeqCst);
 
         fn normalize(value: &mut Value, root: &Path) {
             match value {

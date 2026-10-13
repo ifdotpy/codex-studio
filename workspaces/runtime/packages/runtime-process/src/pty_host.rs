@@ -25,6 +25,9 @@ use thiserror::Error;
 use crate::PtyHost;
 use crate::supervisor_identity::{signal_verified_group_member, start_time};
 
+#[cfg(test)]
+type BeforeKillHook = Box<dyn Fn(bool) + Send>;
+
 #[derive(Debug, Error)]
 pub enum PtyHostError {
     #[error(transparent)]
@@ -136,7 +139,7 @@ struct PtyShared {
     termination_complete: AtomicBool,
     captured_groups: Mutex<Vec<SessionGroup>>,
     #[cfg(test)]
-    before_kill: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    before_kill: Mutex<Option<BeforeKillHook>>,
     #[cfg(test)]
     fail_next_kill: AtomicBool,
 }
@@ -212,14 +215,11 @@ impl PtyShared {
         if let Ok(hook) = self.before_kill.lock()
             && let Some(hook) = hook.as_ref()
         {
-            hook();
+            hook(child.status.is_some());
         }
-        // Python enumerates again before KILL. Only trust newly discovered
-        // groups while a member from our original snapshot still anchors this
-        // session; otherwise report unresolved cleanup instead of risking a
-        // reused session ID.
-        let current_groups =
-            fresh_groups_for_kill(self.session, &groups, session_groups, has_live_anchor)?;
+        // The live PTY retains ownership of this session while close runs, so
+        // match Python and kill every group in the fresh session enumeration.
+        let current_groups = fresh_groups_for_kill(self.session, &groups, session_groups, false)?;
         #[cfg(test)]
         let signal_error = if self.fail_next_kill.swap(false, Ordering::AcqRel) {
             Some(rustix::io::Errno::PERM)
@@ -436,8 +436,10 @@ pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
         while Instant::now() < deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        // Restart cleanup has no live PTY ownership, so a captured live member
+        // must still anchor this session before newly discovered groups are used.
         let current_groups =
-            fresh_groups_for_kill(identity.session, &groups, session_groups, has_live_anchor)?;
+            fresh_groups_for_kill(identity.session, &groups, session_groups, true)?;
         signal_groups(
             &current_groups,
             identity.session,
@@ -562,10 +564,10 @@ fn fresh_groups_for_kill(
     session: u32,
     captured: &[SessionGroup],
     enumerate: impl FnOnce(u32) -> Vec<SessionGroup>,
-    has_anchor: impl FnOnce(&[SessionGroup], u32) -> bool,
+    require_anchor: bool,
 ) -> Result<Vec<SessionGroup>, PtyHostError> {
     let current = enumerate(session);
-    if !current.is_empty() && !has_anchor(captured, session) {
+    if require_anchor && !current.is_empty() && !has_live_anchor(captured, session) {
         return Err(PtyHostError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "terminal session jobs remain without a verified original member",
@@ -678,65 +680,40 @@ fn exit_code(status: ExitStatus) -> i32 {
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
-    use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
-    use std::time::Duration;
 
-    use super::{GroupMember, LocalPtyHost, PtyHost, SessionGroup, fresh_groups_for_kill};
+    use super::{LocalPtyHost, PtyHost};
 
-    #[test]
-    fn kill_enumeration_sees_a_group_created_after_term_at_the_gate() {
-        let original = SessionGroup {
-            id: 700,
-            members: vec![GroupMember {
-                pid: 701,
-                start_time: "original-member".into(),
-            }],
-        };
-        let discovered = Arc::new(Mutex::new(vec![original.clone()]));
-        let gate = Arc::new(Barrier::new(2));
-        let worker_groups = discovered.clone();
-        let worker_gate = gate.clone();
-        let captured = vec![original];
-        let worker = thread::spawn(move || {
-            fresh_groups_for_kill(
-                700,
-                &captured,
-                move |_| {
-                    worker_gate.wait(); // TERM has completed; KILL enumeration is gated.
-                    worker_gate.wait(); // The test inserts a new session group.
-                    worker_groups.lock().expect("groups").clone()
-                },
-                |_, _| true,
-            )
-            .expect("fresh session enumeration")
-        });
+    struct ReleaseGate(Option<mpsc::Sender<()>>);
 
-        gate.wait();
-        discovered.lock().expect("groups").push(SessionGroup {
-            id: 702,
-            members: vec![GroupMember {
-                pid: 703,
-                start_time: "new-member".into(),
-            }],
-        });
-        gate.wait();
-        let groups = worker.join().expect("enumeration worker");
-        assert!(groups.iter().any(|group| group.id == 702));
+    impl ReleaseGate {
+        fn release(&mut self) {
+            if let Some(sender) = self.0.take() {
+                sender.send(()).expect("release KILL gate");
+            }
+        }
+    }
+
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _release_result = sender.send(());
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn term_resistant_job_survives_until_leader_is_reaped_before_kill() {
+    fn live_close_kills_handoff_group_after_try_wait_reaps_leader() {
         let root = PathBuf::from("/dev/shm/cs-rust-terminals-tests/process-host");
         std::fs::create_dir_all(&root).expect("tmpfs cwd");
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
         let host = LocalPtyHost;
         let command = [
-            "/bin/bash".to_owned(),
+            "/usr/bin/python3".to_owned(),
             "-c".to_owned(),
-            r#"set -m; /usr/bin/python3 -c 'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("JOB_READY", flush=True); signal.pause()' & job=$!; echo CHILD_PID:$job; wait"#.to_owned(),
+            "import os,signal\nr,w=os.pipe()\ndef term(_sig,_frame):\n pid=os.fork()\n if pid==0:\n  os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n  print(f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}',flush=True); os.write(w,b'x'); signal.pause()\n os.close(w); os.read(r,1); raise SystemExit(0)\nsignal.signal(signal.SIGTERM,term)\nprint('READY',flush=True)\nsignal.pause()".to_owned(),
         ];
         let env = [
             ("TERM".into(), "xterm-256color".into()),
@@ -746,56 +723,86 @@ mod tests {
             .open(&command, &cwd, &env)
             .expect("open terminal shell");
         let leader = session.identity().expect("Linux identity").pid;
-        let (sender, receiver) = mpsc::channel();
+        let (observed_sender, observed_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let mut release_gate = ReleaseGate(Some(release_sender));
         let mut output = String::new();
-        let mut child_pid = None;
-        while child_pid.is_none() || !output.contains("JOB_READY") {
+        while !output.contains("READY") {
             let mut bytes = [0_u8; 512];
             let count = host.read(&mut session, &mut bytes).expect("read handshake");
             assert_ne!(count, 0, "leader exited before announcing its child");
             output.push_str(&String::from_utf8_lossy(&bytes[..count]));
-            child_pid = output
-                .lines()
-                .find_map(|line| line.strip_prefix("CHILD_PID:")?.trim().parse::<u32>().ok());
         }
-        let child_pid = child_pid.expect("child pid");
-        let stat =
-            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).expect("job process stat");
-        let (_, fields) = stat.rsplit_once(')').expect("job stat fields");
-        let fields = fields.split_whitespace().collect::<Vec<_>>();
-        let group = fields[2].parse::<u32>().expect("job process group");
-        assert_ne!(group, leader, "job must have its own process group");
-        let hook = Box::new(move || {
-            let leader_alive =
-                std::fs::read_to_string(format!("/proc/{leader}/stat")).is_ok_and(|stat| {
-                    stat.rsplit_once(") ")
-                        .and_then(|(_, fields)| fields.split_whitespace().next())
-                        .is_some_and(|state| state != "Z")
-                });
-            assert!(
-                !leader_alive,
-                "TERM-responsive leader must be reaped before KILL"
-            );
-            let child_alive =
-                std::fs::read_to_string(format!("/proc/{child_pid}/stat")).is_ok_and(|stat| {
-                    stat.rsplit_once(") ")
-                        .and_then(|(_, fields)| fields.split_whitespace().next())
-                        .is_some_and(|state| state != "Z")
-                });
-            assert!(
-                child_alive,
-                "TERM-ignoring job must survive TERM until KILL"
-            );
-            let _sent = sender.send(());
+        let hook = Box::new(move |reaped| {
+            observed_sender
+                .send(reaped)
+                .expect("report try_wait status");
+            release_receiver.recv().expect("test releases KILL");
         });
         *session.0.before_kill.lock().expect("termination hook") = Some(hook);
         let repeated_close = session.clone();
-        host.close(session).expect("TERM/KILL and reap session");
+        let close_thread = thread::spawn(move || host.close(session));
+        assert!(observed_receiver.recv().expect("pre-KILL reaping witness"));
+        let mut replacement = None;
+        let mut read_session = repeated_close.clone();
+        while replacement.is_none() {
+            let mut bytes = [0_u8; 512];
+            let count = host
+                .read(&mut read_session, &mut bytes)
+                .expect("read replacement handshake");
+            assert_ne!(count, 0, "replacement exited before the KILL gate");
+            output.push_str(&String::from_utf8_lossy(&bytes[..count]));
+            replacement = output.lines().find_map(|line| {
+                let fields = line
+                    .strip_prefix("REPLACEMENT:")?
+                    .split(':')
+                    .collect::<Vec<_>>();
+                Some((
+                    fields.first()?.parse::<u32>().ok()?,
+                    fields.get(1)?.parse::<u32>().ok()?,
+                ))
+            });
+        }
+        let (replacement_pid, replacement_group) = replacement.expect("replacement pid and group");
+        assert_ne!(
+            replacement_group, leader,
+            "replacement owns a new process group"
+        );
+        let replacement_stat = std::fs::read_to_string(format!("/proc/{replacement_pid}/stat"))
+            .expect("replacement process stat before KILL");
+        assert!(
+            replacement_stat
+                .rsplit_once(')')
+                .and_then(|(_, fields)| fields.split_whitespace().next())
+                .is_some_and(|state| state != "Z"),
+            "replacement must still be alive at the fresh KILL enumeration"
+        );
+        let replacement_start = super::start_time(replacement_pid, false)
+            .expect("read replacement identity")
+            .expect("replacement is live before KILL");
+        release_gate.release();
+        close_thread
+            .join()
+            .expect("close thread")
+            .expect("TERM/KILL and reap session");
         host.close(repeated_close)
             .expect("repeated close uses completed state without a fresh snapshot");
-        receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("pre-KILL witness ran");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let replacement_killed = loop {
+            let current = super::start_time(replacement_pid, false)
+                .expect("read replacement identity after KILL");
+            if current.as_deref() != Some(&replacement_start) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        assert!(
+            replacement_killed,
+            "freshly enumerated replacement group must be killed"
+        );
         let _remove = std::fs::remove_dir_all(cwd);
     }
 
