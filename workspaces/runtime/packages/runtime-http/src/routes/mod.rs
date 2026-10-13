@@ -1,4 +1,5 @@
 mod account_login;
+mod agent_management;
 mod agents_create;
 mod catalog;
 mod checkpoints;

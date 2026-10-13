@@ -9,6 +9,8 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod agent_management;
+pub mod agent_management_store;
 pub mod agent_move;
 pub mod agents_create;
 pub mod analytics;

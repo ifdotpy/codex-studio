@@ -9,6 +9,7 @@ mod state_check;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
 pub use repositories::account_state;
+pub use repositories::agent_management;
 pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,
