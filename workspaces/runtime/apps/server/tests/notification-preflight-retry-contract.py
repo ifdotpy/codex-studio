@@ -165,13 +165,19 @@ class NotificationPreflightRetry(unittest.TestCase):
         owner_finished = threading.Event()
         callback_finished = threading.Event()
         errors = []
+        sleeps = []
         original_acquire = runtime.lock.acquire
+        original_sleep = time.sleep
 
         def observed_acquire(*args, **kwargs):
             acquired = original_acquire(*args, **kwargs)
             if kwargs.get("blocking") is False and not acquired:
                 lock_miss.set()
             return acquired
+
+        def observed_sleep(seconds):
+            sleeps.append(seconds)
+            original_sleep(seconds)
 
         def owner_write():
             try:
@@ -197,7 +203,8 @@ class NotificationPreflightRetry(unittest.TestCase):
 
         owner = threading.Thread(target=owner_write)
         callback = threading.Thread(target=notification_write)
-        with patch.object(runtime.lock, "acquire", side_effect=observed_acquire):
+        with patch.object(runtime.lock, "acquire", side_effect=observed_acquire), \
+                patch.object(codex_runtime.time, "sleep", side_effect=observed_sleep):
             owner.start()
             try:
                 self.assertTrue(lock_held.wait(HANG_GUARD_SECONDS))
@@ -217,6 +224,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                 self.assertFalse(callback.is_alive())
 
         self.assertEqual(errors, [])
+        self.assertEqual(sleeps, [], "Runtime.lock turnover should not add the SQLite retry backoff floor")
         with runtime.db() as db:
             rows = [row[0] for row in db.execute("SELECT id FROM fixture_lock_claim ORDER BY id")]
         self.assertEqual(rows, ["notification", "owner"])

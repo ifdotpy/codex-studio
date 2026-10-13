@@ -2630,6 +2630,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         while True:
             entered = False
             retry = False
+            wait_for_lock_turnover = False
             lock_acquired = False
             try:
                 try:
@@ -2644,6 +2645,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             # safe to discard before retrying the lock claim.
                             db.rollback()
                             retry = True
+                            wait_for_lock_turnover = True
                         else:
                             entered = True
                             yield db
@@ -2660,8 +2662,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if retry:
                 if self.closed or time.monotonic() >= deadline:
                     raise TimeoutError("Timed out waiting to enter the notification transaction")
-                time.sleep(min(delay, max(0, deadline - time.monotonic())))
-                delay = min(.5, delay * 2)
+                if wait_for_lock_turnover:
+                    # The writer has been released. It is now safe to wait for
+                    # the current state-lock owner, then retry the writer-first
+                    # claim without an arbitrary backoff floor.
+                    remaining = max(0, deadline - time.monotonic())
+                    if not self.lock.acquire(timeout=remaining):
+                        raise TimeoutError("Timed out waiting for Runtime.lock before notification transaction")
+                    self.lock.release()
+                else:
+                    # SQLite writer contention has its own bounded backoff.
+                    time.sleep(min(delay, max(0, deadline - time.monotonic())))
+                    delay = min(.5, delay * 2)
                 continue
             return
 
