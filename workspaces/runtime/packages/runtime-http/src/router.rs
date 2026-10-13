@@ -602,8 +602,13 @@ mod tests {
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         for (path, valid_json, limit) in cases {
             let app = router(state()).expect("router starts");
+            let at_limit_status = if path == "/api/assets" {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::NOT_IMPLEMENTED
+            };
             for (length, expected) in [
-                (limit, StatusCode::NOT_IMPLEMENTED),
+                (limit, at_limit_status),
                 (limit + 1, StatusCode::PAYLOAD_TOO_LARGE),
             ] {
                 let mut body = Vec::with_capacity(length);

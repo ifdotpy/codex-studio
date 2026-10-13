@@ -157,7 +157,7 @@ fn expand_home(path: &str) -> String {
     path.to_owned()
 }
 
-fn mime_type(path: &Path) -> String {
+pub fn mime_type(path: &Path) -> String {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())

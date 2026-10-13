@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -84,9 +85,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = BackendProcess(Path(scratch))
         cls.addClassCleanup(cls.backend.close)
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-        scratch_root = Path("/var/tmp/cs-rust-files")
-        scratch_root.mkdir(parents=True, exist_ok=True)
-        cls.workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=scratch_root))
+        cls.workspace = Path(tempfile.mkdtemp(prefix="files-workspace-", dir=scratch))
         cls.addClassCleanup(shutil.rmtree, cls.workspace)
         cls.outside = cls.workspace.parent / f"{cls.workspace.name}-outside.md"
         cls.addClassCleanup(cls.outside.unlink, missing_ok=True)
@@ -174,6 +173,115 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(missing.status, 400, missing.body[:1000])
         self.assertEqual(state_snapshot(backend.state), before)
+
+    def test_upload_replays_by_id_and_reads_through_asset_endpoint(self) -> None:
+        backend = self.backend
+        asset_id = "8f319af0-59e9-4c6a-8ec8-e99c9e354092"
+        content = b"uploaded through the HTTP boundary"
+        body = {
+            "agent": "files-contract-live",
+            "id": asset_id,
+            "name": "asset.txt",
+            "base64": base64.b64encode(content).decode("ascii"),
+        }
+        before = state_snapshot(backend.state)
+        response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        asset = response.json()
+        self.assertEqual(asset["id"], asset_id)
+        self.assertEqual(asset["agent"], body["agent"])
+        self.assertEqual(asset["name"], body["name"])
+        self.assertEqual(asset["size"], len(content))
+        self.assertEqual(asset["hash"], hashlib.sha256(content).hexdigest())
+        self.assertNotIn("path", asset)
+
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            stored = database.execute(
+                "SELECT record FROM runtime_assets WHERE id=?", (asset_id,)
+            ).fetchone()
+        self.assertIsNotNone(stored)
+        record = json.loads(stored[0])
+        self.assertEqual(Path(record["path"]).read_bytes(), content)
+        readback = backend.request(
+            "GET", "/api/file?" + urlencode({"asset": asset_id}), headers=self._headers()
+        )
+        self.assertEqual(readback.status, 200, readback.body[:1000])
+        self.assertEqual(base64.b64decode(readback.json()["base64"]), content)
+        self.assertEqual(readback.json()["mime"], "text/plain")
+
+        replay = backend.request("POST", "/api/assets", body=body, headers=self._headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json(), asset)
+        conflict = backend.request(
+            "POST",
+            "/api/assets",
+            body={**body, "base64": base64.b64encode(b"different content").decode("ascii")},
+            headers=self._headers(),
+        )
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertIn("different content", conflict.json()["error"])
+        renamed = backend.request(
+            "POST", "/api/assets", body={**body, "name": "renamed.txt"}, headers=self._headers()
+        )
+        self.assertEqual(renamed.status, 400, renamed.body[:1000])
+        after_assets = [
+            row for row in state_snapshot(backend.state)["runtime_assets"] if row[0] != asset_id
+        ]
+        self.assertEqual(after_assets, before["runtime_assets"])
+
+        data_alias = backend.request(
+            "POST",
+            "/api/assets",
+            body={
+                "agent": "files-contract-live",
+                "name": "data-alias.txt",
+                "data": base64.b64encode(b"data alias").decode("ascii"),
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(data_alias.status, 200, data_alias.body[:1000])
+        self.assertTrue(data_alias.json()["id"])
+
+    def test_upload_refusals_do_not_write_state(self) -> None:
+        backend = self.backend
+        before = state_snapshot(backend.state)
+        before_uploads = sorted(path.name for path in (backend.state / "uploads").iterdir())
+        cases = (
+            {"agent": "files-contract-live", "name": "bad.txt", "base64": "!!!"},
+            {
+                "agent": "files-contract-missing",
+                "name": "bad.txt",
+                "base64": base64.b64encode(b"bytes").decode("ascii"),
+            },
+        )
+        for body in cases:
+            with self.subTest(agent=body["agent"]):
+                response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertEqual(state_snapshot(backend.state), before)
+                self.assertEqual(
+                    sorted(path.name for path in (backend.state / "uploads").iterdir()),
+                    before_uploads,
+                )
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_upload_cleans_orphaned_file_before_persisting_record(self) -> None:
+        backend = self.backend
+        orphan = backend.state / "uploads" / "crash-orphan"
+        orphan.mkdir()
+        (orphan / ".payload.tmp").write_bytes(b"unindexed payload")
+        response = backend.request(
+            "POST",
+            "/api/assets",
+            body={
+                "agent": "files-contract-live",
+                "name": "recovery.txt",
+                "base64": base64.b64encode(b"recovered").decode("ascii"),
+            },
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertFalse(orphan.exists())
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_execution_backed_workspaces_have_named_501_without_writes(self) -> None:

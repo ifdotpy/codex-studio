@@ -1,11 +1,14 @@
 //! File metadata and bounded content reads for local workspaces.
 
+use super::extractors::ApiJson;
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use base64::Engine;
 use serde_json::{Value, json};
+use studio_runtime_services::payload_store::{self, PayloadStoreError};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, WorkspaceFilesRepository};
 
@@ -17,6 +20,7 @@ const EXECUTION_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
+        post("/api/assets", OperationStatus::Implemented, upload_asset),
         get(
             "/api/file-info",
             OperationStatus::partial(&EXECUTION_DEPENDENCIES),
@@ -28,6 +32,37 @@ pub(crate) fn routes() -> RouteGroup {
             file_content,
         ),
     ])
+}
+
+async fn upload_asset(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent = body
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
+    let id = body.get("id").and_then(Value::as_str).map(str::to_owned);
+    let encoded = body
+        .get("base64")
+        .or_else(|| body.get("data"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?
+        .to_owned();
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let asset = tokio::task::spawn_blocking(move || {
+        payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_payload_store_error)?;
+    super::generated_json::<crate::generated::AssetRecord>(asset).map(Json)
 }
 
 pub(crate) async fn file_info(
@@ -251,26 +286,39 @@ fn file_error(error: WorkspaceFilesError) -> ApiError {
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or_default();
-        let third = chunk.get(2).copied().unwrap_or_default();
-        encoded.push(char::from(ALPHABET[usize::from(first >> 2)]));
-        encoded.push(char::from(
-            ALPHABET[usize::from(((first & 0b11) << 4) | (second >> 4))],
-        ));
-        encoded.push(if chunk.len() > 1 {
-            char::from(ALPHABET[usize::from(((second & 0b1111) << 2) | (third >> 6))])
-        } else {
-            '='
-        });
-        encoded.push(if chunk.len() > 2 {
-            char::from(ALPHABET[usize::from(third & 0b11_1111)])
-        } else {
-            '='
-        });
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
+    match error {
+        PayloadStoreError::InvalidData => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data")
+        }
+        PayloadStoreError::InvalidFilename => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Invalid filename")
+        }
+        PayloadStoreError::ContentLimit => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Files must contain 1 byte to 20 MiB",
+        ),
+        PayloadStoreError::UploadConflict => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "This upload id has different content",
+        ),
+        PayloadStoreError::UnknownAgent => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
+        }
+        PayloadStoreError::DeletedAgent => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
+        }
+        PayloadStoreError::InvalidStoredAsset => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid stored object assets",
+        ),
+        PayloadStoreError::Io(_)
+        | PayloadStoreError::Store(_)
+        | PayloadStoreError::Json(_)
+        | PayloadStoreError::Clock
+        | PayloadStoreError::Entropy => ApiError::internal(),
     }
-    encoded
 }
