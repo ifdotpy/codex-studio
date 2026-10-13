@@ -28,6 +28,16 @@ pub enum RulesTickError {
     File,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CheckReconciliation {
+    /// Authoritative durable proof that this identity has never reached transport.
+    NotSubmitted,
+    /// An exact durable monitor owns this identity (and its eventual completion).
+    Submitted,
+    /// No proof either way. Hold visibly; never infer absence from a lost response.
+    Unknown,
+}
+
 pub enum CheckSubmission {
     Accepted,
     NotSubmitted { error: String },
@@ -36,10 +46,15 @@ pub enum CheckSubmission {
 
 /// Implemented by the monitor driver after preparation/approval and native session
 /// admission are installed. It MUST revalidate owner and check identity before I/O.
-/// Unknown submissions stay in flight and are never replayed by this adapter.
+/// Launch MUST be idempotent for the exact monitor identity and reserve its durable
+/// operation before transport I/O. A duplicate reservation must not send again.
+/// Reconciliation includes native ticket receipts, not only monitor-row existence.
 pub trait RuleMonitor {
     fn available(&self) -> bool;
     fn launch(&self, check: &RuleCheck) -> CheckSubmission;
+    fn reconcile(&self, _check: &RuleCheck) -> CheckReconciliation {
+        CheckReconciliation::Unknown
+    }
     fn cancel(&self, monitor_id: &str) -> Result<(), RulesTickError>;
 }
 
@@ -141,53 +156,142 @@ pub fn tick_batch(
             }
             Ok(decision.check)
         })?;
-        if let Some(check) = check {
+        if let Some(check) = check
+            && submit_check(store, &check, now, monitor)?
+        {
             report.launched += 1;
-            if let CheckSubmission::NotSubmitted { error } = monitor.launch(&check) {
-                finish(
-                    store,
-                    &check,
-                    CheckResult {
-                        code: None,
-                        error: Some(&error),
-                        output: "",
-                    },
-                    now,
-                )?;
-            }
         }
     }
     Ok(report)
 }
 
-/// Run before enabling ticks or monitor callbacks. Never submit an old in-flight command.
+/// Run before enabling ticks. Reconcile durable intents outside the writer, then
+/// revalidate their exact reservation inside it. Legacy checks remain unknown.
 pub fn recover_batch(
     store: &RuntimeStore,
     after_rowid: i64,
     now: f64,
+    monitor: &impl RuleMonitor,
 ) -> Result<TickReport, RulesTickError> {
-    store.transaction_with(|transaction| {
-        let rows = RulesTickRepository::page(transaction, after_rowid)?;
-        let mut report = TickReport {
-            next_rowid: (rows.len() == RULE_BATCH)
-                .then(|| rows.last().map(|row| row.rowid))
-                .flatten(),
-            ..TickReport::default()
-        };
-        for row in rows {
-            let snapshot = load_snapshot(transaction, row.rule)?;
-            let decision = snapshot.recover(now)?;
-            if apply(
-                transaction,
-                &owner(transaction, snapshot.owner_id())?,
-                &decision,
-                now,
-            )? {
-                report.changed += 1;
+    let rows = RulesTickRepository::page(&store.read()?, after_rowid)?;
+    let mut report = TickReport {
+        next_rowid: (rows.len() == RULE_BATCH)
+            .then(|| rows.last().map(|row| row.rowid))
+            .flatten(),
+        ..TickReport::default()
+    };
+    for row in rows {
+        let sampled = load_snapshot(&store.read()?, row.rule)?;
+        let intent = launch_intent(&sampled)?;
+        let state = match &intent {
+            Some(check) if sampled.launch_allowed(check) && monitor.available() => {
+                monitor.reconcile(check)
             }
+            _ => CheckReconciliation::Unknown,
+        };
+        let check = store.transaction_with::<_, RulesTickError>(|tx| {
+            let Some(rule) = RulesRepository::get(tx, sampled.id())? else {
+                return Ok(None);
+            };
+            let owner = owner(tx, sampled.owner_id())?;
+            if !sampled.current(rule.value(), &owner.value()) {
+                return Ok(None);
+            }
+            if let Some(check) = &intent
+                && sampled.launch_allowed(check)
+            {
+                match state {
+                    CheckReconciliation::NotSubmitted => return Ok(Some(check.clone())),
+                    CheckReconciliation::Submitted => return Ok(None),
+                    CheckReconciliation::Unknown => {}
+                }
+            }
+            report.changed += usize::from(apply(tx, &owner, &sampled.recover(now)?, now)?);
+            Ok(None)
+        })?;
+        if let Some(check) = check
+            && submit_check(store, &check, now, monitor)?
+        {
+            report.launched += 1;
         }
-        Ok(report)
-    })
+    }
+    Ok(report)
+}
+
+/// Timer, recovery and event callers use this only AFTER their reservation commits.
+/// The monitor port closes the final ownership race and deduplicates by monitor ID.
+pub fn submit_check(
+    store: &RuntimeStore,
+    check: &RuleCheck,
+    now: f64,
+    monitor: &impl RuleMonitor,
+) -> Result<bool, RulesTickError> {
+    if !monitor.available() {
+        return Err(RulesTickError::MonitorUnavailable);
+    }
+    let current = store.transaction_with::<_, RulesTickError>(|tx| {
+        let Some(rule) = RulesRepository::get(tx, &check.rule_id)? else {
+            return Ok(false);
+        };
+        let snapshot = load_snapshot(tx, rule)?;
+        Ok(snapshot.launch_allowed(check) && launch_intent(&snapshot)?.as_ref() == Some(check))
+    })?;
+    if !current {
+        return Ok(false);
+    }
+    match monitor.launch(check) {
+        CheckSubmission::Accepted => {}
+        CheckSubmission::NotSubmitted { error } => {
+            finish(
+                store,
+                check,
+                CheckResult {
+                    code: None,
+                    error: Some(&error),
+                    output: "",
+                },
+                now,
+            )?;
+        }
+        CheckSubmission::Unknown => {
+            store.transaction_with::<_, RulesTickError>(|tx| {
+                let Some(rule) = RulesRepository::get(tx, &check.rule_id)? else {
+                    return Ok(());
+                };
+                let snapshot = load_snapshot(tx, rule)?;
+                if snapshot.launch_allowed(check) {
+                    let mut decision = snapshot.recover(now)?;
+                    if let Some(record) = &mut decision.record {
+                        record["error"] = serde_json::json!(
+                            "Monitor submission outcome unknown; check was not repeated."
+                        );
+                    }
+                    apply(tx, &owner(tx, snapshot.owner_id())?, &decision, now)?;
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(true)
+}
+
+fn launch_intent(snapshot: &RuleSnapshot) -> Result<Option<RuleCheck>, RulesTickError> {
+    let Some(value) = snapshot
+        .record()
+        .get("launchIntent")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|_| {
+            RuleError::Invalid {
+                object: format!("rules/{}", snapshot.id()),
+                location: "/launchIntent".into(),
+            }
+            .into()
+        })
 }
 
 pub fn finish(
@@ -212,7 +316,14 @@ pub fn finish_in_transaction(
         return Ok(false);
     };
     let snapshot = load_snapshot(transaction, rule)?;
-    let decision = snapshot.finish_check(check, result, now)?;
+    let mut decision = snapshot.finish_check(check, result, now)?;
+    if let Some(record) = decision
+        .record
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        record.remove("launchIntent");
+    }
     apply(
         transaction,
         &owner(transaction, snapshot.owner_id())?,
@@ -221,7 +332,7 @@ pub fn finish_in_transaction(
     )
 }
 
-/// Same-agent event subscription hook. The caller commits before launching returned checks.
+/// Same-agent event hook. Commit, then pass each returned intent to submit_check.
 /// Rule wake events must not re-enter this hook. Batch cursors allow bounded fan-out.
 pub struct RuleEvent<'a> {
     pub agent_id: &'a str,
@@ -303,7 +414,11 @@ fn apply(
         return Ok(false);
     };
     // Validate before any write; RuntimeStore rolls back rule, wake and canonical views together.
-    let record = RuleRecord::from_value(record.clone()).map_err(StoreError::from)?;
+    let mut record = record.clone();
+    if let Some(check) = &decision.check {
+        record["launchIntent"] = serde_json::to_value(check).map_err(|_| RuleError::Schema)?;
+    }
+    let record = RuleRecord::from_value(record).map_err(StoreError::from)?;
     RulesRepository::put(transaction, &record)?;
     if let Some(wake) = &decision.wake {
         enqueue_recovery_event(

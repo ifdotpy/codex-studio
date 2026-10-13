@@ -447,6 +447,21 @@ class PersistedWorkItemRecord(_OpenPersistedRecord):
     version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
 
 
+class PersistedRuleLaunchIntent(ContractModel):
+    """Exact request reserved before handing a rule command to the monitor driver."""
+
+    ruleId: StrictStr
+    checkNumber: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    agentId: StrictStr
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    accountKey: StrictStr | None
+    threadId: StrictStr | None
+    monitorId: StrictStr
+    command: Annotated[StrictStr, Field(max_length=12000)]
+    timeoutMs: Annotated[StrictInt, Field(ge=1000, le=86400000)]
+    liveness: StrictBool
+
+
 class PersistedRuleRecord(_OpenPersistedRecord):
     """Open rule records; only fields consumed by the rule engine are constrained."""
 
@@ -484,6 +499,7 @@ class PersistedRuleRecord(_OpenPersistedRecord):
     durationMinutes: Annotated[StrictInt, Field(ge=1, le=525600)] = 1
     activeWorkers: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
     restartCheck: dict[StrictStr, JsonValue] | None = None
+    launchIntent: PersistedRuleLaunchIntent | None = None
     alerted: StrictBool = False
     lowSince: StrictFloat | StrictInt | None = None
     lastEvent: StrictStr = ""

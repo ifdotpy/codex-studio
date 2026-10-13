@@ -185,5 +185,38 @@
         "after": ".all(|field| owner.get(field) == owner.get(field))"
       }
     ]
+  },
+  {
+    "id": "R18",
+    "witness": "durable reservation before actual process exit",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_tick.rs",
+    "edits": [
+      {
+        "before": "record[\"launchIntent\"] = serde_json::to_value(check).map_err(|_| RuleError::Schema)?;",
+        "after": "record[\"lostLaunchIntent\"] = serde_json::to_value(check).map_err(|_| RuleError::Schema)?;"
+      }
+    ]
+  },
+  {
+    "id": "R19",
+    "witness": "authoritatively unsubmitted check launches after restart",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_tick.rs",
+    "edits": [
+      {
+        "before": "CheckReconciliation::NotSubmitted => return Ok(Some(check.clone())),",
+        "after": "CheckReconciliation::NotSubmitted => return Ok(None),"
+      }
+    ]
+  },
+  {
+    "id": "R20",
+    "witness": "unknown launch outcome visibly holds without resend",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_tick.rs",
+    "edits": [
+      {
+        "before": "CheckReconciliation::Unknown => {}",
+        "after": "CheckReconciliation::Unknown => return Ok(Some(check.clone())),"
+      }
+    ]
   }
 ]

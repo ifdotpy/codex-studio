@@ -1,6 +1,6 @@
 //! Rule decisions on checked persisted records. No clock, filesystem, store or provider I/O.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
@@ -191,7 +191,8 @@ pub struct RuleSnapshot {
     owner: Owner,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuleCheck {
     pub rule_id: String,
     pub check_number: u64,
@@ -300,6 +301,17 @@ impl RuleSnapshot {
             record: Some(record),
             ..RuleDecision::default()
         }
+    }
+
+    /// Rechecked by the effect adapter before submitting a durable launch intent.
+    pub fn launch_allowed(&self, check: &RuleCheck) -> bool {
+        self.rule.status == Status::Active
+            && self.rule.in_flight
+            && self.owner.auto_wake
+            && !self.owner.deleted()
+            && self.owner.epoch == check.epoch
+            && !self.owner.recovery_pending(check.epoch)
+            && &self.check() == check
     }
 
     pub fn check(&self) -> RuleCheck {
