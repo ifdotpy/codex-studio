@@ -416,7 +416,9 @@ def seed_layers(client: Client, project_id: str, source: str | Path, identity: s
         return []
     done = json.loads(record.read_text())
     results = []
-    for path in [path for path, value in done.items() if value is None]:
+    # A path waits while its value is None or a failed attempt ({"pending": true, "attempts": n}).
+    for path in [path for path, value in done.items() if value is None or value.get('pending')]:
+        attempt = int((done[path] or {}).get('attempts', 0))
         folder = root / path
         if not folder.is_dir() or folder.is_symlink():
             raise LinuxVMError(f'The layer folder {path} is no longer on the Mac; Studio cannot send it to the VM.',
@@ -429,13 +431,22 @@ def seed_layers(client: Client, project_id: str, source: str | Path, identity: s
         upload_id = 'seed-' + operation[:40]
         begin = {'uploadId': upload_id, 'root': '/var/lib/codex-studio/projects/layr-' + upload_id,
                  'totalBytes': measure.size, 'sha256': digest, 'mode': 'full', 'deletePaths': []}
-        status = client.call('upload.begin', begin, request_id=operation + ':begin', timeout=30)
-        if status.get('state') == 'receiving' and status.get('receivedBytes') != measure.size:
-            chunks = _Chunks(client, upload_id, operation, int(status.get('receivedBytes') or 0))
-            _layer_tar(folder, cast(IO[bytes], chunks))
-            chunks.close()
-        result = client.call('project.seed', {'projectId': project_id, 'path': path, 'uploadId': upload_id},
-                             request_id=operation + ':seed', timeout=3600)
+        # The guest returns the saved answer of a request ID again, also a failure whose outcome is
+        # unknown. Each step is safe to repeat (the guest keeps chunks by sequence number and content;
+        # the upload state and main/<path> decide project.seed), so after a failure the next attempt
+        # uses new IDs; the guest serializes it behind an earlier one that may still run.
+        try:
+            status = client.call('upload.begin', begin, request_id=operation + ':begin:' + str(attempt), timeout=30)
+            if status.get('state') == 'receiving' and status.get('receivedBytes') != measure.size:
+                chunks = _Chunks(client, upload_id, operation + ':' + str(attempt), int(status.get('receivedBytes') or 0))
+                _layer_tar(folder, cast(IO[bytes], chunks))
+                chunks.close()
+            result = client.call('project.seed', {'projectId': project_id, 'path': path, 'uploadId': upload_id},
+                                 request_id=operation + ':seed:' + str(attempt), timeout=3600)
+        except LinuxVMError:
+            done[path] = {'pending': True, 'attempts': attempt + 1}
+            _save(record, done)
+            raise
         done[path] = {'stateId': result.get('stateId'), 'seeded': result.get('seeded'), 'bytes': measure.size,
                       'at': time.time()}
         _save(record, done)
