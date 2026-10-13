@@ -7,7 +7,12 @@ use tokio::sync::oneshot;
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
     preparation::PreparationResources::bundled(
         String::new(),
-        crate::model_catalog::ModelCatalogService::new(None),
+        crate::model_catalog::ModelCatalogService::new(Some(
+            std::env::temp_dir()
+                .join("absent-provider-for-test")
+                .to_string_lossy()
+                .into_owned(),
+        )),
         crate::agents_create::prepared_python(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         ),
@@ -250,7 +255,15 @@ impl Peer {
     fn gated(gate: Option<oneshot::Receiver<()>>) -> Self {
         Self::identity("default", 1, gate)
     }
-    fn identity(account: &str, generation: u64, mut gate: Option<oneshot::Receiver<()>>) -> Self {
+    fn identity(account: &str, generation: u64, gate: Option<oneshot::Receiver<()>>) -> Self {
+        Self::identity_with_cleanup(account, generation, gate, None)
+    }
+    fn identity_with_cleanup(
+        account: &str,
+        generation: u64,
+        mut gate: Option<oneshot::Receiver<()>>,
+        cleanup_error: Option<String>,
+    ) -> Self {
         let generation = Generation(generation);
         MATRIX
             .try_with(|context| {
@@ -329,7 +342,7 @@ impl Peer {
             }
             TaskExit {
                 result: Ok(()),
-                cleanup_error: None,
+                cleanup_error,
                 recovery_needed: None,
             }
         });

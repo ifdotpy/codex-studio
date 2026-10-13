@@ -110,16 +110,11 @@ pub(super) fn recover(
             }
         }
         let prefix = format!("account-worker:account:{account}:");
-        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.request.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
+        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
         let rows = stmt
-            .query_map(
-                params![
-                    prefix,
-                    format!("{prefix}~"),
-                    i64::try_from(generation.0).map_err(|_| invalid(account))?
-                ],
-                |r| r.get::<_, String>(0),
-            )?
+            .query_map(params![prefix, format!("{prefix}~"),], |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut recovered = Vec::new();
         for raw in rows {
@@ -131,9 +126,6 @@ pub(super) fn recover(
             }
             let written = receipt(tx, &context.operation, "written")?;
             let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
-            if request.ticket.generation != generation.0 {
-                continue;
-            }
             if context.method()? == Method::TurnStart {
                 SchedulerRepository::settle_start_outcome(
                     tx,
@@ -151,15 +143,24 @@ pub(super) fn recover(
                 if current.as_ref().is_some_and(|a| {
                     a.epoch == context.intent.epoch
                         && account_key(a) == account
-                        && a.extra.get("autoWake") == Some(&json!(true))
                         && a.extra.get("startAttempt").is_none_or(Value::is_null)
+                        && (a.extra.get("autoWake") == Some(&json!(true))
+                            || a.extra
+                                .get("startOutcomeHold")
+                                .is_some_and(|h| h["operationId"] == context.operation))
                 }) {
-                    hold_before_claim(
+                    hold_thread_receipt(
                         tx,
-                        &context.intent.agent_id,
+                        &context,
+                        request.ticket.generation,
                         "thread-preparation/receipt-pending",
                     )?;
                 }
+            }
+            // An old generation's ticket cannot be restored into this transport.
+            // Its durable receipt and visible Unknown hold remain for reconciliation.
+            if request.ticket.generation != generation.0 {
+                continue;
             }
             recovered.push((context, request));
             if recovered.len() > MAX_PENDING_RESPONSES {
@@ -198,6 +199,19 @@ fn retire_generations(
                     .and_then(|number| number.parse().ok())
             };
             if generation.is_none_or(|generation| generation >= current) {
+                continue;
+            }
+            if kind == "account"
+                && matches!(
+                    value
+                        .pointer("/request/method")
+                        .or_else(|| value.get("method"))
+                        .and_then(Value::as_str),
+                    Some("thread/start" | "thread/resume")
+                )
+            {
+                // An unresolved thread request may have applied in the previous
+                // child. Generation replacement is not negative delivery proof.
                 continue;
             }
             if kind == "account"
@@ -262,7 +276,11 @@ pub(super) fn claim(
             .as_ref()
             .and_then(|a| a.extra.get("startAttempt"))
             .filter(|a| {
-                a["submitted"] == false && a["prepareError"] == "workspace-readiness/pending"
+                a["submitted"] == false
+                    && matches!(
+                        a["prepareError"].as_str(),
+                        Some("workspace-readiness/pending" | "model-catalog/refresh-pending")
+                    )
             });
         let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
         match scheduler::claim_preparation_in_transaction(tx, agent, epoch, attempt, now()) {
@@ -433,12 +451,25 @@ pub(super) fn outcome(
                         {
                             effect = Some(next);
                         } else {
-                            SchedulerRepository::settle_start_outcome(
-                                tx,
-                                &i.identity(),
-                                "held",
-                                Some("Provider thread resume failed; input remains pending."),
-                            )?;
+                            let reason = "Provider thread resume failed; input remains pending.";
+                            let current =
+                                AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))?;
+                            if current.as_ref().is_some_and(|a| {
+                                a.epoch == i.epoch
+                                    && account_key(a) == account
+                                    && a.extra
+                                        .get("startOutcomeHold")
+                                        .is_some_and(|h| h["operationId"] == context.operation)
+                            }) {
+                                hold_thread_receipt(tx, context, ticket.generation, reason)?;
+                            } else {
+                                SchedulerRepository::settle_start_outcome(
+                                    tx,
+                                    &i.identity(),
+                                    "held",
+                                    Some(reason),
+                                )?;
+                            }
                         }
                     }
                     Method::TurnStart => match body {
@@ -1139,6 +1170,40 @@ pub(super) fn flush_streams(
     })
 }
 
+/// Durable retry registration survives releasing an unsubmitted claim on restart.
+pub(super) fn pending_preparations(
+    store: &RuntimeStore,
+    account: &str,
+) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
+    let db = store.read()?;
+    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND json_extract(record,'$.epoch')=json_extract(record,'$.preparationWake.epoch') AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
+    let ids = query
+        .query_map([account], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.len() > MAX_PENDING_RESPONSES {
+        return Err(WorkerError::Capacity);
+    }
+    ids.into_iter()
+        .map(|id| {
+            let row = AgentRepository::get(&db, &AgentId::from(id.as_str()))?
+                .ok_or_else(|| invalid(&id))?;
+            let reason = row
+                .extra
+                .get("preparationWake")
+                .and_then(|v| v["reason"].as_str())
+                .ok_or_else(|| invalid(&id))?
+                .to_owned();
+            let provider = row
+                .extra
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex")
+                .to_owned();
+            Ok((id, row.epoch, reason, provider))
+        })
+        .collect()
+}
+
 pub(super) fn preparation_step<T>(
     store: &RuntimeStore,
     intent: &TurnIntent,
@@ -1161,6 +1226,10 @@ pub(super) fn preparation_step<T>(
                         .and_then(Value::as_object_mut)
                 {
                     attempt.insert("prepareError".into(), json!(reason));
+                    row.extra.insert(
+                        "preparationWake".into(),
+                        json!({"epoch":intent.epoch,"reason":reason}),
+                    );
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok::<_, WorkerError>(())
@@ -1173,6 +1242,22 @@ pub(super) fn preparation_step<T>(
         }
         Err(error) => Err(error),
     }
+}
+
+fn hold_thread_receipt(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    generation: u64,
+    reason: &str,
+) -> Result<(), WorkerError> {
+    hold_before_claim(tx, &context.intent.agent_id, reason)?;
+    let mut agent = AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
+        .ok_or_else(|| invalid(&context.intent.agent_id))?;
+    agent.extra.insert("startOutcomeHold".into(), json!({
+        "stage":"held", "reason":reason, "operationId":context.operation, "connectionGeneration":generation,
+    }));
+    AgentRepository::put(tx, &agent)?;
+    Ok(())
 }
 
 fn hold_before_claim(

@@ -12,6 +12,11 @@ pub(crate) struct CommitGuard {
     thread: thread::Snapshot,
     compiler_snapshot: Option<turn::PreparationSnapshot>,
     state_root: std::path::PathBuf,
+    filesystem: FilesystemSnapshot,
+}
+pub(crate) struct Admission {
+    selection: gates::ExecutionSelection,
+    filesystem: FilesystemSnapshot,
 }
 pub(crate) struct RequestPreparation {
     pub intent: TurnIntent,
@@ -103,7 +108,11 @@ fn catalog(
         )),
     }
 }
-fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, WorkerError> {
+fn preconditions(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
     if record["epoch"] != intent.epoch
         || record["startAttempt"]["id"] != intent.attempt_id
@@ -125,7 +134,7 @@ fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, Wor
         ));
     }
     gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
-    authorize(tx, intent)?;
+    authorize(tx, intent, filesystem)?;
     for selected in &intent.events {
         let current = studio_runtime_store::QueueEventRepository::get(
             tx,
@@ -168,10 +177,11 @@ pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
     intent: &TurnIntent,
-) -> Result<gates::ExecutionSelection, WorkerError> {
+) -> Result<Admission, WorkerError> {
+    let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
     let (identity, observation) = catalog(resources, intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let record = preconditions(tx, intent)?;
+        let record = preconditions(tx, intent, &filesystem)?;
         let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
@@ -188,7 +198,10 @@ pub(crate) fn admit(
                 native.map_or(gates::StoredField::Null, gates::StoredField::Value);
             selected.catalog_precondition = Some((catalog.identity.clone(), catalog.expires_at));
         }
-        Ok(selected)
+        Ok(Admission {
+            selection: selected,
+            filesystem,
+        })
     })
 }
 pub(crate) fn workspace(
@@ -257,13 +270,20 @@ pub(crate) fn prepare_ready(
     intent: &TurnIntent,
     method: Method,
     generation: u64,
-    selection: gates::ExecutionSelection,
+    admission: Admission,
     token: crate::workspace_ready::ReadyToken,
 ) -> Result<RequestPreparation, WorkerError> {
+    let Admission {
+        selection,
+        mut filesystem,
+    } = admission;
+    // Workspace provisioning may have created the progress directory.
+    filesystem.progress_directory =
+        FilesystemSnapshot::capture(store, &intent.agent_id)?.progress_directory;
     let (identity, _) = catalog(resources, intent)?;
     let (mut snapshot, mut turn_snapshot, events, mut prepared_intent) =
         scheduler::lifecycle_transaction_with(store, |tx| {
-            let record = preconditions(tx, intent)?;
+            let record = preconditions(tx, intent, &filesystem)?;
             let mut frozen = selection
                 .freeze_record(&record, &identity, Instant::now())
                 .map_err(|e| refusal(e.to_string()))?;
@@ -281,6 +301,7 @@ pub(crate) fn prepare_ready(
                 &frozen,
                 &generation.to_string(),
                 store.root(),
+                filesystem.progress_directory.clone(),
             )?;
             let (turn_snapshot, events) =
                 submission_snapshot(tx, resources, &frozen, intent, store.root())?;
@@ -297,6 +318,7 @@ pub(crate) fn prepare_ready(
         thread: snapshot.clone(),
         compiler_snapshot: None,
         state_root: store.root().to_path_buf(),
+        filesystem,
     };
     if method == Method::ThreadResume {
         let method = if snapshot.actor.thread_id.is_some() {
@@ -421,7 +443,7 @@ pub(crate) fn commit(
     context: &Pending,
     guard: &CommitGuard,
 ) -> Result<(), WorkerError> {
-    let record = preconditions(tx, &context.intent)?;
+    let record = preconditions(tx, &context.intent, &guard.filesystem)?;
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection
@@ -470,6 +492,7 @@ pub(crate) fn commit(
         &current,
         &guard.thread.account.connection_id,
         &guard.state_root,
+        guard.filesystem.progress_directory.clone(),
     )?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));
@@ -487,6 +510,10 @@ pub(crate) fn commit(
         }
         frozen["complaintsPresented"] = json!(compiled.agent_patch.complaints_presented);
     }
+    frozen
+        .as_object_mut()
+        .ok_or_else(|| invalid("agent"))?
+        .remove("preparationWake");
     if let Some(attempt) = frozen
         .get_mut("startAttempt")
         .and_then(Value::as_object_mut)

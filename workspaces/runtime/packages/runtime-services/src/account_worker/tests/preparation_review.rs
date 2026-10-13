@@ -230,7 +230,12 @@ async fn late_context_change_refuses_submission() {
 #[tokio::test]
 async fn missing_native_effort_uses_shared_catalog_published_after_construction() {
     let state = State::new().await;
-    let service = crate::model_catalog::ModelCatalogService::new(None);
+    let service = crate::model_catalog::ModelCatalogService::new(Some(
+        std::env::temp_dir()
+            .join("absent-provider-for-test")
+            .to_string_lossy()
+            .into_owned(),
+    ));
     let resources = preparation::PreparationResources::bundled(
         String::new(),
         service.clone(),
@@ -369,7 +374,12 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             })
             .await
             .unwrap();
-        let catalog = crate::model_catalog::ModelCatalogService::new(None);
+        let catalog = crate::model_catalog::ModelCatalogService::new(Some(
+            std::env::temp_dir()
+                .join("absent-provider-for-test")
+                .to_string_lossy()
+                .into_owned(),
+        ));
         let page = json!({"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]});
         if expired {
             crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());

@@ -43,6 +43,7 @@ impl From<rusqlite::Error> for WorkerError {
 
 pub const COMMAND_CAPACITY: usize = 16;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
+const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +60,8 @@ pub enum WorkerError {
     PreparationRefused(String),
     #[error("{0}")]
     PreparationPending(String),
+    #[error("provider cleanup is not confirmed: {0}")]
+    CleanupUnconfirmed(String),
     #[error("account already has a worker")]
     AlreadyRunning,
     #[error("account worker is closed")]
@@ -79,6 +82,7 @@ pub enum WorkerError {
 pub struct StoreBridge {
     store: Arc<RuntimeStore>,
     slot: Arc<Semaphore>,
+    preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
@@ -88,6 +92,7 @@ impl StoreBridge {
         let bridge = Self {
             store,
             slot: Arc::new(Semaphore::new(1)),
+            preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
             #[cfg(test)]
             faults: Arc::default(),
@@ -114,6 +119,35 @@ impl StoreBridge {
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)?
+    }
+    async fn prepare_run<T: Send + 'static>(
+        &self,
+        name: &'static str,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
+        #[cfg(test)]
+        let index = self.faults.before(name)?;
+        #[cfg(test)]
+        self.faults.pause(index).await;
+        #[cfg(not(test))]
+        let _ = name;
+        let permit = self
+            .preparation_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| WorkerError::Closed)?;
+        let store = self.store.clone();
+        // The blocking owner retains its permit even if its caller is cancelled.
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation(&store)
+        })
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?;
+        #[cfg(test)]
+        self.faults.after(index, result.is_ok())?;
+        result
     }
     async fn worker_run<T: Send + 'static>(
         &self,
@@ -265,6 +299,8 @@ pub async fn start_account_worker_with_preparation(
         events,
         stop: stop.subscribe(),
         inbox,
+        queued_commands: VecDeque::new(),
+        retry_at: Some(tokio::time::Instant::now()),
         pending: recovered
             .into_iter()
             .map(|(context, record)| (record.ticket.id, context))
@@ -345,6 +381,8 @@ struct Worker {
     events: mpsc::Receiver<SessionEvent>,
     stop: watch::Receiver<bool>,
     inbox: mpsc::Receiver<AccountCommand>,
+    queued_commands: VecDeque<AccountCommand>,
+    retry_at: Option<tokio::time::Instant>,
     pending: BTreeMap<RequestId, Pending>,
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
@@ -361,7 +399,7 @@ impl Worker {
         // Completion has an independent lane. Drain bounded delivered and retained
         // evidence before persisting disconnect; abandoned cursors are never ACKed.
         let cleanup = self.finish(exit).await;
-        match result.and(cleanup) {
+        match cleanup.and(result) {
             Err(WorkerError::Session(SessionTaskError::Closed)) if *self.stop.borrow() => Ok(()),
             result => result,
         }
@@ -407,7 +445,8 @@ impl Worker {
                 biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
-                command = self.inbox.recv(), if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
+                _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
+                command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
                     Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
@@ -436,6 +475,33 @@ impl Worker {
             result = &mut job => result,
         }
     }
+    async fn prepare<T: Send + 'static>(
+        &mut self,
+        name: &'static str,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
+        let bridge = self.bridge.clone();
+        let job = bridge.prepare_run(name, operation);
+        tokio::pin!(job);
+        loop {
+            tokio::select! { biased;
+                _ = Shutdown::cancelled(&mut self.stop), if !self.closing => {
+                    self.closing = true;
+                    self.control.cancel();
+                },
+                result = &mut job => return result,
+                event = self.events.recv(), if !self.closing => match event {
+                    Some(event) => self.event(event).await?,
+                    None => { self.closing = true; self.control.cancel(); }
+                },
+                command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
+                    Some(command) => self.queued_commands.push_back(command),
+                    None => { self.closing = true; self.control.cancel(); }
+                },
+            }
+        }
+    }
     // Session commands can wait behind event backpressure. Keep settling events
     // while waiting; the future is retained exactly once, including shutdown.
     async fn drive<T>(
@@ -451,6 +517,36 @@ impl Worker {
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
             }
         }
+    }
+    async fn retry_preparations(&mut self) -> Result<(), WorkerError> {
+        self.retry_at = None;
+        let account = self.account.clone();
+        let pending = self
+            .db("retry_preparations", move |store| {
+                store::pending_preparations(store, &account)
+            })
+            .await?;
+        if !pending.is_empty() {
+            self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
+        }
+        for (agent, epoch, reason, provider) in pending {
+            if reason == "model-catalog/refresh-pending" {
+                // This initiates/coalesces refresh outside the store bridge. The
+                // shared service owns the child and its cleanup until completion.
+                let _status = self
+                    .resources
+                    .model_catalog
+                    .read(
+                        &self.account,
+                        &self.resources.account_home,
+                        &provider,
+                        false,
+                    )
+                    .await;
+            }
+            self.wake(agent, epoch).await?;
+        }
+        Ok(())
     }
     async fn wake(&mut self, agent: String, epoch: i64) -> Result<(), WorkerError> {
         if self.closing || self.pending.len() >= MAX_PENDING_RESPONSES {
@@ -502,26 +598,28 @@ impl Worker {
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(selection) = self
-                .db("preparation", move |s| {
+                .prepare("preparation", move |s| {
                     store::preparation_step(s, &i, || preparation::admit(s, &resources, &i))
                 })
                 .await?
             else {
+                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
                 return Ok(());
             };
             let i = intent.clone();
             let Some(token) = self
-                .db("workspace", move |s| {
+                .prepare("workspace", move |s| {
                     store::preparation_step(s, &i, || preparation::workspace(s, &i))
                 })
                 .await?
             else {
+                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
                 return Ok(());
             };
             let i = intent.clone();
             let resources = self.resources.clone();
             let Some(prepared) = self
-                .db("preparation", move |s| {
+                .prepare("preparation", move |s| {
                     store::preparation_step(s, &i, || {
                         preparation::prepare_ready(
                             s, &resources, &i, method, generation, selection, token,
@@ -530,6 +628,7 @@ impl Worker {
                 })
                 .await?
             else {
+                self.retry_at = Some(tokio::time::Instant::now() + PREPARATION_RETRY);
                 return Ok(());
             };
             Some(prepared)
@@ -879,6 +978,7 @@ impl Worker {
         self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
+        let cleanup_error = exit.adapter.as_ref().and_then(|a| a.cleanup_error.clone());
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
         self.db("finish", move |store| {
             if let Some(recovery) = recovery {
@@ -890,6 +990,9 @@ impl Worker {
             Ok(())
         })
         .await?;
+        if let Some(error) = cleanup_error {
+            return Err(WorkerError::CleanupUnconfirmed(error));
+        }
         exit.result.map_err(Into::into)
     }
 }

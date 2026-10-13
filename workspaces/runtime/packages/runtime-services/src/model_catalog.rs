@@ -60,6 +60,8 @@ struct CacheEntry {
 
 struct CatalogInner {
     executable: Option<PathBuf>,
+    #[cfg(test)]
+    refresh_factory: Mutex<Option<Arc<dyn ProviderTaskFactory>>>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
@@ -123,6 +125,8 @@ impl ModelCatalogService {
     pub fn with_change_callback(executable: Option<String>, on_change: ChangeCallback) -> Self {
         Self(Arc::new(CatalogInner {
             executable: executable.map(PathBuf::from),
+            #[cfg(test)]
+            refresh_factory: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
             next_generation: Mutex::new(0),
             on_change,
@@ -213,7 +217,34 @@ impl ModelCatalogService {
             }
         }
         let cleanup_error = self.0.cleanup_error.clone();
+        #[cfg(test)]
+        let refresh_factory = self
+            .0
+            .refresh_factory
+            .lock()
+            .expect("fixture factory")
+            .clone();
         tasks.push(tokio::spawn(async move {
+            #[cfg(test)]
+            if let Some(factory) = refresh_factory {
+                let _permit = permit;
+                let result = read_session_with_shutdown(
+                    factory,
+                    ProviderLaunchSpec::new(
+                        vec!["fixture".into()],
+                        Default::default(),
+                        std::env::temp_dir(),
+                    ),
+                    Instant::now(),
+                    stop,
+                    cleanup_error,
+                )
+                .await;
+                if let Some(inner) = service.upgrade() {
+                    store_result(&inner, &cache_key, generation, result);
+                }
+                return;
+            }
             let result = read_provider_catalog(
                 permit,
                 executable.as_deref(),
@@ -556,6 +587,12 @@ pub(crate) mod tests {
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
 
+    pub(crate) fn set_refresh_factory(
+        service: &ModelCatalogService,
+        factory: Arc<dyn ProviderTaskFactory>,
+    ) {
+        *service.0.refresh_factory.lock().expect("fixture factory") = Some(factory);
+    }
     pub(crate) fn expire_fixture(service: &ModelCatalogService) {
         for entry in service.0.cache.lock().expect("cache").values_mut() {
             entry.expires_at = Some(Instant::now());

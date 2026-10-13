@@ -95,7 +95,7 @@ pub(super) fn agent(tx: &Transaction<'_>, id: &str) -> Result<AgentRecord, Worke
     AgentRepository::get(tx, &AgentId::from(id))?.ok_or_else(|| invalid(id))
 }
 pub(super) fn records(
-    tx: &Transaction<'_>,
+    tx: &rusqlite::Connection,
     table: &str,
 ) -> Result<BTreeMap<String, String>, WorkerError> {
     if !tx.query_row(
@@ -110,24 +110,52 @@ pub(super) fn records(
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?)
 }
-pub(super) fn authorize(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<(), WorkerError> {
-    let agents = records(tx, "runtime_agents")?;
-    let projects = records(tx, "runtime_projects")?;
-    let mut resolved_paths = BTreeMap::new();
-    for (rows, key) in [(&agents, "cwd"), (&projects, "path")] {
-        for raw in rows.values() {
-            let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
-            if let Some(path) = record
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|p| !p.is_empty())
-            {
-                let resolved = crate::projects::resolve_nonstrict(Path::new(path))
-                    .map_err(|_| invalid(key))?;
-                resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
+/// Filesystem observations are captured on the preparation executor, before SQL.
+/// Authorization still validates current stored owners in its writer transaction.
+#[derive(Clone)]
+pub(super) struct FilesystemSnapshot {
+    resolved_paths: BTreeMap<String, String>,
+    pub progress_directory: Option<String>,
+}
+impl FilesystemSnapshot {
+    pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
+        let db = store.read()?;
+        let agents = records(&db, "runtime_agents")?;
+        let projects = records(&db, "runtime_projects")?;
+        drop(db);
+        let mut resolved_paths = BTreeMap::new();
+        for (rows, key) in [(&agents, "cwd"), (&projects, "path")] {
+            for raw in rows.values() {
+                let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
+                if let Some(path) = record
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|p| !p.is_empty())
+                {
+                    let resolved = crate::projects::resolve_nonstrict(Path::new(path))
+                        .map_err(|_| invalid(key))?;
+                    resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
+                }
             }
         }
+        let progress = store.root().join("progress").join(id);
+        let progress_directory = (progress.is_dir()
+            && std::fs::canonicalize(&progress).ok().as_ref() == Some(&progress))
+        .then(|| progress.to_string_lossy().into_owned());
+        Ok(Self {
+            resolved_paths,
+            progress_directory,
+        })
     }
+}
+pub(super) fn authorize(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+) -> Result<(), WorkerError> {
+    let agents = records(tx, "runtime_agents")?;
+    let projects = records(tx, "runtime_projects")?;
+    let resolved_paths = filesystem.resolved_paths.clone();
     let rows = crate::submit_gates::AuthorizationRecords {
         recipient_id: intent.agent_id.clone(),
         agents,
@@ -334,6 +362,7 @@ pub(super) fn thread_snapshot(
     record: &Value,
     connection: &str,
     state_root: &Path,
+    progress_directory: Option<String>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
     let root_id = record["rootId"]
@@ -357,11 +386,7 @@ pub(super) fn thread_snapshot(
     } else {
         thread::Role::Implementer
     });
-    let progress = state_root.join("progress").join(id);
-    let progress_directory = (lead
-        && progress.is_dir()
-        && std::fs::canonicalize(&progress).ok().as_ref() == Some(&progress))
-    .then(|| progress.to_string_lossy().into_owned());
+    let progress_directory = lead.then_some(progress_directory).flatten();
     let admission = if record
         .get("accountTransferId")
         .is_some_and(|v| !v.is_null())

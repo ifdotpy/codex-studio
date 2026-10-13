@@ -369,3 +369,269 @@ async fn invalid_publication_identity_refuses_before_entering_writer() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn filesystem_preparation_does_not_own_database_permit() {
+    let state = State::new().await;
+    let bridge = state.bridge.clone();
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let job = tokio::spawn(async move {
+        bridge
+            .prepare_run("blocked-filesystem", move |_| {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok(())
+            })
+            .await
+    });
+    observed.await.unwrap();
+    let access = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.bridge.run(|store| {
+            Ok(store
+                .read()?
+                .query_row("SELECT COUNT(*) FROM runtime_agents", [], |row| {
+                    row.get::<_, i64>(0)
+                })?)
+        }),
+    )
+    .await;
+    release.send(()).unwrap();
+    job.await.unwrap().unwrap();
+    assert!(
+        access
+            .expect("another account can use the store during filesystem work")
+            .unwrap()
+            > 0
+    );
+}
+
+pub(super) async fn scenario_preparation_drains_journal_and_stop() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("workspace".into());
+    state.wake(&worker).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .unwrap();
+    let marker = peer
+        .frame(json!({"method":"test/barrier","params":{}}))
+        .await;
+    peer.acknowledged(marker).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        loop {
+            if state
+                .bridge
+                .faults
+                .committed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(name, _)| name == "stop")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("stop commits while filesystem preparation remains paused");
+    assert!(state.record().await["epoch"].as_i64().unwrap() > state.epoch);
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state.bridge.faults.release.notify_one();
+    worker_barrier(&worker).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "revoked preparation must never admit provider input"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn preparation_drains_journal_and_stop() {
+    scenario_preparation_drains_journal_and_stop().await;
+}
+
+pub(super) async fn unresolved_thread_receipt_survives_replacement(rejected: bool) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    worker_barrier(&worker).await;
+    worker.task.abort();
+    assert!(worker.completion().await.is_err());
+    let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+    bridge.faults = state.bridge.faults.clone();
+    let mut peer = Peer::identity("default", if rejected { 1 } else { 2 }, None);
+    let mut replacement = peer.worker(bridge).await;
+    let held = state.record().await;
+    assert_eq!(
+        held["startOutcomeHold"]["reason"],
+        "thread-preparation/receipt-pending"
+    );
+    assert_eq!(held["startOutcomeHold"]["connectionGeneration"], 1);
+    assert_eq!(held["startOutcomeHold"]["operationId"], resume["id"]);
+    state.wake(&replacement).await;
+    worker_barrier(&replacement).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "unknown prior thread request must prevent input replay"
+    );
+    if rejected {
+        let cursor = peer
+            .frame(json!({"id":resume["id"], "error":{"code":-32000,"message":"thread refused"}}))
+            .await;
+        peer.acknowledged(cursor).await;
+        let held = state.record().await;
+        assert_eq!(
+            held["startOutcomeHold"]["reason"],
+            "Provider thread resume failed; input remains pending."
+        );
+        assert_eq!(held["error"], held["startOutcomeHold"]["reason"]);
+    }
+    assert_ne!(state.event_status("input").await, "delivered");
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn old_generation_thread_receipt_remains_unknown() {
+    unresolved_thread_receipt_survives_replacement(false).await;
+}
+#[tokio::test(start_paused = true)]
+async fn recovered_thread_rejection_replaces_receipt_pending_hold() {
+    unresolved_thread_receipt_survives_replacement(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn cold_catalog_refreshes_and_wakes_without_an_external_command() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                row.extra.remove("nativeEffort");
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let resources = test_resources().unwrap();
+    let catalog = resources.model_catalog.clone();
+    let mut catalog_peer = Peer::new();
+    crate::model_catalog::tests::set_refresh_factory(&catalog, catalog_peer.factory.clone());
+    let mut peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    let held = state.record().await;
+    assert_eq!(
+        held["startAttempt"]["prepareError"],
+        "model-catalog/refresh-pending"
+    );
+    tokio::time::advance(PREPARATION_RETRY).await;
+    let list = catalog_peer.write("model/list").await;
+    // The one-off exchange does not require journal ACK for its final response.
+    catalog_peer.frame(json!({"id":list["id"],"result":{"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}})).await;
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn = peer.write("turn/start").await;
+    assert_eq!(
+        state.record().await["startAttempt"]["id"],
+        held["startAttempt"]["id"]
+    );
+    peer.accepted(&turn).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+    catalog.shutdown().await.unwrap();
+}
+
+pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                let mut owner = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                owner.id = AgentId::from("workspace-owner");
+                owner.status = studio_runtime_store::AgentStatus::Waiting;
+                owner.extra.insert("autoWake".into(), json!(false));
+                owner
+                    .extra
+                    .insert("workspaceOperation".into(), json!("capture"));
+                AgentRepository::put(tx, &owner)?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        state.record().await["preparationWake"]["reason"],
+        "workspace-readiness/pending"
+    );
+    worker.task.abort();
+    assert!(worker.completion().await.is_err());
+    state
+        .bridge
+        .run(|store| {
+            store.transaction_with(|tx| {
+                let mut owner =
+                    AgentRepository::get(tx, &AgentId::from("workspace-owner"))?.unwrap();
+                owner.extra.remove("workspaceOperation");
+                AgentRepository::put(tx, &owner)?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+    bridge.faults = state.bridge.faults.clone();
+    let mut peer = Peer::new();
+    let mut replacement = peer.worker(bridge).await;
+    let resume = peer.write("thread/resume").await;
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let turn = peer.write("turn/start").await;
+    peer.accepted(&turn).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert!(state.record().await.get("preparationWake").is_none());
+    replacement.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn workspace_retry_wakes_after_restart() {
+    scenario_workspace_retry_wakes_after_restart().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_surfaces_unconfirmed_provider_cleanup() {
+    let state = State::new().await;
+    let peer =
+        Peer::identity_with_cleanup("default", 1, None, Some("termination unconfirmed".into()));
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    assert!(matches!(
+        worker.shutdown().await,
+        Err(WorkerError::CleanupUnconfirmed(_))
+    ));
+}
