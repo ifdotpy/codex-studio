@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use studio_runtime_services::agents_create::{self, RenameError};
-use studio_runtime_services::event_write::python_json;
+use studio_runtime_services::event_write::python_json_default;
 use studio_runtime_store::SyncDocumentsRepository;
 
 use crate::error::ApiError;
@@ -96,11 +96,11 @@ async fn rename(
 
 fn rename_signature(id: &str, name: Option<&str>) -> String {
     let name = name
-        .map(|value| python_json(&Value::String(value.to_owned())))
+        .map(|value| python_json_default(&Value::String(value.to_owned())))
         .unwrap_or_else(|| "null".to_owned());
     let body = format!(
         "{{\"chat\": {}, \"name\": {name}, \"operation\": \"rename\"}}",
-        python_json(&Value::String(id.to_owned()))
+        python_json_default(&Value::String(id.to_owned()))
     );
     Sha256::digest(body.as_bytes())
         .iter()

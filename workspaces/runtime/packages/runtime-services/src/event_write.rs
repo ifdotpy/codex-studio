@@ -14,13 +14,48 @@ static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Match the compact, sorted JSON written by Python's signed federation protocol.
 pub fn python_json(value: &Value) -> String {
+    python_json_with_options(value, JsonOptions::COMPACT_UNICODE)
+}
+
+/// Match Python's default sorted JSON format used by existing durable signatures.
+pub fn python_json_default(value: &Value) -> String {
+    python_json_with_options(value, JsonOptions::DEFAULT)
+}
+
+#[derive(Clone, Copy)]
+struct JsonOptions {
+    compact: bool,
+    ensure_ascii: bool,
+    python_float: bool,
+}
+
+impl JsonOptions {
+    const COMPACT_UNICODE: Self = Self {
+        compact: true,
+        ensure_ascii: false,
+        python_float: true,
+    };
+
+    const DEFAULT: Self = Self {
+        compact: false,
+        ensure_ascii: true,
+        python_float: false,
+    };
+}
+
+fn python_json_with_options(value: &Value, options: JsonOptions) -> String {
     match value {
         Value::Null | Value::Bool(_) => value.to_string(),
-        Value::Number(number) => python_number(number),
-        Value::String(value) => python_quote(value),
+        Value::Number(number) if options.python_float => python_number(number),
+        Value::Number(number) => number.to_string(),
+        Value::String(value) => python_quote(value, options.ensure_ascii),
         Value::Array(values) => format!(
             "[{}]",
-            values.iter().map(python_json).collect::<Vec<_>>().join(",")
+            values
+                .iter()
+                .map(|value| python_json_with_options(value, options))
+                .collect::<Vec<_>>()
+                .join(if options.compact { "," } else { ", " })
         ),
         Value::Object(values) => {
             let mut keys = values.keys().collect::<Vec<_>>();
@@ -28,9 +63,16 @@ pub fn python_json(value: &Value) -> String {
             format!(
                 "{{{}}}",
                 keys.into_iter()
-                    .map(|key| format!("{}:{}", python_quote(key), python_json(&values[key])))
+                    .map(|key| {
+                        format!(
+                            "{}:{}{}",
+                            python_quote(key, options.ensure_ascii),
+                            if options.compact { "" } else { " " },
+                            python_json_with_options(&values[key], options)
+                        )
+                    })
                     .collect::<Vec<_>>()
-                    .join(",")
+                    .join(if options.compact { "," } else { ", " })
             )
         }
     }
@@ -116,7 +158,7 @@ pub fn python_strip(value: &str) -> &str {
     })
 }
 
-fn python_quote(value: &str) -> String {
+fn python_quote(value: &str, ensure_ascii: bool) -> String {
     let mut output = String::from("\"");
     for character in value.chars() {
         match character {
@@ -127,8 +169,21 @@ fn python_quote(value: &str) -> String {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            c if c < ' ' => {
+            c if c < ' ' || (ensure_ascii && c as u32 == 0x7f) => {
                 output.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if ensure_ascii && c as u32 > 0x7f => {
+                let n = c as u32;
+                if n <= 0xffff {
+                    output.push_str(&format!("\\u{n:04x}"));
+                } else {
+                    let n = n - 0x10000;
+                    output.push_str(&format!(
+                        "\\u{:04x}\\u{:04x}",
+                        0xd800 + (n >> 10),
+                        0xdc00 + (n & 0x3ff)
+                    ));
+                }
             }
             c => output.push(c),
         }
@@ -646,7 +701,10 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, save_plan};
+    use super::{
+        AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, python_json_default,
+        save_plan,
+    };
     use serde_json::json;
 
     #[test]
@@ -674,6 +732,10 @@ mod tests {
         assert_eq!(
             python_json(&json!({"z":1,"a":"é"})),
             "{\"a\":\"é\",\"z\":1}"
+        );
+        assert_eq!(
+            python_json_default(&json!({"z":1,"a":"Café🙂"})),
+            "{\"a\": \"Caf\\u00e9\\ud83d\\ude42\", \"z\": 1}"
         );
     }
     use std::collections::BTreeMap;
