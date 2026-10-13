@@ -37,7 +37,7 @@ data-encoding = "=2.11.1"
 http-range-header = "=0.4.2"
 inventory = "=0.3.25"
 chrono = { version = "=0.4.42", default-features = false, features = ["clock"] }
-uuid = { version = "=1.28.0", default-features = false, features = ["std"] }
+uuid = { version = "=1.28.0", default-features = false, features = ["std", "v5"] }
 serde = { version = "1.0", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std", "float_roundtrip"] }
 serde_path_to_error = "=0.1.20"
