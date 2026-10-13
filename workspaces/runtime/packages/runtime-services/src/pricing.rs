@@ -234,8 +234,16 @@ fn price_with_rates(
         .first()
         .map(|tier| tier.size)
         .or_else(|| rates.legacy_over.as_ref().map(|tier| tier.size));
-    let tier_used = threshold
-        .is_some_and(|threshold| context_tokens.is_some_and(|context| context >= threshold));
+    let inclusive_tier = !rates.tiers.is_empty();
+    let tier_used = threshold.is_some_and(|threshold| {
+        context_tokens.is_some_and(|context| {
+            if inclusive_tier {
+                context >= threshold
+            } else {
+                context > threshold
+            }
+        })
+    });
     let selected = if tier_used && !rates.tiers.is_empty() {
         context_tokens
             .and_then(|context| rates.tiers.iter().rev().find(|tier| context >= tier.size))
@@ -309,6 +317,26 @@ mod tests {
             value.amount_usd,
             Some((70.0 * 3.0 + 5.0 * 4.0 + 20.0 + 20.0) / 1_000_000.0)
         );
+    }
+
+    #[test]
+    fn legacy_context_over_200k_boundary_is_strict() {
+        let catalog = PricingCatalog::from_value(&json!({
+            "providers": {"openai": {"models": {"gpt-legacy": {"cost": {
+                "input": 1, "output": 2,
+                "context_over_200k": {"input": 10, "output": 20}
+            }}}}}
+        }))
+        .expect("legacy catalog");
+        let usage = json!({"inputTokens":100,"outputTokens":10});
+        let at_boundary =
+            catalog.price_usage("openai", "gpt-legacy", &usage, Some(200_000.0), false);
+        let above_boundary =
+            catalog.price_usage("openai", "gpt-legacy", &usage, Some(200_001.0), false);
+        assert!(!at_boundary.context_tier_used);
+        assert_eq!(at_boundary.amount_usd, Some(120.0 / 1_000_000.0));
+        assert!(above_boundary.context_tier_used);
+        assert_eq!(above_boundary.amount_usd, Some(1_200.0 / 1_000_000.0));
     }
 
     #[test]
