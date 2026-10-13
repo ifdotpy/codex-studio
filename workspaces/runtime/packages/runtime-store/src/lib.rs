@@ -8,8 +8,8 @@ pub use schema::{python_json, python_json_compact, sha256_hex};
 
 pub use repositories::account_state;
 pub use repositories::analytics::{
-    AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError, SessionCostError,
-    export as analytics_export, persisted_session_cost, read as analytics_read,
+    self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
+    SessionCostError,
 };
 
 use std::fs::{File, OpenOptions};

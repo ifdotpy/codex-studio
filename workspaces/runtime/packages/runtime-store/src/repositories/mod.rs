@@ -1,6 +1,6 @@
 pub mod account_state;
 pub(crate) mod agents;
-pub(crate) mod analytics;
+pub mod analytics;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
