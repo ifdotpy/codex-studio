@@ -366,9 +366,8 @@ impl AdapterTask {
             parse_process_environment(&bytes)
         });
         // Reap the bounded filesystem job; never detach a started blocking job.
-        let original = job
-            .await
-            .map_err(|_| AdapterError::TaskFailed)?
+        let original = reap_environment_job(job, &mut self.stop)
+            .await?
             .map_err(|_| AdapterError::UnverifiableChild)?;
         verify_environment(&original, &self.open.env)
             .map_err(|_| AdapterError::UnverifiableChild)?;
@@ -660,6 +659,24 @@ impl AdapterTask {
             generation: event.generation,
             payload,
         })
+    }
+}
+
+/// Abort queued blocking work on stop. Once the OS read has started Tokio cannot
+/// cancel it: shutdown retains the socket/permit and joins that bounded read.
+#[cfg(target_os = "linux")]
+async fn reap_environment_job<T>(
+    mut job: tokio::task::JoinHandle<T>,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<T, AdapterError> {
+    tokio::select! {
+        biased;
+        _ = cancelled(stop) => {
+            job.abort();
+            let _ = job.await;
+            Err(AdapterError::Cancelled)
+        }
+        result = &mut job => result.map_err(|_| AdapterError::TaskFailed),
     }
 }
 

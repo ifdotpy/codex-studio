@@ -229,3 +229,7 @@ The old thread adapter and session remain unmodified in behavior until the
 session and account driver use this seam and independent review approves cutover.
 These stages add no production caller wiring or live-model verification. Remove
 the old byte-stream workers only when those callers have migrated.
+
+Environment reads that have not started are aborted on shutdown. Shutdown still joins
+the cancelled blocking job (Tokio may first wait for a pool worker) or an already
+started, at-most-4-MiB OS read; there is no detached job or hard OS-read deadline.

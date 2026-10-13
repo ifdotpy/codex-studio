@@ -385,3 +385,53 @@ async fn abandoned_buffered_write_receipt_or_receive_future_fences_attachment() 
         assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, entered) = oneshot::channel();
+        let first = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+        });
+        entered.await.unwrap();
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = executed.clone();
+        let queued = tokio::task::spawn_blocking(move || {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst)
+        });
+        let stop = Shutdown::default();
+        stop.cancel();
+        let mut receiver = stop.subscribe();
+        let mut cancelled_job = Box::pin(reap_environment_job(queued, &mut receiver));
+        // Tokio abort prevents execution, but reaping waits until the occupied
+        // blocking pool visits the cancelled job. Release the explicit barrier.
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(cancelled_job.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        release.send(()).unwrap();
+        assert!(matches!(cancelled_job.await, Err(AdapterError::Cancelled)));
+        first.await.unwrap();
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, entered) = oneshot::channel();
+        let running = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+        });
+        entered.await.unwrap();
+        let mut receiver = stop.subscribe();
+        let mut join = Box::pin(reap_environment_job(running, &mut receiver));
+        assert!(std::future::poll_fn(|cx| Poll::Ready(join.as_mut().poll(cx).is_pending())).await);
+        release.send(()).unwrap();
+        assert!(matches!(join.await, Err(AdapterError::Cancelled)));
+    });
+}
