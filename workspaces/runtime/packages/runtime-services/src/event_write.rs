@@ -340,7 +340,7 @@ fn refuse_if_event_rule_applies(
     Ok(())
 }
 
-fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
+pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
         return Err(EventWriteError::RemoteEventsUnavailable);
     }
