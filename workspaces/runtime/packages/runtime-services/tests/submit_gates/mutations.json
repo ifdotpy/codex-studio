@@ -1,0 +1,158 @@
+[
+  {
+    "id": "SG01",
+    "description": "allow a foreign sender through the same-team predicate",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".is_some_and(|agent| agent.root_id.as_deref() == Some(root))",
+        "after": ".is_some_and(|agent| agent.root_id.is_some() || !root.is_empty())"
+      }
+    ],
+    "witnesses": ["missing-/snapshot/agents/sender/root_id"]
+  },
+  {
+    "id": "SG02",
+    "description": "allow global and foreign broadcasts",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "return Err(D::BroadcastDisabled);",
+        "after": "return Ok(());"
+      }
+    ],
+    "witnesses": ["broadcast-foreign"]
+  },
+  {
+    "id": "SG03",
+    "description": "allow deleted peer leads",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "&& !agent.deleted",
+        "after": "&& (agent.deleted || !agent.deleted)"
+      }
+    ],
+    "witnesses": ["peer-deleted-True"]
+  },
+  {
+    "id": "SG04",
+    "description": "skip complaint recipient ownership",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".filter(|c| c.author.as_ref() == Some(&recipient.id))",
+        "after": ".filter(|c| c.author.is_some())"
+      }
+    ],
+    "witnesses": ["complaint-foreign-recipient"]
+  },
+  {
+    "id": "SG05",
+    "description": "treat agent followups as system followups",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if !sender_present {",
+        "after": "if *sender_present || !sender_present {"
+      }
+    ],
+    "witnesses": ["followup-True-foreign"]
+  },
+  {
+    "id": "SG06",
+    "description": "apply pending settings from another account",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if pending\n                .account_key",
+        "after": "if false && pending\n                .account_key"
+      }
+    ],
+    "witnesses": ["pending-wrong-account"]
+  },
+  {
+    "id": "SG07",
+    "description": "ignore an account change during catalog validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if observed.account_key != current.account_key",
+        "after": "if false && observed.account_key != current.account_key"
+      }
+    ],
+    "witnesses": ["changed-during-read-account_key"]
+  },
+  {
+    "id": "SG08",
+    "description": "silently admit unsupported fast mode",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if settings.fast_mode && !info.priority {",
+        "after": "if false && settings.fast_mode && !info.priority {"
+      }
+    ],
+    "witnesses": ["fast-denied"]
+  },
+  {
+    "id": "SG09",
+    "description": "accept expired catalog observation",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if catalog.expires_at <= now {",
+        "after": "if false && catalog.expires_at <= now {"
+      }
+    ],
+    "witnesses": ["expired-catalog"]
+  },
+  {
+    "id": "SG10",
+    "description": "submit budgeted roots without coverage",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if token_budget.is_some() {",
+        "after": "if false && token_budget.is_some() {"
+      }
+    ],
+    "witnesses": ["budget-0-spent-0"]
+  },
+  {
+    "id": "SG11",
+    "description": "lose the new account default reasoning effort",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "settings.native_effort = revalidated.ok_or(D::SettingsChanged)?;",
+        "after": "let _ignored = revalidated.ok_or(D::SettingsChanged)?;\n            settings.native_effort = None;"
+      }
+    ],
+    "witnesses": ["changed-account"]
+  },
+  {
+    "id": "SG12",
+    "description": "consume pending settings on a fixed retry",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if !current.settings_fixed {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": ["fixed-keeps-pending"]
+  },
+  {
+    "id": "SG13",
+    "description": "use a catalog belonging to another account",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if catalog.account_key != snapshot.account_key {",
+        "after": "if false && catalog.account_key != snapshot.account_key {"
+      }
+    ],
+    "witnesses": ["foreign-catalog"]
+  }
+]

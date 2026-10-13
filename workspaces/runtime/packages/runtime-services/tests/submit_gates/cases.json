@@ -1,0 +1,2483 @@
+{
+  "seeds": {
+    "authorization": {
+      "gate": "authorization",
+      "snapshot": {
+        "recipient_id": "recipient",
+        "agents": {
+          "recipient": {
+            "id": "recipient",
+            "root_id": "root",
+            "parent_id": null,
+            "is_lead": false,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          },
+          "sender": {
+            "id": "sender",
+            "root_id": "root",
+            "parent_id": null,
+            "is_lead": false,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          },
+          "foreign": {
+            "id": "foreign",
+            "root_id": "foreign",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        "rooms": {
+          "room": {
+            "kind": "private",
+            "members": ["recipient", "sender"]
+          }
+        },
+        "complaints": {
+          "complaint": {
+            "author": "recipient",
+            "lead_id": "sender"
+          }
+        },
+        "projects": {}
+      },
+      "events": [
+        {
+          "kind": "agent_message",
+          "sender": "sender",
+          "room": "room"
+        }
+      ]
+    },
+    "execution": {
+      "gate": "execution",
+      "current": {
+        "account_key": "account",
+        "execution_settings_account_key": "account",
+        "settings": {
+          "model": "model",
+          "effort": null,
+          "native_effort": "medium",
+          "fast_mode": false,
+          "daybreak_enabled": false
+        },
+        "pending": null,
+        "settings_fixed": false
+      },
+      "catalog": {
+        "account_key": "account",
+        "generation": 7,
+        "lifetime": 30,
+        "models": [
+          {
+            "model": "model",
+            "resolved_model": "alias",
+            "hidden": false,
+            "supported_efforts": ["low", "medium", "high"],
+            "default_effort": "medium",
+            "priority": true
+          }
+        ]
+      }
+    },
+    "budget": {
+      "gate": "budget",
+      "budget": null,
+      "spent": 0
+    }
+  },
+  "witnesses": [
+    {
+      "name": "same-team-private",
+      "gate": "authorization",
+      "patches": []
+    },
+    {
+      "name": "kind-user_message",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "user_message"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-work_review",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "work_review"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-complaint",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-tool_response",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "tool_response"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-native_recovery",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "native_recovery"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-unknown",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "unknown"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-chat_review",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "chat_review"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind-radio_turn",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "radio_turn"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-False-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": false,
+              "sender": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-False-foreign",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": false,
+              "sender": "foreign"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-True-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-True-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": "sender"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-True-foreign",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": "foreign"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-True-missing",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": "missing"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-True-",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "broadcast-root",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room",
+          "value": {
+            "kind": "broadcast",
+            "root_id": "root"
+          }
+        }
+      ]
+    },
+    {
+      "name": "broadcast-foreign",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room",
+          "value": {
+            "kind": "broadcast",
+            "root_id": "foreign"
+          }
+        }
+      ]
+    },
+    {
+      "name": "broadcast-all",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room",
+          "value": {
+            "kind": "broadcast",
+            "root_id": "all"
+          }
+        }
+      ]
+    },
+    {
+      "name": "broadcast-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room",
+          "value": {
+            "kind": "broadcast",
+            "root_id": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "broadcast-",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room",
+          "value": {
+            "kind": "broadcast",
+            "root_id": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "members-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": []
+        }
+      ]
+    },
+    {
+      "name": "members-['recipient']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": ["recipient"]
+        }
+      ]
+    },
+    {
+      "name": "members-['sender']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": ["sender"]
+        }
+      ]
+    },
+    {
+      "name": "members-['recipient', 'sender', 'foreign']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": ["recipient", "sender", "foreign"]
+        }
+      ]
+    },
+    {
+      "name": "members-['recipient', 'sender', 'missing']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": ["recipient", "sender", "missing"]
+        }
+      ]
+    },
+    {
+      "name": "members-['recipient', 'sender', 'sender']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/members",
+          "value": ["recipient", "sender", "sender"]
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/agents/recipient/root_id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient/root_id",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/agents/recipient/root_id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient/root_id",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/agents/sender/root_id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/sender/root_id",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/agents",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents",
+          "value": {}
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/rooms",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms",
+          "value": {}
+        }
+      ]
+    },
+    {
+      "name": "missing-/snapshot/rooms/room/kind",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/rooms/room/kind",
+          "value": "other"
+        }
+      ]
+    },
+    {
+      "name": "missing-/events/0/sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events/0/sender",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "missing-/events/0/room",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events/0/room",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "complaint-sender-sender-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "sender",
+              "response_author": "sender"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "sender"
+        }
+      ]
+    },
+    {
+      "name": "complaint-user-user-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "user",
+              "response_author": "user"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "sender"
+        }
+      ]
+    },
+    {
+      "name": "complaint-foreign-foreign-foreign",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "foreign",
+              "response_author": "foreign"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "complaint-sender-foreign-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "sender",
+              "response_author": "foreign"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "sender"
+        }
+      ]
+    },
+    {
+      "name": "complaint-sender-sender-foreign",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "sender",
+              "response_author": "sender"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "complaint-None-sender-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": null,
+              "response_author": "sender"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/lead_id",
+          "value": "sender"
+        }
+      ]
+    },
+    {
+      "name": "complaint-missing",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": null,
+              "responder": "user",
+              "response_author": "user"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "complaint-foreign-recipient",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "user",
+              "response_author": "user"
+            }
+          ]
+        },
+        {
+          "path": "/snapshot/complaints/complaint/author",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "peer-private",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "peer-deleted-True",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/deleted",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "peer-is_lead-False",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/is_lead",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "peer-parent_id-parent",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/parent_id",
+          "value": "parent"
+        }
+      ]
+    },
+    {
+      "name": "peer-root_id-other",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/root_id",
+          "value": "other"
+        }
+      ]
+    },
+    {
+      "name": "peer-resolved_cwd-/var/tmp/moved",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/resolved_cwd",
+          "value": "/var/tmp/moved"
+        }
+      ]
+    },
+    {
+      "name": "peer-resolved_cwd-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender/resolved_cwd",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "peer-missing-membership",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {}
+        }
+      ]
+    },
+    {
+      "name": "peer-followup-denied",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": "sender"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "peer-complaint-denied",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/snapshot/agents/recipient",
+          "value": {
+            "id": "recipient",
+            "root_id": "recipient",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/agents/sender",
+          "value": {
+            "id": "sender",
+            "root_id": "sender",
+            "parent_id": null,
+            "is_lead": true,
+            "deleted": false,
+            "resolved_cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/snapshot/projects",
+          "value": {
+            "/var/tmp/submit-gates-project": {
+              "resolved_path": "/var/tmp/submit-gates-project",
+              "teams": [["recipient", "sender"]]
+            }
+          }
+        },
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "complaint_response",
+              "complaint_id": "complaint",
+              "responder": "sender",
+              "response_author": "sender"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mixed-batch-denied",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "kind": "user_message"
+            },
+            {
+              "kind": "followup",
+              "sender_present": true,
+              "sender": "foreign"
+            },
+            {
+              "kind": "user_message"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unchanged",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "fixed",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/settings_fixed",
+          "value": true
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "missing-account-pin",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": null
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "changed-account",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        }
+      ]
+    },
+    {
+      "name": "changed-account-explicit-effort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/effort",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "name": "changed-account-alias",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/model",
+          "value": "alias"
+        }
+      ]
+    },
+    {
+      "name": "invalid-model-missing",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/model",
+          "value": "missing"
+        }
+      ]
+    },
+    {
+      "name": "invalid-model-",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/model",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "invalid-model- ",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/model",
+          "value": " "
+        }
+      ]
+    },
+    {
+      "name": "invalid-effort-extreme",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/effort",
+          "value": "extreme"
+        }
+      ]
+    },
+    {
+      "name": "invalid-effort-",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/effort",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "invalid-effort- ",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/effort",
+          "value": " "
+        }
+      ]
+    },
+    {
+      "name": "hidden-model",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/models/0/hidden",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "missing-model",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/models",
+          "value": []
+        }
+      ]
+    },
+    {
+      "name": "missing-default-effort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/models/0/default_effort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "fast-supported",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/fast_mode",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "fast-denied",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings/fast_mode",
+          "value": true
+        },
+        {
+          "path": "/catalog/models/0/priority",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "missing-catalog",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ],
+      "deviation": "catalog-required"
+    },
+    {
+      "name": "expired-catalog",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/lifetime",
+          "value": 0
+        }
+      ],
+      "deviation": "catalog-expired"
+    },
+    {
+      "name": "foreign-catalog",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/account_key",
+          "value": "foreign"
+        }
+      ],
+      "deviation": "catalog-account-mismatch"
+    },
+    {
+      "name": "changed-during-read-account_key",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/observed",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            },
+            "pending": null,
+            "settings_fixed": false
+          }
+        },
+        {
+          "path": "/current/account_key",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "changed-during-read-settings/model",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/observed",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            },
+            "pending": null,
+            "settings_fixed": false
+          }
+        },
+        {
+          "path": "/current/settings/model",
+          "value": "alias"
+        }
+      ]
+    },
+    {
+      "name": "changed-during-read-settings/effort",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/observed",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            },
+            "pending": null,
+            "settings_fixed": false
+          }
+        },
+        {
+          "path": "/current/settings/effort",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "name": "changed-during-read-settings/fast_mode",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/observed",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            },
+            "pending": null,
+            "settings_fixed": false
+          }
+        },
+        {
+          "path": "/current/settings/fast_mode",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "pending",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pending",
+          "value": {
+            "account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": "high",
+              "native_effort": "high",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending-unpinned",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pending",
+          "value": {
+            "account_key": null,
+            "settings": {
+              "model": "model",
+              "effort": "high",
+              "native_effort": "high",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending-wrong-account",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pending",
+          "value": {
+            "account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": "high",
+              "native_effort": "high",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "fixed-keeps-pending",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pending",
+          "value": {
+            "account_key": "old",
+            "settings": {
+              "model": "model",
+              "effort": "high",
+              "native_effort": "high",
+              "fast_mode": false,
+              "daybreak_enabled": false
+            }
+          }
+        },
+        {
+          "path": "/current/settings_fixed",
+          "value": true
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-fast-denied",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pending",
+          "value": {
+            "account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": true,
+              "daybreak_enabled": false
+            }
+          }
+        },
+        {
+          "path": "/catalog/models/0/priority",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "fixed-changed-account-validates-without-patch",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/execution_settings_account_key",
+          "value": "old"
+        },
+        {
+          "path": "/current/settings_fixed",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "daybreak-refusal",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/settings/daybreak_enabled",
+          "value": true
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "unlimited",
+      "gate": "budget",
+      "patches": []
+    },
+    {
+      "name": "budget-0-spent-0",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 0
+        },
+        {
+          "path": "/spent",
+          "value": 0
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-0-spent-1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 0
+        },
+        {
+          "path": "/spent",
+          "value": 1
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-0-spent-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 0
+        },
+        {
+          "path": "/spent",
+          "value": 10
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-1-spent-0",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 1
+        },
+        {
+          "path": "/spent",
+          "value": 0
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-1-spent-1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 1
+        },
+        {
+          "path": "/spent",
+          "value": 1
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-1-spent-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 1
+        },
+        {
+          "path": "/spent",
+          "value": 10
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-10-spent-0",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 10
+        },
+        {
+          "path": "/spent",
+          "value": 0
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-10-spent-1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 10
+        },
+        {
+          "path": "/spent",
+          "value": 1
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-10-spent-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 10
+        },
+        {
+          "path": "/spent",
+          "value": 10
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-9007199254740992-spent-0",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 9007199254740992
+        },
+        {
+          "path": "/spent",
+          "value": 0
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-9007199254740992-spent-1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 9007199254740992
+        },
+        {
+          "path": "/spent",
+          "value": 1
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-9007199254740992-spent-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 9007199254740992
+        },
+        {
+          "path": "/spent",
+          "value": 10
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-18446744073709551615-spent-0",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 18446744073709551615
+        },
+        {
+          "path": "/spent",
+          "value": 0
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-18446744073709551615-spent-1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 18446744073709551615
+        },
+        {
+          "path": "/spent",
+          "value": 1
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "budget-18446744073709551615-spent-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 18446744073709551615
+        },
+        {
+          "path": "/spent",
+          "value": 10
+        }
+      ],
+      "deviation": "budget-policy/coverage-unavailable"
+    },
+    {
+      "name": "daybreak-codex-['daybreakBlue']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakBlue"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-['daybreakBlue']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakBlue"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-['daybreakRed']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakRed"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-['daybreakRed']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakRed"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-['daybreakBlue', 'daybreakRed']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakBlue", "daybreakRed"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-['daybreakBlue', 'daybreakRed']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakBlue", "daybreakRed"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-['standard']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["standard"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-['standard']",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["standard"]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-[]",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": []
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-[]",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": []
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-[7]",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": [7]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-[7]",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": [7]
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-codex-None",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "codex"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": null
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "daybreak-claude-None",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current",
+          "value": {
+            "account_key": "account",
+            "execution_settings_account_key": "account",
+            "settings": {
+              "model": "model",
+              "effort": null,
+              "native_effort": "medium",
+              "fast_mode": false,
+              "daybreak_enabled": true
+            },
+            "pending": null,
+            "settings_fixed": false,
+            "provider": "claude"
+          }
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": null
+              }
+            }
+          ]
+        }
+      ],
+      "deviation": "daybreak-unsupported"
+    },
+    {
+      "name": "disabled-daybreak-ignores-required-grants",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true,
+              "access_programs": {
+                "cyber": ["daybreakBlue"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "matrix": {
+    "roots": ["root", "foreign", "all", null],
+    "senders": ["sender", "foreign", "missing", null],
+    "efforts": [null, "low", "high", "unsupported"],
+    "models": ["model", "alias", "missing"],
+    "budgets": [null, 0, 1, 10, 18446744073709551615]
+  }
+}

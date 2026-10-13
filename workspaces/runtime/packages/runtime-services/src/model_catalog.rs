@@ -31,6 +31,22 @@ pub enum CatalogRead {
     Unavailable,
 }
 
+/// Admission reads never expose the display cache's stale fallback. The caller
+/// must retain account/home/provider identity and recheck expiry before freezing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdmissionCatalogRead {
+    Fresh {
+        value: Value,
+        account_key: String,
+        home: String,
+        provider: String,
+        generation: u64,
+        expires_at: std::time::Instant,
+    },
+    Pending,
+    Unavailable,
+}
+
 struct CacheEntry {
     generation: u64,
     value: Option<Value>,
@@ -51,6 +67,46 @@ struct CatalogInner {
 pub struct ModelCatalogService(Arc<CatalogInner>);
 
 impl ModelCatalogService {
+    /// Observe only an already refreshed catalog. This never starts a provider;
+    /// use `read` outside admission to request/coalesce the asynchronous refresh.
+    #[must_use]
+    pub fn read_for_admission(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+    ) -> AdmissionCatalogRead {
+        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        if provider != "codex" {
+            return AdmissionCatalogRead::Unavailable;
+        }
+        let Ok(cache) = self.0.cache.lock() else {
+            return AdmissionCatalogRead::Unavailable;
+        };
+        let Some(entry) = cache.get(&key) else {
+            return AdmissionCatalogRead::Pending;
+        };
+        if entry.pending {
+            return AdmissionCatalogRead::Pending;
+        }
+        if entry.error {
+            return AdmissionCatalogRead::Unavailable;
+        }
+        match (&entry.value, entry.expires_at) {
+            (Some(value), Some(expires_at)) if expires_at > Instant::now() => {
+                AdmissionCatalogRead::Fresh {
+                    value: value.clone(),
+                    account_key: key.0,
+                    home: key.1,
+                    provider: key.2,
+                    generation: entry.generation,
+                    expires_at: expires_at.into_std(),
+                }
+            }
+            _ => AdmissionCatalogRead::Pending,
+        }
+    }
+
     #[must_use]
     pub fn new(executable: Option<String>) -> Self {
         Self::with_change_callback(executable, Arc::new(|| {}))
@@ -476,6 +532,76 @@ mod tests {
             Instant::now(),
         )
         .await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_never_exposes_cold_stale_pending_failed_or_foreign_catalogs() {
+        use super::AdmissionCatalogRead;
+        let service = ModelCatalogService::new(None);
+        let key = (
+            "account".to_owned(),
+            "/disposable".to_owned(),
+            "codex".to_owned(),
+        );
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            AdmissionCatalogRead::Pending
+        );
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, "claude"),
+            AdmissionCatalogRead::Unavailable
+        );
+        let value = json!({"data": [{"model": "one"}]});
+        let expiry = Instant::now() + CATALOG_TTL;
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(value.clone()),
+                expires_at: Some(expiry),
+                error: false,
+                pending: false,
+            },
+        );
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            AdmissionCatalogRead::Fresh {
+                value: value.clone(),
+                account_key: key.0.clone(),
+                home: key.1.clone(),
+                provider: key.2.clone(),
+                generation: 7,
+                expires_at: expiry.into_std(),
+            }
+        );
+        assert_eq!(
+            service.read_for_admission("foreign", &key.1, &key.2),
+            AdmissionCatalogRead::Pending
+        );
+        assert_eq!(
+            service.read_for_admission(&key.0, "/changed-home", &key.2),
+            AdmissionCatalogRead::Pending
+        );
+        tokio::time::advance(CATALOG_TTL).await;
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            AdmissionCatalogRead::Pending
+        );
+        {
+            let mut cache = service.0.cache.lock().expect("cache");
+            let entry = cache.get_mut(&key).expect("entry");
+            entry.expires_at = Some(Instant::now() + CATALOG_TTL);
+            entry.pending = true;
+        }
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            AdmissionCatalogRead::Pending
+        );
+        assert!(store_result(&service.0, &key, 7, Err(())));
+        assert_eq!(
+            service.read_for_admission(&key.0, &key.1, &key.2),
+            AdmissionCatalogRead::Unavailable
+        );
     }
 
     #[tokio::test(start_paused = true)]
