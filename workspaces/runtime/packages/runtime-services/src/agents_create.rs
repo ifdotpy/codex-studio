@@ -581,7 +581,7 @@ pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #[path = "../../tests/support/prepared_python.rs"]
+    #[path = "../../../tests/support/prepared_python.rs"]
     pub(super) mod python_oracle;
     use super::create_agent;
     use rusqlite::Connection;
