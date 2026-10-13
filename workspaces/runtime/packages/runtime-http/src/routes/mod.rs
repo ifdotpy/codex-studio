@@ -1,5 +1,6 @@
 mod account_login;
 mod agents_create;
+mod browser;
 mod catalog;
 mod checkpoints;
 pub(crate) mod compose;

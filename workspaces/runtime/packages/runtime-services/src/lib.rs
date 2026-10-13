@@ -12,6 +12,7 @@ pub mod account_policy;
 pub mod agents_create;
 pub mod analytics;
 pub mod bounded_child;
+pub mod browser;
 pub mod change_notifications;
 pub mod checkpoints;
 pub mod coordination;
