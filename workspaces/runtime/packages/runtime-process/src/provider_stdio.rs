@@ -1,5 +1,6 @@
 //! Temporary stdio children behind the async provider seam. A task owns the
-//! process group until it has stopped and reaped it, even if its caller drops.
+//! process group through bounded cleanup even if its caller drops. A reap timeout
+//! reports the child identity; it does not prove termination or cap surviving children.
 use crate::{provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
@@ -14,6 +15,20 @@ use tokio::{
 // POSIX ESRCH: the process group exited before the stop signal.
 const NO_SUCH_PROCESS: i32 = 3;
 const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn reap_with_deadline<T>(
+    pid: Option<u32>,
+    wait: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    tokio::time::timeout(REAP_GRACE, wait)
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("provider child {pid:?} outlived reap grace; termination is unconfirmed"),
+            ))
+        })
+}
 
 pub struct StdioProviderTaskFactory {
     pub deadline: Instant,
@@ -114,15 +129,9 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                     result = tokio::time::timeout_at(deadline, exchange) => result.unwrap_or(Err(AdapterError::Timeout)),
                 };
                 // Always wait, including when the group already exited (ESRCH).
+                let pid = child.id();
                 let killed = child.start_kill();
-                let reaped = tokio::time::timeout(REAP_GRACE, child.wait())
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "provider reap deadline",
-                        ))
-                    });
+                let reaped = reap_with_deadline(pid, child.wait()).await;
                 let cleanup = killed
                     .or_else(|error| {
                         if error.raw_os_error() == Some(NO_SUCH_PROCESS) {
@@ -245,6 +254,16 @@ async fn read_entries(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn failed_reap_reports_the_unconfirmed_child() {
+        let error = super::reap_with_deadline::<()>(Some(12345), std::future::pending())
+            .await
+            .expect_err("bounded reap");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("12345"));
+        assert!(error.to_string().contains("termination is unconfirmed"));
+    }
+
     use super::*;
     #[tokio::test(start_paused = true)]
     async fn raw_unknown_output_counts_toward_the_total_limit() {

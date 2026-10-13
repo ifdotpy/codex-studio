@@ -56,6 +56,7 @@
 //! remain owned by the follow-up slices.
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use studio_runtime_providers::Frame;
@@ -594,6 +595,7 @@ fn write_text_notification(
         .filter(|turn| !turn.is_empty())
         .map(str::to_owned);
     let key = StreamKey {
+        agent_id: agent_id.to_owned(),
         account: identity
             .provider_handle
             .strip_prefix("account:")
@@ -646,6 +648,10 @@ fn write_text_notification(
                 streams,
                 Some(&key),
                 observed_at,
+                StreamFlushOptions {
+                    allow_reassigned_owner: false,
+                    close_stream: true,
+                },
             )?;
             let latest =
                 NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
@@ -716,6 +722,10 @@ pub fn flush_notification_streams(
             &mut next,
             None,
             observed_at,
+            StreamFlushOptions {
+                allow_reassigned_owner: false,
+                close_stream: false,
+            },
         )?;
         if agent != before {
             persist_agent(transaction, agent_id, &agent, state_dir)?;
@@ -727,13 +737,97 @@ pub fn flush_notification_streams(
 pub(crate) fn prune_inactive_streams(
     transaction: &Transaction<'_>,
     streams: &mut NotificationStreamBuffer,
+    observed_at: f64,
+    recovering: bool,
 ) -> Result<(), NotificationDispatchError> {
     for key in streams.selected(None) {
         let active: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2 AND (?3 IS NULL OR json_extract(record,'$.turnId')=?3) AND json_extract(record,'$.deletedAt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))",
             rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
         ).map_err(StoreError::from)?;
+        if recovering && active && !streams.has_pending(&key) && streams.has_base(&key) {
+            let owner = if key.agent_id.is_empty() {
+                transaction
+                    .query_row(
+                        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
+                        rusqlite::params![key.account, key.thread],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+            } else {
+                transaction
+                    .query_row(
+                        "SELECT id,record FROM runtime_agents WHERE id=?1",
+                        [&key.agent_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+            }
+            .map_err(StoreError::from)?;
+            if let Some((id, raw)) = owner {
+                let mut projection: Value =
+                    serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
+                projection["turnId"] = json!(key.turn);
+                projection["deletedAt"] = Value::Null;
+                flush_selected(
+                    transaction,
+                    &id,
+                    &mut projection,
+                    streams,
+                    Some(&key),
+                    observed_at,
+                    StreamFlushOptions {
+                        allow_reassigned_owner: true,
+                        close_stream: false,
+                    },
+                )?;
+            }
+            continue;
+        }
         if !active {
+            // Cursor acknowledgement already made this text durable. Retiring a
+            // stream must materialize it even after its turn/agent becomes inactive.
+            let owner = if key.agent_id.is_empty() {
+                transaction
+                    .query_row(
+                        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
+                        rusqlite::params![key.account, key.thread],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+            } else {
+                transaction
+                    .query_row(
+                        "SELECT id,record FROM runtime_agents WHERE id=?1",
+                        [&key.agent_id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+            }
+            .map_err(StoreError::from)?;
+            let Some((id, raw)) = owner else {
+                // The owner may have been deleted or have legacy identity that
+                // cannot be recovered. Keep the durable stream, but do not make
+                // account startup fail permanently.
+                continue;
+            };
+            let mut projection: Value =
+                serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
+            // Only the transcript is written. Never restore an obsolete lifecycle.
+            projection["turnId"] = json!(key.turn);
+            projection["deletedAt"] = Value::Null;
+            flush_selected(
+                transaction,
+                &id,
+                &mut projection,
+                streams,
+                Some(&key),
+                observed_at,
+                StreamFlushOptions {
+                    allow_reassigned_owner: true,
+                    close_stream: true,
+                },
+            )?;
             NotificationDispatchRepository::put_stream_base(
                 transaction,
                 &stream_base_id(&key),
@@ -746,14 +840,37 @@ pub(crate) fn prune_inactive_streams(
 }
 
 fn stream_base_id(key: &StreamKey) -> String {
+    #[derive(Serialize)]
+    struct StreamIdentity<'a> {
+        account: &'a str,
+        generation: u64,
+        thread: &'a str,
+        turn: &'a Option<String>,
+        item: &'a str,
+        method: &'a str,
+    }
+    let durable_identity = StreamIdentity {
+        account: &key.account,
+        generation: key.generation,
+        thread: &key.thread,
+        turn: &key.turn,
+        item: &key.item,
+        method: &key.method,
+    };
     format!(
         "account-worker:stream-base:{}",
         sha256_hex(
-            serde_json::to_string(key)
-                .expect("stream key serialization")
+            serde_json::to_string(&durable_identity)
+                .expect("stream identity serialization")
                 .as_bytes()
         )
     )
+}
+
+#[derive(Clone, Copy)]
+struct StreamFlushOptions {
+    allow_reassigned_owner: bool,
+    close_stream: bool,
 }
 
 fn flush_selected(
@@ -763,15 +880,16 @@ fn flush_selected(
     streams: &mut NotificationStreamBuffer,
     terminal: Option<&StreamKey>,
     observed_at: f64,
+    options: StreamFlushOptions,
 ) -> Result<(), NotificationDispatchError> {
     for key in streams.selected(terminal) {
-        if agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
+        let reassigned = agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
             || agent
                 .get("accountKey")
                 .and_then(Value::as_str)
                 .unwrap_or("default")
-                != key.account
-        {
+                != key.account;
+        if reassigned && !(options.allow_reassigned_owner && key.agent_id == agent_id) {
             continue;
         }
         if agent.get("deletedAt").is_some_and(|v| !v.is_null())
@@ -786,10 +904,35 @@ fn flush_selected(
                 None,
             )?;
             streams.discard(&key);
-            if terminal.is_some() {
+            if options.close_stream {
                 streams.close(&key);
             }
             continue;
+        }
+        if !streams.has_pending(&key) {
+            if streams.has_base(&key) {
+                if !options.allow_reassigned_owner {
+                    if options.close_stream {
+                        NotificationDispatchRepository::put_stream_base(
+                            transaction,
+                            &stream_base_id(&key),
+                            None,
+                        )?;
+                        streams.close(&key);
+                    }
+                    continue;
+                }
+            } else {
+                if options.close_stream {
+                    NotificationDispatchRepository::put_stream_base(
+                        transaction,
+                        &stream_base_id(&key),
+                        None,
+                    )?;
+                    streams.close(&key);
+                }
+                continue;
+            }
         }
         let id = format!("{agent_id}:{}", key.item);
         let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
@@ -826,7 +969,13 @@ fn flush_selected(
                 .turn
                 .as_deref()
                 .or_else(|| agent.get("turnId").and_then(Value::as_str));
-            let record = assistant_item_record(&id, &text, observed_at, true, turn, phase);
+            let mut record = assistant_item_record(&id, &text, observed_at, true, turn, phase);
+            if let Some(turn_status) = old
+                .as_ref()
+                .and_then(|(record, _)| record.get("turnStatus"))
+            {
+                record["turnStatus"] = turn_status.clone();
+            }
             NotificationDispatchRepository::put_transcript_item(
                 transaction,
                 &id,
@@ -836,17 +985,19 @@ fn flush_selected(
                 &text,
                 text.chars().count() > ITEM_PREVIEW_CHARS,
             )?;
-            update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
-            agent["events"] = Value::from(
-                agent["events"]
-                    .as_u64()
-                    .unwrap_or_default()
-                    .saturating_add(count - 1),
-            );
-            agent["activity"] = json!({"phase":"writing", "at":observed_at});
-            agent["tail"] = Value::String(suffix(&text, 300));
+            if !reassigned && !options.allow_reassigned_owner && count > 0 {
+                update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
+                agent["events"] = Value::from(
+                    agent["events"]
+                        .as_u64()
+                        .unwrap_or_default()
+                        .saturating_add(count.saturating_sub(1)),
+                );
+                agent["activity"] = json!({"phase":"writing", "at":observed_at});
+                agent["tail"] = Value::String(suffix(&text, 300));
+            }
         }
-        if terminal.is_some() {
+        if options.close_stream {
             NotificationDispatchRepository::put_stream_base(
                 transaction,
                 &stream_base_id(&key),
@@ -1268,6 +1419,7 @@ mod tests {
             assert!(matches!(
                 streams.enqueue_delta(
                     super::stream::StreamKey {
+                        agent_id: "agent".into(),
                         account: "default".into(),
                         generation: 7,
                         thread: "thread".into(),
@@ -1389,6 +1541,63 @@ mod tests {
             .expect("late row exists");
         assert_eq!(late.record["text"], "finallate");
         assert_eq!(late.record["streaming"], true);
+    }
+
+    #[test]
+    fn reassigned_stream_owner_materializes_and_missing_owner_does_not_block_recovery() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        let key = super::stream::StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 7,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "answer".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let mut streams = NotificationStreamBuffer::default();
+        assert!(matches!(
+            streams.enqueue_delta(key, "retained text", &json!({})),
+            super::stream::EnqueueResult::Buffered
+        ));
+        transaction
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.accountKey','new-account','$.threadId','new-thread') WHERE id='agent'",
+                [],
+            )
+            .expect("transfer stream owner");
+        super::prune_inactive_streams(&transaction, &mut streams, 10.0, true)
+            .expect("reassigned stream materializes");
+        transaction.commit().expect("owner transcript commits");
+        let item = TranscriptRepository::item(&connection, "agent", "agent:answer")
+            .expect("transcript reads")
+            .expect("reassigned stream is retained");
+        assert_eq!(item.record["text"], "retained text");
+        assert_eq!(streams.pending_bytes(), 0);
+
+        let mut connection = database();
+        let transaction = connection.transaction().expect("orphan transaction begins");
+        transaction
+            .execute("DELETE FROM runtime_agents WHERE id='agent'", [])
+            .expect("remove stream owner");
+        let mut streams = NotificationStreamBuffer::default();
+        streams.enqueue_delta(
+            super::stream::StreamKey {
+                agent_id: "agent".into(),
+                account: "default".into(),
+                generation: 7,
+                thread: "thread".into(),
+                turn: Some("turn".into()),
+                item: "orphan".into(),
+                method: "item/agentMessage/delta".into(),
+            },
+            "still durable",
+            &json!({}),
+        );
+        super::prune_inactive_streams(&transaction, &mut streams, 11.0, true)
+            .expect("ownerless stream does not block account recovery");
+        assert_eq!(streams.pending_bytes(), "still durable".len());
     }
 
     #[test]

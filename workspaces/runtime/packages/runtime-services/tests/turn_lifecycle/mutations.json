@@ -611,8 +611,8 @@
     "witnesses": [],
     "lifecycleCombinations": [],
     "workerWitnesses": [
-      "transfer_between_resume_and_start_never_writes_to_old_account",
-      "transfer_after_claim_before_resume_submission_is_refused"
+      "transfer_after_claim_before_resume_submission_is_refused",
+      "competing_workers_transfer_claim_to_destination_session"
     ]
   },
   {
@@ -761,6 +761,104 @@
       }
     ],
     "witnesses": ["flushed_then_start_then_delta"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "A1",
+    "description": "A1-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "delete_effect(tx, &key)?;\n            }\n            forget_request",
+        "after": "// MUTATION: guard retires independently of retained effect.\n            }\n            forget_request"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "retained_submit_and_settlement_keep_one_replay_identity"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "A2",
+    "description": "A2-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "            flush_selected(\n                transaction,\n                &id,\n                &mut projection,\n                streams,\n                Some(&key),\n                observed_at,\n                true,\n            )?;",
+        "after": "            // MUTATION: close without materializing acknowledged text."
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": ["stopped_pending_text_survives_fresh_process_recovery"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "A3",
+    "description": "A3-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "        // committed pending record, never that possibly empty cache, owns text.\n        let mut streams = load_streams(tx, account)?;",
+        "after": "        // MUTATION: discard the committed batch when the live cache was moved.\n        let mut streams = NotificationStreamBuffer::default();"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "journal_error_does_not_delete_an_acknowledged_pending_batch"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "A4",
+    "description": "A4-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "                .is_some_and(|at| at <= tokio::time::Instant::now())",
+        "after": "                .is_some_and(|_at| false)"
+      },
+      {
+        "before": "                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,\n                command",
+        "after": "                command"
+      },
+      {
+        "before": "                changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },",
+        "after": "                changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },\n                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": ["elapsed_flush_deadline_wins_over_replenished_events"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "A5",
+    "description": "A5-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "event = session.events.recv() => {\n                // recv is cancellation safe; settlement owns the event only\n                // after this branch wins, so a command cannot drop its outcomes.\n                let event = settle_catalog_event(session, event.ok_or(())?).await?;",
+        "after": "event = next_event(session) => {\n                let event = event?;"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": ["command_receipt_cannot_cancel_a_taken_catalog_event"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "L3Generation",
+    "description": "L3Generation-closure-regression",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "        retire_generations(tx, account, generation.0)?;",
+        "after": "        // MUTATION: leave old generation receipt rows."
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "old_generation_pending_text_is_materialized_and_receipts_retire"
+    ],
     "lifecycleCombinations": []
   }
 ]

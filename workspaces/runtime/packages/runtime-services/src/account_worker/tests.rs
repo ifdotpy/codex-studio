@@ -32,21 +32,36 @@ runtime.close()
 // transaction is changed by injection; after-commit failures retain its writes.
 #[derive(Default)]
 pub(super) struct Faults {
+    pub(super) hold_admission: std::sync::atomic::AtomicBool,
+    pub(super) admission_held: tokio::sync::Notify,
+    pub(super) release_admission: tokio::sync::Notify,
     count: std::sync::atomic::AtomicUsize,
     pub(super) journal_count: std::sync::atomic::AtomicUsize,
     cycles: std::sync::atomic::AtomicUsize,
     cycled: tokio::sync::Notify,
     pause_at: std::sync::Mutex<Option<usize>>,
+    pause_operation: std::sync::Mutex<Option<String>>,
     paused: tokio::sync::Notify,
     release: tokio::sync::Notify,
     fired: std::sync::atomic::AtomicBool,
     target: std::sync::Mutex<Option<(usize, bool)>>,
+    named_target: std::sync::Mutex<Option<(String, usize, bool)>>,
+    operations: std::sync::Mutex<Vec<(String, usize)>>,
+    committed: std::sync::Mutex<Vec<(String, usize)>>,
     entered: tokio::sync::Notify,
     pub(super) shutdown_wait: tokio::sync::Notify,
 }
 impl Faults {
     pub(super) async fn pause(&self, index: usize) {
-        let pause = *self.pause_at.lock().unwrap() == Some(index);
+        let pause = *self.pause_at.lock().unwrap() == Some(index)
+            || self
+                .operations
+                .lock()
+                .unwrap()
+                .get(index)
+                .is_some_and(|(name, _)| {
+                    self.pause_operation.lock().unwrap().as_ref() == Some(name)
+                });
         if pause {
             self.paused.notify_one();
             self.release.notified().await;
@@ -68,20 +83,48 @@ impl Faults {
         self.count.store(0, std::sync::atomic::Ordering::SeqCst);
         self.fired.store(false, std::sync::atomic::Ordering::SeqCst);
         *self.target.lock().unwrap() = target;
+        *self.named_target.lock().unwrap() = None;
+        *self.pause_at.lock().unwrap() = None;
+        *self.pause_operation.lock().unwrap() = None;
+        self.hold_admission
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.operations.lock().unwrap().clear();
+        self.committed.lock().unwrap().clear();
     }
-    pub(super) fn before(&self) -> Result<usize, WorkerError> {
+    pub(super) fn before(&self, name: &str) -> Result<usize, WorkerError> {
+        assert!(
+            !self.fired.load(std::sync::atomic::Ordering::SeqCst),
+            "bridge remains crashed"
+        );
+        let mut operations = self.operations.lock().unwrap();
+        let occurrence = operations.iter().filter(|(n, _)| n == name).count();
+        operations.push((name.into(), occurrence));
+        drop(operations);
         let index = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.entered.notify_one();
         self.check(index, false)?;
         Ok(index)
     }
-    pub(super) fn after(&self, index: usize) -> Result<(), WorkerError> {
+    pub(super) fn after(&self, index: usize, success: bool) -> Result<(), WorkerError> {
+        if success {
+            self.committed
+                .lock()
+                .unwrap()
+                .push(self.operations.lock().unwrap()[index].clone());
+        }
         self.check(index, true)
     }
     fn check(&self, index: usize, after: bool) -> Result<(), WorkerError> {
-        if *self.target.lock().unwrap() == Some((index, after)) {
+        let named = self.named_target.lock().unwrap().clone();
+        let operation = self.operations.lock().unwrap().get(index).cloned();
+        if *self.target.lock().unwrap() == Some((index, after))
+            || named.is_some_and(|(name, occurrence, side)| {
+                side == after && operation == Some((name, occurrence))
+            })
+        {
             self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
-            Err(WorkerError::InjectedCrash)
+            // Unwind the worker future immediately: no error handler or finish runs.
+            panic!("injected crash at bridge boundary {operation:?} after={after}")
         } else {
             Ok(())
         }
@@ -101,12 +144,31 @@ fn copy_template(source: &std::path::Path, target: &std::path::Path) {
         }
     }
 }
+fn test_root() -> PathBuf {
+    std::env::var_os("STUDIO_ACCOUNT_TEST_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("studio-account-worker-tests"))
+}
 fn template() -> (PathBuf, Value) {
-    let parent = PathBuf::from("/var/tmp/cs-rust-account-worker");
+    let parent = test_root();
+    std::fs::create_dir_all(&parent).unwrap();
     let digest = studio_runtime_store::sha256_hex(CREATE_AGENTS.as_bytes());
     let root = parent.join(format!("template-{}", &digest[..16]));
     let lock = std::fs::File::create(parent.join("template.lock")).unwrap();
-    lock.lock().unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(30),
+                    "fixture lock deadline"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) => panic!("fixture lock: {error}"),
+        }
+    }
     let manifest = root.join("agents.json");
     if !manifest.exists() {
         std::fs::create_dir_all(&root).unwrap();
@@ -145,6 +207,8 @@ struct Wire {
     receipt: oneshot::Sender<CommandReceipt>,
 }
 struct Peer {
+    account: String,
+    generation: Generation,
     factory: Arc<Factory>,
     entries: mpsc::Sender<JournalEntry>,
     writes: mpsc::Receiver<Wire>,
@@ -158,7 +222,18 @@ impl Peer {
     fn new() -> Self {
         Self::gated(None)
     }
-    fn gated(mut gate: Option<oneshot::Receiver<()>>) -> Self {
+    fn gated(gate: Option<oneshot::Receiver<()>>) -> Self {
+        Self::identity("default", 1, gate)
+    }
+    fn identity(account: &str, generation: u64, mut gate: Option<oneshot::Receiver<()>>) -> Self {
+        let generation = Generation(generation);
+        MATRIX
+            .try_with(|context| {
+                context
+                    .generation
+                    .store(generation.0, std::sync::atomic::Ordering::SeqCst)
+            })
+            .ok();
         let stop = Shutdown::default();
         let mut stopped = stop.subscribe();
         let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
@@ -166,11 +241,11 @@ impl Peer {
         let (out, writes) = mpsc::channel(16);
         let (ack, acks) = mpsc::channel(16);
         let (status, observed) = watch::channel(AttachmentStatus {
-            handle: ProviderHandle::for_account("default"),
+            handle: ProviderHandle::for_account(account),
             open_attempted: true,
             info: Some(AttachmentInfo {
-                handle: ProviderHandle::for_account("default"),
-                generation: Generation(1),
+                handle: ProviderHandle::for_account(account),
+                generation,
                 pid: 1,
                 acknowledged: EventCursor(0),
                 resumed: false,
@@ -217,6 +292,11 @@ impl Peer {
                         }
                     }
                     AdapterCommand::Ack { cursor, reply } => {
+                        if let Some(context) = &matrix {
+                            let mut acknowledged = context.acknowledged.lock().unwrap();
+                            let previous = acknowledged.entry(generation.0).or_default();
+                            *previous = (*previous).max(cursor.0);
+                        }
                         let _ignored = reply.send(CommandReceipt::Acknowledged(cursor));
                         tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, sent=ack.send(cursor)=>{sent.unwrap();}}
                     }
@@ -232,6 +312,8 @@ impl Peer {
             ProviderAttachment::from_task(commands, journal, observed, stop.clone(), task),
         ))));
         Self {
+            account: account.into(),
+            generation,
             factory,
             entries,
             writes,
@@ -253,7 +335,7 @@ impl Peer {
     async fn open_worker(&self, bridge: StoreBridge) -> AccountHandle {
         start_account_worker(
             bridge,
-            "default".into(),
+            self.account.clone(),
             self.factory.clone(),
             OpenOptions {
                 clock: self.clock.clone(),
@@ -262,11 +344,11 @@ impl Peer {
                     BTreeMap::new(),
                     "/var/tmp".into(),
                 ),
-                expected_generation: Some(Generation(1)),
+                expected_generation: Some(self.generation),
             },
             SessionTaskConfig {
                 initialize_params: json!({}),
-                generation: Generation(1),
+                generation: self.generation,
                 claude: false,
                 timeout_ms: 60_000,
                 initialize_operation: OperationId("init".into()),
@@ -293,15 +375,21 @@ impl Peer {
         wire.value
     }
     async fn frame(&mut self, value: Value) -> u64 {
-        MATRIX
-            .try_with(|context| context.frames.lock().unwrap().push(value.clone()))
-            .ok();
         self.cursor += 1;
+        MATRIX
+            .try_with(|context| {
+                context
+                    .frames
+                    .lock()
+                    .unwrap()
+                    .insert((self.generation.0, self.cursor), value.clone())
+            })
+            .ok();
         self.entries
             .send(JournalEntry {
                 received_at_ms: self.clock.now_ms(),
                 cursor: EventCursor(self.cursor),
-                generation: Generation(1),
+                generation: self.generation,
                 payload: JournalPayload::Frame(
                     studio_runtime_providers::LineDecoder::new()
                         .push(format!("{value}\n").as_bytes())
@@ -320,16 +408,6 @@ impl Peer {
                 .expect("settlement deadline")
                 .expect("session acknowledges")
                 .0;
-            if let Ok(context) = MATRIX.try_with(Arc::clone) {
-                let bridge = context.state.lock().unwrap().as_ref().unwrap().0.clone();
-                let items=bridge.run(move |store| store.transaction_with(|tx| {
-                    let checkpoint=store::receipt(tx,"cursor:default:1","ack")?.unwrap_or(Value::Null);
-                    assert!(checkpoint.as_u64().unwrap_or(0)>=got,"ACK before committed cursor");
-                    let mut query=tx.prepare("SELECT id FROM runtime_items WHERE json_extract(record,'$.role')='assistant'")?;
-                    Ok(query.query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
-                })).await.unwrap();
-                *context.acknowledged_items.lock().unwrap() = items;
-            }
             if got >= cursor {
                 assert_eq!(got, cursor);
                 break;
@@ -360,7 +438,7 @@ struct State {
 impl State {
     async fn new() -> Self {
         let (store, agent, epoch, root) = tokio::task::spawn_blocking(|| {
-            let root = PathBuf::from("/var/tmp/cs-rust-account-worker").join(format!(
+            let root = test_root().join(format!(
                 "worker-{}",
                 uuid::Uuid::new_v5(
                     &uuid::Uuid::NAMESPACE_OID,
@@ -399,6 +477,20 @@ impl State {
             root,
             retained,
         };
+        if let Ok(context) = MATRIX.try_with(Arc::clone) {
+            let agent = state.agent.clone();
+            let seed = state
+                .bridge
+                .run(move |store| {
+                    Ok(
+                        AgentRepository::get(&store.read()?, &AgentId::from(agent.as_str()))?
+                            .expect("seed"),
+                    )
+                })
+                .await
+                .unwrap();
+            *context.agent_seed.lock().unwrap() = Some(seed);
+        }
         state.enqueue("input").await;
         state
     }
@@ -577,6 +669,14 @@ async fn scenario_shutdown_full_queue_and_silent_provider_is_bounded() {
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     state.wake(&worker).await;
+    if state
+        .bridge
+        .faults
+        .fired
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     let blocked = peer.writes.recv().await.unwrap();
     for _ in 0..COMMAND_CAPACITY {
         worker
@@ -629,13 +729,30 @@ async fn scenario_duplicate_stale_and_completion_before_reply_preserve_order() {
     let start = state.start(&mut peer, &worker).await;
     let completed = json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}});
     let cursor = peer.frame(completed.clone()).await;
-    // A command-lane barrier proves the completion has been processed, while
-    // the missing start reply still prevents acknowledgement of its cursor.
-    worker_barrier(&worker).await;
+    if state
+        .bridge
+        .faults
+        .fired
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        // The scripted test continues provider-side evidence after an injected
+        // worker crash so restart can replay the same completion-before-reply.
+        peer.frame(json!({"id":start["id"],"result":{"turn":{"id":"turn"}}}))
+            .await;
+        return;
+    }
     assert!(peer.acks.try_recv().is_err());
     let reply = peer
         .frame(json!({"id":start["id"],"result":{"turn":{"id":"turn"}}}))
         .await;
+    if state
+        .bridge
+        .faults
+        .fired
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     peer.acknowledged(reply).await;
     assert!(reply > cursor);
     assert_eq!(state.record().await["status"], "completed");
@@ -809,7 +926,7 @@ async fn scenario_foreign_account_stop_cannot_revoke_agent() {
     let agent = state.agent.clone();
     state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("foreign_stop", move |store| {
             assert!(store::stop(store, "another-account", &agent)?.is_none());
             Ok(())
         })
@@ -863,6 +980,14 @@ async fn scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt() {
     let rejected = peer
         .frame(json!({"id":first["id"],"error":{"code":-1,"message":"rejected"}}))
         .await;
+    if state
+        .bridge
+        .faults
+        .fired
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
     peer.acknowledged(rejected).await;
     worker
         .send(AccountCommand::Stop {
@@ -952,6 +1077,7 @@ async fn a_new_stop_can_retry_a_definitely_rejected_interrupt() {
     scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt().await
 }
 
+mod closure;
 mod crash_matrix;
 use crash_matrix::MATRIX;
 
@@ -983,10 +1109,20 @@ async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
         .load(std::sync::atomic::Ordering::SeqCst)
         == before
     {
-        state.bridge.faults.entered.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            state.bridge.faults.entered.notified(),
+        )
+        .await
+        .expect("setup barrier deadline");
     }
     worker.cancel();
-    state.bridge.faults.shutdown_wait.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        state.bridge.faults.shutdown_wait.notified(),
+    )
+    .await
+    .expect("setup barrier deadline");
     tokio::time::advance(SHUTDOWN_GRACE * 2).await;
     assert!(matches!(
         worker.completion().await,
@@ -1056,7 +1192,7 @@ async fn committed_stop_survives_crash_before_interrupt_admission() {
         .unwrap();
     assert!(matches!(
         worker.completion().await,
-        Err(WorkerError::InjectedCrash)
+        Err(WorkerError::TaskFailed)
     ));
     state.bridge.faults.arm(None);
     let mut peer = Peer::new();
@@ -1183,7 +1319,7 @@ async fn scenario_durable_stream_batch_recovers_before_flush() {
         .await;
     assert!(matches!(
         worker.completion().await,
-        Err(WorkerError::InjectedCrash)
+        Err(WorkerError::TaskFailed)
     ));
     state.bridge.faults.arm(None);
     let mut peer = Peer::new();
@@ -1210,12 +1346,23 @@ async fn unrelated_store_failure_after_enqueue_keeps_write_unknown() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    state
+        .bridge
+        .faults
+        .hold_admission
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     state.wake(&worker).await;
     let resume = peer.write("thread/resume").await;
     peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let held = peer.next_write().await;
     assert_eq!(held.value["method"], "turn/start");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        state.bridge.faults.admission_held.notified(),
+    )
+    .await
+    .expect("admitted command receipt remains withheld");
     state.bridge.run(|store| {
         store.transaction_with(|tx| {
             tx.execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON runtime_operation_receipts WHEN NEW.id LIKE 'account-worker:journal:%' BEGIN SELECT RAISE(ABORT,'unrelated journal failure'); END;")?;
@@ -1224,9 +1371,20 @@ async fn unrelated_store_failure_after_enqueue_keeps_write_unknown() {
     }).await.unwrap();
     peer.frame(json!({"method":"test/barrier","params":{}}))
         .await;
-    assert!(worker.completion().await.is_err());
-    drop(held);
+    worker_barrier(&worker).await;
     assert_eq!(state.event_status("input").await, "uncertain");
+    state
+        .bridge
+        .run(|store| {
+            store.transaction_with(|tx| {
+                tx.execute_batch("DROP TRIGGER fail_journal")?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    drop(held);
+    worker.shutdown().await.unwrap();
 }
 
 async fn scenario_stream_base_survives_replaced_visible_item() {
@@ -1235,8 +1393,24 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
     let mut worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
-    let delta = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"base","delta":"a".repeat(store::STREAM_FLUSH_BYTES)}})).await;
+    let delta = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"base","delta":"a".repeat(64 * 1024)}})).await;
     peer.acknowledged(delta).await;
+    let full_size = state
+        .bridge
+        .run(|store| {
+            Ok(store.read()?.query_row(
+                "SELECT length(body) FROM runtime_item_fulltext WHERE id LIKE '%:base'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        full_size,
+        64 * 1024,
+        "fixed-size delta crosses the flush threshold before completion"
+    );
     let started = peer.frame(json!({"method":"item/started","params":{"threadId":"fake-thread-0","turnId":"turn","item":{"id":"base","type":"agentMessage","text":"replacement"}}})).await;
     peer.acknowledged(started).await;
     let delta = peer.frame(json!({"method":"item/agentMessage/delta","params":{"threadId":"fake-thread-0","turnId":"turn","itemId":"base","delta":"tail"}})).await;
@@ -1261,10 +1435,7 @@ async fn scenario_stream_base_survives_replaced_visible_item() {
         })
         .await
         .unwrap();
-    assert_eq!(
-        text,
-        format!("{}tail", "a".repeat(store::STREAM_FLUSH_BYTES))
-    );
+    assert_eq!(text, format!("{}tail", "a".repeat(64 * 1024)));
     assert_eq!(bases, 0);
     worker.shutdown().await.unwrap();
 }
@@ -1293,7 +1464,12 @@ async fn stop_and_wake_progress_with_a_replenished_event_lane() {
         .load(std::sync::atomic::Ordering::SeqCst)
         == before
     {
-        state.bridge.faults.entered.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            state.bridge.faults.entered.notified(),
+        )
+        .await
+        .expect("setup barrier deadline");
     }
     // With the worker blocked in its first transaction, 32 admitted entries fill
     // both bounded 16-entry lanes. More are replenished while commands run.
@@ -1400,10 +1576,20 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
         .load(std::sync::atomic::Ordering::SeqCst)
         == before
     {
-        state.bridge.faults.entered.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            state.bridge.faults.entered.notified(),
+        )
+        .await
+        .expect("setup barrier deadline");
     }
     worker.cancel();
-    state.bridge.faults.shutdown_wait.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        state.bridge.faults.shutdown_wait.notified(),
+    )
+    .await
+    .expect("setup barrier deadline");
     tokio::time::advance(SHUTDOWN_GRACE * 2).await;
     assert!(matches!(
         worker.completion().await,

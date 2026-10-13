@@ -64,7 +64,8 @@ struct CatalogInner {
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
     slots: Arc<tokio::sync::Semaphore>,
-    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    cleanup_error: Arc<Mutex<Option<String>>>,
     stop: Shutdown,
 }
 
@@ -127,7 +128,8 @@ impl ModelCatalogService {
             next_generation: Mutex::new(0),
             on_change,
             slots: Arc::new(tokio::sync::Semaphore::new(MAX_REFRESHES)),
-            tasks: Mutex::new(Vec::new()),
+            tasks: tokio::sync::Mutex::new(Vec::new()),
+            cleanup_error: Arc::default(),
             stop: Shutdown::default(),
         }))
     }
@@ -196,16 +198,33 @@ impl ModelCatalogService {
         let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         let home = home.to_owned();
-        let mut tasks = self.0.tasks.lock().expect("catalog task registry");
+        let mut tasks = self.0.tasks.lock().await;
         if *self.0.stop.subscribe().borrow() {
             return CatalogRead::Unavailable;
         }
-        tasks.retain(|task| !task.is_finished());
+        let mut index = 0;
+        while index < tasks.len() {
+            if tasks[index].is_finished() {
+                if let Err(error) = (&mut tasks[index]).await {
+                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                        Some(error.to_string());
+                }
+                drop(tasks.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        let cleanup_error = self.0.cleanup_error.clone();
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
-            let result =
-                read_provider_catalog(executable.as_deref(), &home, account != "default", stop)
-                    .await;
+            let result = read_provider_catalog(
+                executable.as_deref(),
+                &home,
+                account != "default",
+                stop,
+                cleanup_error,
+            )
+            .await;
             if let Some(inner) = service.upgrade() {
                 store_result(&inner, &cache_key, generation, result);
             }
@@ -226,18 +245,27 @@ impl ModelCatalogService {
             });
     }
     pub async fn shutdown(&self) -> std::io::Result<()> {
-        let tasks = {
-            let mut tasks = self.0.tasks.lock().expect("catalog tasks");
-            self.0.stop.cancel();
-            std::mem::take(&mut *tasks)
-        };
-        let mut result = Ok(());
-        for task in tasks {
+        self.0.stop.cancel();
+        // Handles remain registry-owned while awaiting: cancelling this drain
+        // cannot detach unfinished cleanup, and the next shutdown resumes it.
+        let mut tasks = self.0.tasks.lock().await;
+        while let Some(task) = tasks.last_mut() {
             if let Err(error) = task.await {
-                result = Err(std::io::Error::other(error));
+                *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                    Some(error.to_string());
             }
+            drop(tasks.pop());
         }
-        result
+        match self
+            .0
+            .cleanup_error
+            .lock()
+            .expect("catalog cleanup report")
+            .as_ref()
+        {
+            Some(error) => Err(std::io::Error::other(error.clone())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -282,6 +310,7 @@ async fn read_provider_catalog(
     home: &str,
     isolated: bool,
     stop: Shutdown,
+    cleanup_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Value, ()> {
     let started = Instant::now();
     let executable = executable.unwrap_or_else(|| std::path::Path::new("codex"));
@@ -311,7 +340,7 @@ async fn read_provider_catalog(
     });
     #[cfg(unix)]
     {
-        read_session_with_shutdown(factory, launch, started, stop).await
+        read_session_with_shutdown(factory, launch, started, stop, cleanup_error).await
     }
     #[cfg(not(unix))]
     {
@@ -326,13 +355,21 @@ async fn read_session(
     launch: ProviderLaunchSpec,
     started: Instant,
 ) -> Result<Value, ()> {
-    read_session_with_shutdown(factory, launch, started, Shutdown::default()).await
+    read_session_with_shutdown(
+        factory,
+        launch,
+        started,
+        Shutdown::default(),
+        Arc::default(),
+    )
+    .await
 }
 async fn read_session_with_shutdown(
     factory: Arc<dyn ProviderTaskFactory>,
     launch: ProviderLaunchSpec,
     started: Instant,
     shutdown: Shutdown,
+    cleanup_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Value, ()> {
     let mut stop = shutdown.subscribe();
     if *stop.borrow() {
@@ -366,6 +403,7 @@ async fn read_session_with_shutdown(
         result = read_pages(&mut session, started) => result,
     };
     let closed = session.shutdown().await;
+    record_cleanup_failure(&cleanup_error, closed.adapter.as_ref());
     // Cancellation also closes the adapter lanes; the session may observe that
     // closure before its stop signal. A complete catalog still requires reaping.
     if !matches!(closed.result, Ok(()) | Err(SessionTaskError::Closed))
@@ -376,11 +414,34 @@ async fn read_session_with_shutdown(
     result
 }
 
+fn record_cleanup_failure(
+    report: &Arc<Mutex<Option<String>>>,
+    exit: Option<&studio_runtime_process::provider_seam::TaskExit>,
+) {
+    if let Some(error) = exit.and_then(|exit| exit.cleanup_error.as_ref()) {
+        *report.lock().expect("catalog cleanup report") = Some(error.clone());
+    }
+}
+
 async fn next_event(
     session: &mut SessionHandle,
 ) -> Result<crate::provider_session_task::SessionEvent, ()> {
     let event = session.events.recv().await.ok_or(())?;
-    // This catalog is deliberately ephemeral: consuming the entry settles it.
+    settle_catalog_event(session, event).await
+}
+
+#[cfg(test)]
+tokio::task_local! { static SETTLEMENT_GATE: std::sync::Arc<(tokio::sync::Notify,tokio::sync::Notify)>; }
+async fn settle_catalog_event(
+    session: &mut SessionHandle,
+    event: crate::provider_session_task::SessionEvent,
+) -> Result<crate::provider_session_task::SessionEvent, ()> {
+    #[cfg(test)]
+    if let Ok(gate) = SETTLEMENT_GATE.try_with(Arc::clone) {
+        gate.0.notify_one();
+        gate.1.notified().await;
+    }
+    // This ephemeral reader still owns the taken event throughout settlement.
     if let Some(journal) = &event.journal {
         session
             .control
@@ -400,8 +461,10 @@ async fn catalog_drive<T>(
     loop {
         tokio::select! { biased;
             result = &mut future => return result.map_err(|_|()),
-            event = next_event(session) => {
-                let event = event?;
+            event = session.events.recv() => {
+                // recv is cancellation safe; settlement owns the event only
+                // after this branch wins, so a command cannot drop its outcomes.
+                let event = settle_catalog_event(session, event.ok_or(())?).await?;
                 if !event.outcomes.is_empty() {
                     if pending.len() == crate::provider_session_task::MAX_UNSETTLED { return Err(()); }
                     pending.push_back(event);
@@ -539,6 +602,136 @@ mod tests {
     use studio_runtime_process::{EventCursor, provider_seam::*};
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
+
+    #[test]
+    fn request_failure_does_not_become_a_catalog_cleanup_failure() {
+        let report = Arc::new(Mutex::new(None));
+        let request_failed = TaskExit {
+            result: Err(AdapterError::Timeout),
+            cleanup_error: None,
+            recovery_needed: None,
+        };
+        record_cleanup_failure(&report, Some(&request_failed));
+        assert!(report.lock().expect("report lock").is_none());
+
+        let cleanup_failed = TaskExit {
+            result: Err(AdapterError::Timeout),
+            cleanup_error: Some("termination unconfirmed".into()),
+            recovery_needed: None,
+        };
+        record_cleanup_failure(&report, Some(&cleanup_failed));
+        assert_eq!(
+            report.lock().expect("report lock").as_deref(),
+            Some("termination unconfirmed")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_shutdown_keeps_refresh_join_ownership() {
+        let service = ModelCatalogService::new(None);
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        service.0.tasks.lock().await.push(tokio::spawn(async move {
+            wait.await.expect("release refresh");
+        }));
+        let first = service.clone();
+        let drain = tokio::spawn(async move { first.shutdown().await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !*service.0.stop.subscribe().borrow() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drain starts");
+        drain.abort();
+        assert!(drain.await.expect_err("cancelled drain").is_cancelled());
+        assert_eq!(
+            service.0.tasks.lock().await.len(),
+            1,
+            "unfinished refresh remains owned"
+        );
+        release.send(()).expect("refresh retained");
+        service.shutdown().await.expect("resumed drain");
+        assert!(service.0.tasks.lock().await.is_empty());
+        *service.0.cleanup_error.lock().expect("report") =
+            Some("provider child 12345 outlived reap grace; termination is unconfirmed".into());
+        let error = service
+            .shutdown()
+            .await
+            .expect_err("cleanup failure remains observable");
+        assert!(error.to_string().contains("12345"));
+    }
+
+    #[tokio::test]
+    async fn command_receipt_cannot_cancel_a_taken_catalog_event() {
+        let factory = Arc::new(Script(vec![], 0));
+        let mut session = SessionHandle::open(
+            factory,
+            ProviderHandle::for_account("catalog"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch: ProviderLaunchSpec::new(
+                    vec!["script".into()],
+                    BTreeMap::new(),
+                    "/var/tmp".into(),
+                ),
+                expected_generation: Some(Generation(1)),
+            },
+            SessionTaskConfig {
+                generation: Generation(1),
+                claude: false,
+                timeout_ms: 30_000,
+                initialize_operation: OperationId("initialize".into()),
+                request_id_prefix: None,
+                recovered: vec![],
+                initialize_params: json!({}),
+            },
+        )
+        .await
+        .expect("session");
+        let (events, receiver) = mpsc::channel(1);
+        session.events = receiver;
+        events
+            .send(crate::provider_session_task::SessionEvent {
+                journal: None,
+                outcomes: vec![SessionOutcome::GenerationClosed { generation: 7 }],
+            })
+            .await
+            .expect("event");
+        let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        let (reply, receipt) = tokio::sync::oneshot::channel::<()>();
+        let barrier = gate.clone();
+        let task = tokio::spawn(SETTLEMENT_GATE.scope(gate, async move {
+            let mut pending = std::collections::VecDeque::new();
+            catalog_drive(
+                &mut session,
+                async { receipt.await.map_err(|_| SessionTaskError::Closed) },
+                &mut pending,
+            )
+            .await
+            .expect("command");
+            assert_eq!(
+                pending.len(),
+                1,
+                "taken event and its outcomes must survive command completion"
+            );
+            assert!(matches!(
+                pending[0].outcomes[0],
+                SessionOutcome::GenerationClosed { generation: 7 }
+            ));
+            session.shutdown().await;
+        }));
+        tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+            .await
+            .expect("event taken");
+        reply
+            .send(())
+            .expect("command becomes ready during settlement");
+        barrier.1.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("settlement deadline")
+            .expect("reader");
+    }
 
     struct Script(Vec<Value>, usize);
     impl ProviderTaskFactory for Script {
@@ -855,14 +1048,7 @@ mod tests {
                 .expect("catalog resource check")
                 .is_empty()
         );
-        assert!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .is_empty()
-        );
+        assert!(service.0.tasks.lock().await.is_empty());
         drop(permits);
         for account in 0..MAX_REFRESHES {
             assert_eq!(
@@ -873,15 +1059,7 @@ mod tests {
             );
         }
         assert_eq!(service.0.slots.available_permits(), 0);
-        assert_eq!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .len(),
-            MAX_REFRESHES
-        );
+        assert_eq!(service.0.tasks.lock().await.len(), MAX_REFRESHES);
         service.retain_accounts(&[json!({"id":"0","home":"/var/tmp","provider":"codex"})]);
         assert_eq!(
             service
@@ -894,14 +1072,7 @@ mod tests {
         );
         service.shutdown().await.expect("catalog resource check");
         assert_eq!(service.0.slots.available_permits(), MAX_REFRESHES);
-        assert!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .is_empty()
-        );
+        assert!(service.0.tasks.lock().await.is_empty());
         assert_eq!(
             service.read("new", "/var/tmp", "codex", false).await,
             CatalogRead::Unavailable

@@ -49,10 +49,6 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
-[doc("Run the full workspace readiness Python corpus and writer witness (manual heavy tier).")]
-test-rust-runtime-corpora:
-    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
@@ -85,6 +81,7 @@ test-heavy:
 [doc("Run the full Rust lifecycle, notification and preparation matrices (manual heavy tier; no load generators).")]
 test-rust-runtime-corpora:
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates)_corpus$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
+    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
 
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:

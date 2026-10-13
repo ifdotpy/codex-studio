@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,7 +22,7 @@ def main():
     parser.add_argument("--allow-survivors", action="store_true", help="record a pre-hardening baseline")
     parser.add_argument("--only", help="comma-separated mutation IDs")
     parser.add_argument("--manifest", type=Path, default=Path(__file__).with_name("mutations.json"))
-    parser.add_argument("--filter", default="binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)")
+    parser.add_argument("--filter", default="binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) or test(account_worker) or test(command_receipt_cannot_cancel)")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[6]
     target = args.target.resolve()
@@ -61,7 +62,7 @@ def main():
                args.filter]
     results = []
 
-    def run(identity, tier):
+    def run(identity, tier, witnesses=()):
         env = dict(environment)
         if tier == "full":
             env["STUDIO_RUNTIME_CORPUS_FULL"] = "1"
@@ -72,7 +73,13 @@ def main():
             result = subprocess.run(command, cwd=work, env=env, stdout=output, stderr=subprocess.STDOUT, check=False)
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         status = {0: "survived", 100: "caught"}.get(result.returncode, "invalid")
+        output = log.read_text()
+        failures = sorted(set(re.findall(r"^\s*FAIL \[.*?\] \(.*?\) \S+ (\S+)$", output, re.MULTILINE)))
+        detected = [name for name in witnesses if any(test.endswith("::"+name) or test == name for test in failures)]
+        if status == "caught" and witnesses and not detected:
+            status = "unwitnessed"
         row = dict(id=identity, tier=tier, status=status, exit=result.returncode,
+                   failedTests=failures, detectedWorkerWitnesses=detected,
                    wallSeconds=time.monotonic()-start,
                    cpuSeconds=after.ru_utime+after.ru_stime-cpu.ru_utime-cpu.ru_stime,
                    log=str(log))
@@ -96,7 +103,7 @@ def main():
             try:
                 path.write_text(changed)
                 for tier in tiers:
-                    run(mutation["id"], tier)
+                    run(mutation["id"], tier, mutation.get("workerWitnesses", ()))
             finally:
                 path.write_text(original)
         survivors = [r for r in results if r["id"] != "baseline" and r["status"] != "caught"]

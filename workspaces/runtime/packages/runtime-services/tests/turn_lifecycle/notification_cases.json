@@ -8741,7 +8741,7 @@
         "value": "wrong"
       }
     ],
-    "expect_refusal": "invalid stored object runtime_agents:agent",
+    "expect_refusal": "database schema or migration marker is incompatible: Invalid stored object runtime_agents/agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy",
     "return": null

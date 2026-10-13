@@ -73,9 +73,10 @@ pub(super) fn recover(
     account: &str,
     generation: Generation,
 ) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
-    scheduler::lifecycle_transaction(store, |tx| {
+    scheduler::lifecycle_transaction_with(store, |tx| {
         SchedulerRepository::recover_unsubmitted_for_account(tx, account)?;
         SchedulerRepository::reconcile_generation(tx, account, generation.0, now())?;
+        retire_generations(tx, account, generation.0)?;
         // The repository preserves Python recovery records. Journal delivery needs
         // the scoped attempt restored before notifications can be acknowledged.
         let mut statement = tx.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.startAttempt') IS NULL AND COALESCE(json_extract(record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2")?;
@@ -108,9 +109,6 @@ pub(super) fn recover(
                 AgentRepository::put(tx, &agent)?;
             }
         }
-        Ok(())
-    })?;
-    scheduler::lifecycle_transaction_with(store, |tx| {
         let prefix = format!("account-worker:account:{account}:");
         let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.request.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
         let rows = stmt
@@ -130,9 +128,6 @@ pub(super) fn recover(
                 serde_json::from_value(value["context"].clone()).map_err(|_| invalid(account))?;
             if Method::from_wire(&context.method).is_none() {
                 return Err(invalid(account));
-            }
-            if receipt(tx, &context.operation, "resolved")?.is_some() {
-                continue;
             }
             let written = receipt(tx, &context.operation, "written")?;
             let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
@@ -155,6 +150,65 @@ pub(super) fn recover(
         Ok(recovered)
     })
 }
+// Reconciliation has already held old-generation input. Transport receipts
+// from a closed generation cannot authorize replay and no longer need journals.
+fn retire_generations(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    current: u64,
+) -> Result<(), WorkerError> {
+    for kind in ["cursor", "journal", "callback", "recovery", "account"] {
+        let prefix = format!("account-worker:{kind}:{account}:");
+        let mut query =
+            tx.prepare("SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2")?;
+        let rows = query
+            .query_map(params![prefix, format!("{prefix}~")], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (id, raw) in rows {
+            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&id))?;
+            let generation = if kind == "account" {
+                value
+                    .pointer("/request/generation")
+                    .or_else(|| value.get("generation"))
+                    .and_then(Value::as_u64)
+            } else {
+                id.strip_prefix(&prefix)
+                    .and_then(|tail| tail.split(':').next())
+                    .and_then(|number| number.parse().ok())
+            };
+            if generation.is_none_or(|generation| generation >= current) {
+                continue;
+            }
+            if kind == "account"
+                && let Some(context) = value.get("context")
+            {
+                let pending: Pending =
+                    serde_json::from_value(context.clone()).map_err(|_| invalid(&id))?;
+                if let Some(key) = effect_key(account, &Effect::Submit(pending.intent)) {
+                    delete_effect(tx, &key)?;
+                }
+                forget_request(tx, &pending.operation)?;
+            }
+            if kind == "journal"
+                && let (Some(generation), Some(cursor)) = (generation, value["cursor"].as_u64())
+            {
+                let identity = json!({"providerHandle":ProviderHandle::for_account(account).as_str(),"generation":generation,"cursor":cursor});
+                tx.execute(
+                    "DELETE FROM runtime_operation_receipts WHERE id=?1",
+                    [format!(
+                        "provider-notification:{}",
+                        studio_runtime_store::sha256_hex(identity.to_string().as_bytes())
+                    )],
+                )?;
+            }
+            tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn claim(
     store: &RuntimeStore,
     account: &str,
@@ -402,6 +456,13 @@ pub(super) fn outcome(
             _ => false,
         };
         if retired {
+            // A retained Submit owns the same prepared/request identity. Retire
+            // it with that identity's guard, never in an independent commit.
+            if context.method()? == Method::TurnStart
+                && let Some(key) = effect_key(account, &Effect::Submit(i.clone()))
+            {
+                delete_effect(tx, &key)?;
+            }
             forget_request(tx, &context.operation)?;
         }
         if let Some(effect) = &effect {
@@ -542,7 +603,10 @@ pub(super) fn journal(
                             .unwrap_or_else(|| streams.clone());
                             if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
                                 crate::notification_dispatch::prune_inactive_streams(
-                                    tx, &mut next,
+                                    tx,
+                                    &mut next,
+                                    now(),
+                                    false,
                                 )?;
                                 effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
                             }
@@ -652,6 +716,12 @@ pub(super) fn interrupt_intent(
         return Ok(None);
     };
     let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);
+    let interrupt = &attempt["interrupt"];
+    if interrupt["threadId"] == thread
+        && matches!(interrupt["outcome"].as_str(), Some("unknown" | "accepted"))
+    {
+        return Ok(None);
+    }
     Ok(attempt["id"]
         .as_str()
         .zip(attempt["epoch"].as_i64())
@@ -703,6 +773,7 @@ pub(super) fn callback_admission(
             return Ok(true);
         }
         if receipt(tx, operation, "written")? == Some(json!(true)) {
+            settle_callback_in_transaction(tx, account, generation, cursor)?;
             return Ok(true);
         }
         if receipt(tx, operation, "submitted")?.is_some() {
@@ -756,23 +827,29 @@ fn persist_effect(
     effect: &Effect,
 ) -> Result<(), WorkerError> {
     if let Some(key) = effect_key(account, effect) {
+        if receipt(tx, &key, "pending")?.is_some() {
+            return Ok(());
+        }
+        let prefix = format!("account-worker:effect:{account}:");
+        let order: i64 = tx.query_row("SELECT COALESCE(MAX(json_extract(result,'$.order')),0)+1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2", params![prefix,format!("{prefix}~")], |row| row.get(0))?;
         save(
             tx,
             &key,
             "pending",
-            serde_json::to_value(effect).map_err(|_| invalid(&key))?,
+            json!({"order":order,"effect":serde_json::to_value(effect).map_err(|_|invalid(&key))?}),
         )?;
     }
     Ok(())
 }
+fn delete_effect(tx: &studio_runtime_store::Transaction<'_>, key: &str) -> Result<(), WorkerError> {
+    tx.execute(
+        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        [receipt_id(key, "pending")],
+    )?;
+    Ok(())
+}
 pub(super) fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(), WorkerError> {
-    store.transaction_with(|tx| {
-        tx.execute(
-            "DELETE FROM runtime_operation_receipts WHERE id=?1",
-            [receipt_id(key, "pending")],
-        )?;
-        Ok(())
-    })
+    store.transaction_with(|tx| delete_effect(tx, key))
 }
 pub(super) fn recover_effects(
     store: &RuntimeStore,
@@ -781,7 +858,7 @@ pub(super) fn recover_effects(
     let connection = store.read()?;
     let prefix = format!("account-worker:effect:{account}:");
     let mut stmt = connection.prepare(
-        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT 33",
+        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.order'),rowid LIMIT 33",
     )?;
     let rows = stmt
         .query_map(params![prefix, format!("{prefix}~")], |r| {
@@ -792,7 +869,11 @@ pub(super) fn recover_effects(
         return Err(WorkerError::Capacity);
     }
     rows.into_iter()
-        .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid(account)))
+        .map(|raw| {
+            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;
+            serde_json::from_value(value.get("effect").unwrap_or(&value).clone())
+                .map_err(|_| invalid(account))
+        })
         .collect()
 }
 
@@ -886,14 +967,20 @@ pub(super) fn callback_settled(
     generation: u64,
     cursor: u64,
 ) -> Result<(), WorkerError> {
-    store.transaction_with(|tx| {
-        let operation = format!("journal:{account}:{generation}:{cursor}");
-        if let Some(mut row) = receipt(tx, &operation, "settled")? {
-            row["ready"] = json!(true);
-            replace(tx, &operation, "settled", row)?;
-        }
-        compact(tx, account, generation)
-    })
+    store.transaction_with(|tx| settle_callback_in_transaction(tx, account, generation, cursor))
+}
+fn settle_callback_in_transaction(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    let operation = format!("journal:{account}:{generation}:{cursor}");
+    if let Some(mut row) = receipt(tx, &operation, "settled")? {
+        row["ready"] = json!(true);
+        replace(tx, &operation, "settled", row)?;
+    }
+    compact(tx, account, generation)
 }
 
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
@@ -929,27 +1016,40 @@ fn persist_streams(
         replace(tx, &key, "pending", json!(pending))
     }
 }
+fn load_streams(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+) -> Result<NotificationStreamBuffer, WorkerError> {
+    let key = format!("streams:{account}");
+    let mut metadata =
+        receipt(tx, &key, "metadata")?.unwrap_or_else(|| json!({"entries":[],"closed":[]}));
+    if let Some(pending) = receipt(tx, &key, "pending")? {
+        for entry in pending.as_array().ok_or_else(|| invalid(account))? {
+            let target = metadata["entries"]
+                .as_array_mut()
+                .ok_or_else(|| invalid(account))?
+                .iter_mut()
+                .find(|stored| stored["key"] == entry["key"])
+                .ok_or_else(|| invalid(account))?;
+            // Metadata is the durable authority for stream identity and its
+            // flushed base. The pending receipt owns only the unflushed batch;
+            // replacing the whole entry can erase the base hash needed to
+            // rebuild text after an item/started snapshot replaces its visible
+            // transcript row.
+            for field in ["pending", "count", "params"] {
+                target[field] = entry[field].clone();
+            }
+        }
+    }
+    serde_json::from_value(metadata).map_err(|_| invalid(account))
+}
 pub(super) fn restore_streams(
     store: &RuntimeStore,
     account: &str,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
     store.transaction_with(|tx| {
-        let key = format!("streams:{account}");
-        let mut metadata =
-            receipt(tx, &key, "metadata")?.unwrap_or_else(|| json!({"entries":[],"closed":[]}));
-        if let Some(pending) = receipt(tx, &key, "pending")? {
-            for entry in pending.as_array().ok_or_else(|| invalid(account))? {
-                let target = metadata["entries"]
-                    .as_array_mut()
-                    .ok_or_else(|| invalid(account))?
-                    .iter_mut()
-                    .find(|stored| stored["key"] == entry["key"])
-                    .ok_or_else(|| invalid(account))?;
-                *target = entry.clone();
-            }
-        }
-        let mut streams = serde_json::from_value(metadata).map_err(|_| invalid(account))?;
-        crate::notification_dispatch::prune_inactive_streams(tx, &mut streams)?;
+        let mut streams = load_streams(tx, account)?;
+        crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), true)?;
         persist_streams(tx, account, &streams)?;
         Ok(streams)
     })
@@ -957,9 +1057,13 @@ pub(super) fn restore_streams(
 pub(super) fn flush_streams(
     store: &RuntimeStore,
     account: &str,
-    mut streams: NotificationStreamBuffer,
+    _streams: NotificationStreamBuffer,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
     scheduler::lifecycle_transaction_with(store, |tx| {
+        // A failed/cancelled journal job may have moved the live buffer. The
+        // committed pending record, never that possibly empty cache, owns text.
+        let mut streams = load_streams(tx, account)?;
+        crate::notification_dispatch::prune_inactive_streams(tx, &mut streams, now(), false)?;
         for (owner, generation, thread) in streams.threads() {
             let (_, identity) = SchedulerRepository::find_attempt_for_thread(
                 tx, &owner, generation, &thread, None,

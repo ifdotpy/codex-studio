@@ -291,6 +291,10 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
             assert!(
                 include_str!("../src/account_worker/tests.rs")
                     .contains(&format!("async fn {name}("))
+                    || include_str!("../src/account_worker/tests/closure.rs")
+                        .contains(&format!("async fn {name}("))
+                    || include_str!("../src/model_catalog.rs")
+                        .contains(&format!("async fn {name}("))
                     || include_str!("../src/account_worker/tests/crash_matrix.rs")
                         .contains(&format!("async fn {name}(")),
                 "missing worker witness {name}"

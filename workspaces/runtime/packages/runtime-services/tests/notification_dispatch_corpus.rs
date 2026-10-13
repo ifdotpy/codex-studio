@@ -480,13 +480,21 @@ fn corpus(full: bool) {
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
         let seeded = started.elapsed().as_secs_f64();
-        let store = RuntimeStore::open(Some(&rust)).expect("open Python-written state");
-        let first = apply(&store, case, &expected["before"]["prepared"]);
-        let error = first.as_ref().err().cloned();
+        let (first, error) = match RuntimeStore::open(Some(&rust)) {
+            Ok(store) => {
+                let first = apply(&store, case, &expected["before"]["prepared"]);
+                let error = first.as_ref().err().cloned();
+                drop(store);
+                (first, error)
+            }
+            Err(error) => {
+                let error = error.to_string();
+                (Err(error.clone()), Some(error))
+            }
+        };
         if let Ok(value) = &first {
             assert_eq!(value, &case["return"], "{id}: entry-point result");
         }
-        drop(store);
         if case["crash_replay"] == true {
             let fixture = rust.parent().expect("parent").join("replay.json");
             fs::write(
