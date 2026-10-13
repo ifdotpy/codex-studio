@@ -3,8 +3,10 @@ pub(crate) mod agents;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
+pub(crate) mod federation;
 pub(crate) mod messages;
 pub(crate) mod monitors;
+pub(crate) mod multi_server;
 pub(crate) mod profiles;
 pub(crate) mod questions_reads;
 pub(crate) mod queue_write;
@@ -21,20 +23,22 @@ pub(crate) mod workspace_views;
 use crate::schema::SchemaRequirements;
 
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
-    &agents::REQUIREMENTS,
     &account_state::REQUIREMENTS,
+    &agents::REQUIREMENTS,
     &coordination::REQUIREMENTS,
-    &tasks::REQUIREMENTS,
-    &events::REQUIREMENTS,
     &event_write::REQUIREMENTS,
-    &queue_write::REQUIREMENTS,
+    &events::REQUIREMENTS,
+    &federation::REQUIREMENTS,
     &messages::REQUIREMENTS,
     &monitors::REQUIREMENTS,
+    &multi_server::REQUIREMENTS,
     &profiles::REQUIREMENTS,
-    &rules::REQUIREMENTS,
+    &queue_write::REQUIREMENTS,
     &questions_reads::REQUIREMENTS,
+    &rules::REQUIREMENTS,
     &scheduler::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
+    &tasks::REQUIREMENTS,
     &terminals::REQUIREMENTS,
     &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
