@@ -102,6 +102,8 @@ export type PostBody<Path extends PathsFor<"post">> = NonNullable<
   OperationRequestBodyContent<Operation<Path, "post">>
 >;
 
+/** A read waits this long for a slow server. Only a lost connection should end it. */
+export const READ_DEADLINE_MS = 120_000;
 const deadlines = new Map<
   AbortController,
   { at: number; expire: () => void }
@@ -424,6 +426,18 @@ export class NetworkTimeoutError extends TypeError {
   }
 }
 
+/** Send one exact write until the server answers it. A timeout means a slow server, not
+ * a failure: each attempt has the same request identity, so the server applies it once. */
+export async function untilAnswered<T>(send: () => Promise<T>): Promise<T> {
+  for (;;) {
+    try {
+      return await send();
+    } catch (error) {
+      if (!(error instanceof NetworkTimeoutError)) throw error;
+    }
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -563,7 +577,7 @@ async function performGet<Path extends PathsFor<"get">>(
   options?: InternalGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
   const requestOptions = options ?? {};
-  const timeoutMs = requestOptions.timeoutMs ?? 15000;
+  const timeoutMs = requestOptions.timeoutMs ?? READ_DEADLINE_MS;
   const controller = requestController(requestOptions, timeoutMs);
   try {
     const fetchOptions = {
@@ -762,7 +776,7 @@ export function syncGet<Path extends PathsFor<"get">>(
   options?: SyncGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
   if (schemaMismatch) return Promise.reject(new ApiSchemaMismatchError());
-  return performGet(path, { ...options, timeoutMs: 15000 });
+  return performGet(path, { ...options, timeoutMs: READ_DEADLINE_MS });
 }
 export const syncPost = <Path extends PathsFor<"post">>(
   path: Path,

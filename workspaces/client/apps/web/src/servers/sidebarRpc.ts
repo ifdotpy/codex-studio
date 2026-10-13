@@ -1,6 +1,13 @@
 import { sidebarAgent } from "./sidebarSnapshot";
 import type { Agent } from "../types";
-import { ApiError, post, type PostBody, type PostOptions } from "../api";
+import {
+  ApiError,
+  NetworkTimeoutError,
+  READ_DEADLINE_MS,
+  post,
+  type PostBody,
+  type PostOptions,
+} from "../api";
 import {
   isServerCommand,
   type ServerCommand,
@@ -65,11 +72,13 @@ export function createSidebarRpcClient(
     pending.delete(event.data.correlation);
     clearTimeout(request.timer);
     if (event.data.error) {
-      const { message, status, payload } = event.data.error;
+      const { message, status, payload, timedOut } = event.data.error;
       request.reject(
         typeof status === "number"
           ? new ApiError(message, status, payload)
-          : new Error(message),
+          : timedOut === true
+            ? new NetworkTimeoutError()
+            : new Error(message),
       );
     } else request.resolve(event.data.result);
   };
@@ -101,7 +110,7 @@ export function createSidebarRpcClient(
           },
           value.action === "post"
             ? (value.options?.timeoutMs ?? 15000) + 2000
-            : 20000,
+            : READ_DEADLINE_MS + 5000,
         );
         pending.set(correlation, {
           frame,

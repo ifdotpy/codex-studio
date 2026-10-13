@@ -2,7 +2,7 @@ import {
   parseStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
-import { get, errorText, ApiError } from "../api";
+import { get, errorText, ApiError, NetworkTimeoutError } from "../api";
 import { executeSidebarRequest } from "./sidebarRpc";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
@@ -57,6 +57,10 @@ export function useServerFrame(
                       message: errorText(failure),
                       ...(failure instanceof ApiError
                         ? { status: failure.status, payload: failure.details }
+                        : {}),
+                      // The window sends the same request again after a timeout.
+                      ...(failure instanceof NetworkTimeoutError
+                        ? { timedOut: true }
                         : {}),
                     },
                   }

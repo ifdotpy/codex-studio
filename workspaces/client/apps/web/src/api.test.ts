@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   NetworkTimeoutError,
+  READ_DEADLINE_MS,
   apiDownload,
   get,
   post,
@@ -10,6 +11,7 @@ import {
   setToken,
   setWorkspace,
   syncGet,
+  untilAnswered,
 } from "./api";
 import {
   entitySequenceInvalidationCovered,
@@ -595,7 +597,7 @@ describe("OpenAPI transport facade", () => {
     await expect(older).resolves.toMatchObject({ token: "newer-token" });
   });
 
-  it("uses the fixed sync read deadline", async () => {
+  it("waits for a slow sync read until the fixed deadline", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(
       (request: Request) =>
@@ -609,9 +611,38 @@ describe("OpenAPI transport facade", () => {
     const pending = syncGet("/api/session");
     const rejection =
       expect(pending).rejects.toBeInstanceOf(NetworkTimeoutError);
-    await vi.advanceTimersByTimeAsync(15000);
+    // A slow answer still arrives inside the deadline.
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(fetch.mock.calls[0][0].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS - 30000);
     await rejection;
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the same write again after a timeout and stops at a real answer", async () => {
+    let attempt = 0;
+    const result = await untilAnswered(async () => {
+      if (++attempt < 3) throw new NetworkTimeoutError();
+      return "created";
+    });
+    expect(result).toBe("created");
+    expect(attempt).toBe(3);
+    const refused = new ApiError("Refused", 400);
+    let calls = 0;
+    await expect(
+      untilAnswered(async () => {
+        calls++;
+        throw refused;
+      }),
+    ).rejects.toBe(refused);
+    expect(calls).toBe(1);
+    // A lost connection keeps its uncertainty for the caller.
+    const lost = new TypeError("Failed to fetch");
+    await expect(
+      untilAnswered(async () => {
+        throw lost;
+      }),
+    ).rejects.toBe(lost);
   });
 
   it("uses the established ApiError class for parsed HTTP failures", async () => {
