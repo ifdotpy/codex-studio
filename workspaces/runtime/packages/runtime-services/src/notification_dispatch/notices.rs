@@ -417,47 +417,24 @@ pub(crate) fn error_message(error: &Value) -> String {
     crate::account_worker::history::message(error)
 }
 
-/// Human-visible JSON uses UTF-8 and Python's separators; key order carries no meaning.
-pub(super) fn json_text(value: &Value) -> String {
-    match value {
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(json_text).collect::<Vec<_>>().join(", ")
-        ),
-        Value::Object(fields) => format!(
-            "{{{}}}",
-            fields
-                .iter()
-                .map(|(k, v)| format!("{}: {}", json!(k), json_text(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Value::Number(n) if n.is_f64() => n
-            .as_f64()
-            .map(studio_runtime_store::python_float_json)
-            .unwrap_or_else(|| n.to_string()),
-        value => value.to_string(),
-    }
-}
-
-pub(super) fn ascii_text(text: &str) -> String {
-    let mut output = String::new();
-    for character in text.chars() {
-        if character.is_ascii() {
-            output.push(character);
-        } else {
-            for unit in character.encode_utf16(&mut [0; 2]) {
-                output.push_str(&format!("\\u{unit:04x}"));
-            }
-        }
-    }
-    output
-}
+pub(super) use studio_runtime_store::python_json_utf8 as json_text;
 
 /// Preserve generated object's insertion order, including fields appended by a transition.
 pub(super) fn ordered_text(value: &Value, keys: impl IntoIterator<Item = String>) -> String {
+    ordered_text_with(value, keys, json_text)
+}
+
+pub(super) fn ordered_ascii(value: &Value, keys: impl IntoIterator<Item = String>) -> String {
+    ordered_text_with(value, keys, studio_runtime_store::python_json)
+}
+
+fn ordered_text_with(
+    value: &Value,
+    keys: impl IntoIterator<Item = String>,
+    render: fn(&Value) -> String,
+) -> String {
     let Some(fields) = value.as_object() else {
-        return json_text(value);
+        return render(value);
     };
     let mut ordered = Vec::new();
     for key in keys.into_iter().chain(fields.keys().cloned()) {
@@ -469,7 +446,7 @@ pub(super) fn ordered_text(value: &Value, keys: impl IntoIterator<Item = String>
         "{{{}}}",
         ordered
             .iter()
-            .map(|key| format!("{}: {}", json!(key), json_text(&fields[key])))
+            .map(|key| format!("{}: {}", render(&json!(key)), render(&fields[key])))
             .collect::<Vec<_>>()
             .join(", ")
     )

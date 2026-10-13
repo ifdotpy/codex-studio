@@ -160,6 +160,18 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             generation: step["generation"].as_u64().unwrap_or(7),
             cursor: step["cursor"].as_u64().unwrap_or(index as u64 + 1),
         };
+        if let Some(service) = case["requires_service"].as_str() {
+            assert_eq!(case["steps"].as_array().expect("steps").len(), 1);
+            return store.transaction_with(|tx| {
+                let before = raw_rows(tx);
+                let error = studio_runtime_services::notification_dispatch::dispatch_notification(
+                    tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5,
+                ).expect_err("missing service must refuse before acknowledgement");
+                assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
+                assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
+                Ok::<_,studio_runtime_store::StoreError>(error.to_string())
+            }).map_err(|e|e.to_string()).and_then(Err);
+        }
         if case["late_failure"] == true {
             let original_streams = streams.clone();
             let refusal = store.transaction_with(|tx| {
@@ -183,33 +195,20 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 .expect("unrelated caller work committed");
             return Err(refusal);
         }
-        if case["fault_matrix"] == true && std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
-        {
-            for table in [
-                "runtime_agents",
-                "runtime_items",
-                "runtime_tasks",
-                "runtime_requests",
-                "runtime_plans",
-                "runtime_compactions",
-                "sync_entities",
-                "runtime_operation_receipts",
-            ] {
-                for phase in ["BEFORE", "AFTER"] {
-                    for operation in ["INSERT", "UPDATE", "DELETE"] {
-                        let failed: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-                            tx.execute_batch(&format!("CREATE TEMP TRIGGER notification_failpoint {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'notification failpoint'); END;")).expect("failpoint trigger");
-                            let before = raw_rows(tx);
-                            let result = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects);
-                            tx.execute_batch("DROP TRIGGER notification_failpoint;").expect("drop failpoint");
-                            if table == "runtime_operation_receipts" && operation == "INSERT" { assert!(result.is_err(), "receipt failpoint must be exercised"); }
-                            if result.is_err() { assert_eq!(before, raw_rows(tx), "{phase} {operation} {table}: caught failure leaked writes"); }
-                            Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
-                        });
-                        assert!(failed.is_err());
-                    }
-                }
-            }
+        if full_failpoints(case) {
+            write_failpoints(store, |tx| {
+                dispatch_notification(
+                    tx,
+                    agent_id,
+                    store.root().to_str().expect("path"),
+                    &streams,
+                    &identity,
+                    &frame,
+                    1234.5,
+                    &effects,
+                )
+                .map(|_| ())
+            })?;
         }
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
@@ -285,8 +284,79 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             flush_agents(store, case, &mut streams)?;
         }
     }
+    if full_failpoints(case) {
+        write_failpoints(store, |tx| {
+            studio_runtime_services::notification_dispatch::flush_notification_streams(
+                tx,
+                "agent",
+                store.root().to_str().expect("path"),
+                &streams,
+                1234.5,
+            )
+            .map(|_| ())
+        })?;
+    }
     flush_agents(store, case, &mut streams)?;
     Ok(json!(results))
+}
+
+static WRITE_FAILURE_POINTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn full_failpoints(case: &Value) -> bool {
+    case["fault_matrix"] == true
+        && std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
+        && std::env::var_os("NOTIFICATION_REPLAY_CHILD").is_none()
+}
+
+fn write_failpoints(
+    store: &RuntimeStore,
+    operation: impl Fn(
+        &studio_runtime_store::Transaction<'_>,
+    ) -> Result<
+        (),
+        studio_runtime_services::notification_dispatch::NotificationDispatchError,
+    >,
+) -> Result<(), String> {
+    use studio_runtime_services::notification_dispatch::NotificationDispatchError;
+    for phase in ["BEFORE", "AFTER"] {
+        let mut writes = 0;
+        // The successful probe counts every ordinary-table write, including
+        // repeated writes and writes performed by existing projection triggers.
+        // Virtual-table shadow storage is verified by the complete raw snapshot.
+        for ordinal in 0.. {
+            let mut baseline_error = None;
+            let rolled_back: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
+                tx.execute_batch("CREATE TEMP TABLE notification_write_trace(value INTEGER); CREATE TEMP TABLE notification_failure(ordinal INTEGER); INSERT INTO notification_failure VALUES(0);").expect("trace fixture");
+                tx.execute("UPDATE notification_failure SET ordinal=?1", [ordinal]).expect("failure ordinal");
+                let tables = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").expect("ordinary tables").query_map([], |r|r.get::<_,String>(0)).expect("table names").collect::<Result<Vec<_>,_>>().expect("table names");
+                for (index, table) in tables.iter().enumerate() {
+                    for action in ["INSERT", "UPDATE", "DELETE"] {
+                        tx.execute_batch(&format!("CREATE TEMP TRIGGER notification_trace_{index}_{action} {phase} {action} ON main.\"{}\" BEGIN INSERT INTO notification_write_trace VALUES(1); SELECT CASE WHEN (SELECT count(*) FROM notification_write_trace)=(SELECT ordinal FROM notification_failure) THEN RAISE(ABORT,'notification failpoint') END; END;", table.replace('"', "\"\""))).expect("write trace trigger");
+                    }
+                }
+                let before = raw_rows(tx);
+                let result = operation(tx);
+                if ordinal == 0 {
+                    baseline_error = result.err().map(|error|error.to_string());
+                    writes = tx.query_row("SELECT count(*) FROM notification_write_trace", [], |r|r.get::<_,i64>(0)).expect("write count");
+                } else {
+                    assert!(result.is_err(), "{phase} write {ordinal}/{writes} was not exercised");
+                    assert_eq!(before, raw_rows(tx), "{phase} write {ordinal}/{writes}: caught failure leaked rows");
+                    WRITE_FAILURE_POINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(NotificationDispatchError::InvalidNotification)
+            });
+            assert!(rolled_back.is_err());
+            if let Some(error) = baseline_error {
+                return Err(error);
+            }
+            if ordinal == writes {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn raw_rows(
@@ -510,12 +580,15 @@ fn corpus(full: bool) {
         kinds(false),
         "default must exercise every method"
     );
-    let root =
-        State(std::env::temp_dir().join(format!("notification-corpus-{}", std::process::id())));
+    let scratch = std::env::var_os("NOTIFICATION_CORPUS_STATE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let root = State(scratch.join(format!("notification-corpus-{}", std::process::id())));
     fs::create_dir(&root.0).expect("unique corpus state");
     let mut oracle = Oracle::new(&root.0);
     let mut report = vec![];
     let mut green = 0;
+    let mut refusals = 0;
     for case in cases
         .iter()
         .filter(|case| case["unit_test"].is_null() && (full || case["tier"] == "fast"))
@@ -532,13 +605,16 @@ fn corpus(full: bool) {
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
         let seeded = started.elapsed().as_secs_f64();
-        let store = RuntimeStore::open(Some(&rust)).expect("open Python-written state");
+        let store = RuntimeStore::open(Some(&rust));
         let prepared = if case["submission"] == true {
             &expected["before"]["prepared"]
         } else {
             &expected["captures"]
         };
-        let first = apply(&store, case, prepared);
+        let first = match &store {
+            Ok(store) => apply(store, case, prepared),
+            Err(error) => Err(error.to_string()),
+        };
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             assert_eq!(value, &case["return"], "{id}: entry-point result");
@@ -570,6 +646,28 @@ fn corpus(full: bool) {
         let applied = started.elapsed().as_secs_f64();
         let actual =
             oracle.call(json!({"command":"snapshot","module":"notification_dispatch","root":rust}));
+        if let Some(service) = case["requires_service"].as_str() {
+            assert_eq!(
+                error.as_deref(),
+                Some(format!("Not implemented: requires {service}").as_str())
+            );
+            assert_eq!(
+                actual, expected["before"],
+                "named refusal changed stored state"
+            );
+            let table = case["python_writes"]
+                .as_str()
+                .expect("missing service's real Python table witness");
+            assert_ne!(
+                expected["after"][table], expected["before"][table],
+                "Python service witness must store a real effect"
+            );
+            refusals += 1;
+            report.push(json!({"id":id,"contract":"named-service-refusal","dependency":service,
+                "pythonExpectedStoredState":expected["after"],"rustStoredState":actual,"error":error,
+                "seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
+            continue;
+        }
         let mut diff = vec![];
         let expected_after = expected_with_deviations(expected["after"].clone(), case);
         differences(Some(&expected_after), Some(&actual), "", &mut diff);
@@ -621,7 +719,7 @@ fn corpus(full: bool) {
             .map(|row| row["seconds"][key].as_f64().expect("phase duration"))
             .sum::<f64>()
     };
-    let timing = json!({"cases":report.len(),"wallSeconds":corpus_started.elapsed().as_secs_f64(),"rustCpu":rust_cpu,"oracleCpu":oracle_cpu,"phases":{"seed":phase("seed"),"apply":phase("apply"),"snapshot":phase("snapshot")}});
+    let timing = json!({"cases":report.len(),"writeFailurePoints":WRITE_FAILURE_POINTS.load(std::sync::atomic::Ordering::Relaxed),"wallSeconds":corpus_started.elapsed().as_secs_f64(),"rustCpu":rust_cpu,"oracleCpu":oracle_cpu,"phases":{"seed":phase("seed"),"apply":phase("apply"),"snapshot":phase("snapshot")}});
     fs::write(
         report_path.with_extension("timing.json"),
         serde_json::to_vec_pretty(&timing).expect("timing JSON"),
@@ -629,10 +727,10 @@ fn corpus(full: bool) {
     .expect("timing report");
     eprintln!("corpus timing: {timing}");
     assert_eq!(
-        green,
+        green + refusals,
         report.len(),
-        "{green} green / {} red; field differences: {}",
-        report.len() - green,
+        "{green} exact / {refusals} named refusals / {} red; field differences: {}",
+        report.len() - green - refusals,
         report_path.display()
     );
 }

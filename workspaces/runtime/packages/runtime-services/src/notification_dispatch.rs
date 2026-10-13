@@ -275,15 +275,33 @@ pub fn dispatch_notification_with_effects(
             );
         }
         validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
-        if matches!(kind.as_str(), "error" | "model/safetyBuffering/updated") {
-            flush_selected(
+        let unload = kind == "thread/closed"
+            || (kind == "thread/status/changed" && params["status"]["type"] == "notLoaded");
+        if (unload || matches!(kind.as_str(), "error" | "model/safetyBuffering/updated"))
+            && let Some(thread) = params["threadId"].as_str().filter(|v| !v.is_empty())
+        {
+            let before = agent.clone();
+            let turn = params["turnId"].as_str().filter(|v| !v.is_empty());
+            let keys = next_streams
+                .selected(None)
+                .into_iter()
+                .filter(|key| {
+                    key.thread == thread
+                        && (unload || turn.is_none_or(|turn| key.turn.as_deref() == Some(turn)))
+                })
+                .collect();
+            flush_keys(
                 transaction,
                 agent_id,
                 &mut agent,
                 &mut next_streams,
-                None,
+                keys,
+                unload,
                 observed_at,
             )?;
+            if agent != before {
+                persist_agent(transaction, agent_id, &agent, state_dir)?;
+            }
         }
         if kind == "item/commandExecution/outputDelta" {
             let key = command_key(identity, &params)?;
@@ -847,7 +865,28 @@ fn flush_selected(
     terminal: Option<&StreamKey>,
     observed_at: f64,
 ) -> Result<(), NotificationDispatchError> {
-    for key in streams.selected(terminal) {
+    let keys = streams.selected(terminal);
+    flush_keys(
+        transaction,
+        agent_id,
+        agent,
+        streams,
+        keys,
+        terminal.is_some(),
+        observed_at,
+    )
+}
+
+fn flush_keys(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    agent: &mut Value,
+    streams: &mut NotificationStreamBuffer,
+    keys: Vec<StreamKey>,
+    close: bool,
+    observed_at: f64,
+) -> Result<(), NotificationDispatchError> {
+    for key in keys {
         if agent.get("threadId").and_then(Value::as_str) != Some(key.thread.as_str())
             || agent
                 .get("accountKey")
@@ -870,7 +909,7 @@ fn flush_selected(
                 None,
             )?;
             streams.discard(&key);
-            if terminal.is_some() {
+            if close {
                 streams.close(&key);
             }
             continue;
@@ -882,7 +921,7 @@ fn flush_selected(
                 agent,
                 streams,
                 &key,
-                terminal.is_some(),
+                close,
                 observed_at,
             )?;
             continue;
@@ -930,7 +969,7 @@ fn flush_selected(
             agent["activity"] = json!({"phase":"writing", "at":observed_at});
             agent["tail"] = Value::String(suffix(&text, 300));
         }
-        if terminal.is_some() {
+        if close {
             NotificationDispatchRepository::put_stream_base(
                 transaction,
                 &stream_base_id(&key),
@@ -1075,6 +1114,9 @@ fn persist_agent(
     agent: &Value,
     state_dir: &str,
 ) -> Result<(), NotificationDispatchError> {
+    let mut normalized = agent.clone();
+    crate::agents_create::mode_fields(&mut normalized);
+    let agent = &normalized;
     NotificationDispatchRepository::put_agent_record(transaction, agent_id, agent)?;
     let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
     let context = crate::sync_entity_context::agent_view_context(
@@ -1268,6 +1310,61 @@ mod tests {
             &frame(value),
             observed_at,
         )
+    }
+
+    #[test]
+    fn stale_safety_notice_keeps_current_turn_stream_pending() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let streams = initial.stream_update.expect("staged stream");
+        let result = super::dispatch_notification(&tx,"agent",".",&streams,&identity(2),&frame(&json!({"method":"model/safetyBuffering/updated","params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}})),1234.5).expect("stale notice");
+        assert!(
+            result.stream_update.is_none(),
+            "unrelated turn must not consume pending text"
+        );
+        let count: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_items", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn unload_closes_text_before_returning_recovery_dependency() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let streams = initial.stream_update.expect("staged stream");
+        let result = super::dispatch_notification_with_effects(
+            &tx,
+            "agent",
+            ".",
+            &streams,
+            &identity(2),
+            &frame(&json!({"method":"thread/closed","params":{"threadId":"thread"}})),
+            1234.5,
+            &super::UnavailableNotificationEffects,
+        )
+        .expect("typed recovery dependency");
+        assert_eq!(
+            result.outcome,
+            DispatchOutcome::RequiresService {
+                service: super::NotificationDependency::ThreadUnloaded
+            }
+        );
+        let streams = result.stream_update.expect("closed stream");
+        let record = NotificationDispatchRepository::transcript_item(&tx, "agent", "agent:answer")
+            .expect("saved item")
+            .expect("item")
+            .0;
+        assert_eq!(record["text"], "pending");
+        let late = super::dispatch_notification(&tx,"agent",".",&streams,&identity(3),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}})),1234.5).expect("late delta");
+        assert_eq!(
+            late.outcome,
+            DispatchOutcome::Ignored {
+                reason: "closed-stream".into()
+            }
+        );
     }
 
     #[test]

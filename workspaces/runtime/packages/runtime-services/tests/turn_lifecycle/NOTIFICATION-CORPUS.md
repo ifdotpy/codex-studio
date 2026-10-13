@@ -25,6 +25,10 @@ inherited `CODEX_BIN`. The oracle further isolates its own process. Never point
 these tests at an existing runtime state directory. `NOTIFICATION_CASE` can select
 an id substring; a filter matching nothing fails. `NOTIFICATION_CORPUS_REPORT`
 selects the JSON field-difference report outside the checkout.
+`NOTIFICATION_CORPUS_STATE_ROOT` selects a disposable state parent independently
+of HOME, logs and build output, including during the unchanged mutation runner.
+On a busy host it may point to an owned `/dev/shm/cs-<name>-*` directory;
+SQLite durability settings are unchanged and each case directory is removed.
 
 ## Contract and fixtures
 
@@ -92,8 +96,14 @@ complaints, events, sync, search and receipt rows remain in this comparison.
 
 Missing account, login, rate-limit, provider-generation, realtime, monitor and
 thread-recovery services return `RequiresService` with a typed dependency.
-The oracle still executes Python and compares its stored rows. This typed outcome
-is a transport contract; it is not a claim that the missing effect ran.
+The oracle still executes Python. Where these services have no stored effects,
+notification rows remain an exact comparison. Rate-limit updates and native-limit
+refreshes have separately labelled `named-service-refusal` witnesses: the report
+retains Python's complete expected stored state, while the actual default Rust
+entry point must return the exact dependency and leave every raw row and receipt
+unchanged even when its caller catches the error and commits. Each witness also
+asserts that Python changed its named service table, independently of transport
+receipts. These are refusal proofs, not parity claims for unimplemented services.
 The default production dispatcher turns these outcomes into an error and rolls
 back its savepoint, preventing the worker from acknowledging an absent service.
 The injected dispatcher may only be acknowledged after its caller handles the
@@ -192,8 +202,11 @@ New witness families cover native warnings/hooks/safety/errors, exact native
 request resolution, repeated and child async questions, command output with
 Unicode truncation and repeated starts, failed tool completion, malformed stored
 state and caught late-write errors. Full mode additionally injects SQLite trigger
-failures before and after writes to each notification table. Every caught failure
-must leave the raw rows unchanged even when unrelated caller work commits.
+failures before and after every ordinary-table write in selected sequences,
+including repeated writes and existing projection triggers. The successful probe
+counts the writes before injecting each ordinal failure. All raw tables, including
+full-text shadow storage, must remain unchanged after each caught failure. The
+late-write witness additionally commits unrelated caller work after the error.
 `notification_kinds_mutations.json` is the separate mutation inventory for these
 rules; run it with the shared runner's `--manifest` option and notification-corpus
 `--filter`. Infrastructure failure is not mutation detection.
