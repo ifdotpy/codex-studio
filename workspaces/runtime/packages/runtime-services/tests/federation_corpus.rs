@@ -275,7 +275,7 @@ fn authenticated_consumer(corpus: &Corpus) {
             effects::OriginObservation::Unavailable,
             corpus.now()
         )
-        .unwrap_err()
+        .expect_err("missing trusted origin must refuse")
         .to_string()
         .contains("trusted-origin-observation")
     );
