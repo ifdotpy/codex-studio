@@ -414,7 +414,7 @@ fn launch_admission_serializes_cancel_before_native_submission_completes() {
                 self.release.wait();
             }
             self.sent.lock().expect("sent").push((*method).into());
-            Submission::Accepted
+            Submission::Written
         }
     }
     let root = fixtures::tempdir();

@@ -117,6 +117,12 @@ impl MonitorRuntime {
         self.attach_batch(&mut scan, now)?;
         for _ in 0..BATCH {
             let Some(delivery) = self.port.next()? else {
+                // Results were drained above. Recover cancellation intents before
+                // rule evaluation so an unavailable rule adapter cannot starve them.
+                for id in monitor_driver::pending_cancel_ids(&self.store)? {
+                    let _response =
+                        monitor_driver::cancel(&self.store, self.port.as_ref(), &id, None, now)?;
+                }
                 let rules = if scan.recovering_rules {
                     rules_tick::recover_batch(&self.store, scan.rule, now, self.port.as_ref())?
                 } else {
@@ -247,13 +253,10 @@ impl MonitorRuntime {
         Ok(result)
     }
 
-    /// HTTP has no client request identity. The durable ticket blocks an unknown
-    /// input; a transport failure cannot authorize a second write.
-    pub fn input_http(&self, id: &str, input: &Input, now: f64) -> Result<Value, MonitorError> {
-        let mut nonce = [0_u8; 16];
-        getrandom::fill(&mut nonce)
-            .map_err(|_| MonitorError::Refused("Monitor input identity unavailable"))?;
-        self.input(id, &studio_runtime_store::sha256_hex(&nonce), input, now)
+    /// MonitorInput lacks a caller identity, so fail closed until its schema carries
+    /// a stable request_id that can key a saved replay receipt.
+    pub fn input_http(&self, _id: &str, _input: &Input, _now: f64) -> Result<Value, MonitorError> {
+        Err(MonitorError::Unavailable("monitor-input-request-identity"))
     }
 
     pub fn input(
@@ -280,7 +283,7 @@ impl MonitorRuntime {
             },
             now,
         )?;
-        if !matches!(submitted, Submission::Accepted) {
+        if !matches!(submitted, Submission::Written) {
             return Err(MonitorError::Refused(
                 "Monitor input was not acknowledged; inspect its receipt",
             ));

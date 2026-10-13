@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
+use studio_runtime_store::MonitorsRepository;
 use tower::ServiceExt;
 
 async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
@@ -72,13 +73,13 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let body = json!({"id":case["before"]["id"],"text":"hello"});
+    let (status, refusal) = call(&app, "/api/monitor/input", body.clone()).await;
+    assert_eq!(status, 501);
     assert_eq!(
-        call(&app, "/api/monitor/input", body.clone()).await,
-        (200, json!({}))
+        refusal["error"],
+        "Not implemented: requires monitor-input-request-identity"
     );
-    *port.unknown.lock().expect("unknown") = true;
-    assert_eq!(call(&app, "/api/monitor/input", body.clone()).await.0, 400);
-    assert_eq!(call(&app, "/api/monitor/input", body).await.0, 400);
+    assert!(port.submitted.lock().expect("submitted").is_empty());
     for _ in 0..2 {
         let (status, response) = call(
             &app,
@@ -89,6 +90,15 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         assert_eq!(status, 200, "{response}");
         assert_eq!(response["cancelRequested"], true);
     }
-    assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    let saved = MonitorsRepository::get(
+        &store.read().expect("read"),
+        case["before"]["id"].as_str().expect("id"),
+    )
+    .expect("monitor")
+    .expect("monitor")
+    .value()
+    .clone();
+    assert_eq!(saved["cancelDispatch"]["status"], "written");
     assert_eq!(fixtures::events(&store), json!([]));
 }

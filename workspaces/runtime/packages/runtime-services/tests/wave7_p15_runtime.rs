@@ -286,15 +286,17 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
         String::from_utf8_lossy(&output.stderr)
     );
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("rule corpus");
-    assert_eq!(cases.len(), 8);
+    assert_eq!(cases.len(), 9);
     for (number, case) in cases.iter().enumerate() {
         let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")));
         fixtures::seed(&store, case);
-        store
-            .transaction(|tx| {
-                RulesRepository::put(tx, &RuleRecord::from_value(case["rule"].clone())?)
-            })
-            .expect("rule");
+        if !case["rule"].is_null() {
+            store
+                .transaction(|tx| {
+                    RulesRepository::put(tx, &RuleRecord::from_value(case["rule"].clone())?)
+                })
+                .expect("rule");
+        }
         let runtime = runtime(&store, &Arc::new(Port::default()));
         let result = delivery(
             case,
@@ -311,13 +313,11 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
                 .deliver(&result, case["now"].as_f64().expect("now"))
                 .is_err()
         );
-        assert_eq!(
-            RulesRepository::get(&store.read().expect("read"), "rule")
-                .expect("get")
-                .expect("rule")
-                .value(),
-            &case["rule"]
-        );
+        let original_rule = RulesRepository::get(&store.read().expect("read"), "rule")
+            .expect("get")
+            .map(|row| row.value().clone())
+            .unwrap_or(Value::Null);
+        assert_eq!(original_rule, case["rule"]);
         assert_eq!(fixtures::events(&store), json!([]));
         store
             .transaction(|tx| {
@@ -336,12 +336,12 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
             "{}",
             case["name"]
         );
+        let saved_rule = RulesRepository::get(&store.read().expect("read"), "rule")
+            .expect("get")
+            .map(|row| row.value().clone());
         assert_eq!(
-            RulesRepository::get(&store.read().expect("read"), "rule")
-                .expect("get")
-                .expect("rule")
-                .value(),
-            &case["afterRule"],
+            saved_rule.unwrap_or(Value::Null),
+            case["afterRule"],
             "{}",
             case["name"]
         );
@@ -413,6 +413,66 @@ fn cancelled_intent_is_committed_before_transport_and_rolls_back_on_each_write_f
             assert_eq!(record(&store, id)["cancelRequested"], true);
         }
     }
+}
+
+#[test]
+fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
+    use studio_runtime_services::monitor_driver;
+
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let id = case["before"]["id"].as_str().expect("id");
+    let store = fixtures::store(root.path(), "cancel-restart");
+    fixtures::seed(&store, &case);
+
+    // Crash witness: the reservation commits, then the process stops before the
+    // native port is called. The next runtime must recover this exact intent.
+    let (_, operation) = store
+        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, id, None, 2000.0))
+        .expect("cancel reservation");
+    assert!(operation.is_some());
+    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "pending");
+    let state = store.root().to_owned();
+    drop(store);
+
+    let store = Arc::new(RuntimeStore::open(Some(&state)).expect("restart"));
+    let port = Arc::new(Port::default());
+    *port.not_sent.lock().expect("not sent") = true;
+    let restarted_runtime = runtime(&store, &port);
+    restarted_runtime.tick(2001.0).expect("proven not sent");
+    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "pending");
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+
+    *port.not_sent.lock().expect("not sent") = false;
+    restarted_runtime.tick(2002.0).expect("written receipt");
+    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "written");
+    let submitted = port.submitted.lock().expect("submitted");
+    assert_eq!(submitted.len(), 2);
+    assert_eq!(submitted[0], submitted[1]);
+    drop(submitted);
+    restarted_runtime
+        .cancel(id, None, 2003.0)
+        .expect("cancel replay");
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
+
+    let unknown_case = running(&cases);
+    let unknown_store = Arc::new(fixtures::store(root.path(), "cancel-unknown"));
+    fixtures::seed(&unknown_store, &unknown_case);
+    let unknown_id = unknown_case["before"]["id"].as_str().expect("id");
+    let unknown_port = Arc::new(Port::default());
+    *unknown_port.unknown.lock().expect("unknown") = true;
+    let unknown_runtime = runtime(&unknown_store, &unknown_port);
+    unknown_runtime
+        .cancel(unknown_id, None, 2010.0)
+        .expect("unknown cancel receipt");
+    assert_eq!(
+        record(&unknown_store, unknown_id)["cancelDispatch"]["status"],
+        "unknown"
+    );
+    *unknown_port.unknown.lock().expect("unknown") = false;
+    unknown_runtime.tick(2011.0).expect("hold unknown");
+    assert_eq!(unknown_port.submitted.lock().expect("submitted").len(), 1);
 }
 
 #[tokio::test(start_paused = true)]

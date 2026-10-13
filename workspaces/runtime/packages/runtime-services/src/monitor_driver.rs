@@ -11,12 +11,16 @@ use crate::monitor_policy::{self, Effect, Input, InputOutcome, MonitorError, Ope
 use crate::monitor_runtime::{self, PreparedStart};
 
 pub enum Submission {
-    Accepted,
-    NotSubmitted { error: String },
+    /// The transport returned its durable Written receipt for this effect identity.
+    Written,
+    /// The transport proves no bytes were sent; the same identity may be retried.
+    NotSent { error: String },
+    /// The transport cannot prove whether it wrote; this identity must not be resent.
     Unknown,
 }
 
 pub trait MonitorNative {
+    /// Repeated calls with the same effect identity must reconcile the same native write.
     fn submit(&self, operation: &Operation, effect: &Effect) -> Submission;
 }
 
@@ -42,7 +46,7 @@ pub fn start(
     let effect = monitor_runtime::reserve_start(store, id, prepared, now)?;
     // A transport failure does not authorize another command/exec.
     let submission = port.submit(&prepared.operation, &effect);
-    if let Submission::NotSubmitted { error } = &submission {
+    if let Submission::NotSent { error } = &submission {
         crate::monitor_receipts::finish(
             store,
             &crate::monitor_receipts::ResultReceipt {
@@ -81,11 +85,11 @@ pub fn input(
         now,
     )?;
     let result = port.submit(request.operation, &effect);
-    // Accepted means transport admission, not a native acknowledgement. The exact
-    // ticket's callback calls settle_input after its reply is known.
+    // Written means the transport wrote the exact ticket. The exact ticket's
+    // callback calls settle_input after its reply is known.
     let outcome = match &result {
-        Submission::Accepted => None,
-        Submission::NotSubmitted { error } => Some(InputOutcome::Rejected(error.clone())),
+        Submission::Written => None,
+        Submission::NotSent { error } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),
         )),
@@ -114,36 +118,57 @@ pub fn cancel(
     let (mut response, operation) =
         store.transaction_with(|tx| reserve_cancel(tx, id, owner, now))?;
     if let Some(operation) = operation {
-        // Intent is already durable. An unknown terminate is not resent by a
-        // duplicate cancellation; the eventual exit receipt settles the monitor.
-        let submission = port.submit(&operation, &cancel_effect(id));
-        if !matches!(submission, Submission::Accepted) {
-            store.transaction_with(|tx| {
-                let (current, actor) = monitor_runtime::snapshot(tx, id)?;
-                if current.operation() == Some(&operation)
-                    && current.record()["status"] == "running"
-                {
-                    let mut record = current.record().clone();
-                    record["error"] =
-                        json!("Cancel requested. Process termination was not confirmed.");
-                    response["error"] = record["error"].clone();
-                    monitor_runtime::apply(
-                        tx,
-                        &current,
-                        &actor,
-                        &monitor_policy::Decision {
-                            record,
-                            effects: vec![],
-                            response: Value::Null,
-                        },
-                        now,
-                    )?;
+        let receipt = port.submit(&operation, &cancel_effect(id));
+        let (status, error) = match receipt {
+            Submission::Written => ("written", None),
+            Submission::NotSent { error } => ("pending", Some(error)),
+            Submission::Unknown => ("unknown", Some("Cancel dispatch outcome unknown".into())),
+        };
+        store.transaction_with(|tx| {
+            let (current, actor) = monitor_runtime::snapshot(tx, id)?;
+            if current.operation() == Some(&operation)
+                && current.record()["status"] == "running"
+                && current.record()["cancelRequested"] == true
+            {
+                let mut record = current.record().clone();
+                let mut dispatch = json!({"status":status,"updatedAt":now});
+                if let Some(error) = &error {
+                    dispatch["error"] = json!(error.chars().take(12000).collect::<String>());
+                    response["error"] = dispatch["error"].clone();
                 }
-                Ok::<_, MonitorError>(())
-            })?;
-        }
+                record["cancelDispatch"] = dispatch;
+                monitor_runtime::apply(
+                    tx,
+                    &current,
+                    &actor,
+                    &monitor_policy::Decision {
+                        record,
+                        effects: vec![],
+                        response: Value::Null,
+                    },
+                    now,
+                )?;
+            }
+            Ok::<_, MonitorError>(())
+        })?;
     }
     Ok(response)
+}
+
+/// Select persisted cancellation intents whose transport receipt allows progress.
+pub fn pending_cancel_ids(store: &RuntimeStore) -> Result<Vec<String>, MonitorError> {
+    let connection = store.read()?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.cancelRequested')=1 AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending' ORDER BY id LIMIT 64",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(ids)
 }
 
 /// P10 calls this in the lifecycle transaction while its retained account owner
@@ -156,7 +181,21 @@ pub fn reserve_cancel(
     now: f64,
 ) -> Result<(Value, Option<Operation>), MonitorError> {
     let (snapshot, actor) = monitor_runtime::snapshot(tx, id)?;
-    let decision = monitor_policy::cancel(&snapshot, owner, now)?;
+    let mut decision = monitor_policy::cancel(&snapshot, owner, now)?;
+    let dispatch_status = snapshot
+        .record()
+        .pointer("/cancelDispatch/status")
+        .and_then(Value::as_str);
+    let needs_dispatch = decision.effects.contains(&Effect::Terminate)
+        || (snapshot.record()["status"] == "running"
+            && snapshot.record()["cancelRequested"] == true
+            && (dispatch_status.is_none() || dispatch_status == Some("pending")));
+    if needs_dispatch {
+        decision.record["cancelDispatch"] = json!({"status":"pending"});
+        if !decision.effects.contains(&Effect::Terminate) {
+            decision.effects.push(Effect::Terminate);
+        }
+    }
     let operation = if decision.effects.contains(&Effect::Terminate) {
         Some(
             snapshot

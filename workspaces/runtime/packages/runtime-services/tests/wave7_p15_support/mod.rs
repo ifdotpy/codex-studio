@@ -15,14 +15,19 @@ pub struct Port {
     pub probes: Mutex<Vec<(String, i64, String)>>,
     pub fail_ack: Mutex<bool>,
     pub unknown: Mutex<bool>,
+    pub not_sent: Mutex<bool>,
 }
 impl MonitorNative for Port {
     fn submit(&self, _: &Operation, effect: &Effect) -> Submission {
         self.submitted.lock().expect("submit").push(effect.clone());
         if *self.unknown.lock().expect("unknown") {
             Submission::Unknown
+        } else if *self.not_sent.lock().expect("not sent") {
+            Submission::NotSent {
+                error: "injected not sent".into(),
+            }
         } else {
-            Submission::Accepted
+            Submission::Written
         }
     }
 }

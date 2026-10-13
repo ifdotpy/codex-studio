@@ -42,4 +42,22 @@ for code in (0, 1):
                 host._finish_monitor(monitor["id"], code, error, finished=oracle.NOW)
             cases.append(dict(name=f"rule-{code}-{cancelled}-{error}", actor=owner, before=before, rule=rule, code=code, error=error, now=oracle.NOW, after=host.records(host.connection,"monitors")[0], afterRule=host.records(host.connection,"rules")[0], wakes=host.wakes))
             host.connection.close()
+
+# Python commits the monitor result and acknowledges its result receipt even when
+# the associated rule was deleted before the monitor exited.
+host = Host()
+host.root = Path(sys.argv[1])
+owner = {**oracle.OWNER, "cwd": str(host.root)}
+host.insert("agents", owner)
+rule = {**oracle.base(), "command": "printf marker", "checks": 1, "inFlight": True}
+host.put(host.connection, "rules", rule)
+with patch("codex_runtime.time.time", return_value=oracle.NOW), patch("codex_rules.time.time", return_value=oracle.NOW):
+    monitor = host.monitor("owner", {"command": rule["command"], "stall_timeout_seconds": 0}, key="rule:rule:1", approved=True, epoch=7, rule=rule)
+    monitor.update(status="running", tail="marker", bytes=6, cancelRequested=False, operation={"agent":"owner", "epoch":7, "accountKey":"fixture", "connectionId":"fixture-connection"})
+    host.put(host.connection, "monitors", monitor)
+    host.connection.execute("DELETE FROM runtime_rules WHERE id=?", (rule["id"],))
+    before = copy.deepcopy(monitor)
+    host._finish_monitor(monitor["id"], 0, None, finished=oracle.NOW)
+cases.append(dict(name="rule-deleted-before-monitor-finish", actor=owner, before=before, rule=None, code=0, error=None, now=oracle.NOW, after=host.records(host.connection,"monitors")[0], afterRule=None, wakes=host.wakes))
+host.connection.close()
 print(json.dumps(cases))

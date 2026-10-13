@@ -456,8 +456,11 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
         let rule_id = before["ruleId"]
             .as_str()
             .ok_or(MonitorError::Refused("Missing monitor rule identity"))?;
-        let rule = RulesRepository::get(tx, rule_id)?
-            .ok_or(MonitorError::Refused("Monitor rule no longer exists"))?;
+        // Python's rule_finished is a no-op after the rule row has been deleted.
+        // Commit the monitor so its durable result receipt can be acknowledged.
+        let Some(rule) = RulesRepository::get(tx, rule_id)? else {
+            return Ok(());
+        };
         let snapshot = load_snapshot(tx, rule)?;
         let check = launch_intent(&snapshot)?.unwrap_or_else(|| snapshot.check());
         if before["id"].as_str() != Some(&check.monitor_id)
