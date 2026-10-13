@@ -11,6 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[5]
 DIFFERENTIAL = ROOT / "workspaces/runtime/apps/server/tests/http_runtime_extractor_differential.py"
@@ -29,6 +30,30 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_split_suite_counts_include_every_unittest_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            log = root / "full.log"
+            content = (
+                "test_first (__main__.First.test_first) ... ok\n"
+                "Ran 1 test in 0.1s\nOK\n"
+                "test_second (__main__.Second.test_second) ... skipped 'fixture'\n"
+                "Ran 1 test in 0.2s\nOK (skipped=1)\n"
+                "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+            )
+            log.write_text(content)
+            process = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
+                "logPath": str(log), "status": "passed", "passed": 2,
+                "failed": 0, "skipped": 1, "exitCode": 0,
+            }))
+            suite = ROOT / "workspaces/runtime/apps/server/tests/test_isolation_contract.py"
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                result = ledger.run_suite(suite, {}, root, [], {})
+                self.assertEqual(len(result["tests"]), 2)
+                log.write_text(content.replace("Ran 1 test in 0.1s", "Ran 2 tests in 0.1s"))
+                with self.assertRaisesRegex(RuntimeError, "result-count mismatch"):
+                    ledger.run_suite(suite, {}, root, [], {})
+
     def test_probe_cases_are_operation_keyed_and_reference_seeded_records(self) -> None:
         documented = set(ledger.operations())
         self.assertLessEqual(set(ledger.PROBE_CASES), documented)
@@ -73,7 +98,6 @@ class LedgerTraceContract(unittest.TestCase):
         for operation in (
             ("GET", "/api/changes"),
             ("GET", "/api/models"),
-            ("GET", "/api/multi-server"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),

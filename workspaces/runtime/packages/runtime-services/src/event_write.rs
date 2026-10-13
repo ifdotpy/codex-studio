@@ -439,7 +439,7 @@ pub fn save_receipt(
     Ok(())
 }
 
-fn recovery_pending(agent: &AgentRecord) -> bool {
+pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
     let matches = |recovery: &Value| {
         ["epoch", "accountKey", "threadId"]

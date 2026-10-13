@@ -181,11 +181,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/multi-server"): {
         "primary": {"expected": "2xx"},
         "additional": [{
-            "name": "local identity dependency",
+            "name": "cached local identity",
             "fixture_mutations": {"remove_identity": True},
             "restore": ["identity_file"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires server-credentials/local-identity",
+            "expected": "2xx",
         }],
     },
     ("GET", "/api/multi-server/v1/pair"): {
@@ -226,7 +225,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "fixture_mutations": {"stale_session_cost_cache": True},
             "restore": ["session_cost_cache"],
             "expected": "501",
-            "expected_error": "Not implemented: requires usage-policy/session-cost-refresh",
+            "expected_error": "Not implemented: requires costs/pricing-refresh",
             "assert_no_write": True,
         }],
     },
@@ -283,6 +282,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "expected": "501",
         }],
     },
+    ("POST", "/api/monitor/cancel"): {
+        "primary": {"body": {"id": "$monitor"}, "expected": "2xx"},
+    },
+    ("POST", "/api/monitor/input"): {
+        "primary": {"body": {"id": "$monitor", "text": ""}, "expected": "400"},
+    },
     ("GET", "/api/monitor/log"): {
         "primary": {"query": {"id": "$monitor"}, "header": {"Range": "bytes=0-"}},
     },
@@ -333,6 +338,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/connections"): {
         "primary": {"body": {"source": "$agent", "target": "$chat"}},
+    },
+    ("POST", "/api/context-repair"): {
+        "primary": {"body": {"id": "$agent"}, "expected": "2xx"},
     },
     ("POST", "/api/messages"): {
         "primary": {
@@ -392,7 +400,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
             "replace_body": True,
             "expected": "501",
-            "expected_error": "Not implemented: requires federation-credentials/private-key, multi-server-runtime/orchestration, remote-transport/identity-write, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery, server-credentials/local-identity",
+            "expected_error": "Not implemented: requires multi-server-runtime/orchestration, multi-server-runtime/pairing, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery",
             "assert_no_write": True,
         }],
     },
@@ -518,6 +526,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
+    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},

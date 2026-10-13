@@ -1,0 +1,49 @@
+[
+  {
+    "id": "legacy-200k-boundary",
+    "file": "workspaces/runtime/packages/runtime-services/src/pricing.rs",
+    "edits": [
+      { "before": "context > threshold", "after": "context >= threshold" }
+    ]
+  },
+  {
+    "id": "response-id-truthiness",
+    "file": "workspaces/runtime/packages/runtime-services/src/cost_usage.rs",
+    "edits": [
+      {
+        "before": "record.get(\"responseId\").is_some_and(is_truthy)",
+        "after": "record.get(\"responseId\").is_some()"
+      }
+    ]
+  },
+  {
+    "id": "claude-account-fallback",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics.rs",
+    "edits": [
+      {
+        "before": "is_some_and(|provider| provider == \"claude\")",
+        "after": "is_some_and(|provider| provider == \"openai\")"
+      }
+    ]
+  },
+  {
+    "id": "account-provider-cache-key",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics.rs",
+    "edits": [
+      {
+        "before": "signature(providers)\n}",
+        "after": "signature(&BTreeMap::<String, String>::new())\n}"
+      }
+    ]
+  },
+  {
+    "id": "token-rate-map-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
+    "edits": [
+      {
+        "before": "rates.len() > MAX_AGENTS",
+        "after": "rates.len() > MAX_AGENTS + 1"
+      }
+    ]
+  }
+]

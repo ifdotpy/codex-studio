@@ -13,6 +13,8 @@ use crate::router::HttpState;
 
 const SIGNING_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("federation-credentials/private-key")];
+const MESSAGING_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("federation/trusted-origin-observation")];
 const MANAGEMENT_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("federation-credentials/private-key"),
     Dependency::new("remote-transport/tailscale-identity"),
@@ -39,7 +41,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/message",
-            OperationStatus::partial(&SIGNING_DEPENDENCIES),
+            OperationStatus::partial(&MESSAGING_DEPENDENCIES),
             message,
         ),
         get(
@@ -59,7 +61,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/pull",
-            OperationStatus::partial(&SIGNING_DEPENDENCIES),
+            OperationStatus::partial(&MESSAGING_DEPENDENCIES),
             pull,
         ),
         get(
@@ -69,7 +71,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/federation/v1/status",
-            OperationStatus::partial(&SIGNING_DEPENDENCIES),
+            OperationStatus::partial(&MESSAGING_DEPENDENCIES),
             signed_status,
         ),
     ])
@@ -80,7 +82,12 @@ async fn no_get_counterpart() -> Result<Json<Value>, ApiError> {
 }
 
 async fn message() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/federation/v1/message"))
+    Err(dependency_unavailable(
+        "POST",
+        "/api/federation/v1/message",
+        &MESSAGING_DEPENDENCIES,
+    )
+    .unwrap_or_else(|_| ApiError::internal()))
 }
 
 async fn pair() -> Result<Json<Value>, ApiError> {
@@ -88,11 +95,17 @@ async fn pair() -> Result<Json<Value>, ApiError> {
 }
 
 async fn pull() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/federation/v1/pull"))
+    Err(
+        dependency_unavailable("POST", "/api/federation/v1/pull", &MESSAGING_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal()),
+    )
 }
 
 async fn signed_status() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/federation/v1/status"))
+    Err(
+        dependency_unavailable("POST", "/api/federation/v1/status", &MESSAGING_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal()),
+    )
 }
 
 async fn manage(
@@ -166,6 +179,7 @@ inventory::submit! {
             "federation-credentials/invitation",
             "federation-credentials/key-generation",
             "federation-credentials/private-key",
+            "federation/trusted-origin-observation",
             "remote-transport/signed-federation-exchange",
             "remote-transport/tailscale-identity",
         ],

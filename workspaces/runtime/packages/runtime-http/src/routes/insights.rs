@@ -6,16 +6,21 @@ use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Instant;
 use studio_runtime_services::analytics::{self, AnalyticsOptions};
+use studio_runtime_services::costs::{self, CostsError};
 
 use super::extractors::QueryParams;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const SESSION_COST_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("usage-policy/session-cost-refresh")];
+const SESSION_COST_DEPENDENCIES: [Dependency; 3] = [
+    Dependency::new("store-bootstrap/analytics-usage-schema"),
+    Dependency::new("costs/pricing-refresh"),
+    Dependency::new("costs/claude-local-usage"),
+];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -102,25 +107,75 @@ async fn session_cost(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value =
-        tokio::task::spawn_blocking(move || analytics::persisted_session_cost(&store, &agent))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_analytics_error)?;
-    let value = value.ok_or_else(cost_dependency)?;
+    let account_providers = state
+        .account_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .accounts()
+                .accounts
+                .into_iter()
+                .filter_map(|account| {
+                    Some((
+                        account.get("id")?.as_str()?.to_owned(),
+                        account.get("provider")?.as_str()?.to_owned(),
+                    ))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let value = tokio::task::spawn_blocking(move || {
+        costs::session_cost_with_accounts(&store, &agent, &account_providers)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_costs_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SessionCostResponse,
     >(value)?))
 }
 
-fn cost_dependency() -> ApiError {
+fn cost_dependency(dependency: &'static str) -> ApiError {
+    debug_assert!(
+        SESSION_COST_DEPENDENCIES
+            .iter()
+            .any(|candidate| candidate.name() == dependency)
+    );
     dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
         .unwrap_or_else(|_| ApiError::internal())
 }
 
+fn map_costs_error(error: CostsError) -> ApiError {
+    match error {
+        CostsError::Dependency(dependency) => cost_dependency(dependency),
+        CostsError::Analytics(error) => map_analytics_error(error),
+        CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::MissingFamily) => {
+            dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
+                .unwrap_or_else(|_| ApiError::internal())
+        }
+        CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::InvalidStoredRow(id)) => {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object analytics_usage/{id}"),
+            )
+        }
+        CostsError::Usage(
+            studio_runtime_store::CostUsageRepositoryError::Sqlite(_)
+            | studio_runtime_store::CostUsageRepositoryError::RecordLimit,
+        )
+        | CostsError::Grouping(_)
+        | CostsError::Repository(_)
+        | CostsError::Sqlite(_)
+        | CostsError::Computation => ApiError::internal(),
+        CostsError::InvalidPricing => cost_dependency("costs/pricing-refresh"),
+    }
+}
+
 fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
     match error {
-        analytics::AnalyticsError::RefreshRequired => cost_dependency(),
+        analytics::AnalyticsError::RefreshRequired => {
+            cost_dependency("store-bootstrap/analytics-usage-schema")
+        }
         analytics::AnalyticsError::InvalidRequest(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
@@ -154,7 +209,9 @@ inventory::submit! {
         name: "insights",
         routes: Some(routes),
         dependencies: &[
-        "usage-policy/session-cost-refresh",
+        "store-bootstrap/analytics-usage-schema",
+        "costs/claude-local-usage",
+        "costs/pricing-refresh",
         ],
     }
 }

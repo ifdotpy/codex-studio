@@ -2,15 +2,17 @@
 
 ## Change Contract
 
-- **Responsibility:** Synchronous process boundary ports and the typed client
+- **Responsibility:** Process boundary ports, an owned asynchronous pipe child, and the typed client
   for the existing supervisor v1 protocol. This crate does not start the
   production supervisor, make HTTP requests, or access SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
-  models for each v1 action; `PtyHost` and `ProgressWatch` ports.
-- **Forbidden dependencies:** Tokio, HTTP frameworks, SQLite, Python runtime
+  models for each v1 action; `PtyHost` and `ProgressWatch` ports;
+  [`stream_child`](src/stream_child.rs) for bounded local commands and sign-in.
+- **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
   bindings, and OS-specific code outside transport adapters.
-- **Invariants:** The supervisor remains the sole owner of provider and command
-  children. Handshake identity is `(backendId, stateDir)`; each child receipt
+- **Invariants:** The supervisor remains the owner of resumable provider children.
+  Local pipe children belong to the retained stream actor, which kills its own
+  process group and reaps on cancellation or handle drop. Handshake identity is `(backendId, stateDir)`; each child receipt
   and journal event also carries a process `generation`. A sent action whose
   response is lost is `UnknownOutcome`; callers resolve it by operation receipt
   or journal replay instead of issuing a fresh operation identity.
@@ -153,3 +155,26 @@ For that decision, evaluate [`interprocess` 2.4.5](https://crates.io/crates/inte
 recent commits and explicit Windows/Linux/macOS support) against
 the existing pipe endpoint identity/security contract before adding it. It is
 not currently in the dependency graph.
+
+## Owned local pipe children
+
+[`StreamChild`](src/stream_child.rs) uses Tokio and process-wrap process groups;
+process-wrap's kill-on-drop feature stays disabled. Each child has an owner thread
+with a private Tokio runtime. The owner awaits process-group termination, reaping,
+and pipe closure before destroying that runtime; handle drop signals and joins it.
+`close()` exposes cleanup errors. Cleanup therefore survives application runtime
+shutdown. These children cannot be recovered by saved PID after a backend restart.
+An optional inherited lease remains in the child until its descriptors close.
+
+`ChildSpec` supplies the complete environment after `env_clear`. A sign-in caller
+selects its isolated configuration home and CLI search path; a monitor caller
+supplies the environment selected by workspace preparation and permission checks.
+This leaf neither reads provider homes nor copies the ambient environment. It
+never includes arguments, environment values, or captured output in errors.
+
+`next_event` streams bounded chunks with order preserved within each pipe.
+`write` distinguishes a request that was never admitted from an unknown submitted
+write; unknown input must not be replayed. `capture` uses the same actor for a
+bounded tail of each pipe. Buffer and deadline limits are owned by
+[`stream_child.rs`](src/stream_child.rs). Production provider commands still use
+the account worker's native command port and sandbox policy.

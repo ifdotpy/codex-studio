@@ -1448,6 +1448,11 @@ pub struct UsageState {
     max_seq: i64,
     generation: i64,
 }
+impl UsageState {
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+}
 pub fn cost_root(db: &Connection, agent: &str) -> Result<String, SessionCostError> {
     let (table,raw): (String,String) = db.query_row("SELECT 'analytics_agents',record FROM analytics_agents WHERE id=?1 UNION ALL SELECT 'runtime_agents',record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",[agent],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
     let table = if table == "analytics_agents" {

@@ -29,8 +29,6 @@ pub(crate) fn routes() -> RouteGroup {
         [Dependency::new("agent-management/agent-mode-settings")];
     const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("agent-management/conversation-settings")];
-    const DELETE_DEPENDENCY: [Dependency; 1] =
-        [Dependency::new("agent-management/conversation-termination")];
     RouteGroup::new(vec![
         post(
             "/api/agents",
@@ -46,11 +44,6 @@ pub(crate) fn routes() -> RouteGroup {
             "/api/conversation",
             OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
             conversation,
-        ),
-        post(
-            "/api/conversation/delete",
-            OperationStatus::partial(&DELETE_DEPENDENCY),
-            delete_conversation,
         ),
         post(
             "/api/leads",
@@ -216,11 +209,6 @@ async fn rename(
     })
     .await
 }
-async fn delete_conversation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(operation_error(OperationError::Unavailable(
-        "agent-management/conversation-termination",
-    )))
-}
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
     if matches!(
@@ -259,7 +247,6 @@ inventory::submit! {
         "agent-discovery/launcher-status",
         "agent-management/agent-mode-settings",
         "agent-management/conversation-settings",
-        "agent-management/conversation-termination",
         "agent-management/empty-chat-reuse",
         "project-driver/chat-binding",
         "provider-session/model-list",

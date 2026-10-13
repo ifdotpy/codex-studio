@@ -1,0 +1,112 @@
+[
+  {
+    "id": "restart-resends-unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "python_transfer_actions_restart_and_projection",
+    "edits": [
+      {
+        "before": "member[\"phase\"] = json!(\"unknown\");",
+        "after": "member[\"phase\"] = json!(\"waiting\");"
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-lazy-native",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "python_transfer_actions_restart_and_projection",
+    "edits": [
+      {
+        "before": "if flag(m, \"lazy\")\n                        && !phase.terminal()",
+        "after": "if false\n                        && !phase.terminal()"
+      }
+    ]
+  },
+  {
+    "id": "receipt-ignores-transport",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "exact_native_receipt_survives_restart_without_resubmission",
+    "edits": [
+      {
+        "before": "if m.get(\"transportTicket\") != Some(&expected) {",
+        "after": "if m.get(\"transportTicket\").is_none() && expected.is_null() {"
+      }
+    ]
+  },
+  {
+    "id": "receipt-ignores-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "exact_native_receipt_survives_restart_without_resubmission",
+    "edits": [
+      {
+        "before": "|| a[\"epoch\"].as_i64() != Some(ticket.epoch)",
+        "after": "|| a[\"epoch\"].as_i64().is_none()"
+      }
+    ]
+  },
+  {
+    "id": "request-ignores-scope",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "request_replay_is_bound_to_lead_destination_and_scope",
+    "edits": [
+      {
+        "before": "                != scope\n",
+        "after": "                != scope && false\n"
+      }
+    ]
+  },
+  {
+    "id": "selection-needs-empty-lead",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_selection.rs",
+    "witness": "selection_matches_real_python_method",
+    "edits": [
+      {
+        "before": "if !empty || truthy(agent.get(\"inFlight\")) {",
+        "after": "if false || truthy(agent.get(\"inFlight\")) {"
+      }
+    ]
+  },
+  {
+    "id": "selection-provider-default",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_selection.rs",
+    "witness": "selection_matches_real_python_method",
+    "edits": [
+      {
+        "before": "if provider == \"claude\" {",
+        "after": "if provider != \"claude\" {"
+      }
+    ]
+  },
+  {
+    "id": "retry-resets-only-blocked-phase",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "retry_only_resets_blocked_members",
+    "edits": [
+      {
+        "before": "if self.phase(id)? != Phase::Blocked {",
+        "after": "if self.phase(id)? == Phase::Blocked {"
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-unresolved-interrupt",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "cancel_refuses_unresolved_interrupt",
+    "edits": [
+      {
+        "before": "truthy(m.get(\"interruptSubmittedAt\")) && m[\"interruptOutcome\"] != \"acknowledged\"",
+        "after": "truthy(m.get(\"interruptSubmittedAt\")) && m[\"interruptOutcome\"] == \"acknowledged\""
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-active-interrupt",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "cancel_refuses_acknowledged_interrupt_while_turn_is_active",
+    "edits": [
+      {
+        "before": "op[\"members\"][id][\"interruptOutcome\"] == \"acknowledged\"\n                        && flag(&agents[id], \"inFlight\")",
+        "after": "op[\"members\"][id][\"interruptOutcome\"] == \"acknowledged\"\n                        && false"
+      }
+    ]
+  }
+]

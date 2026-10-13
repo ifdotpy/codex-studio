@@ -46,8 +46,8 @@ jsonschema = { version = "=0.49.9", default-features = false }
 mime_guess = "=2.0.5"
 nix = { version = "=0.31.3", default-features = false, features = ["user"] }
 notify = { version = "=8.2.0", default-features = false, features = ["macos_kqueue"] }
-rustix = { version = "=1.1.5", default-features = false, features = ["std", "process", "time"] }
-process-wrap = { version = "=10.0.1", default-features = false, features = ["process-group", "std"] }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "process", "fs", "time"] }
+process-wrap = { version = "=10.0.1", default-features = false, features = ["process-group", "std", "tokio1"] }
 tempfile = "=3.27.0"
 futures-util = "=0.3.34"
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
@@ -60,7 +60,7 @@ axum = "=0.8.9"
 form_urlencoded = "=1.2.2"
 getrandom = "=0.3.4"
 subtle = "=2.6.1"
-tokio = { version = "=1.53.2", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "=1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }
 ring = "=0.17.14"
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

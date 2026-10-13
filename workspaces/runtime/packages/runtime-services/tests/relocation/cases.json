@@ -1,0 +1,161 @@
+[
+  {
+    "name": "add-changed-location",
+    "family": "location"
+  },
+  {
+    "name": "add-legacy-location",
+    "family": "location",
+    "legacy": true
+  },
+  {
+    "name": "add-deleted-project",
+    "family": "location",
+    "deleted": true
+  },
+  {
+    "name": "add-double-slash-path",
+    "family": "location",
+    "canonical": "//host/path"
+  },
+  {
+    "name": "remove-location",
+    "family": "location",
+    "action": "remove_location"
+  },
+  {
+    "name": "release-waiting-not-started",
+    "family": "release"
+  },
+  {
+    "name": "release-exported-expired",
+    "family": "release",
+    "uncertain": "exported",
+    "target": "receiving"
+  },
+  {
+    "name": "hold-waiting-imported",
+    "family": "release",
+    "target": "ready"
+  },
+  {
+    "name": "hold-exported-active",
+    "family": "release",
+    "uncertain": "exported",
+    "target": "active"
+  },
+  {
+    "name": "hold-exported-before-deadline",
+    "family": "release",
+    "uncertain": "exported",
+    "deadline": 1100,
+    "target": "receiving"
+  },
+  {
+    "name": "hold-importing-unknown",
+    "family": "release",
+    "uncertain": "importing"
+  },
+  {
+    "name": "expire-waiting",
+    "family": "expire"
+  },
+  {
+    "name": "expire-importing",
+    "family": "expire",
+    "phase": "importing"
+  },
+  {
+    "name": "expire-legacy-deadline",
+    "family": "expire",
+    "missing_deadline": true
+  },
+  {
+    "name": "before-deadline",
+    "family": "expire",
+    "deadline": 1100
+  },
+  {
+    "name": "cache-first-observation",
+    "family": "cache"
+  },
+  {
+    "name": "cache-existing-observation",
+    "family": "cache",
+    "already": true
+  },
+  {
+    "name": "cache-idle-agent",
+    "family": "cache",
+    "inFlight": false
+  },
+  {
+    "name": "cache-wrong-turn",
+    "family": "cache",
+    "notification": {
+      "turnId": "turn-b",
+      "requestUsage": {
+        "cachedInputTokens": 33
+      }
+    }
+  },
+  {
+    "name": "cache-fallback-usage",
+    "family": "cache",
+    "notification": {
+      "tokenUsage": {
+        "last": {
+          "cachedInputTokens": 0,
+          "inputTokens": 100
+        }
+      }
+    }
+  },
+  {
+    "name": "cache-boolean-not-integer",
+    "family": "cache",
+    "notification": {
+      "requestUsage": {
+        "cachedInputTokens": true
+      }
+    }
+  },
+  {
+    "name": "cache-ready-not-active",
+    "family": "cache",
+    "phase": "ready"
+  },
+  {
+    "name": "status-waiting",
+    "family": "status"
+  },
+  {
+    "name": "status-complete-cached",
+    "family": "status",
+    "phase": "complete"
+  },
+  {
+    "name": "tool-applied",
+    "family": "tool"
+  },
+  {
+    "name": "tool-not-applied",
+    "family": "tool",
+    "outcome": "not_applied"
+  },
+  {
+    "name": "tool-old-applied-wrapper",
+    "family": "tool",
+    "oldOutcome": "applied"
+  },
+  {
+    "name": "tool-still-queued",
+    "family": "tool",
+    "state": "queued"
+  },
+  {
+    "name": "tool-previous-applied",
+    "family": "tool",
+    "previous": "applied"
+  }
+]

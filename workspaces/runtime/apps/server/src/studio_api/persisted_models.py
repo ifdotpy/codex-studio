@@ -11,6 +11,9 @@ from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeIn
 from studio_api.workspace_operation_models import (
     PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
 )
+from studio_api.relocation_models import RelocationFormats
+from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
+from studio_api.persisted_account_transfer import PersistedAccountTransferRecord, PersistedTransferAgentRecord
 
 
 def _unicode_scalar(value: str) -> str:
@@ -56,6 +59,17 @@ class PersistedTranscriptAsset(ContractModel):
     created: float
 
 
+class PersistedAgentArchive(ContractModel):
+    """Archive identity consumed by lifecycle restoration; other audit data stays open."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    at: float
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    cleanupPending: StrictBool | None = None
+
+
 class PersistedAgentRecord(ContractModel):
     """Persisted agent identity plus the extensible state written by the runtime."""
 
@@ -77,6 +91,19 @@ class PersistedAgentRecord(ContractModel):
     threadId: StrictStr | None = None
     accountKey: StrictStr | None = None
     model: StrictStr | None = None
+
+    # Lifecycle fields are optional so older Python-written agents remain readable.
+    agentArchive: PersistedAgentArchive | None = None
+    autoWake: StrictBool | None = None
+    cleanedImageWorkspace: dict[StrictStr, JsonValue] | None = None
+    cleanedWorktree: dict[StrictStr, JsonValue] | None = None
+    executionMode: StrictStr | None = None
+    imageWorkspace: StrictBool | None = None
+    imageWorkspaceReady: StrictBool | None = None
+    inFlight: StrictBool | None = None
+    parkedEvent: StrictStr | None = None
+    worktreeCleanup: dict[StrictStr, JsonValue] | None = None
+    worktreeReady: StrictBool | None = None
 
 
 class _OpenPersistedRecord(ContractModel):
@@ -319,6 +346,8 @@ class PersistedRequestRecord(_OpenPersistedRecord):
     connectionId: StrictStr | None = None
     status: StrictStr | None = None
 
+    method: StrictStr | None = None
+
 
 class PersistedComplaintRecord(_OpenPersistedRecord):
     leadId: StrictStr | None = None
@@ -332,11 +361,60 @@ class PersistedCheckpointRecord(_OpenPersistedRecord):
     created: StrictFloat | StrictInt | None = None
 
 
+class MonitorOperationRecord(ContractModel):
+    """Exact native command ownership; extra transport evidence remains readable."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    agent: StrictStr = Field(min_length=1, max_length=200)
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    accountKey: StrictStr = Field(min_length=1, max_length=200)
+    connectionId: StrictStr = Field(min_length=1, max_length=200)
+
+
+class PersistedMonitorResult(ContractModel):
+    """First definitive command result, flushed before the monitor/event transaction."""
+
+    version: Literal[1]
+    key: StrictStr = Field(min_length=1, max_length=200)
+    code: StrictInt | None
+    error: StrictStr | None = Field(default=None, max_length=12000)
+    operation: MonitorOperationRecord | None
+    finished: float = Field(gt=0)
+
+
 class PersistedMonitorRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     ruleId: StrictStr | None = None
-    status: StrictStr | None = None
+    status: Literal["approval", "starting", "running", "completed", "failed", "cancelled", "lost"] | None = None
     lastExitCode: StrictInt | None = None
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    command: StrictStr = Field(default="", max_length=12000)
+    cwd: StrictStr = ""
+    timeout_ms: Annotated[StrictInt, Field(ge=1000, le=86400000)] = 3600000
+    stallTimeoutSeconds: Annotated[StrictInt, Field(ge=0, le=31536000)] = 1800
+    wakeOn: Literal["exit", "failure"] = "exit"
+    livenessCommand: StrictStr = Field(default="", max_length=12000)
+    successExitCodes: list[Annotated[StrictInt, Field(ge=0, le=255)]] = Field(default_factory=lambda: [0], min_length=1, max_length=16)
+    created: float = Field(default=0, ge=0)
+    finished: float | None = Field(default=None, ge=0)
+    activityAt: float = Field(default=0, ge=0)
+    activityGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    stallWakeGeneration: Annotated[StrictInt, Field(ge=-1, le=MAX_SAFE_INTEGER)] = -1
+    stallProbeGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    stallProbeStarted: float | None = Field(default=None, ge=0)
+    cancelRequested: StrictBool = False
+    configurationPending: StrictBool = False
+    interactive: StrictBool = False
+    stdinClosed: StrictBool = False
+    stdinCloseRequested: StrictStr | None = None
+    operation: MonitorOperationRecord | None = None
+    inputAttempt: dict[str, JsonValue] | None = None
+    log: StrictStr = ""
+    tail: StrictStr = Field(default="", max_length=12000)
+    bytes: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    exitCode: StrictInt | None = None
+    error: StrictStr | None = Field(default=None, max_length=12000)
 
 
 class PersistedTerminalRecord(_OpenPersistedRecord):
@@ -359,14 +437,76 @@ class PersistedWorkItemRecord(_OpenPersistedRecord):
     status: StrictStr | None = None
     title: StrictStr | None = None
 
+    owner: StrictStr | None = None
+    releases: list[JsonValue] = Field(default_factory=list)
+    version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+
+
+class PersistedRuleLaunchIntent(ContractModel):
+    """Exact request reserved before handing a rule command to the monitor driver."""
+
+    ruleId: StrictStr
+    checkNumber: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    agentId: StrictStr
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    accountKey: StrictStr | None
+    threadId: StrictStr | None
+    monitorId: StrictStr
+    command: Annotated[StrictStr, Field(max_length=12000)]
+    timeoutMs: Annotated[StrictInt, Field(ge=1000, le=86400000)]
+    liveness: StrictBool
+
 
 class PersistedRuleRecord(_OpenPersistedRecord):
-    kind: StrictStr | None = None
-    agent: StrictStr | None = None
-    restartCheck: dict[StrictStr, JsonValue] | None = None
-    alerted: StrictBool | None = None
-    lowSince: StrictFloat | StrictInt | None = None
+    """Open rule records; only fields consumed by the rule engine are constrained."""
 
+    kind: Literal["interval", "once", "file", "event", "low_workers"] = "interval"
+    agent: StrictStr = ""
+    rootId: StrictStr = ""
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    name: Annotated[StrictStr, Field(max_length=120)] = ""
+    status: Literal["active", "paused", "completed"] = "active"
+    intervalSeconds: Annotated[StrictInt, Field(ge=10, le=31536000)] = 60
+    nextAt: StrictFloat | StrictInt = 0
+    created: StrictFloat | StrictInt = 0
+    at: StrictFloat | StrictInt = 0
+    path: StrictStr | None = None
+    event: StrictStr = ""
+    command: Annotated[StrictStr, Field(max_length=12000)] = ""
+    text: StrictStr = ""
+    inFlight: StrictBool = False
+    checks: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    wakes: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    fingerprint: tuple[
+        Annotated[StrictInt, Field(ge=-(2**63), le=2**63 - 1)],
+        Annotated[StrictInt, Field(ge=0, le=2**64 - 1)],
+        Annotated[StrictInt, Field(ge=0, le=2**64 - 1)],
+    ] | None = None
+    fileActivityAt: StrictFloat | StrictInt = 0
+    fileGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    stallWakeGeneration: Annotated[StrictInt, Field(ge=-1, le=MAX_SAFE_INTEGER)] = -1
+    stallTimeoutSeconds: Annotated[StrictInt, Field(ge=0, le=31536000)] = 1800
+    livenessCommand: Annotated[StrictStr, Field(max_length=12000)] = ""
+    stallProbe: StrictBool = False
+    stallEventKey: StrictStr = ""
+    stallText: StrictStr = ""
+    minimumWorkers: Annotated[StrictInt, Field(ge=1, le=255)] = 1
+    durationMinutes: Annotated[StrictInt, Field(ge=1, le=525600)] = 1
+    activeWorkers: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    restartCheck: dict[StrictStr, JsonValue] | None = None
+    launchIntent: PersistedRuleLaunchIntent | None = None
+    alerted: StrictBool = False
+    lowSince: StrictFloat | StrictInt | None = None
+    lastEvent: StrictStr = ""
+    eventText: Annotated[StrictStr, Field(max_length=12000)] = ""
+    lastOutput: Annotated[StrictStr, Field(max_length=12000)] = ""
+    lastAt: StrictFloat | StrictInt = 0
+    lastFinished: StrictFloat | StrictInt = 0
+    lastStallFinished: StrictFloat | StrictInt = 0
+    lastExitCode: StrictInt | None = None
+    lastStallExitCode: StrictInt | None = None
+    lastStallError: StrictStr | None = None
+    error: StrictStr | None = None
 
 class PersistedTranscriptInput(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
@@ -482,11 +622,14 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
+    **FEDERATION_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
+    "persisted-account-transfer-record.schema.json": PersistedAccountTransferRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,
+    "persisted-relocation.schema.json": RelocationFormats,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
@@ -494,6 +637,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-message-event.schema.json": PersistedMessageEvent,
     "persisted-monitor-record.schema.json": PersistedMonitorRecord,
+    "persisted-monitor-result.schema.json": PersistedMonitorResult,
     "persisted-operation-result.schema.json": PersistedOperationResult,
     "persisted-plan-record.schema.json": PersistedPlanRecord,
     "persisted-profile-record.schema.json": PersistedProfileRecord,
@@ -511,6 +655,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
+    "persisted-transfer-agent-record.schema.json": PersistedTransferAgentRecord,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,

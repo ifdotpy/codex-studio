@@ -1,0 +1,2838 @@
+[
+  {
+    "name": "interval-due",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {}
+  },
+  {
+    "name": "interval-future",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0
+    }
+  },
+  {
+    "name": "interval-paused",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "status": "paused"
+    }
+  },
+  {
+    "name": "interval-inflight",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true
+    }
+  },
+  {
+    "name": "interval-stopped-autoWake",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "interval-stopped-deletedAt",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "deletedAt": 1
+    }
+  },
+  {
+    "name": "interval-stopped-epoch",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "epoch": 8
+    }
+  },
+  {
+    "name": "once-due",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {}
+  },
+  {
+    "name": "once-future",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000001.0
+    }
+  },
+  {
+    "name": "once-paused",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "status": "paused"
+    }
+  },
+  {
+    "name": "once-inflight",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "inFlight": true
+    }
+  },
+  {
+    "name": "once-stopped-autoWake",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "once-stopped-deletedAt",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {},
+    "ownerChanges": {
+      "deletedAt": 1
+    }
+  },
+  {
+    "name": "once-stopped-epoch",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {},
+    "ownerChanges": {
+      "epoch": 8
+    }
+  },
+  {
+    "name": "file-due",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {}
+  },
+  {
+    "name": "file-future",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000001.0
+    }
+  },
+  {
+    "name": "file-paused",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "status": "paused"
+    }
+  },
+  {
+    "name": "file-inflight",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "inFlight": true
+    }
+  },
+  {
+    "name": "file-stopped-autoWake",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "file-stopped-deletedAt",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {},
+    "ownerChanges": {
+      "deletedAt": 1
+    }
+  },
+  {
+    "name": "file-stopped-epoch",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {},
+    "ownerChanges": {
+      "epoch": 8
+    }
+  },
+  {
+    "name": "event-due",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {}
+  },
+  {
+    "name": "event-future",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000001.0
+    }
+  },
+  {
+    "name": "event-paused",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "status": "paused"
+    }
+  },
+  {
+    "name": "event-inflight",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "inFlight": true
+    }
+  },
+  {
+    "name": "event-stopped-autoWake",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "event-stopped-deletedAt",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {},
+    "ownerChanges": {
+      "deletedAt": 1
+    }
+  },
+  {
+    "name": "event-stopped-epoch",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {},
+    "ownerChanges": {
+      "epoch": 8
+    }
+  },
+  {
+    "name": "low_workers-due",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {}
+  },
+  {
+    "name": "low_workers-future",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000001.0
+    }
+  },
+  {
+    "name": "low_workers-paused",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "status": "paused"
+    }
+  },
+  {
+    "name": "low_workers-inflight",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "inFlight": true
+    }
+  },
+  {
+    "name": "low_workers-stopped-autoWake",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "low_workers-stopped-deletedAt",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {},
+    "ownerChanges": {
+      "deletedAt": 1
+    }
+  },
+  {
+    "name": "low_workers-stopped-epoch",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {},
+    "ownerChanges": {
+      "epoch": 8
+    }
+  },
+  {
+    "name": "interval-boundary--1",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "command": "printf fixture"
+    }
+  },
+  {
+    "name": "low-duration--1",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999941.0
+    }
+  },
+  {
+    "name": "interval-boundary-0",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "command": "printf fixture"
+    }
+  },
+  {
+    "name": "low-duration-0",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999940.0
+    }
+  },
+  {
+    "name": "interval-boundary-1",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "command": "printf fixture"
+    }
+  },
+  {
+    "name": "low-duration-1",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999939.0
+    }
+  },
+  {
+    "name": "recovery-restartRecovery-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false,
+      "restartRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "old"
+      }
+    }
+  },
+  {
+    "name": "recovery-restartRecovery-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false,
+      "restartRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture"
+      }
+    }
+  },
+  {
+    "name": "recovery-restartRecovery-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "restartRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "old"
+      }
+    }
+  },
+  {
+    "name": "recovery-restartRecovery-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "restartRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture"
+      }
+    }
+  },
+  {
+    "name": "recovery-disconnectRecovery-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false,
+      "disconnectRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "old"
+      }
+    }
+  },
+  {
+    "name": "recovery-disconnectRecovery-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "autoWake": false,
+      "disconnectRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture"
+      }
+    }
+  },
+  {
+    "name": "recovery-disconnectRecovery-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "disconnectRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "old"
+      }
+    }
+  },
+  {
+    "name": "recovery-disconnectRecovery-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {},
+    "ownerChanges": {
+      "disconnectRecovery": {
+        "stage": "pending",
+        "autoWake": true,
+        "epoch": 7,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture"
+      }
+    }
+  },
+  {
+    "name": "file-stall--1-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998201.0
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-stall--1-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998201.0
+    },
+    "fingerprint": [1700000000000000000, 6, 9]
+  },
+  {
+    "name": "file-stall-0-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998200.0
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-stall-0-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998200.0
+    },
+    "fingerprint": [1700000000000000000, 6, 9]
+  },
+  {
+    "name": "file-stall-1-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998199.0
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-stall-1-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000060.0,
+      "fileActivityAt": 1799998199.0
+    },
+    "fingerprint": [1700000000000000000, 6, 9]
+  },
+  {
+    "name": "file-unchanged",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {},
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-removed",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {},
+    "fingerprint": null
+  },
+  {
+    "name": "file-stall-disabled",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "stallTimeoutSeconds": 0,
+      "fileActivityAt": 1799996400.0
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-stall-latched",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "stallWakeGeneration": 0,
+      "fileActivityAt": 1799996400.0
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "file-stall-probe",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "fileActivityAt": 1799996400.0,
+      "livenessCommand": "printf alive"
+    },
+    "fingerprint": [1700000000000000000, 5, 9]
+  },
+  {
+    "name": "low-workers-0",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999880.0
+    },
+    "workers": []
+  },
+  {
+    "name": "low-workers-1",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999880.0
+    },
+    "workers": [
+      {
+        "id": "w0",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "low-workers-2",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999880.0
+    },
+    "workers": [
+      {
+        "id": "w0",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      },
+      {
+        "id": "w1",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "low-workers-3",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999880.0
+    },
+    "workers": [
+      {
+        "id": "w0",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      },
+      {
+        "id": "w1",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      },
+      {
+        "id": "w2",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "running",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "low-command-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "minimumWorkers": 1,
+      "lowSince": 1799999880.0
+    },
+    "workers": [
+      {
+        "id": "w1",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "idle",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      }
+    ],
+    "monitors": [
+      {
+        "id": "m1",
+        "agent": "w1",
+        "status": "running",
+        "cancelRequested": false
+      }
+    ]
+  },
+  {
+    "name": "low-command-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "minimumWorkers": 1,
+      "lowSince": 1799999880.0
+    },
+    "workers": [
+      {
+        "id": "w1",
+        "rootId": "owner",
+        "epoch": 7,
+        "status": "idle",
+        "autoWake": true,
+        "isLead": false,
+        "accountKey": "fixture",
+        "threadId": "thread-fixture",
+        "role": "orchestrator",
+        "approvalPolicy": "never",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": []
+        }
+      }
+    ],
+    "monitors": [
+      {
+        "id": "m1",
+        "agent": "w1",
+        "status": "running",
+        "cancelRequested": true
+      }
+    ]
+  },
+  {
+    "name": "low-latched",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1799999880.0,
+      "alerted": true
+    }
+  },
+  {
+    "name": "low-clock-backwards",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "lowSince": 1800000120.0
+    }
+  },
+  {
+    "name": "event-child_completed",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "child_completed",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-child_result",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "child_result",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-worker_completed",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "worker_completed",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-work_review",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "work_review",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-complaint_submitted",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "complaint_submitted",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-monitor_exit",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "monitor_exit",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-rule",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "rule",
+      "text": "hello 🦀",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-duplicate",
+    "operation": "event",
+    "kind": "event",
+    "changes": {
+      "lastEvent": "event-1"
+    },
+    "event": {
+      "kind": "worker_completed",
+      "text": "same",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-command",
+    "operation": "event",
+    "kind": "event",
+    "changes": {
+      "command": "printf check"
+    },
+    "event": {
+      "kind": "worker_completed",
+      "text": "hello",
+      "key": "event-1"
+    }
+  },
+  {
+    "name": "event-stopped",
+    "operation": "event",
+    "kind": "event",
+    "changes": {},
+    "event": {
+      "kind": "worker_completed",
+      "text": "held",
+      "key": "event-1"
+    },
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "finish-interval-0",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": ""
+    }
+  },
+  {
+    "name": "finish-interval-1",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "ok"
+    }
+  },
+  {
+    "name": "finish-interval-2",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-interval-3",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\n{\"wakeAgent\":false}\n"
+    }
+  },
+  {
+    "name": "finish-interval-4",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":0}"
+    }
+  },
+  {
+    "name": "finish-interval-5",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":null}"
+    }
+  },
+  {
+    "name": "finish-interval-6",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "false"
+    }
+  },
+  {
+    "name": "finish-interval-7",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "bad json"
+    }
+  },
+  {
+    "name": "finish-interval-8",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "repeatOutput": {
+        "character": "🦀",
+        "count": 12001
+      }
+    }
+  },
+  {
+    "name": "finish-once-0",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": ""
+    }
+  },
+  {
+    "name": "finish-once-1",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "ok"
+    }
+  },
+  {
+    "name": "finish-once-2",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-once-3",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\n{\"wakeAgent\":false}\n"
+    }
+  },
+  {
+    "name": "finish-once-4",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":0}"
+    }
+  },
+  {
+    "name": "finish-once-5",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":null}"
+    }
+  },
+  {
+    "name": "finish-once-6",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "false"
+    }
+  },
+  {
+    "name": "finish-once-7",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "bad json"
+    }
+  },
+  {
+    "name": "finish-once-8",
+    "operation": "finish",
+    "kind": "once",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "repeatOutput": {
+        "character": "🦀",
+        "count": 12001
+      }
+    }
+  },
+  {
+    "name": "finish-file-0",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": ""
+    }
+  },
+  {
+    "name": "finish-file-1",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "ok"
+    }
+  },
+  {
+    "name": "finish-file-2",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-file-3",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\n{\"wakeAgent\":false}\n"
+    }
+  },
+  {
+    "name": "finish-file-4",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":0}"
+    }
+  },
+  {
+    "name": "finish-file-5",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "{\"wakeAgent\":null}"
+    }
+  },
+  {
+    "name": "finish-file-6",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "false"
+    }
+  },
+  {
+    "name": "finish-file-7",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "bad json"
+    }
+  },
+  {
+    "name": "finish-file-8",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "repeatOutput": {
+        "character": "🦀",
+        "count": 12001
+      }
+    }
+  },
+  {
+    "name": "finish-error-1-None",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": 1,
+      "error": null,
+      "output": "tail"
+    }
+  },
+  {
+    "name": "finish-error-None-None",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": null,
+      "error": null,
+      "output": "tail"
+    }
+  },
+  {
+    "name": "finish-error-0-failure",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": 0,
+      "error": "failure",
+      "output": "tail"
+    }
+  },
+  {
+    "name": "finish-error--9-cancelled",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": -9,
+      "error": "cancelled",
+      "output": "tail"
+    }
+  },
+  {
+    "name": "finish-error-0-",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": 0,
+      "error": "",
+      "output": "tail"
+    }
+  },
+  {
+    "name": "finish-stall-False",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "stallProbe": true,
+      "stallEventKey": "rule-stall:rule:0",
+      "fileActivityAt": 1799998000.0,
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": 7,
+      "error": "probe failed",
+      "output": "observation"
+    },
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "finish-stall-True",
+    "operation": "finish",
+    "kind": "file",
+    "changes": {
+      "stallProbe": true,
+      "stallEventKey": "rule-stall:rule:0",
+      "fileActivityAt": 1799998000.0,
+      "checks": 2,
+      "inFlight": true
+    },
+    "result": {
+      "code": 7,
+      "error": "probe failed",
+      "output": "observation"
+    },
+    "ownerChanges": {}
+  },
+  {
+    "name": "restart-interval-False",
+    "operation": "recover",
+    "kind": "interval",
+    "changes": {
+      "status": "paused",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-interval-True",
+    "operation": "recover",
+    "kind": "interval",
+    "changes": {
+      "status": "active",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-once-False",
+    "operation": "recover",
+    "kind": "once",
+    "changes": {
+      "status": "paused",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-once-True",
+    "operation": "recover",
+    "kind": "once",
+    "changes": {
+      "status": "active",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-file-False",
+    "operation": "recover",
+    "kind": "file",
+    "changes": {
+      "status": "paused",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-file-True",
+    "operation": "recover",
+    "kind": "file",
+    "changes": {
+      "status": "active",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-event-False",
+    "operation": "recover",
+    "kind": "event",
+    "changes": {
+      "status": "paused",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-event-True",
+    "operation": "recover",
+    "kind": "event",
+    "changes": {
+      "status": "active",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-low_workers-False",
+    "operation": "recover",
+    "kind": "low_workers",
+    "changes": {
+      "status": "paused",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-low_workers-True",
+    "operation": "recover",
+    "kind": "low_workers",
+    "changes": {
+      "status": "active",
+      "inFlight": true,
+      "checks": 3
+    }
+  },
+  {
+    "name": "restart-legacy-file",
+    "operation": "recover",
+    "kind": "file",
+    "remove": [
+      "fileActivityAt",
+      "fileGeneration",
+      "stallWakeGeneration",
+      "stallTimeoutSeconds",
+      "livenessCommand"
+    ]
+  },
+  {
+    "name": "matrix-interval--1000-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval--1000-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval--1000-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval--1000-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval--1-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval--1-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval--1-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval--1-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-0-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-0-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-0-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-0-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-1-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-1-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-1-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-1-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-1000-False-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-1000-False-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-interval-1000-True-False",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-interval-1000-True-True",
+    "operation": "tick",
+    "kind": "interval",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once--1000-False-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once--1000-False-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once--1000-True-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once--1000-True-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once--1-False-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once--1-False-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once--1-True-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once--1-True-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-0-False-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-0-False-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-0-True-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-0-True-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-1-False-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-1-False-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-1-True-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-1-True-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-1000-False-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-1000-False-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-once-1000-True-False",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-once-1000-True-True",
+    "operation": "tick",
+    "kind": "once",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file--1000-False-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file--1000-False-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file--1000-True-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file--1000-True-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file--1-False-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file--1-False-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file--1-True-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file--1-True-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-0-False-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-0-False-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-0-True-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-0-True-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-1-False-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-1-False-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-1-True-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-1-True-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-1000-False-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-1000-False-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-file-1000-True-False",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-file-1000-True-True",
+    "operation": "tick",
+    "kind": "file",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event--1000-False-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event--1000-False-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event--1000-True-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event--1000-True-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event--1-False-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event--1-False-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event--1-True-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event--1-True-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-0-False-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-0-False-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-0-True-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-0-True-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-1-False-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-1-False-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-1-True-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-1-True-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-1000-False-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-1000-False-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-event-1000-True-False",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-event-1000-True-True",
+    "operation": "tick",
+    "kind": "event",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers--1000-False-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers--1000-False-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers--1000-True-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers--1000-True-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers--1-False-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers--1-False-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers--1-True-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers--1-True-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1799999999.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-0-False-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-0-False-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-0-True-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-0-True-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-1-False-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-1-False-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-1-True-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-1-True-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800000001.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-1000-False-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-1000-False-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": false
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "matrix-low_workers-1000-True-False",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {
+      "autoWake": false
+    }
+  },
+  {
+    "name": "matrix-low_workers-1000-True-True",
+    "operation": "tick",
+    "kind": "low_workers",
+    "changes": {
+      "nextAt": 1800001000.0,
+      "inFlight": true
+    },
+    "fingerprint": [1700000000000000000, 5, 9],
+    "ownerChanges": {}
+  },
+  {
+    "name": "finish-line-boundary-0",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\r{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-1",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\u000b{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-2",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\f{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-3",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\u001c{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-4",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\u001d{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-5",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before\u001e{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-6",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before{\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-7",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before {\"wakeAgent\":false}"
+    }
+  },
+  {
+    "name": "finish-line-boundary-8",
+    "operation": "finish",
+    "kind": "interval",
+    "changes": {
+      "inFlight": true,
+      "checks": 3
+    },
+    "result": {
+      "code": 0,
+      "error": null,
+      "output": "before {\"wakeAgent\":false}"
+    }
+  }
+]

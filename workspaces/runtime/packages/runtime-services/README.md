@@ -256,3 +256,49 @@ On macOS, Rust currently reports the named reason
 unchanged. Python can read passive Keychain authentication through its
 Security.framework helper; this slice does not add platform APIs or a new
 dependency to reproduce that behavior.
+
+## Monitor runtime
+
+[`monitor_policy`](src/monitor_policy.rs) checks Python-written monitor and agent
+records before producing pure state transitions. [`monitor_runtime`](src/monitor_runtime.rs)
+commits monitor rows, approval expiry, canonical sync projections, and exit/stall
+notifications in one transaction. [`monitor_driver`](src/monitor_driver.rs) calls
+an injected native transport only after that transaction commits. A bounded striped
+lock serializes launch, input and cancellation through submission; a concurrent
+request is refused while a native operation is pending, before any write. Preparation
+supplies the exact actor, monitor, operation and permission-bearing native params;
+a changed actor or monitor rejects the prepared submission.
+
+The account worker implements `MonitorNative::submit`, validating its current
+connection ticket and serializing native I/O with stop. `Accepted` means transport
+admission; callbacks persist output through `MonitorOutput::append`, input replies
+through `settle_input`, and definitive exits through `monitor_receipts::finish`.
+Output uses exact byte offsets: a duplicate receipt compares existing log bytes
+without extending the log or its committed cursor. Results are fsynced before the
+monitor/event transaction and acknowledged only after commit. Recovery consumes
+exact receipts without repeating commands. Lost input acknowledgements remain
+blocked until their exact ticket is resolved.
+
+Periodic callers run `tick` and consume returned probe effects after commit.
+Workspace preparation and native sandbox policy apply to probes as to commands;
+their result calls `complete_probe`, which rejects a stale activity generation.
+`reattach` requires exact operation proof from the current supervisor connection
+and cancels only a pending provisional disconnect notice. Never reconstruct
+process ownership from persisted PIDs.
+
+The rules integrator implements `RuleFinish` using
+`rules_tick::finish_in_transaction` in the same transaction as the monitor result.
+That module is not on this base. Native preparation/session, rule finish and
+cross-server effects retain named refusals until their adapters are installed.
+HTTP cancellation currently supports terminal and prelaunch local monitors;
+running cancellation and input remain partial. A scripted transport or harmless
+local child test is not evidence of a live provider run.
+
+Targeted checks are `cargo nextest run -p studio-runtime-services --test monitor_corpus
+--test monitor_recovery` and the `rust-monitors-http-contract.py` suite against
+both backends. The differential oracle imports real Python writers behind the
+shared provider-home/process guard. `STUDIO_RUNTIME_CORPUS_FULL=1` includes the
+complete store-boundary matrix. Its mutation manifest is
+[`tests/monitors/mutations.json`](tests/monitors/mutations.json), consumed by the
+shared `tests/turn_lifecycle/mutation_check.py` runner with `--manifest` and
+`--filter 'binary(/monitor_(corpus|recovery)/)'`.
