@@ -6,14 +6,13 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
-    "stateId": {
-      "maxLength": 128,
-      "title": "Stateid",
-      "type": "string"
-    },
     "label": {
       "title": "Label",
       "type": "string"
+    },
+    "localApproved": {
+      "title": "Localapproved",
+      "type": "boolean"
     },
     "origin": {
       "title": "Origin",
@@ -23,18 +22,19 @@
       "title": "Publickey",
       "type": "string"
     },
+    "remoteApproved": {
+      "title": "Remoteapproved",
+      "type": "boolean"
+    },
+    "stateId": {
+      "maxLength": 128,
+      "title": "Stateid",
+      "type": "string"
+    },
     "status": {
       "enum": ["approved", "pending", "revoked"],
       "title": "Status",
       "type": "string"
-    },
-    "localApproved": {
-      "title": "Localapproved",
-      "type": "boolean"
-    },
-    "remoteApproved": {
-      "title": "Remoteapproved",
-      "type": "boolean"
     },
     "whoisUser": {
       "anyOf": [

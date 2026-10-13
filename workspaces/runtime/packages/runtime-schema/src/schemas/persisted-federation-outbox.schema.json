@@ -6,45 +6,14 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
-    "id": {
-      "maxLength": 128,
-      "title": "Id",
-      "type": "string"
-    },
-    "kind": {
-      "enum": ["chat-message", "room-invite", "room-accept"],
-      "title": "Kind",
-      "type": "string"
-    },
-    "room": {
-      "maxLength": 128,
-      "title": "Room",
-      "type": "string"
-    },
-    "payload": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Payload",
-      "type": "object"
-    },
-    "created": {
-      "title": "Created",
-      "type": "number"
-    },
-    "status": {
-      "enum": ["queued", "delivered"],
-      "title": "Status",
-      "type": "string"
-    },
     "attempts": {
       "maximum": 9007199254740991,
       "minimum": 0,
       "title": "Attempts",
       "type": "integer"
     },
-    "nextAt": {
-      "title": "Nextat",
+    "created": {
+      "title": "Created",
       "type": "number"
     },
     "error": {
@@ -69,6 +38,27 @@
       ],
       "title": "Hash"
     },
+    "id": {
+      "maxLength": 128,
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["chat-message", "room-invite", "room-accept"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "nextAt": {
+      "title": "Nextat",
+      "type": "number"
+    },
+    "payload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Payload",
+      "type": "object"
+    },
     "receipt": {
       "anyOf": [
         {
@@ -82,6 +72,16 @@
         }
       ],
       "title": "Receipt"
+    },
+    "room": {
+      "maxLength": 128,
+      "title": "Room",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["queued", "delivered"],
+      "title": "Status",
+      "type": "string"
     }
   },
   "required": [

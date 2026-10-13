@@ -9,11 +9,6 @@
           "title": "Id",
           "type": "string"
         },
-        "role": {
-          "enum": ["lead", "agent"],
-          "title": "Role",
-          "type": "string"
-        },
         "name": {
           "anyOf": [
             {
@@ -25,6 +20,11 @@
             }
           ],
           "title": "Name"
+        },
+        "role": {
+          "enum": ["lead", "agent"],
+          "title": "Role",
+          "type": "string"
         },
         "status": {
           "anyOf": [
@@ -48,6 +48,10 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
     "id": {
       "maxLength": 128,
       "title": "Id",
@@ -56,6 +60,31 @@
     "kind": {
       "const": "federated",
       "title": "Kind",
+      "type": "string"
+    },
+    "localApproved": {
+      "title": "Localapproved",
+      "type": "boolean"
+    },
+    "localMembers": {
+      "items": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Localmembers",
+      "type": "array"
+    },
+    "localParticipants": {
+      "items": {
+        "$ref": "#/$defs/PersistedFederationParticipant"
+      },
+      "maxItems": 50,
+      "title": "Localparticipants",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
       "type": "string"
     },
     "peerId": {
@@ -67,23 +96,9 @@
       "title": "Peerlabel",
       "type": "string"
     },
-    "name": {
-      "title": "Name",
-      "type": "string"
-    },
-    "status": {
-      "enum": ["pending", "approved", "revoked"],
-      "title": "Status",
-      "type": "string"
-    },
-    "localMembers": {
-      "items": {
-        "maxLength": 128,
-        "type": "string"
-      },
-      "maxItems": 50,
-      "title": "Localmembers",
-      "type": "array"
+    "remoteApproved": {
+      "title": "Remoteapproved",
+      "type": "boolean"
     },
     "remoteMembers": {
       "items": {
@@ -93,21 +108,17 @@
       "title": "Remotemembers",
       "type": "array"
     },
-    "localParticipants": {
-      "items": {
-        "$ref": "#/$defs/PersistedFederationParticipant"
-      },
-      "maxItems": 50,
-      "title": "Localparticipants",
-      "type": "array"
+    "remoteSequence": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Remotesequence",
+      "type": "integer"
     },
-    "localApproved": {
-      "title": "Localapproved",
-      "type": "boolean"
-    },
-    "remoteApproved": {
-      "title": "Remoteapproved",
-      "type": "boolean"
+    "sequence": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Sequence",
+      "type": "integer"
     },
     "shareNames": {
       "title": "Sharenames",
@@ -117,21 +128,10 @@
       "title": "Sharestatus",
       "type": "boolean"
     },
-    "sequence": {
-      "maximum": 9007199254740991,
-      "minimum": 0,
-      "title": "Sequence",
-      "type": "integer"
-    },
-    "remoteSequence": {
-      "maximum": 9007199254740991,
-      "minimum": 0,
-      "title": "Remotesequence",
-      "type": "integer"
-    },
-    "created": {
-      "title": "Created",
-      "type": "number"
+    "status": {
+      "enum": ["pending", "approved", "revoked"],
+      "title": "Status",
+      "type": "string"
     },
     "updated": {
       "title": "Updated",

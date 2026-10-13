@@ -6,17 +6,6 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
-    "hash": {
-      "title": "Hash",
-      "type": "string"
-    },
-    "receipt": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "title": "Receipt",
-      "type": "object"
-    },
     "ack": {
       "enum": ["pending", "sent", "confirmed"],
       "title": "Ack",
@@ -25,6 +14,10 @@
     "created": {
       "title": "Created",
       "type": "number"
+    },
+    "hash": {
+      "title": "Hash",
+      "type": "string"
     },
     "kind": {
       "anyOf": [
@@ -37,6 +30,13 @@
         }
       ],
       "title": "Kind"
+    },
+    "receipt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Receipt",
+      "type": "object"
     },
     "room": {
       "anyOf": [

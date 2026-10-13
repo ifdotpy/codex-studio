@@ -6,6 +6,11 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "created": {
+      "exclusiveMinimum": 0,
+      "title": "Created",
+      "type": "number"
+    },
     "sender": {
       "maxLength": 128,
       "title": "Sender",
@@ -22,22 +27,17 @@
       ],
       "title": "Sendername"
     },
-    "text": {
-      "maxLength": 12000,
-      "minLength": 1,
-      "title": "Text",
-      "type": "string"
-    },
-    "created": {
-      "exclusiveMinimum": 0,
-      "title": "Created",
-      "type": "number"
-    },
     "sequence": {
       "maximum": 9007199254740991,
       "minimum": 1,
       "title": "Sequence",
       "type": "integer"
+    },
+    "text": {
+      "maxLength": 12000,
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
     }
   },
   "required": ["sender", "text", "created", "sequence"],
