@@ -853,6 +853,8 @@ class LinuxVMSettingsResponse(ResponseModel):
     settings: LinuxVMSettings
     state: str
     allocatedDiskBytes: int | None = None
+    # The reason of a failed state, such as a guest kernel panic.
+    error: str | None = None
 
 
 class DirectoriesResponse(ResponseModel):

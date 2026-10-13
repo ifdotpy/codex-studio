@@ -102,8 +102,10 @@ def create_router(context: ApiContext) -> APIRouter:
             if values is not None:
                 client.set_settings(values.model_dump())
             vm_status = client.status()
+            failure = vm_status.get("error") if vm_status["state"] == "failed" else None
             return {"settings": client.get_settings(), "state": vm_status["state"],
-                    "allocatedDiskBytes": vm_status.get("allocatedDiskBytes")}
+                    "allocatedDiskBytes": vm_status.get("allocatedDiskBytes"),
+                    "error": str(failure) if failure else None}
         except (RuntimeError, OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 

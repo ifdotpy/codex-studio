@@ -27,7 +27,10 @@ class FakeVM:
         return self.settings
 
     def status(self):
-        return {'state': self.state, 'allocatedDiskBytes': 1024}
+        result = {'state': self.state, 'allocatedDiskBytes': 1024}
+        if self.state == 'failed':
+            result['error'] = 'Kernel panic - not syncing: corrupted stack end detected inside scheduler'
+        return result
 
     def set_settings(self, values):
         if self.state != 'stopped':
@@ -55,6 +58,15 @@ class VMSettingsApi(unittest.TestCase):
         self.assertEqual(response.json()['settings'], SETTINGS)
         self.assertEqual(response.json()['allocatedDiskBytes'], 1024)
         self.assertEqual(self.vm.writes, [])
+
+    def test_failed_guest_reports_the_reason(self):
+        response = self.client.get('/api/linux-vm/settings')
+        self.assertIsNone(response.json()['error'])
+        self.vm.state = 'failed'
+        response = self.client.get('/api/linux-vm/settings')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['state'], 'failed')
+        self.assertIn('Kernel panic', response.json()['error'])
 
     def test_write_uses_the_host_settings_api(self):
         values = {**SETTINGS, 'cpus': 2}

@@ -29,6 +29,7 @@ const meta = {
                   },
             state: parameters.vmState ?? "running",
             allocatedDiskBytes: 1024,
+            error: parameters.vmError ?? null,
           }),
           { headers: { "content-type": "application/json" } },
         );
@@ -74,5 +75,22 @@ export const SaveStoppedLimits: Story = {
       cpus: 6,
       memoryBytes: 4 * GiB,
     });
+  },
+};
+
+export const FailedGuestShowsTheReason: Story = {
+  parameters: {
+    vmState: "failed",
+    vmError:
+      "Kernel panic - not syncing: corrupted stack end detected inside scheduler",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      "VM state: failed",
+    );
+    await expect(canvas.getByRole("alert")).toHaveTextContent(
+      "Reason: Kernel panic - not syncing",
+    );
   },
 };

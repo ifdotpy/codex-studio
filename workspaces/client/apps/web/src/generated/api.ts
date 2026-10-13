@@ -7207,6 +7207,8 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Allocateddiskbytes */
       allocatedDiskBytes?: number | null;
+      /** Error */
+      error?: string | null;
       settings: components["schemas"]["LinuxVMSettings"];
       /** State */
       state: string;
