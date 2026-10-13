@@ -28,34 +28,79 @@ JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
 
-# These consumer cases progress into provider turns which this runtime does
-# not implement. The ledger skips them explicitly instead of treating a
-# timeout as a conformance result.
+# These tests stop at an operation whose manifest still names the missing
+# service. Each exclusion is tied to that operation so it becomes stale when
+# the corresponding dependency is implemented.
 MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
     "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
-        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": {"service": "turn-driver/provider-turn", "reason": "Provider turn execution requires turn-driver/provider-turn."},
-        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": {"service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-    },
-    "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py": {
-        "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread": {"service": "turn-driver/provider-turn", "reason": "The receipt replay is followed by a provider turn requiring turn-driver/provider-turn."},
-        "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread": {"service": "turn-driver/provider-turn", "reason": "The receipt replay is followed by a provider turn requiring turn-driver/provider-turn."},
+        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
+        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
     },
     "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
-        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"service": "turn-driver/provider-turn", "reason": "The fixture comparison starts a provider turn requiring turn-driver/provider-turn."},
-    },
-    "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
-        "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": {"service": "turn-driver/provider-turn", "reason": "Recovering the tool request requires a provider turn from turn-driver/provider-turn."},
-    },
-    "workspaces/runtime/apps/server/tests/yolo-contract.py": {
-        "__main__.YoloHTTPContract.test_turns_after_yolo_is_disabled_use_restricted_provider_permissions": {"service": "turn-driver/provider-turn", "reason": "The test executes provider turns requiring turn-driver/provider-turn."},
-        "__main__.YoloHTTPContract.test_yolo_default_inherits_to_worker_and_selects_provider_permissions": {"service": "turn-driver/provider-turn", "reason": "The test executes a worker provider turn requiring turn-driver/provider-turn."},
-        "__main__.YoloWorkerMessageOrderingHTTPContract.test_message_ordering_before_and_after_worker_first_turn_is_deterministic": {"service": "turn-driver/provider-turn", "reason": "The worker first turn requires turn-driver/provider-turn."},
-        "__main__.YoloRestartHTTPContract.test_disabled_yolo_mode_is_served_after_backend_restart": {"service": "turn-driver/provider-turn", "reason": "The post-restart message waits for a provider turn requiring turn-driver/provider-turn."},
+        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
     },
     "workspaces/runtime/apps/server/tests/sync-http-contract.py": {
-        "__main__.SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once": {"service": "event-driver/message-receipts", "reason": "Voice replay checks the unavailable event-driver/message-receipts endpoint."},
+        "__main__.SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once": {"operation": "GET /api/messages/receipts", "service": "event-driver/message-receipts", "reason": "Voice replay checks the unavailable event-driver/message-receipts endpoint."},
     },
 }
+
+# These tests need provider turn execution, but no current route declares that
+# dependency. Keep them under one explicit unresolved-service group and fail
+# if a route starts advertising the dependency before these exclusions are
+# re-keyed to that operation.
+UNDECLARED_PROVIDER_TURN_SERVICE = "turn-driver/provider-turn"
+UNDECLARED_PROVIDER_TURN_TESTS: dict[str, dict[str, str]] = {
+    "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py": {
+        "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
+        "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread": "Receipt replay is followed by a provider turn; no operation declares this dependency yet.",
+    },
+    "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
+        "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": "Recovering the tool request requires a provider turn; no operation declares this dependency yet.",
+    },
+    "workspaces/runtime/apps/server/tests/yolo-contract.py": {
+        "__main__.YoloHTTPContract.test_turns_after_yolo_is_disabled_use_restricted_provider_permissions": "The test executes provider turns; no operation declares this dependency yet.",
+        "__main__.YoloHTTPContract.test_yolo_default_inherits_to_worker_and_selects_provider_permissions": "The test executes a worker provider turn; no operation declares this dependency yet.",
+        "__main__.YoloWorkerMessageOrderingHTTPContract.test_message_ordering_before_and_after_worker_first_turn_is_deterministic": "The worker first turn requires provider turn execution; no operation declares this dependency yet.",
+        "__main__.YoloRestartHTTPContract.test_disabled_yolo_mode_is_served_after_backend_restart": "The post-restart message waits for a provider turn; no operation declares this dependency yet.",
+    },
+}
+
+
+def missing_service_tests_for_suite(relative: str) -> dict[str, dict[str, str]]:
+    return dict(MISSING_SERVICE_TESTS.get(relative, {})) | {
+        test_id: {
+            "service": UNDECLARED_PROVIDER_TURN_SERVICE,
+            "reason": reason,
+            "operation": "requires a provider turn; no operation declares it yet",
+        }
+        for test_id, reason in UNDECLARED_PROVIDER_TURN_TESTS.get(relative, {}).items()
+    }
+
+
+def validate_missing_service_exclusions(
+    manifest: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    for suite, tests in MISSING_SERVICE_TESTS.items():
+        for test_id, details in tests.items():
+            method, path = details["operation"].split(" ", 1)
+            entry = manifest.get((method, path))
+            if (
+                entry is None
+                or entry.get("status") != "partial"
+                or details["service"] not in entry.get("dependencies", [])
+            ):
+                raise RuntimeError(
+                    "stale missing-service exclusion: "
+                    f"{suite}::{test_id} expects {details['service']} on {details['operation']}"
+                )
+    if any(
+        UNDECLARED_PROVIDER_TURN_SERVICE in entry.get("dependencies", [])
+        for entry in manifest.values()
+    ):
+        raise RuntimeError(
+            "provider-turn exclusions are stale: a Rust operation now declares "
+            f"{UNDECLARED_PROVIDER_TURN_SERVICE}; re-key the tests to that operation"
+        )
 
 # Probe inputs are keyed by the documented HTTP operation so a schema-valid
 # sample can point at records created by the Python runtime seed. Each case may
@@ -1520,7 +1565,7 @@ def run_suite(
     trace_path = trace_root / f"{path.stem}.jsonl"
     suite_environment = environment.copy()
     suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
-    skipped_for_service = MISSING_SERVICE_TESTS.get(relative, {})
+    skipped_for_service = missing_service_tests_for_suite(relative)
     if skipped_for_service:
         suite_environment["STUDIO_HTTP_LEDGER_SKIP_TESTS"] = json.dumps({
             test_id: details["reason"] for test_id, details in skipped_for_service.items()
@@ -1550,10 +1595,21 @@ def run_suite(
     cases = case_results(log_text)
     actual_skips = {case["testId"] for case in cases if case["status"] == "skipped"}
     required_skips = set(skipped_for_service)
-    if actual_skips & required_skips != required_skips:
+    if not required_skips.issubset(actual_skips):
         raise RuntimeError(
             f"missing-service test skip mismatch in {relative}: "
-            f"expected={sorted(required_skips)}, observed={sorted(actual_skips & required_skips)}"
+            f"expected at least={sorted(required_skips)}, observed={sorted(actual_skips)}"
+        )
+    observed_counts = {
+        "passed": sum(case["status"] == "ok" for case in cases),
+        "failed": sum(case["status"] in {"fail", "error"} for case in cases),
+        "skipped": sum(case["status"] == "skipped" for case in cases),
+    }
+    reported_counts = {name: result.get(name, 0) or 0 for name in observed_counts}
+    if observed_counts != reported_counts:
+        raise RuntimeError(
+            f"consumer result-count mismatch in {relative}: "
+            f"parsed={observed_counts}, reported={reported_counts}"
         )
     requests: list[dict[str, Any]] = []
     if trace_path.exists():
@@ -1603,8 +1659,22 @@ def run_suite(
         "tests": cases,
         "requiresMissingServices": [
             {"testId": test_id, **details}
-            for test_id, details in sorted(skipped_for_service.items())
+            for test_id, details in sorted(MISSING_SERVICE_TESTS.get(relative, {}).items())
         ],
+        "undeclaredProviderTurn": (
+            {
+                "service": UNDECLARED_PROVIDER_TURN_SERVICE,
+                "reason": "requires a provider turn; no operation declares it yet",
+                "tests": [
+                    {"testId": test_id, "reason": reason}
+                    for test_id, reason in sorted(
+                        UNDECLARED_PROVIDER_TURN_TESTS.get(relative, {}).items()
+                    )
+                ],
+            }
+            if UNDECLARED_PROVIDER_TURN_TESTS.get(relative)
+            else None
+        ),
         "failures": failures,
         "requests": requests,
         "unattributedRequests": unattributed,
@@ -1695,22 +1765,7 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
-    advertised_services = {
-        dependency
-        for entry in manifest.values()
-        for dependency in entry.get("dependencies", [])
-    }
-    stale_exclusions = sorted({
-        details["service"]
-        for suite in MISSING_SERVICE_TESTS.values()
-        for details in suite.values()
-        if details["service"] in advertised_services
-    })
-    if stale_exclusions:
-        raise RuntimeError(
-            "ledger has stale missing-service exclusions; service appears in the Rust manifest: "
-            + ", ".join(stale_exclusions)
-        )
+    validate_missing_service_exclusions(manifest)
     ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rust-http-traces-", dir=DEFAULT_CACHE) as trace_dir_name:
@@ -1777,7 +1832,9 @@ def main() -> int:
         "testsFailed": sum(row["failed"] for row in suites),
         "testsSkipped": sum(row["skipped"] for row in suites),
         "testsRequiringMissingService": sum(
-            len(row.get("requiresMissingServices", [])) for row in suites
+            len(row.get("requiresMissingServices", []))
+            + len((row.get("undeclaredProviderTurn") or {}).get("tests", []))
+            for row in suites
         ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
