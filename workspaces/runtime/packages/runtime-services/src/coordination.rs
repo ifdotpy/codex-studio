@@ -269,7 +269,9 @@ fn post_managed_message(
     agent.extra.remove("nativeFailureHold");
     capacity_reset(transaction, &mut agent)?;
     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
-    studio_runtime_store::EventWriteRepository::set_agent_sync_manual_input(transaction, &agent)?;
+    let projection =
+        serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
+    crate::agents_create::publish_agent(transaction, &projection).map_err(event_write_error)?;
 
     let created = crate::event_write::unix_time().map_err(event_write_error)?;
     QueueWriteRepository::put_metadata(
