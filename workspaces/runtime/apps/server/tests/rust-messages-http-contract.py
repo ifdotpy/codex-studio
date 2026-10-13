@@ -252,6 +252,8 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend = start_contract_backend(cls)
         cls.agent_id = seed_agent(cls.backend)
         cls.other_agent_id = seed_agent(cls.backend)
+        cls.denial_agent_id = seed_agent(cls.backend)
+        cls.denial_peer_agent_id = seed_agent(cls.backend)
         cls.backend.start()
 
     @classmethod
@@ -645,6 +647,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         update_agent(self.backend, self.agent_id, {}, remove=("deletedAt",))
 
     def test_managed_send_denial_gates_refuse_without_writes(self):
+        agent_id = self.denial_agent_id
         cases = (
             ({"nativeSafetyRetry": {"stage": "turns", "epoch": 0, "accountKey": "default"}}, ()),
             ({"excludedAccountKeys": ["default"]}, ()),
@@ -653,18 +656,18 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ({"tokenBudget": 0}, ()),
         )
         for index, (fields, remove) in enumerate(cases):
-            update_agent(self.backend, self.agent_id, fields, remove=remove)
+            update_agent(self.backend, agent_id, fields, remove=remove)
             if index == 3 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
                 # The Python server requires a persisted workspace operation record;
                 # the Rust fixture exercises the named unavailable admission service.
-                update_agent(self.backend, self.agent_id, {}, remove=("workspaceOperation",))
+                update_agent(self.backend, agent_id, {}, remove=("workspaceOperation",))
                 continue
             if index == 0 and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
                 # Python startup recovery turns an active retry into a durable hold.
                 # The Rust HTTP process preserves this state and exercises the send gate.
                 update_agent(
                     self.backend,
-                    self.agent_id,
+                    agent_id,
                     {"status": "idle", "autoWake": True},
                     remove=("nativeSafetyRetry", "nativeFailureHold", "error"),
                 )
@@ -675,12 +678,12 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
                 with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
                     stored = json.loads(database.execute(
-                        "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,),
+                        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
                     ).fetchone()[0])
                 self.assertTrue(safety_retry_active(stored), stored.get("nativeSafetyRetry"))
-            before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, self.agent_id)
+            before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id)
             response = self.backend.request("POST", "/api/messages", body={
-                "id": message_id, "room": self.agent_id, "text": "Must be refused",
+                "id": message_id, "room": agent_id, "text": "Must be refused",
             }, headers=self.headers())
             self.assertNotEqual(response.status, 200, response.body[:1000])
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index in {3, 4}:
@@ -688,23 +691,24 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 expected = "workspace-policy/message-admission" if index == 3 else "budget-policy/message-admission"
                 self.assertIn(expected, response.json()["error"])
             self.assertEqual(
-                message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, self.agent_id), before,
+                message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id), before,
             )
-            update_agent(self.backend, self.agent_id, {}, remove=tuple(fields))
+            update_agent(self.backend, agent_id, {}, remove=tuple(fields))
 
-        update_agent(self.backend, self.agent_id, {"rootId": self.other_agent_id})
-        update_agent(self.backend, self.other_agent_id, {"agentMode": "single", "concurrency": 0})
+        peer_agent_id = self.denial_peer_agent_id
+        update_agent(self.backend, agent_id, {"rootId": peer_agent_id})
+        update_agent(self.backend, peer_agent_id, {"agentMode": "single", "concurrency": 0})
         message_id = "45454545-4545-4545-4545-454545454545"
-        before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, self.agent_id)
+        before = message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id)
         response = self.backend.request("POST", "/api/messages", body={
-            "id": message_id, "room": self.agent_id, "text": "Delegation is disabled",
+            "id": message_id, "room": agent_id, "text": "Delegation is disabled",
         }, headers=self.headers())
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(
-            message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, self.agent_id), before,
+            message_write_snapshot(self.backend.state / "canvas.sqlite3", message_id, agent_id), before,
         )
-        update_agent(self.backend, self.agent_id, {"rootId": self.agent_id})
-        update_agent(self.backend, self.other_agent_id, {}, remove=("agentMode", "concurrency"))
+        update_agent(self.backend, agent_id, {"rootId": agent_id})
+        update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
 
     def test_managed_send_atomically_finishes_capacity_retry(self):
         retry_id = "capacity-retry-message-send"
