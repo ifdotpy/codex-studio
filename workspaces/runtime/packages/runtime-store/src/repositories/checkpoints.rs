@@ -196,6 +196,24 @@ impl CheckpointsRepository {
         }))
     }
 
+    /// Recheck durable activity in the transaction that reserves the operation.
+    pub fn workspace_unchanged(
+        transaction: &Transaction<'_>,
+        expected: &WorkspaceSnapshot,
+    ) -> StoreResult<bool> {
+        Ok(Self::workspace_snapshot(transaction, &expected.agent.id)?
+            .is_some_and(|current| same_workspace_activity(&current, expected)))
+    }
+
+    /// Persisted identity shared by workspace and Claude control reservations.
+    pub fn workspace_source(agent: &Value) -> Value {
+        json!({
+            "accountKey": agent.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
+            "threadId": agent.get("threadId"),
+            "cwd": agent.get("cwd"),
+        })
+    }
+
     pub fn reserve_capture(
         transaction: &Transaction<'_>,
         expected: &WorkspaceSnapshot,
