@@ -50,6 +50,7 @@ pub struct TerminalOutcome {
 pub enum TerminalEvent {
     Output(Vec<u8>),
     Exit(Option<i64>),
+    CleanupFailed(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -88,6 +89,8 @@ pub struct TerminalDriver<S: TerminalSession> {
     store: Arc<RuntimeStore>,
     session: S,
     event_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
+    clock: fn() -> f64,
+    id_factory: fn() -> Result<String, TerminalError>,
 }
 
 pub struct TerminalCreate<'a> {
@@ -227,11 +230,26 @@ fn hide_process_identity(record: &mut Value) {
 
 impl<S: TerminalSession> TerminalDriver<S> {
     pub fn new(store: std::sync::Arc<RuntimeStore>, session: S) -> Self {
+        Self::with_sources(store, session, now_seconds, new_id)
+    }
+
+    fn with_sources(
+        store: Arc<RuntimeStore>,
+        session: S,
+        clock: fn() -> f64,
+        id_factory: fn() -> Result<String, TerminalError>,
+    ) -> Self {
         Self {
             store,
             session,
             event_locks: Mutex::new(HashMap::new()),
+            clock,
+            id_factory,
         }
+    }
+
+    fn now(&self) -> f64 {
+        (self.clock)()
     }
 
     pub fn create(&self, request: TerminalCreate<'_>) -> Result<Value, TerminalError> {
@@ -264,8 +282,8 @@ impl<S: TerminalSession> TerminalDriver<S> {
             return serde_json::from_str(&result)
                 .map_err(|_| TerminalError::InvalidStoredObject(request_id.into()));
         }
-        let now = now_seconds();
-        let id = new_id()?;
+        let now = self.now();
+        let id = (self.id_factory)()?;
         let cwd = cwd
             .canonicalize()
             .map_err(|_| TerminalError::InvalidRequest)?;
@@ -361,7 +379,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
                         .record;
                     current.set("title", json!(title));
-                    current.set("updated", json!(now_seconds()));
+                    current.set("updated", json!(self.now()));
                     TerminalsRepository::update_record(transaction, id, &current)?;
                     Ok(current)
                 })?;
@@ -383,8 +401,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     .transaction(|transaction| {
                         let current = TerminalsRepository::get(transaction, id)?
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-                        let mut record = current.record;
-                        record.set("updated", json!(now_seconds()));
+                        let record = current.record;
                         TerminalsRepository::update_record(transaction, id, &record)?;
                         let mut value = record.value().clone();
                         hide_process_identity(&mut value);
@@ -398,15 +415,27 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
                         .record;
                     current.set("status", json!("closed"));
-                    current.set("updated", json!(now_seconds()));
+                    current.set("updated", json!(self.now()));
                     TerminalsRepository::update_record(transaction, id, &current)?;
                     Ok(current)
                 })?;
-                self.session.send_request(
+                if let Err(error) = self.session.send_request(
                     &format!("terminal-close:{id}"),
                     "process/kill",
                     json!({"processHandle": id}),
-                )?;
+                ) {
+                    self.store.transaction(|transaction| {
+                        let mut current = TerminalsRepository::get(transaction, id)?
+                            .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
+                            .record;
+                        current.set(
+                            "error",
+                            json!("Terminal teardown failed. The process identity is retained for recovery."),
+                        );
+                        TerminalsRepository::update_record(transaction, id, &current)
+                    })?;
+                    return Err(TerminalError::Session(error));
+                }
                 let mut value = record.value().clone();
                 hide_process_identity(&mut value);
                 Ok(value)
@@ -454,11 +483,27 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         record.set("status", json!("exited"));
                     }
                     record.set("exitCode", code.map_or(Value::Null, |value| json!(value)));
-                    record.set("updated", json!(now_seconds()));
+                    record.set("updated", json!(self.now()));
                     record.remove("error");
                     record.remove("_processIdentity");
                     TerminalsRepository::put(transaction, &id, &record, &output, offset)?;
                     TerminalsRepository::save_decoder_pending(transaction, &id, &[])?;
+                    TerminalsRepository::save_event_cursor(transaction, &id, sequence)?;
+                    Ok(())
+                })?;
+                Ok(())
+            }
+            TerminalEvent::CleanupFailed(message) => {
+                self.store.transaction(|transaction| {
+                    if TerminalsRepository::event_cursor(transaction, &id)?.unwrap_or(0) >= sequence
+                    {
+                        return Ok(());
+                    }
+                    let mut record = TerminalsRepository::get(transaction, &id)?
+                        .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?
+                        .record;
+                    record.set("error", json!(message));
+                    TerminalsRepository::update_record(transaction, &id, &record)?;
                     TerminalsRepository::save_event_cursor(transaction, &id, sequence)?;
                     Ok(())
                 })?;
@@ -583,13 +628,21 @@ impl<S: TerminalSession> TerminalDriver<S> {
             for mut record in rows {
                 let was_running = record.get("status").and_then(Value::as_str) == Some("running");
                 let had_identity = record.get("_processIdentity").is_some();
+                if had_identity && record.get("_processIdentity").is_some_and(Value::is_null) {
+                    record.set(
+                        "error",
+                        json!("Terminal cleanup is unresolved because this platform cannot verify the saved process identity."),
+                    );
+                    TerminalsRepository::update_record(transaction, record.id().as_str(), &record)?;
+                    continue;
+                }
                 if was_running {
                     record.set("status", json!("exited"));
                     record.set(
                         "error",
                         json!("The server restarted. This shell cannot be resumed."),
                     );
-                    record.set("updated", json!(now_seconds()));
+                    record.set("updated", json!(self.now()));
                 }
                 if was_running || had_identity {
                     record.remove("_processIdentity");
@@ -958,6 +1011,14 @@ mod tests {
 
     fn test_driver(state: &TestState, session: FakeSession) -> TerminalDriver<FakeSession> {
         TerminalDriver::new(state.store.as_ref().expect("store").clone(), session)
+    }
+
+    fn action_clock() -> f64 {
+        1_700_000_000.25
+    }
+
+    fn action_id() -> Result<String, TerminalError> {
+        Ok("f48d7c00-0000-4000-8000-000000000001".into())
     }
 
     fn create(driver: &TerminalDriver<FakeSession>, cwd: &Path) -> Value {
@@ -1718,6 +1779,19 @@ mod tests {
             .as_str()
             .expect("id")
             .to_owned();
+        let recovery_identity = serde_json::json!({"pid":73,"process_group":73,"session":73,"start_time_ticks":51,"boot_id":"test-boot"});
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                let mut record = TerminalsRepository::get(transaction, &id)?
+                    .expect("terminal")
+                    .record;
+                record.set("_processIdentity", recovery_identity.clone());
+                TerminalsRepository::update_record(transaction, &id, &record)
+            })
+            .expect("seed recovery identity");
         *driver.session.error.lock().expect("fake error") = Some(SessionError::UnknownOutcome);
         assert!(
             driver
@@ -1734,6 +1808,8 @@ mod tests {
             row.record.get("status").and_then(Value::as_str),
             Some("closed")
         );
+        assert_eq!(row.record.get("_processIdentity"), Some(&recovery_identity));
+        assert!(row.record.get("error").and_then(Value::as_str).is_some());
         let kills = driver
             .session
             .requests
@@ -1743,6 +1819,52 @@ mod tests {
             .filter(|(_, method, _)| method == "process/kill")
             .count();
         assert_eq!(kills, 1, "close commit precedes one possibly-lost kill");
+    }
+
+    #[test]
+    fn cleanup_failure_notification_keeps_identity_and_reports_unresolved_child() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("terminal ID")
+            .to_owned();
+        let identity = serde_json::json!({"pid":91,"process_group":91,"session":91,"start_time_ticks":42,"boot_id":"boot"});
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                let mut record = TerminalsRepository::get(transaction, &id)?
+                    .expect("terminal")
+                    .record;
+                record.set("_processIdentity", identity.clone());
+                TerminalsRepository::update_record(transaction, &id, &record)
+            })
+            .expect("persist recovery identity");
+
+        driver
+            .apply_notification(TerminalNotification {
+                terminal_id: id.clone(),
+                sequence: 1,
+                event: TerminalEvent::CleanupFailed("injected signal failure".into()),
+            })
+            .expect("record unresolved child");
+        let row = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("row")
+        .expect("terminal");
+        assert_eq!(row.record.get("_processIdentity"), Some(&identity));
+        assert_eq!(
+            row.record.get("status").and_then(Value::as_str),
+            Some("running")
+        );
+        assert_eq!(
+            row.record.get("error").and_then(Value::as_str),
+            Some("injected signal failure")
+        );
     }
 
     #[test]
@@ -1923,6 +2045,49 @@ mod tests {
             );
             assert_eq!(row.record.get("_processIdentity"), Some(&identity));
         }
+    }
+
+    #[test]
+    fn restart_without_platform_identity_keeps_a_named_unresolved_row() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("terminal ID")
+            .to_owned();
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                let mut record = TerminalsRepository::get(transaction, &id)?
+                    .expect("terminal")
+                    .record;
+                record.set("_processIdentity", Value::Null);
+                TerminalsRepository::update_record(transaction, &id, &record)
+            })
+            .expect("seed unavailable platform identity");
+
+        driver
+            .reconcile_after_restart()
+            .expect("unavailable identity is retained without signaling");
+        let row = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("terminal row")
+        .expect("row remains available for reconciliation");
+        assert_eq!(
+            row.record.get("status").and_then(Value::as_str),
+            Some("running")
+        );
+        assert_eq!(row.record.get("_processIdentity"), Some(&Value::Null));
+        assert!(
+            row.record
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| error.contains("cleanup is unresolved"))
+        );
     }
 
     #[test]
@@ -2171,34 +2336,25 @@ mod tests {
     fn python_terminal_action_differential_compares_all_returns_and_rows() {
         use crate::agents_create;
 
-        fn normalize(value: &mut Value, terminal_id: &str, root: &Path) {
+        fn normalize(value: &mut Value, root: &Path) {
             match value {
                 Value::Object(object) => {
                     for (key, value) in object.iter_mut() {
-                        if key == "id" && value.as_str() == Some(terminal_id) {
-                            *value = Value::String("$terminal".into());
-                        } else if matches!(key.as_str(), "created" | "updated") && value.is_number()
-                        {
-                            *value = serde_json::json!(0);
-                        } else if key == "cwd" && value.as_str() == root.to_str() {
+                        if key == "cwd" && value.as_str() == root.to_str() {
                             *value = Value::String("$ROOT".into());
                         } else {
-                            normalize(value, terminal_id, root);
+                            normalize(value, root);
                         }
                     }
                 }
                 Value::Array(values) => {
                     for value in values {
-                        normalize(value, terminal_id, root);
+                        normalize(value, root);
                     }
                 }
                 Value::String(text) => {
-                    if text == terminal_id {
-                        *text = "$terminal".into();
-                        return;
-                    }
                     if let Ok(mut nested) = serde_json::from_str::<Value>(text) {
-                        normalize(&mut nested, terminal_id, root);
+                        normalize(&mut nested, root);
                         *text = nested.to_string();
                     }
                 }
@@ -2272,12 +2428,17 @@ mod tests {
         );
         let oracle: Value = serde_json::from_slice(&output.stdout).expect("action oracle JSON");
         let python_actions = oracle["actions"].as_array().expect("Python actions");
-        assert_eq!(python_actions.len(), 5);
+        assert_eq!(python_actions.len(), 7);
 
         let store = Arc::new(
             RuntimeStore::open(Some(rust_directory.path())).expect("open Python-written pre-state"),
         );
-        let driver = TerminalDriver::new(store.clone(), FakeSession::default());
+        let driver = TerminalDriver::with_sources(
+            store.clone(),
+            FakeSession::default(),
+            action_clock,
+            action_id,
+        );
         let create_request = serde_json::json!({
             "id":"action-create", "agent":"agent", "cols":91, "rows":33
         });
@@ -2298,11 +2459,9 @@ mod tests {
             .as_str()
             .expect("Rust terminal ID")
             .to_owned();
-        let python_id = python_actions[0]["result"]["id"]
-            .as_str()
-            .expect("Python terminal ID");
+        assert_eq!(rust_id, python_actions[0]["result"]["id"]);
 
-        let mut rust_results = vec![create_result];
+        let mut rust_results = vec![(create_result, None::<String>)];
         let mut rust_tables = vec![snapshot(&store)];
         for (action, data) in [
             (
@@ -2314,40 +2473,51 @@ mod tests {
                 serde_json::json!({"id":rust_id,"text":"hi🙂","request_id":"actions-input"}),
             ),
             (
+                "input",
+                serde_json::json!({"id":rust_id,"text":"hi🙂","request_id":"actions-input"}),
+            ),
+            (
                 "resize",
                 serde_json::json!({"id":rust_id,"cols":91,"rows":33}),
             ),
             ("close", serde_json::json!({"id":rust_id})),
         ] {
-            rust_results.push(driver.action(action, &data).expect("Rust action"));
+            rust_results.push((driver.action(action, &data).expect("Rust action"), None));
             rust_tables.push(snapshot(&store));
         }
+        let rejected = serde_json::json!({
+            "id":rust_id,"text":"different","request_id":"actions-input"
+        });
+        let rust_rejection = driver.action("input", &rejected);
+        assert!(matches!(
+            rust_rejection,
+            Err(TerminalError::ReceiptConflict)
+        ));
+        rust_results.push((Value::Null, Some("receipt_conflict".to_owned())));
+        rust_tables.push(snapshot(&store));
 
-        for (index, (python, rust)) in python_actions.iter().zip(rust_results.iter()).enumerate() {
+        for (index, (python, (rust, rust_error))) in
+            python_actions.iter().zip(rust_results.iter()).enumerate()
+        {
             let mut expected_result = python["result"].clone();
             let mut actual_result = rust.clone();
-            normalize(&mut expected_result, python_id, &state.root);
-            normalize(&mut actual_result, &rust_id, &state.root);
-            assert_eq!(
-                actual_result, expected_result,
-                "complete return for Python action {}",
-                python["action"]
-            );
+            normalize(&mut expected_result, &state.root);
+            normalize(&mut actual_result, &state.root);
+            if let Some(error) = rust_error {
+                assert_eq!(python["error"].as_str(), Some(error.as_str()));
+                assert_eq!(actual_result, expected_result, "rejected action return");
+            } else {
+                assert_eq!(
+                    actual_result, expected_result,
+                    "complete return for Python action {}",
+                    python["action"]
+                );
+            }
 
             let mut expected_tables = python["tables"].clone();
             let mut actual_tables = rust_tables[index].clone();
-            normalize(&mut expected_tables, python_id, &state.root);
-            normalize(&mut actual_tables, &rust_id, &state.root);
-            if let Some(receipts) = expected_tables["user_terminal_receipts"].as_array_mut() {
-                for receipt in receipts {
-                    if receipt[0] == "actions-input" {
-                        receipt[1] = Value::String(receipt_signature(&serde_json::json!({
-                            "action":"input", "id":rust_id, "text":"hi🙂",
-                            "request_id":"actions-input"
-                        })));
-                    }
-                }
-            }
+            normalize(&mut expected_tables, &state.root);
+            normalize(&mut actual_tables, &state.root);
             assert_eq!(
                 actual_tables, expected_tables,
                 "stored rows after action {} (index {index})",

@@ -1,4 +1,11 @@
 //! Unix PTY host backed by the blocking `pty-process` API.
+//!
+//! Terminals can be created without a restart-verifiable process identity,
+//! matching Python. In that case restart cleanup leaves the row marked as an
+//! unresolved cleanup and never signals the saved PID. Linux verifies boot ID
+//! and process start ticks before signalling. Its member verify-to-signal gap
+//! remains narrower than Python's unverified `killpg`, but cannot be made atomic
+//! without pidfd support.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -126,6 +133,12 @@ struct PtyShared {
     session: u32,
     process_group: u32,
     termination_attempted: AtomicBool,
+    termination_complete: AtomicBool,
+    captured_groups: Mutex<Vec<SessionGroup>>,
+    #[cfg(test)]
+    before_kill: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    fail_next_kill: AtomicBool,
 }
 
 struct PtyChild {
@@ -155,10 +168,25 @@ impl PtyShared {
     fn terminate(&self, deadline: Instant) -> Result<ExitStatus, PtyHostError> {
         let mut child = self.child()?;
         self.termination_attempted.store(true, Ordering::Release);
+        if self.termination_complete.load(Ordering::Acquire) {
+            return child.status.ok_or_else(|| {
+                PtyHostError::Io(std::io::Error::other(
+                    "completed terminal has no exit status",
+                ))
+            });
+        }
         let already_reaped = child.status.is_some();
-        // Freeze all session groups and member identities before TERM. The
-        // KILL pass uses this same snapshot even if TERM reaps the leader.
-        let groups = session_groups(self.session);
+        // Keep the first ownership snapshot for retry and repeated-close safety.
+        let groups = {
+            let mut captured = self
+                .captured_groups
+                .lock()
+                .map_err(|_| PtyHostError::Lock)?;
+            if captured.is_empty() && !already_reaped {
+                *captured = session_groups(self.session);
+            }
+            captured.clone()
+        };
         let term_deadline = (Instant::now() + Duration::from_millis(500)).min(deadline);
         let _term_result = signal_groups(
             &groups,
@@ -180,8 +208,35 @@ impl PtyShared {
         while !already_reaped && Instant::now() < term_deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        #[cfg(test)]
+        if let Ok(hook) = self.before_kill.lock()
+            && let Some(hook) = hook.as_ref()
+        {
+            hook();
+        }
+        // Python enumerates again before KILL. Only trust newly discovered
+        // groups while a member from our original snapshot still anchors this
+        // session; otherwise report unresolved cleanup instead of risking a
+        // reused session ID.
+        let current_groups =
+            fresh_groups_for_kill(self.session, &groups, session_groups, has_live_anchor)?;
+        #[cfg(test)]
+        let signal_error = if self.fail_next_kill.swap(false, Ordering::AcqRel) {
+            Some(rustix::io::Errno::PERM)
+        } else {
+            signal_groups(
+                &current_groups,
+                self.session,
+                self.process_group,
+                child.process.id(),
+                Signal::KILL,
+                false,
+            )
+            .err()
+        };
+        #[cfg(not(test))]
         let signal_error = signal_groups(
-            &groups,
+            &current_groups,
             self.session,
             self.process_group,
             child.process.id(),
@@ -193,6 +248,7 @@ impl PtyShared {
             if let Some(error) = signal_error {
                 return Err(PtyHostError::Signal(error));
             }
+            self.termination_complete.store(true, Ordering::Release);
             return child.status.ok_or_else(|| {
                 PtyHostError::Io(std::io::Error::other("reaped terminal child has no status"))
             });
@@ -213,6 +269,7 @@ impl PtyShared {
         if let Some(error) = signal_error {
             return Err(PtyHostError::Signal(error));
         }
+        self.termination_complete.store(true, Ordering::Release);
         Ok(status)
     }
 }
@@ -282,6 +339,12 @@ impl PtyHost for LocalPtyHost {
             process_group,
             identity,
             termination_attempted: AtomicBool::new(false),
+            termination_complete: AtomicBool::new(false),
+            captured_groups: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            before_kill: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_kill: AtomicBool::new(false),
         })))
     }
 
@@ -373,8 +436,10 @@ pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
         while Instant::now() < deadline {
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        let current_groups =
+            fresh_groups_for_kill(identity.session, &groups, session_groups, has_live_anchor)?;
         signal_groups(
-            &groups,
+            &current_groups,
             identity.session,
             identity.process_group,
             identity.pid,
@@ -464,6 +529,49 @@ fn session_groups(session: u32) -> Vec<SessionGroup> {
 #[cfg(not(target_os = "linux"))]
 fn session_groups(_session: u32) -> Vec<SessionGroup> {
     Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn has_live_anchor(groups: &[SessionGroup], session: u32) -> bool {
+    groups.iter().any(|group| {
+        group.members.iter().any(|member| {
+            let current_group_session =
+                std::fs::read_to_string(format!("/proc/{}/stat", member.pid))
+                    .ok()
+                    .and_then(|stat| {
+                        let (_, tail) = stat.rsplit_once(')')?;
+                        let fields = tail.split_whitespace().collect::<Vec<_>>();
+                        Some((
+                            fields.get(2)?.parse::<u32>().ok()?,
+                            fields.get(3)?.parse::<u32>().ok()?,
+                        ))
+                    });
+            current_group_session == Some((group.id, session))
+                && start_time(member.pid, false).ok().flatten().as_deref()
+                    == Some(&member.start_time)
+        })
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_live_anchor(_groups: &[SessionGroup], _session: u32) -> bool {
+    true
+}
+
+fn fresh_groups_for_kill(
+    session: u32,
+    captured: &[SessionGroup],
+    enumerate: impl FnOnce(u32) -> Vec<SessionGroup>,
+    has_anchor: impl FnOnce(&[SessionGroup], u32) -> bool,
+) -> Result<Vec<SessionGroup>, PtyHostError> {
+    let current = enumerate(session);
+    if !current.is_empty() && !has_anchor(captured, session) {
+        return Err(PtyHostError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "terminal session jobs remain without a verified original member",
+        )));
+    }
+    Ok(current)
 }
 
 fn signal_groups(
@@ -564,4 +672,163 @@ fn exit_code(status: ExitStatus) -> i32 {
             -1
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::{GroupMember, LocalPtyHost, PtyHost, SessionGroup, fresh_groups_for_kill};
+
+    #[test]
+    fn kill_enumeration_sees_a_group_created_after_term_at_the_gate() {
+        let original = SessionGroup {
+            id: 700,
+            members: vec![GroupMember {
+                pid: 701,
+                start_time: "original-member".into(),
+            }],
+        };
+        let discovered = Arc::new(Mutex::new(vec![original.clone()]));
+        let gate = Arc::new(Barrier::new(2));
+        let worker_groups = discovered.clone();
+        let worker_gate = gate.clone();
+        let captured = vec![original];
+        let worker = thread::spawn(move || {
+            fresh_groups_for_kill(
+                700,
+                &captured,
+                move |_| {
+                    worker_gate.wait(); // TERM has completed; KILL enumeration is gated.
+                    worker_gate.wait(); // The test inserts a new session group.
+                    worker_groups.lock().expect("groups").clone()
+                },
+                |_, _| true,
+            )
+            .expect("fresh session enumeration")
+        });
+
+        gate.wait();
+        discovered.lock().expect("groups").push(SessionGroup {
+            id: 702,
+            members: vec![GroupMember {
+                pid: 703,
+                start_time: "new-member".into(),
+            }],
+        });
+        gate.wait();
+        let groups = worker.join().expect("enumeration worker");
+        assert!(groups.iter().any(|group| group.id == 702));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn term_resistant_job_survives_until_leader_is_reaped_before_kill() {
+        let root = PathBuf::from("/dev/shm/cs-rust-terminals-tests/process-host");
+        std::fs::create_dir_all(&root).expect("tmpfs cwd");
+        let cwd = root.join(format!("leader-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("isolated cwd");
+        let host = LocalPtyHost;
+        let command = [
+            "/bin/bash".to_owned(),
+            "-c".to_owned(),
+            r#"set -m; /usr/bin/python3 -c 'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("JOB_READY", flush=True); signal.pause()' & job=$!; echo CHILD_PID:$job; wait"#.to_owned(),
+        ];
+        let env = [
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ];
+        let mut session = host
+            .open(&command, &cwd, &env)
+            .expect("open terminal shell");
+        let leader = session.identity().expect("Linux identity").pid;
+        let (sender, receiver) = mpsc::channel();
+        let mut output = String::new();
+        let mut child_pid = None;
+        while child_pid.is_none() || !output.contains("JOB_READY") {
+            let mut bytes = [0_u8; 512];
+            let count = host.read(&mut session, &mut bytes).expect("read handshake");
+            assert_ne!(count, 0, "leader exited before announcing its child");
+            output.push_str(&String::from_utf8_lossy(&bytes[..count]));
+            child_pid = output
+                .lines()
+                .find_map(|line| line.strip_prefix("CHILD_PID:")?.trim().parse::<u32>().ok());
+        }
+        let child_pid = child_pid.expect("child pid");
+        let stat =
+            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).expect("job process stat");
+        let (_, fields) = stat.rsplit_once(')').expect("job stat fields");
+        let fields = fields.split_whitespace().collect::<Vec<_>>();
+        let group = fields[2].parse::<u32>().expect("job process group");
+        assert_ne!(group, leader, "job must have its own process group");
+        let hook = Box::new(move || {
+            let leader_alive =
+                std::fs::read_to_string(format!("/proc/{leader}/stat")).is_ok_and(|stat| {
+                    stat.rsplit_once(") ")
+                        .and_then(|(_, fields)| fields.split_whitespace().next())
+                        .is_some_and(|state| state != "Z")
+                });
+            assert!(
+                !leader_alive,
+                "TERM-responsive leader must be reaped before KILL"
+            );
+            let child_alive =
+                std::fs::read_to_string(format!("/proc/{child_pid}/stat")).is_ok_and(|stat| {
+                    stat.rsplit_once(") ")
+                        .and_then(|(_, fields)| fields.split_whitespace().next())
+                        .is_some_and(|state| state != "Z")
+                });
+            assert!(
+                child_alive,
+                "TERM-ignoring job must survive TERM until KILL"
+            );
+            let _sent = sender.send(());
+        });
+        *session.0.before_kill.lock().expect("termination hook") = Some(hook);
+        let repeated_close = session.clone();
+        host.close(session).expect("TERM/KILL and reap session");
+        host.close(repeated_close)
+            .expect("repeated close uses completed state without a fresh snapshot");
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pre-KILL witness ran");
+        let _remove = std::fs::remove_dir_all(cwd);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_kill_signal_returns_error_and_retains_the_recovery_identity() {
+        let root = PathBuf::from("/dev/shm/cs-rust-terminals-tests/process-host");
+        std::fs::create_dir_all(&root).expect("tmpfs cwd");
+        let cwd = root.join(format!("signal-failure-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("isolated cwd");
+        let host = LocalPtyHost;
+        let session = host
+            .open(
+                &["/bin/cat".into()],
+                &cwd,
+                &[("TERM".into(), "xterm".into())],
+            )
+            .expect("open cat");
+        let recovery = session.clone();
+        session
+            .0
+            .fail_next_kill
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            host.close(session).is_err(),
+            "injected signal failure is reported"
+        );
+        assert!(
+            recovery.identity().is_some(),
+            "recovery identity remains available"
+        );
+        host.close(recovery)
+            .expect("a later close completes after the injected failure");
+        let _remove = std::fs::remove_dir_all(cwd);
+    }
 }

@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread::{self, JoinHandle};
@@ -26,7 +28,7 @@ pub type IdentityCallback =
 struct LiveTerminal {
     session: PtySession,
     reader: Option<JoinHandle<()>>,
-    reader_done: mpsc::Receiver<()>,
+    reader_done: Option<mpsc::Receiver<()>>,
 }
 
 /// A blocking local PTY adapter implementing the service's AppServer-shaped port.
@@ -36,6 +38,10 @@ pub struct PtyTerminalSession {
     sessions: Arc<Mutex<HashMap<String, LiveTerminal>>>,
     callback: Arc<Mutex<Option<NotificationCallback>>>,
     identity_callback: Arc<Mutex<Option<IdentityCallback>>>,
+    #[cfg(test)]
+    fail_next_close: Arc<Mutex<bool>>,
+    #[cfg(test)]
+    force_identity_unavailable: Arc<AtomicBool>,
 }
 
 impl PtyTerminalSession {
@@ -114,7 +120,15 @@ impl PtyTerminalSession {
             .map_err(|_| SessionError::Disconnected)?
             .clone();
         if let Some(identity_callback) = identity_callback {
-            identity_callback(&id, session.identity())?;
+            #[cfg(test)]
+            let identity = if self.force_identity_unavailable.load(Ordering::Acquire) {
+                None
+            } else {
+                session.identity()
+            };
+            #[cfg(not(test))]
+            let identity = session.identity();
+            identity_callback(&id, identity)?;
         }
 
         let mut sessions = self
@@ -150,7 +164,7 @@ impl PtyTerminalSession {
             LiveTerminal {
                 session,
                 reader: Some(reader),
-                reader_done: reader_done_rx,
+                reader_done: Some(reader_done_rx),
             },
         );
         Ok(json!({"ok":true}))
@@ -179,24 +193,60 @@ impl PtyTerminalSession {
             .map_err(|_| SessionError::Disconnected)?
             .remove(id);
         if let Some(mut live) = live {
-            let close_failed = self.host.close(live.session).is_err();
-            let reader_failed = live.reader.take().is_some_and(|reader| {
-                match live
-                    .reader_done
-                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-                {
-                    Ok(()) => reader.join().is_err(),
-                    Err(_) => {
-                        drop(reader);
-                        true
+            #[cfg(test)]
+            let injected_failure = self
+                .fail_next_close
+                .lock()
+                .map(|mut fail| std::mem::take(&mut *fail))
+                .unwrap_or(false);
+            #[cfg(not(test))]
+            let injected_failure = false;
+            let close_failed = injected_failure || self.host.close(live.session.clone()).is_err();
+            let reader_failed = if close_failed {
+                live.reader.take().is_some_and(|reader| {
+                    drop(reader);
+                    true
+                })
+            } else {
+                live.reader.take().is_some_and(|reader| {
+                    match live.reader_done.take().map(|done| {
+                        done.recv_timeout(
+                            deadline.saturating_duration_since(std::time::Instant::now()),
+                        )
+                    }) {
+                        Some(Ok(())) => reader.join().is_err(),
+                        Some(Err(_)) | None => {
+                            drop(reader);
+                            true
+                        }
                     }
-                }
-            });
+                })
+            };
             if close_failed || reader_failed {
+                live.reader = None;
+                live.reader_done = None;
+                self.sessions
+                    .lock()
+                    .map_err(|_| SessionError::Disconnected)?
+                    .insert(id.to_owned(), live);
                 return Err(SessionError::Disconnected);
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn fail_next_close_for_test(&self) {
+        *self
+            .fail_next_close
+            .lock()
+            .expect("close failure injection") = true;
+    }
+
+    #[cfg(test)]
+    fn force_identity_unavailable_for_test(&self) {
+        self.force_identity_unavailable
+            .store(true, Ordering::Release);
     }
 }
 
@@ -311,17 +361,49 @@ fn read_session(
             Err(_) => break,
         }
     }
-    let _close_result = host.close(session.clone());
-    let code = host.wait(&mut session).ok().flatten().map(i64::from);
+    if let Err(error) = host.close(session.clone()) {
+        callback(TerminalNotification {
+            terminal_id,
+            sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            event: TerminalEvent::CleanupFailed(format!("Terminal teardown failed: {error}")),
+        });
+        let _send_result = done.send(());
+        return;
+    }
+    let code = match host.wait(&mut session) {
+        Ok(Some(code)) => i64::from(code),
+        Ok(None) => {
+            callback(TerminalNotification {
+                terminal_id,
+                sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+                event: TerminalEvent::CleanupFailed(
+                    "Terminal teardown did not reap the child".into(),
+                ),
+            });
+            let _send_result = done.send(());
+            return;
+        }
+        Err(error) => {
+            callback(TerminalNotification {
+                terminal_id,
+                sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+                event: TerminalEvent::CleanupFailed(format!(
+                    "Could not reap terminal child: {error}"
+                )),
+            });
+            let _send_result = done.send(());
+            return;
+        }
+    };
     if let Some(sessions) = sessions.upgrade()
         && let Ok(mut sessions) = sessions.lock()
     {
         sessions.remove(&terminal_id);
     }
     callback(TerminalNotification {
-        terminal_id: terminal_id.clone(),
+        terminal_id,
         sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
-        event: TerminalEvent::Exit(code),
+        event: TerminalEvent::Exit(Some(code)),
     });
     let _send_result = done.send(());
 }
@@ -494,6 +576,59 @@ mod tests {
     }
 
     #[test]
+    fn failed_teardown_keeps_the_live_session_for_recovery() {
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        let (sender, receiver) = mpsc::channel::<TerminalNotification>();
+        adapter.set_notification_callback(std::sync::Arc::new(move |event| {
+            let _send_result = sender.send(event);
+        }));
+        adapter
+            .send_request(
+                "spawn-recoverable-cat",
+                "process/spawn",
+                json!({
+                    "processHandle":"recoverable-cat",
+                    "cwd":cwd.path(),
+                    "command":["/bin/cat"],
+                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("spawn recoverable cat");
+        adapter.fail_next_close_for_test();
+        assert_eq!(
+            adapter.send_request(
+                "injected-close-failure",
+                "process/kill",
+                json!({"processHandle":"recoverable-cat"}),
+            ),
+            Err(crate::terminal_driver::SessionError::Disconnected)
+        );
+        assert!(
+            adapter
+                .sessions
+                .lock()
+                .expect("sessions")
+                .contains_key("recoverable-cat")
+        );
+
+        adapter.close().expect("retry teardown");
+        let mut saw_exit = false;
+        while let Ok(event) = receiver.recv_timeout(Duration::from_secs(2)) {
+            match event.event {
+                TerminalEvent::Exit(Some(_)) => {
+                    saw_exit = true;
+                    break;
+                }
+                TerminalEvent::CleanupFailed(message) => panic!("teardown failed: {message}"),
+                TerminalEvent::Output(_) | TerminalEvent::Exit(None) => {}
+            }
+        }
+        assert!(saw_exit, "successful recovery reports a reaped child");
+    }
+
+    #[test]
     fn resize_changes_the_window_size_reported_by_the_child() {
         let cwd = terminal_cwd();
         let adapter = PtyTerminalSession::new();
@@ -539,6 +674,9 @@ mod tests {
                     }
                 }
                 TerminalEvent::Exit(_) => panic!("size probe exited before reporting dimensions"),
+                TerminalEvent::CleanupFailed(message) => {
+                    panic!("size probe cleanup failed: {message}")
+                }
             }
         }
         assert!(String::from_utf8_lossy(&output).contains("27 88"));
@@ -789,9 +927,42 @@ mod tests {
             )
             .expect("spawn identity target");
         let mut stale = identity_receiver.recv().expect("persisted identity");
+        // A separate session is the unrelated live process the stale cleanup
+        // must never signal.
+        let unrelated_adapter = PtyTerminalSession::new();
+        unrelated_adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        let (unrelated_sender, unrelated_receiver) = mpsc::channel();
+        unrelated_adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
+            let _send_result = unrelated_sender.send(identity.expect("Linux identity").pid);
+            Ok(())
+        }));
+        unrelated_adapter
+            .send_request(
+                "spawn-unrelated-identity-check",
+                "process/spawn",
+                json!({
+                    "processHandle":"unrelated-identity-check",
+                    "cwd":cwd.path(),
+                    "command":["/bin/cat"],
+                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("spawn unrelated live process");
+        let unrelated_pid = unrelated_receiver.recv().expect("unrelated PID");
         stale.start_time_ticks = stale.start_time_ticks.saturating_add(1);
-        assert!(!cleanup_persisted_identity(&stale).expect("verify stale identity"));
+        assert!(cleanup_persisted_identity(&stale).is_err());
         assert!(std::fs::metadata(format!("/proc/{}/stat", stale.pid)).is_ok());
+        let unrelated_stat = std::fs::read_to_string(format!("/proc/{unrelated_pid}/stat"))
+            .expect("unrelated process remains present");
+        let (_, unrelated_fields) = unrelated_stat
+            .rsplit_once(") ")
+            .expect("unrelated process stat fields");
+        assert_ne!(
+            unrelated_fields.split_whitespace().next(),
+            Some("Z"),
+            "stale identity refusal must not signal the unrelated live process"
+        );
         adapter
             .send_request(
                 "close-identity-check",
@@ -799,6 +970,13 @@ mod tests {
                 json!({"processHandle":"identity-check"}),
             )
             .expect("close verified test process");
+        unrelated_adapter
+            .send_request(
+                "close-unrelated-identity-check",
+                "process/kill",
+                json!({"processHandle":"unrelated-identity-check"}),
+            )
+            .expect("close unrelated process");
     }
 
     #[cfg(target_os = "linux")]
@@ -833,6 +1011,40 @@ mod tests {
                 .is_some_and(|state| state != "Z")
         });
         assert!(!remains, "child survived refusal to persist its identity");
+    }
+
+    #[test]
+    fn missing_restart_identity_does_not_disable_live_creation() {
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        adapter.force_identity_unavailable_for_test();
+        let (identity_sender, identity_receiver) = mpsc::channel();
+        adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
+            let _send_result = identity_sender.send(identity.is_none());
+            Ok(())
+        }));
+        adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        adapter
+            .send_request(
+                "spawn-without-restart-identity",
+                "process/spawn",
+                json!({
+                    "processHandle":"without-restart-identity",
+                    "cwd":cwd.path(),
+                    "command":["/bin/cat"],
+                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("live terminal creation is still available");
+        assert!(identity_receiver.recv().expect("identity callback"));
+        adapter
+            .send_request(
+                "close-without-restart-identity",
+                "process/kill",
+                json!({"processHandle":"without-restart-identity"}),
+            )
+            .expect("known child process group closes without persisted identity");
     }
 
     #[cfg(target_os = "linux")]
@@ -1024,7 +1236,7 @@ mod tests {
                 json!({
                     "processHandle":"surviving-job-session",
                     "cwd":cwd.path(),
-                    "command":["/bin/sh","-c","set -m; /bin/sh -c 'trap \\\"\\\" TERM; echo JOB_READY; exec /bin/cat' & job=$!; echo CHILD_PID:$job; wait"],
+                    "command":["/bin/bash","-c",r#"set -m; /usr/bin/python3 -c 'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("JOB_READY", flush=True); signal.pause()' & job=$!; echo CHILD_PID:$job; wait"#],
                     "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
                     "size":{"cols":100,"rows":28}
                 }),
@@ -1055,6 +1267,18 @@ mod tests {
             .expect("child process group");
         assert_ne!(process_group, std::process::id() as i32);
 
+        std::process::Command::new("/bin/kill")
+            .args(["-TERM", "--", &format!("-{process_group}")])
+            .status()
+            .expect("send TERM to the job before terminal close");
+        let survived_term =
+            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .and_then(|(_, fields)| fields.split_whitespace().next())
+                    .is_some_and(|state| state != "Z")
+            });
+        assert!(survived_term, "job must ignore TERM before the KILL pass");
+
         adapter
             .send_request(
                 "close-surviving-job",
@@ -1062,6 +1286,13 @@ mod tests {
                 json!({"processHandle":"surviving-job-session"}),
             )
             .expect("KILL surviving job after leader reap");
+        loop {
+            if let TerminalEvent::Exit(Some(_)) =
+                receiver.recv().expect("leader exit notification").event
+            {
+                break;
+            }
+        }
         let remains =
             std::fs::read_to_string(format!("/proc/{child_pid}/stat")).is_ok_and(|stat| {
                 stat.rsplit_once(") ")
@@ -1077,6 +1308,13 @@ mod tests {
             !remains,
             "TERM-ignoring session job survived leader reap and close"
         );
+        adapter
+            .send_request(
+                "repeat-close-surviving-job",
+                "process/kill",
+                json!({"processHandle":"surviving-job-session"}),
+            )
+            .expect("second completed close is a no-op");
     }
 
     #[cfg(target_os = "linux")]

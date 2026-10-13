@@ -49,7 +49,8 @@ process-group signal. Windows live terminal actions remain unavailable.
 On macOS, live terminal creation is available, but the current PTY adapter has
 no supported session enumeration or restart-verifiable kernel identity source.
 Close signals only the child's known process group; restart reconciliation never
-signals a persisted process identity. This limit is compile-checked only. The
+signals a persisted process identity and retains the row with a named unresolved
+cleanup error. This limit is compile-checked only. The
 platform-specific behavior is implemented in
 [`pty_host.rs`](../runtime-process/src/pty_host.rs).
 

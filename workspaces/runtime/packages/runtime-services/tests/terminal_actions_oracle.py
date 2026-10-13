@@ -1,6 +1,7 @@
 """Compare terminal actions using the production Python manager and SQLite rows."""
 import concurrent.futures
 import json
+import uuid
 from pathlib import Path
 import shutil
 import sqlite3
@@ -12,6 +13,7 @@ source, root, rust_root = map(Path, sys.argv[1:4])
 sys.path.insert(0, str(source))
 from codex_canvas import Canvas
 from codex_terminals import TerminalManager
+import codex_terminals
 
 
 class Runtime:
@@ -75,6 +77,8 @@ def backup(source_root, destination):
 
 
 def main():
+    codex_terminals.time.time = lambda: 1700000000.25
+    uuid.uuid4 = lambda: uuid.UUID("f48d7c00-0000-4000-8000-000000000001")
     canvas = Canvas(root)
     manager = TerminalManager(root)
     server = Server()
@@ -88,13 +92,22 @@ def main():
     backup(root, rust_root)
     results = [{"action": "create", "result": manager.create(runtime, create_request), "tables": tables(manager)}]
     terminal_id = results[0]["result"]["id"]
-    for action, data in (
-        ("rename", {"id": terminal_id, "title": "  Shell  "}),
-        ("input", {"id": terminal_id, "text": "hi🙂", "request_id": "actions-input"}),
-        ("resize", {"id": terminal_id, "cols": 91, "rows": 33}),
-        ("close", {"id": terminal_id}),
+    for label, action, data in (
+        ("rename", "rename", {"id": terminal_id, "title": "  Shell  "}),
+        ("input", "input", {"id": terminal_id, "text": "hi🙂", "request_id": "actions-input"}),
+        ("input-replay", "input", {"id": terminal_id, "text": "hi🙂", "request_id": "actions-input"}),
+        ("resize", "resize", {"id": terminal_id, "cols": 91, "rows": 33}),
+        ("close", "close", {"id": terminal_id}),
     ):
-        results.append({"action": action, "result": manager.action(action, data), "tables": tables(manager)})
+        results.append({"action": label, "result": manager.action(action, data), "tables": tables(manager)})
+    changed = {"id": terminal_id, "text": "different", "request_id": "actions-input"}
+    try:
+        result = manager.action("input", changed)
+        error = None
+    except ValueError as exception:
+        result = None
+        error = "receipt_conflict" if str(exception) == "This request id has different content" else str(exception)
+    results.append({"action": "input-reject", "result": result, "error": error, "tables": tables(manager)})
     print(json.dumps({"actions": results, "wire": server.calls}, ensure_ascii=False, sort_keys=True))
 
 

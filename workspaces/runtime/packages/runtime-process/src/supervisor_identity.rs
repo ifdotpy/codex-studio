@@ -46,6 +46,8 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
 /// Linux boot/start identity and remains in the captured group and session.
 /// Callers capture all group members before starting teardown so leader reap
 /// cannot hide surviving jobs from the later KILL pass.
+/// Verify a session member before signalling; the remaining verify-to-kill
+/// window is inherent without pidfd and is narrower than Python's raw killpg.
 pub(crate) fn signal_verified_group_member(
     pid: u32,
     pgid: u32,
