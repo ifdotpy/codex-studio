@@ -65,6 +65,36 @@ impl NotificationDispatchRepository {
             .map_err(|error| map_transcript_error(error, "runtime_agents", agent))
     }
 
+    pub fn related_record(
+        transaction: &Transaction<'_>,
+        table: &'static str,
+        id: &str,
+    ) -> StoreResult<Option<Value>> {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let raw: Option<String> = transaction
+            .query_row(
+                &format!("SELECT record FROM {table} WHERE id=?1"),
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid_record(table, id))?;
+            if !value.is_object() || value.get("id").and_then(Value::as_str) != Some(id) {
+                return Err(invalid_record(table, id));
+            }
+            Ok(value)
+        })
+        .transpose()
+    }
+
     pub fn put_agent_record(
         transaction: &Transaction<'_>,
         agent: &str,
@@ -141,26 +171,38 @@ impl NotificationDispatchRepository {
         event_id: &str,
         item_id: &str,
     ) -> StoreResult<()> {
+        let event_exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2)",
+            params![event_id, agent],
+            |row| row.get(0),
+        )?;
+        if !event_exists {
+            return Err(invalid_record("runtime_events", event_id));
+        }
         let meta: Option<String> = transaction
             .query_row(
-                "SELECT record FROM runtime_event_meta WHERE id=?1 AND EXISTS \
-                 (SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2)",
-                params![event_id, agent],
+                "SELECT record FROM runtime_event_meta WHERE id=?1",
+                [event_id],
                 |row| row.get(0),
             )
             .optional()?;
-        let Some(meta) = meta else {
-            return Err(invalid_record("runtime_event_meta", event_id));
-        };
-        let parsed: Value = serde_json::from_str(&meta)
-            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
-        if !parsed.is_object() {
-            return Err(invalid_record("runtime_event_meta", event_id));
+        if let Some(meta) = meta {
+            let parsed: Value = serde_json::from_str(&meta)
+                .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
+            if !parsed.is_object() {
+                return Err(invalid_record("runtime_event_meta", event_id));
+            }
+            transaction.execute(
+                "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1,'$.modelEventProjection',1) WHERE id=?2",
+                params![item_id, event_id],
+            )?;
+        } else {
+            let record = serde_json::json!({"transcriptItemId":item_id,"modelEventProjection":1});
+            transaction.execute(
+                "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                params![event_id, record.to_string()],
+            )?;
         }
-        transaction.execute(
-            "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1,'$.modelEventProjection',1) WHERE id=?2",
-            params![item_id, event_id],
-        )?;
         Ok(())
     }
 
@@ -198,20 +240,34 @@ impl NotificationDispatchRepository {
         Ok(event)
     }
 
-    pub fn event_metadata(transaction: &Transaction<'_>, event_id: &str) -> StoreResult<Value> {
-        let raw: String = transaction
+    pub fn event_metadata(
+        transaction: &Transaction<'_>,
+        event_id: &str,
+    ) -> StoreResult<Option<Value>> {
+        let has_table: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Err(invalid_record("runtime_event_meta", event_id));
+        }
+        let raw: Option<String> = transaction
             .query_row(
                 "SELECT record FROM runtime_event_meta WHERE id=?1",
                 [event_id],
                 |row| row.get(0),
             )
-            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
         let value: Value = serde_json::from_str(&raw)
             .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
         if !value.is_object() {
             return Err(invalid_record("runtime_event_meta", event_id));
         }
-        Ok(value)
+        Ok(Some(value))
     }
 
     pub fn notification_receipt(
@@ -239,6 +295,26 @@ fn validate_item(item: &TranscriptItem, agent: &str) -> StoreResult<()> {
             .record
             .get("text")
             .is_some_and(|text| !text.is_string())
+        || item
+            .record
+            .get("assets")
+            .is_some_and(|assets| !assets.is_array())
+        || item.record.get("inputs").is_some_and(|inputs| {
+            !inputs.as_array().is_some_and(|inputs| {
+                inputs.iter().all(|input| {
+                    input.is_object()
+                        && input.get("id").and_then(Value::as_str).is_some()
+                        && input
+                            .get("at")
+                            .and_then(Value::as_f64)
+                            .is_some_and(f64::is_finite)
+                        && input.get("kind").and_then(Value::as_str).is_some()
+                        && input.get("text").and_then(Value::as_str).is_some()
+                        && input.get("truncated").and_then(Value::as_bool).is_some()
+                        && input.get("assets").is_some_and(Value::is_array)
+                })
+            })
+        })
     {
         return Err(invalid_record("runtime_items", &item.id));
     }

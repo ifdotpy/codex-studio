@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import json
 import sqlite3
+import threading
 import sys
 import time
 from pathlib import Path
@@ -15,18 +16,26 @@ database_path = sys.argv[3]
 sys.path.insert(0, str(server_source))
 
 import codex_browser_recovery
+import codex_budget
 import codex_execution
 import codex_radio
 import codex_runtime as codex_runtime_module
 import codex_token_rate
 from codex_runtime import Runtime
+import codex_streaming
 from codex_streaming import StreamBuffer
 
 
-class TestStreamBuffer(StreamBuffer):
-    """Use the real buffer and flush path without starting its wall-clock timer."""
+class ImmediateTimer:
+    """Drive StreamBuffer's real timer callback deterministically."""
 
-    def _schedule_locked(self):
+    def __init__(self, _interval, callback):
+        self.callback = callback
+
+    def start(self):
+        self.callback()
+
+    def cancel(self):
         return None
 
 
@@ -48,6 +57,7 @@ database.executescript(
     CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL);
     CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);
     CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+    CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
     CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
     CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
     CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
@@ -70,10 +80,14 @@ time.gmtime = lambda *_args: _original_gmtime(1234.5)
 
 runtime = Runtime.__new__(Runtime)
 runtime.closed = False
+runtime.lock = threading.RLock()
+runtime.db = lambda *_args, **_kwargs: nullcontext(database)
 runtime.notification_db = lambda: nullcontext(database)
 runtime.connection_current = lambda *_args: True
 runtime._voice_store = None
-runtime._stream_buffer = TestStreamBuffer(runtime)
+original_timer = codex_streaming.threading.Timer
+codex_streaming.threading.Timer = ImmediateTimer
+runtime._stream_buffer = StreamBuffer(runtime)
 runtime.record_task = lambda *_args, **_kwargs: None
 runtime.analytics_safe = lambda *_args, **_kwargs: None
 runtime.touch_ui = lambda *_args, **_kwargs: None
@@ -89,6 +103,7 @@ codex_execution.needs_record = lambda *_args, **_kwargs: False
 codex_runtime_module.record_needs_dispatch = lambda *_args, **_kwargs: False
 codex_runtime_module.workspace_agent_resource_changed = lambda *_args, **_kwargs: False
 codex_token_rate.token_rates = lambda *_args, **_kwargs: TokenRates()
+codex_budget.budget_capture = lambda *_args, **_kwargs: 0
 codex_browser_recovery.observe = lambda *_args, **_kwargs: None
 codex_radio.observe_item = lambda *_args, **_kwargs: None
 
@@ -104,6 +119,13 @@ agent = {
     "events": 0,
     "activeTools": [],
     "autoWake": False,
+    "isLead": True,
+    "agentMode": "multi",
+    "agentModeRevision": 0,
+    "agentModeSupported": True,
+    "concurrency": 32,
+    "maxAgentsExplicit": False,
+    "subagentConcurrencyVersion": 2,
     "prompt": "A short parity fixture.",
 }
 Runtime._put(runtime, database, "agents", agent, sync_rooms=False)
@@ -186,13 +208,68 @@ ordering_events = [
     },
     {
         "method": "item/completed",
-        "params": {"threadId": "thread", "turnId": "replay-turn-1", "item": {"id": "late-answer", "type": "agentMessage", "text": "final"}},
+        "params": {"threadId": "thread", "turnId": "replay-turn-1", "item": {"id": "late-answer", "type": "agentMessage", "text": "final", "questions": [{"title": "Choose one"}]}},
     },
     {
         "method": "item/agentMessage/delta",
         "params": {"threadId": "thread", "turnId": "replay-turn-1", "itemId": "late-answer", "delta": "late"},
     },
+    {
+        "method": "thread/tokenUsage/updated",
+        "params": {"threadId": "thread", "tokenUsage": {"last": {"totalTokens": 42}, "modelContextWindow": 1024}},
+    },
 ]
+
+
+def projection_snapshot():
+    items = {
+        row["id"]: json.loads(row["record"])
+        for row in database.execute("SELECT id,record FROM runtime_items WHERE agent='agent' ORDER BY id")
+    }
+    agent_record = json.loads(
+        database.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()[0]
+    )
+    sync_row = database.execute(
+        "SELECT seq,hash,payload FROM sync_entities WHERE collection='agent' AND id='agent'"
+    ).fetchone()
+    legacy_search = [
+        {"id": row[0], "agent": row[1], "kind": row[2], "body": row[3]}
+        for row in database.execute(
+            "SELECT s.id,s.agent,s.kind,s.body FROM runtime_search_rows r "
+            "JOIN runtime_search s ON s.rowid=r.search_rowid ORDER BY s.id"
+        )
+    ]
+    next_search = [
+        {"id": row[0], "agent": row[1], "kind": row[2], "searchRowId": row[3]}
+        for row in database.execute(
+            "SELECT id,agent,kind,search_rowid FROM runtime_search_next_meta ORDER BY id"
+        )
+    ]
+    database.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.runtime_search_next_vocab "
+        "USING fts5vocab(main, runtime_search_next, 'instance')"
+    )
+    next_tokens = [
+        [row[0], row[1], row[2], row[3]]
+        for row in database.execute(
+            "SELECT term,doc,col,offset FROM runtime_search_next_vocab ORDER BY term,doc,col,offset"
+        )
+    ]
+    event_meta = {
+        row[0]: json.loads(row[1])
+        for row in database.execute("SELECT id,record FROM runtime_event_meta ORDER BY id")
+    }
+    return {
+        "items": items,
+        "agent": agent_record,
+        "sync": {"seq": sync_row[0], "hash": sync_row[1], "payload": json.loads(sync_row[2])},
+        "search": {"legacy": legacy_search, "next": next_search, "nextTokens": next_tokens},
+        "eventMeta": event_meta,
+    }
+
+
+baseline = projection_snapshot()
+baseline["notificationResults"] = list(notification_results)
 for event in ordering_events:
     Runtime.notification(runtime, event, "default", "fixture-connection")
     notification_results.append({"method": event["method"], "status": "written"})
@@ -203,42 +280,11 @@ runtime._stream_buffer.flush_locked(
     turn_id="replay-turn-1",
     force=True,
 )
+codex_streaming.threading.Timer = original_timer
 
 database.commit()
-items = {}
-for row in database.execute("SELECT id,record FROM runtime_items WHERE agent='agent' ORDER BY id"):
-    items[row["id"]] = json.loads(row["record"])
-agent_record = json.loads(database.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()[0])
-sync_row = database.execute(
-    "SELECT seq,hash,payload FROM sync_entities WHERE collection='agent' AND id='agent'"
-).fetchone()
-legacy_search = [
-    {"id": row[0], "agent": row[1], "kind": row[2], "body": row[3]}
-    for row in database.execute(
-        "SELECT s.id,s.agent,s.kind,s.body FROM runtime_search_rows r "
-        "JOIN runtime_search s ON s.rowid=r.search_rowid ORDER BY s.id"
-    )
-]
-next_search = [
-    {"id": row[0], "agent": row[1], "kind": row[2], "searchRowId": row[3]}
-    for row in database.execute(
-        "SELECT id,agent,kind,search_rowid FROM runtime_search_next_meta ORDER BY id"
-    )
-]
-event_meta = {
-    row[0]: json.loads(row[1])
-    for row in database.execute("SELECT id,record FROM runtime_event_meta ORDER BY id")
-}
 expected = {
-    "items": items,
-    "agent": agent_record,
-    "sync": {
-        "seq": sync_row[0],
-        "hash": sync_row[1],
-        "payload": json.loads(sync_row[2]),
-    },
-    "search": {"legacy": legacy_search, "next": next_search},
-    "eventMeta": event_meta,
+    **projection_snapshot(),
     "notificationResults": notification_results,
     "prepared": {
         "firstEventId": input_rows[0]["id"],
@@ -252,5 +298,6 @@ expected = {
         ],
     },
     "orderingEvents": ordering_events,
+    "baseline": baseline,
 }
 print(json.dumps(expected, ensure_ascii=False, sort_keys=True))
