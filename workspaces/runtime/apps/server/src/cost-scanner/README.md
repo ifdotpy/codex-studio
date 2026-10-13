@@ -16,7 +16,9 @@ explicit and must be unique per profile.
 The vendored files keep CodexBar's incremental cache, duplicate and fork
 accounting, token parsing, and built-in pricing. When available, the helper
 copies only CodexBar's non-secret `models-dev-v1.json` pricing catalog into
-the selected cache root. It never copies the shared token usage cache.
+the selected cache root. It never copies the shared token usage cache. It reads
+that catalog from `$HOME/Library/Caches/CodexBar/model-pricing`, so a caller
+with an isolated `HOME` does not read the real account's caches.
 
 The wrapper marks history coverage as partial until the caller verifies the
 selected profile's complete history. Unknown model pricing stays unknown.

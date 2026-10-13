@@ -143,10 +143,22 @@ private func pathIsInside(_ child: URL, base: URL) -> Bool {
     return childPath == basePath || childPath.hasPrefix(basePath + "/")
 }
 
+private func userCachesDirectory() -> URL? {
+    // Follow the caller's HOME, as the Studio server does. Foundation reads the
+    // account home from the user database and ignores HOME, so an isolated
+    // caller would otherwise reach the real user's caches.
+    if let home = ProcessInfo.processInfo.environment["HOME"], home.hasPrefix("/") {
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+    }
+    return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+}
+
 private func copyInstalledPricingIfNewer(to cache: URL) {
     // CodexBar keeps model pricing separately from token usage. Reuse that
     // non-secret catalog, but never reuse the shared cost-usage cache.
-    guard let globalRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+    guard let globalRoot = userCachesDirectory()?
         .appendingPathComponent("CodexBar", isDirectory: true)
         .appendingPathComponent("model-pricing", isDirectory: true)
     else { return }
