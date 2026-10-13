@@ -138,9 +138,17 @@ struct Work {
     record: Value,
 }
 
+#[derive(Deserialize)]
+struct VoiceSession {
+    agent: String,
+    state: Option<String>,
+    ended: Option<f64>,
+}
+
 pub struct ManagementSnapshot {
     agents: Vec<Agent>,
     work: Vec<Work>,
+    voice_sessions: Vec<VoiceSession>,
     tables: BTreeMap<String, Vec<Value>>,
 }
 
@@ -177,6 +185,7 @@ impl ManagementSnapshot {
     pub fn from_records(records: Records) -> Result<Self, ManagementError> {
         let mut agents = Vec::new();
         let mut work = Vec::new();
+        let mut voice_sessions = Vec::new();
         for (table, rows) in &records.tables {
             if rows.len() > MAX_ROWS {
                 return Err(ManagementError::Unavailable(
@@ -202,6 +211,10 @@ impl ManagementSnapshot {
                 {
                     return Err(invalid());
                 }
+                if table == "voice_sessions" {
+                    voice_sessions
+                        .push(serde_json::from_value(row.clone()).map_err(|_| invalid())?);
+                }
                 if table == "runtime_work" {
                     work.push(Work {
                         identity: serde_json::from_value(row.clone()).map_err(|_| invalid())?,
@@ -219,6 +232,7 @@ impl ManagementSnapshot {
         Ok(Self {
             agents,
             work,
+            voice_sessions,
             tables: records.tables,
         })
     }
@@ -353,7 +367,15 @@ impl ManagementSnapshot {
         {
             return Err(ManagementError::Unavailable("monitor-driver/agent-stop"));
         }
-        if [
+        if self.voice_sessions.iter().any(|session| {
+            session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
+        }) {
+            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
+        }
+        Ok(())
+    }
+    fn has_voice_data(&self, agent: &Agent) -> bool {
+        [
             "voice_sessions",
             "voice_records",
             "voice_deliveries",
@@ -361,10 +383,6 @@ impl ManagementSnapshot {
         ]
         .iter()
         .any(|table| !self.owned(table, "agent", agent.id()).is_empty())
-        {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
-        }
-        Ok(())
     }
     fn blockers(&self, agent: &Agent, unassign: bool) -> Vec<Value> {
         let mut blocks = Vec::new();
@@ -556,6 +574,10 @@ fn stop(
     let agents = snapshot.descendants(target, descendants)?;
     for agent in &agents {
         snapshot.refuse_live(agent)?;
+        // Deletion also removes saved voice data; stop only ends open sessions.
+        if delete && snapshot.has_voice_data(agent) {
+            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
+        }
         if delete {
             workspace_dependency(agent)?;
             if agent.flag("imageWorkspace") {

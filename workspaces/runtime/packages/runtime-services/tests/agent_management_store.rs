@@ -2,7 +2,7 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
-    agent_management::{Action, Records},
+    agent_management::{Action, ManagementError, Records},
     agent_management_store::execute,
 };
 use studio_runtime_store::{RuntimeStore, agent_management};
@@ -274,4 +274,137 @@ fn cancellation_keeps_reserved_uncertain_and_foreign_events() {
             ("uncertain".into(), "uncertain".into())
         ]
     );
+}
+
+#[test]
+fn lifecycle_effect_refusals_preserve_rows_and_projections() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "stop-True")
+        .expect("Python seed");
+    let base = tempfile::tempdir().expect("base");
+    template(base.path());
+    let store = RuntimeStore::open(Some(base.path())).expect("template");
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("records"),
+    );
+    drop(store);
+    for delete in [false, true] {
+        for effect in [
+            "monitor-starting",
+            "monitor-running",
+            "monitor-approval",
+            "voice-connecting",
+            "voice-ready",
+            "child-stop",
+        ] {
+            let root = tempfile::tempdir().expect("case");
+            for database in ["canvas.sqlite3", "analytics.sqlite3"] {
+                fs::copy(base.path().join(database), root.path().join(database)).expect("clone");
+            }
+            let store = RuntimeStore::open(Some(root.path())).expect("open");
+            let dependency = if let Some(status) = effect.strip_prefix("monitor-") {
+                store
+                    .transaction(|tx| {
+                        tx.execute(
+                            "INSERT INTO runtime_monitors(id,record) VALUES('live-monitor',?1)",
+                            [
+                                json!({"id":"live-monitor","agent":"worker","status":status})
+                                    .to_string(),
+                            ],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("monitor");
+                "monitor-driver/agent-stop"
+            } else if let Some(status) = effect.strip_prefix("voice-") {
+                store.transaction(|tx| {
+                    tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('live-voice','worker',1,?1)", [status])?;
+                    Ok(())
+                }).expect("voice");
+                "voice-driver/agent-stop"
+            } else {
+                "event-driver/child-stop-notification"
+            };
+            let action = if delete {
+                Action::Delete {
+                    target: "worker".into(),
+                }
+            } else {
+                Action::Stop {
+                    target: "worker".into(),
+                    descendants: true,
+                }
+            };
+            let before = state(&store);
+            let result = execute(&store, &action, 1234567.5);
+            if delete && effect == "child-stop" {
+                // Python tombstones the worker before stopping it, suppressing the parent event.
+                assert_eq!(
+                    result.expect("delete needs no parent notification"),
+                    json!({"deleted":["worker"]})
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(ManagementError::Unavailable(actual)) if actual == dependency),
+                    "{effect} delete={delete}: {result:?}"
+                );
+                assert_eq!(state(&store), before, "{effect} delete={delete}");
+                drop(store);
+                assert_eq!(
+                    state(&RuntimeStore::open(Some(root.path())).expect("restart")),
+                    before
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "stop-ended-voice")
+        .expect("Python ended session");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    records.tables.remove("voice_sessions");
+    seed(&store, records);
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO voice_sessions(id,agent,created,state,ended) VALUES('ended-voice','lead',1,'ended',?1)", [1234557.5])?;
+        tx.execute("INSERT INTO voice_approvals(id,agent,speech,transcript,status) VALUES('saved-approval','lead','speech','transcript','accepted')", [])?;
+        Ok(())
+    }).expect("saved voice");
+    let result = execute(
+        &store,
+        &Action::Stop {
+            target: "lead".into(),
+            descendants: true,
+        },
+        1234567.5,
+    )
+    .expect("history does not need termination");
+    assert_eq!(result, case["expected"]["result"]);
+    let saved = state(&store);
+    for (table, rows) in case["expected"]["records"]["tables"]
+        .as_object()
+        .expect("tables")
+    {
+        assert_eq!(&saved["tables"][table], rows, "{table}");
+    }
+    let result = execute(
+        &store,
+        &Action::Delete {
+            target: "lead".into(),
+        },
+        1234568.0,
+    );
+    assert!(matches!(
+        result,
+        Err(ManagementError::Unavailable("voice-driver/agent-stop"))
+    ));
+    assert_eq!(state(&store), saved);
 }
