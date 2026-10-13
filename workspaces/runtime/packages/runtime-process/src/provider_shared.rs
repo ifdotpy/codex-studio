@@ -1,8 +1,5 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
-use crate::{
-    BackendIdentity, OperationId, ProviderFactoryError, SupervisorAction, SupervisorError,
-    SupervisorHandle,
-};
+use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -40,7 +37,7 @@ pub(crate) fn clean_environment(requested: &BTreeMap<String, String>) -> BTreeMa
 pub(crate) fn verify_environment(
     original: &BTreeMap<String, String>,
     clean: &BTreeMap<String, String>,
-) -> Result<(), ProviderFactoryError> {
+) -> io::Result<()> {
     let without_launcher = |values: &BTreeMap<String, String>| {
         values
             .iter()
@@ -52,7 +49,7 @@ pub(crate) fn verify_environment(
             .collect::<BTreeMap<_, _>>()
     };
     if without_launcher(original) != without_launcher(clean) {
-        return Err(ProviderFactoryError::Launch);
+        return Err(io::Error::other("retained provider environment differs"));
     }
     Ok(())
 }

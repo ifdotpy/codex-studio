@@ -1,9 +1,9 @@
-//! Synchronous process ports and the supervisor v1 client.
+//! Asynchronous provider adapters, process ports and the supervisor v1 client.
 
 mod client;
 mod ports;
 mod protocol;
-pub mod provider_process;
+mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
 #[cfg(unix)]
@@ -15,10 +15,7 @@ mod transport;
 pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
-pub use provider_process::{
-    ProviderFactoryError, ProviderHandle, ProviderLaunchResolver, ProviderLaunchSpec,
-    ProviderProcessFactory, SupervisorProviderProcess, SupervisorProviderProcessFactory,
-};
+pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]
