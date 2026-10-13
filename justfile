@@ -81,7 +81,7 @@ test-heavy:
 [doc("Run the full Rust readiness, lifecycle, notification, preparation and subsystem matrices (manual heavy tier; no load generators).")]
 test-rust-runtime-corpora:
     @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates|budget|radio_policy|voice_provider|recovery|catalog_reads)_corpus$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates|budget|radio_policy|voice_provider|recovery|catalog_reads)_corpus$/) or binary(/^wave7_p03_message_ingress$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
 
     @cargo nextest run -p studio-runtime-services -E 'binary(/^claude_/) or binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/)'
     @cargo nextest run -p studio-process-supervisor

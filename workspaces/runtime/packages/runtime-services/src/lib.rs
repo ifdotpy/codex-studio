@@ -27,6 +27,7 @@ pub mod coordination;
 pub mod coordination_reads;
 pub mod event_write;
 pub mod federation;
+pub mod message_admission;
 pub mod model_catalog;
 pub mod multi_server;
 pub mod notification_dispatch;
