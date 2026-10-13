@@ -90,19 +90,11 @@ async fn commit(
     command: WorkWrite,
 ) -> Result<Value, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let wake = state.event_wake.clone();
     tokio::task::spawn_blocking(move || {
         let result = store
             .transaction_with_error(|tx| {
-                work_write::write(
-                    tx,
-                    &agent,
-                    request_id.as_deref(),
-                    &signature,
-                    command,
-                    |record| validators.validate_stored("WorkItem", record),
-                )
+                work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
             })
             .map_err(work_items::write_error)?;
         if result.event_inserted {
