@@ -8,7 +8,7 @@ import socket
 from typing import Any
 import uuid
 
-from host_exec_protocol import FRAME_LIMIT, PORT, HostExecError, atomic, conflicts, key, relative, require
+from host_exec_protocol import FRAME_LIMIT, PORT, HostExecError, atomic, conflicts, key, relative, require, under
 
 
 def request_key(operation: str, phase: str) -> str:
@@ -104,7 +104,10 @@ class HostExec:
                 "The host command cwd is outside its line")
         op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line)}, "acquire")
         slot = {**common, "slotId": op["slotId"], "generation": op["generation"]}
-        prepared = await self.broker("host.slot.prepare", slot, "prepare")
+        # Paths that the project settings keep on the Mac (docs/host-exec.md).
+        mac_only = list(op.get("macOnly", []))
+        prepared = await self.broker("host.slot.prepare", {**slot, "macOnly": mac_only}, "prepare")
+        caches = list(prepared.get("caches", []))
         if prepared.get("nameConflicts"):
             await self.broker("host.slot.forget", slot, "conflict-forget")
             await self.call("release", common, "conflict-release")
@@ -136,7 +139,8 @@ class HostExec:
                 await self.call("sync.commit", {**common, "path": path}, "commit:" + key(path))
         relative_cwd = cwd.relative_to(line).as_posix()
         await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
-            "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300)}, "run")
+            "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
+            "caches": caches}, "run")
         after_seq = 0
         while True:
             attached = await self.call("attach", {**common, "afterSeq": after_seq, "waitSeconds": 10}, "attach:" + str(after_seq))
@@ -150,6 +154,8 @@ class HostExec:
             if final["state"] == "exited" and not attached["events"]:
                 break
         changes = await self.manifest("result.manifest", {**common, "area": "changes"}, "changes")
+        # Cache folders and Mac-only paths never return to the line, also from an older Mac service.
+        changes = {path: entry for path, entry in changes.items() if not under(path, caches + mac_only)}
         if final.get("nameConflicts"):
             return {**final, "state": "collection_refused", "transferredBytes": sent}
         for path in sorted(changes, key=lambda value: (-value.count("/"), value)):

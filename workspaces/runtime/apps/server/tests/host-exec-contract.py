@@ -27,18 +27,20 @@ sys.path.insert(0, str(VM_GUEST_ROOT))
 from codex_host_exec_server import HostService
 from codex_host_exec import run_tool, tool_definition
 from host_exec import HostExec
-from host_exec_protocol import HostExecError, conflicts, key, mapped, scan
+import host_exec_protocol
+from host_exec_protocol import HostExecError, conflicts, key, mapped, page, scan
 from host_exec_slot import HostSlotHandlers
 
 
 class Agents:
     def __init__(self, context):
         self.context = context
+        self.contexts = {context["agentId"]: context}
 
     async def dispatch(self, request_id, method, params, emit=None):
-        if params["agentId"] != self.context["agentId"]:
+        if params["agentId"] not in self.contexts:
             raise HostExecError("forbidden", "Unknown agent")
-        return self.context
+        return self.contexts[params["agentId"]]
 
 
 class Slots(HostSlotHandlers):
@@ -65,12 +67,17 @@ class Slots(HostSlotHandlers):
         return run(params)
 
     async def layr(self, context, args, ok=(0,)):
+        line = Path(context["path"])
         if args[0] == "rev-parse":
             return "0123456789abcdef0123456789abcdef"
+        if args[:2] == ["cache", "list"]:
+            return "".join(path + ("\tcache\n" if (line / path).is_dir() else "\tabsent\n") for path in self.caches)
         if args[0] == "export":
-            source, line = Path(args[2]), Path(context["path"])
+            source = Path(args[2])
             shutil.rmtree(source)
-            shutil.copytree(line, source, symlinks=True)
+            # layr keeps cache folders outside states: an export has none of their files.
+            shutil.copytree(line, source, symlinks=True, ignore=lambda folder, names: [
+                name for name in names if (Path(folder) / name).relative_to(line).as_posix() in self.caches])
             (source / ".layr-export.json").write_text('{"state": "%s"}' % args[1])
             if self.bad_names:
                 return ("exported state fixture\nnot written (names differ only in case or Unicode form; "
@@ -98,6 +105,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         layr.mkdir()
         self.slots = Slots(self.state, layr, Agents(context))
         self.slots.bad_names = False
+        self.slots.caches = []
         self.slots.collect_batches = []
         self.slots.collect_conflicts = []
         async def host_context(agent):
@@ -126,9 +134,24 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.host.close()
         self.temp.cleanup()
 
-    async def execute(self, operation, script, timeout=5):
-        return await self.guest.handle(operation, {"agentId": "agent", "operationId": operation,
-            "argv": [sys.executable, "-c", script], "cwd": str(self.line), "timeoutSeconds": timeout}, self.emit)
+    async def execute(self, operation, script, timeout=5, agent="agent"):
+        cwd = self.slots.agents.contexts[agent]["path"]
+        return await self.guest.handle(operation, {"agentId": agent, "operationId": operation,
+            "argv": [sys.executable, "-c", script], "cwd": cwd, "timeoutSeconds": timeout}, self.emit)
+
+    def another_line(self, agent, path):
+        """A second line of the project with its own agent; the Mac slots belong to the project."""
+        self.slots.agents.contexts[agent] = {**self.slots.agents.context, "agentId": agent, "line": agent,
+                                            "path": str(path), "cwd": str(path)}
+
+    def project_settings(self, value):
+        folder = self.state / "layr-projects" / "project"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "host-exec.json").write_text(value if isinstance(value, str) else json.dumps(value))
+
+    async def acquire(self, operation):
+        return await self.guest.call("acquire", {"operationId": operation, "agentId": "agent", "projectId": "project",
+                                                 "linePath": str(self.line)}, "acquire")
 
     async def test_source_return_artifact_file_and_warm_path(self):
         first = await self.execute("first", 'import os,pathlib; p=pathlib.Path("main.swift");p.write_text("host edit\\n");'
@@ -245,16 +268,18 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         slot_b = self.host.slot(self.host.load("b"))
         await self.guest.call("release", {"operationId": "a", "agentId": "agent"}, "release")
         (slot_a / "DerivedData" / "large").write_bytes(b"x" * 65536)
-        self.host.budget = self.host.size(slot_b) + 8192
-        self.host.evict(slot_b.parent, exclude=slot_b)
+        budget = self.host.size(slot_b) + 8192
+        self.host.evict(slot_b.parent, budget, exclude=slot_b)
         self.assertFalse(slot_a.exists())
         self.assertTrue(slot_b.exists())
         with self.assertRaises(HostExecError):
-            self.host.evict(slot_b.parent, reserve=self.host.budget + 1)
+            self.host.evict(slot_b.parent, budget, reserve=budget + 1)
 
     async def test_output_alias_split_and_large_manifest(self):
         for index in range(270):
             (self.line / ("file-%03d" % index)).write_text("x")
+        # Several manifest pages on both sides.
+        self.enterContext(patch.object(host_exec_protocol, "PAGE_ENTRIES", 100))
         result = await self.execute("paged", 'import os,pathlib,time;value=str(pathlib.Path("main.swift").resolve());'
             'value=value.replace("/private/tmp/","/tmp/");data=value.encode();'
             'os.write(1,data[:len(data)//2]);time.sleep(0.02);os.write(1,data[len(data)//2:])')
@@ -322,6 +347,118 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             await self.guest.call("release", {"operationId": "lost-owner", "agentId": "agent"}, "release")
         self.assertEqual(caught.exception.code, "invalid_params")
         self.assertTrue((self.host.slot(op) / "lease.json").exists())
+
+    async def test_project_settings_set_the_slot_count_and_budget(self):
+        self.project_settings({"slots": 1, "diskBudgetGiB": 300})
+        first = await self.acquire("one")
+        self.assertEqual((first["diskBudget"], first["macOnly"]), (300 * 1024**3, []))
+        with self.assertRaises(HostExecError) as caught:
+            await self.acquire("two")
+        self.assertEqual(caught.exception.code, "busy")
+
+    async def test_invalid_project_settings_refuse_the_command(self):
+        for index, value in enumerate(({"slots": 0}, {"slots": True}, {"diskBudgetGiB": -1}, {"diskBudgetGiB": "300"},
+                                       {"budget": 300}, {"macOnly": ["../out"]}, {"macOnly": "out"}, "{not json")):
+            with self.subTest(value=value):
+                self.project_settings(value)
+                with self.assertRaises(HostExecError) as caught:
+                    await self.acquire("invalid-%d" % index)
+                self.assertEqual(caught.exception.code, "invalid_config")
+                self.assertIn("host-exec.json", str(caught.exception))
+                self.assertFalse(self.host.opdir("invalid-%d" % index).exists())
+
+    async def test_a_smaller_slot_count_removes_idle_slots_oldest_first(self):
+        for operation in ("a", "b"):
+            await self.acquire(operation)
+        for operation in ("a", "b"):
+            await self.guest.call("release", {"operationId": operation, "agentId": "agent"}, "release")
+        self.project_settings({"slots": 1})
+        third = await self.acquire("c")
+        self.assertEqual(third["slotId"], self.host.load("b")["slotId"])
+        self.assertEqual(len(list((self.state / "host-slots" / key("project")).iterdir())), 1)
+
+    async def test_source_transfer_walks_the_project_folder_rarely(self):
+        for index in range(300):
+            (self.line / ("file-%03d" % index)).write_text("x")
+        with patch.object(self.host, "size", wraps=self.host.size) as size:
+            result = await self.execute("walks", 'print("ok")')
+        self.assertTrue(result["collected"])
+        # One walk per lease step and budget check, not one for each of the 301 files.
+        self.assertLess(size.call_count, 20)
+
+    async def test_a_cache_folder_reaches_the_mac_and_build_output_stays_there(self):
+        self.project_settings({"slots": 1, "diskBudgetGiB": 300, "macOnly": ["chromium/src/out"]})
+        self.slots.caches = ["chromium"]
+        source = self.line / "chromium" / "src"
+        (source / ".git").mkdir(parents=True)
+        (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (source / "a.cc").write_text("int a = 1;\n")
+        (source / "out" / "Linux").mkdir(parents=True)
+        (source / "out" / "Linux" / "linux.o").write_bytes(b"linux")
+        first = await self.execute("chromium-1", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"a.cc").read_text()=="int a = 1;\\n" and (s/".git/HEAD").exists();'
+            'assert not (s/"out/Linux").exists();'
+            '(s/"out/Default").mkdir(parents=True);(s/"out/Default/a.o").write_text("object 1");'
+            '(s/"a.cc").write_text("mac edit");(s/"gen.h").write_text("generated");'
+            'pathlib.Path("main.swift").write_text("host edit\\n")')
+        self.assertEqual((first["exitCode"], first["diskBudget"]), (0, 300 * 1024**3))
+        self.assertTrue(first["collected"])
+        # Normal sources return; nothing inside the cache folder does.
+        self.assertEqual((self.line / "main.swift").read_text(), "host edit\n")
+        self.assertEqual((source / "a.cc").read_text(), "int a = 1;\n")
+        self.assertFalse((source / "gen.h").exists())
+        self.assertFalse((source / "out" / "Default").exists())
+
+        # Another line of the project: the warm slot receives only the file that differs, and
+        # the build output survives for an incremental build.
+        line2 = self.root / "line2"
+        shutil.copytree(self.line, line2, symlinks=True)
+        (line2 / "chromium" / "src" / "a.cc").write_text("int a = 2;\n")
+        self.another_line("agent2", line2)
+        second = await self.execute("chromium-2", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"out/Default/a.o").read_text()=="object 1";'
+            'assert (s/"a.cc").read_text()=="int a = 2;\\n";assert not (s/"gen.h").exists()', agent="agent2")
+        self.assertEqual(second["exitCode"], 0)
+        self.assertEqual(second["slotPath"], first["slotPath"])
+        self.assertEqual(second["transferredBytes"], len("int a = 2;\n"))
+
+        # A line without the cache folder: the slot follows it and keeps the Mac-only output.
+        line3 = self.root / "line3"
+        line3.mkdir()
+        (line3 / "main.swift").write_text("host edit\n")
+        self.another_line("agent3", line3)
+        third = await self.execute("chromium-3", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert not (s/"a.cc").exists() and not (s/".git").exists();'
+            'assert (s/"out/Default/a.o").read_text()=="object 1"', agent="agent3")
+        self.assertEqual(third["exitCode"], 0)
+
+    async def test_the_broker_never_collects_cache_or_mac_only_paths(self):
+        self.slots.caches = ["chromium"]
+        (self.line / "chromium").mkdir()
+        slot = {"agentId": "agent", "slotId": "0", "generation": "0" * 32, "operationId": "filter"}
+        prepared = await self.slots.dispatch("prepare", "host.slot.prepare", {**slot, "macOnly": ["keep"]})
+        self.assertEqual(prepared["caches"], ["chromium"])
+        await self.slots.dispatch("collect", "host.slot.collect",
+                                  {**slot, "paths": ["chromium/x.cc", "keep/y", "main.swift"], "final": True})
+        self.assertEqual(self.slots.collect_batches, [["main.swift"]])
+
+    def test_scan_skips_paths_and_pages_follow_the_cursor(self):
+        tree = self.root / "tree"
+        for name in ("a/b/out/x.o", "a/b/c.cc", "z.txt"):
+            (tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (tree / name).write_text(name)
+        entries = scan(tree, ["a/b/out"])
+        self.assertEqual(sorted(entries), ["a", "a/b", "a/b/c.cc", "z.txt"])
+        items = sorted(scan(tree).items())
+        found, after = {}, ""
+        with patch.object(host_exec_protocol, "PAGE_ENTRIES", 2):
+            while True:
+                result = page(items, after)
+                found.update(result["entries"])
+                if result["next"] is None:
+                    break
+                after = result["next"]
+        self.assertEqual(found, dict(items))
 
     def test_name_and_alias_rules(self):
         self.assertTrue(conflicts(["README", "readme"]))

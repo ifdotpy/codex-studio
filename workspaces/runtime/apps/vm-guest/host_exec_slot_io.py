@@ -115,7 +115,7 @@ def run(params):
     root = Path(params["root"])
     action = params["action"]
     if action == "manifest":
-        return {"entries": scan(root)}
+        return {"entries": scan(root, params.get("skip", []))}
     if action == "collect":
         return collect(params)
     if action == "clear":

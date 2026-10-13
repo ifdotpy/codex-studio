@@ -50,10 +50,16 @@ A lost host owner leaves the slot leased for inspection.
 
 ## Slots and source changes
 
-Each project has four Mac slots and a 20 GiB disk budget. Idle slots are removed
-in the order of their last use. Active slots retain their leases. A command that
-exceeds the budget stops. Each slot has a source folder, DerivedData, and package
-folders at stable paths.
+By default, each project has four Mac slots and a 20 GiB disk budget. A project
+can change both ("Project settings" below). Idle slots are removed in the order of
+their last use. Active slots retain their leases. A command that exceeds the budget
+stops. Each slot has a source folder, DerivedData, and package folders at stable paths.
+
+The budget check measures the project folder of the slots at each lease step.
+Between two measurements it adds the size of each file that the transfer writes.
+It measures again only when this sum reaches the budget. During a command, a
+background walk measures the folder. The pause after a walk is at least one second
+and at least four times the duration of the walk.
 
 Each guest slot has a private folder for its line owner. The guest saves the line
 (`layr save`) and writes that state into the folder with `layr export --all`,
@@ -79,12 +85,69 @@ conflicts. The adapter checks the layr report because layr returns exit code zer
 when it skips conflicting names. A conflict after the command retains the lease
 and reports that source collection was refused.
 
+## Project settings
+
+The operator sets the limits of one project in a file on the Mac:
+`<Studio state>/linux-vm/layr-projects/<layr project ID>/host-exec.json`. The layr
+project ID is the name of the folder that holds the project's `project.json`. For
+example, a Chromium fork uses one slot, 300 GiB, and a Mac-only build folder:
+
+```json
+{ "slots": 1, "diskBudgetGiB": 300, "macOnly": ["chromium/src/out"] }
+```
+
+- `slots`: an integer from 1 to 64. The default is 4.
+- `diskBudgetGiB`: a number above 0. The default is 20.
+- `macOnly`: paths relative to the line root. The default is no paths.
+
+The Mac service reads the file at the start of each command, so a change needs no
+restart. The command result shows the values as `diskBudget` (bytes) and `macOnly`.
+An invalid file or an unknown key stops each command of the project with the code
+`invalid_config`. The VM cannot write the file, so line content cannot change the
+limits. When the slot count decreases, the next command removes idle slots, the
+least recently used first.
+
+## Mac-only paths
+
+A Mac-only path stays in the slot between commands and between lines:
+
+- The guest does not send it, also when the line has a folder at that path.
+- The source transfer does not delete it. The folders above it stay.
+- Changes in it do not return to the line.
+
+Use it for build output in the source folder, for example the ninja `out` folder of
+Chromium. Also use it for Mac tools that a setup step downloads into the source
+folder. Otherwise the next transfer replaces them with the line version.
+
+## Cache folders
+
+layr keeps cache folders outside states (`layr cache list`; the folders that
+`.layrattributes` marks `regenerable`). `layr export --all` does not write their
+files. The guest reads the line's cache folders from the line folder itself and
+sends them to the slot. Content hashes select the files, so a warm slot receives
+only the files that differ from the previous line.
+
+Changes that a Mac command makes in a cache folder do not return to the line. The
+next command replaces them with the line version. Do not change a cache folder while
+a command transfers it: a changed file stops the transfer with a checksum error.
+Then cancel the operation to release its slot.
+
+A command from a line without the cache folder removes the folder from the slot,
+but not its Mac-only paths. The next line with the folder sends it again in full.
+A plain folder at a cache path (`layr cache list` shows `plain folder`) is part of
+the state and follows the normal source rules.
+
+Each command hashes every file of the slot: once in the guest and twice on the Mac.
+For a tree of the size of Chromium this takes minutes. The first transfer to a new
+slot sends every file.
+
 ## Checks
 
 Run checks one at a time:
 
 ```sh
-python3 -B tests/host-exec-contract.py
+python3 -B workspaces/runtime/apps/server/tests/host-exec-contract.py
+python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
 xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization desktop/native/linux-vm/main.swift

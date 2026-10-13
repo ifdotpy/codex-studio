@@ -1,6 +1,7 @@
 """Content transport for host_exec. Source state and merges belong to layr."""
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import os
@@ -9,12 +10,16 @@ from pathlib import Path
 import stat
 import tempfile
 import unicodedata
-from typing import Any
+from typing import Any, Iterable
 
 PORT = 4051
 FRAME_LIMIT = 2 * 1024 * 1024
 CHUNK = 512 * 1024
-MAX_ENTRIES = 200_000
+# A Chromium checkout with its build output has about a million entries.
+MAX_ENTRIES = 2_000_000
+# A manifest page stays well below the frame limit.
+PAGE_ENTRIES = 4096
+PAGE_BYTES = 1024 * 1024
 
 
 class HostExecError(Exception):
@@ -70,14 +75,27 @@ def inside(root: Path, value: Any, *, leaf: bool = False) -> Path:
     return path
 
 
-def scan(root: Path) -> dict[str, dict[str, Any]]:
+def under(path: str, roots: Iterable[str]) -> bool:
+    """Whether `path` is one of `roots` or inside one of them."""
+    return any(path == root or path.startswith(root + "/") for root in roots)
+
+
+def scan(root: Path, skip: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
+    """The entries below `root` with content hashes. The relative paths in `skip` stay out
+    with everything inside them."""
+    skipped = set(skip)
     result: dict[str, dict[str, Any]] = {}
     if not root.exists():
         return result
     for directory, folders, files in os.walk(root, followlinks=False):
+        if skipped:
+            base = Path(directory).relative_to(root).as_posix()
+            folders[:] = [name for name in folders if (name if base == "." else base + "/" + name) not in skipped]
         for name in sorted(folders + files):
             path = Path(directory) / name
             rel = relative(path.relative_to(root).as_posix())
+            if rel in skipped:
+                continue
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
                 result[rel] = {"kind": "link", "target": os.readlink(path)}
@@ -92,6 +110,22 @@ def scan(root: Path) -> dict[str, dict[str, Any]]:
                 raise HostExecError("unsupported_file", "The slot contains a special file: " + rel)
             require(len(result) <= MAX_ENTRIES, "The slot exceeds its file count limit", "disk_budget")
     return result
+
+
+def page(items: list[tuple[str, Any]], after: Any) -> dict[str, Any]:
+    """The entries of a sorted manifest after the path `after` ("" for the first page), and the
+    cursor of the next page (None after the last page)."""
+    require(isinstance(after, str), "Invalid manifest cursor")
+    start = bisect.bisect_right(items, after, key=lambda item: item[0])
+    entries: dict[str, Any] = {}
+    size = 0
+    for path, entry in items[start:start + PAGE_ENTRIES]:
+        size += len(path.encode()) + len(json.dumps(entry)) + 8
+        if entries and size > PAGE_BYTES:
+            break
+        entries[path] = entry
+    end = start + len(entries)
+    return {"entries": entries, "next": items[end - 1][0] if entries and end < len(items) else None}
 
 
 def conflicts(paths: list[str]) -> list[list[str]]:
