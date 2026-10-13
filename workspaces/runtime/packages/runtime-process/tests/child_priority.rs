@@ -106,6 +106,8 @@ fn environment_child_probe() {
         let second = priority_diagnostics();
         assert_eq!(second.failure_count, 2);
         assert_eq!(second.first_failure, first.first_failure);
+    } else if std::env::var("STUDIO_PRIORITY_PROBE").as_deref() == Ok("stream") {
+        stream_priority_probe();
     } else if std::env::var_os("STUDIO_PRIORITY_PROBE").is_some() {
         println!("configured={:?}", ChildPriority::from_environment());
     }
@@ -181,4 +183,84 @@ fn environment_selects_background_by_default_and_normal_disables_it() {
             String::from_utf8_lossy(&output.stdout).contains(&format!("configured={expected}"))
         );
     }
+}
+
+// A fresh executable per setting keeps the process-wide configuration immutable.
+#[test]
+fn stream_child_honors_default_background_and_normal_for_child_and_grandchild() {
+    for value in [None, Some("background"), Some("normal")] {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "environment_child_probe", "--nocapture"])
+            .env("STUDIO_PRIORITY_PROBE", "stream")
+            .env_remove(CHILD_PRIORITY_ENV);
+        if let Some(value) = value {
+            command.env(CHILD_PRIORITY_ENV, value);
+        }
+        let output = command.output().expect("stream priority probe completes");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+fn stream_priority_probe() {
+    use studio_runtime_process::stream_child::{
+        ChildEvent, ChildSpec, ExitReason, OutputStream, StreamChild,
+    };
+    let before = inherited_report();
+    let root = tempfile::tempdir().expect("stream test root");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("probe runtime");
+    let report = runtime.block_on(async {
+        let mut child = StreamChild::spawn(ChildSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), PROBE.into()],
+            cwd: root.path().into(),
+            environment: [("PATH".into(), "/usr/bin:/bin".into())].into(),
+            timeout: std::time::Duration::from_secs(30),
+            inherited_lease: None,
+        })
+        .await
+        .expect("stream probe spawns");
+        // spawn returns only after the hook, so child and later grandchild cannot
+        // report their inherited priorities before the parent has applied them.
+        child
+            .write(b"ready\n".to_vec(), true)
+            .await
+            .expect("release probe");
+        let mut output = Vec::new();
+        let mut completed = false;
+        while let Some(event) = child.next_event().await {
+            match event {
+                ChildEvent::Output {
+                    stream: OutputStream::Stdout,
+                    bytes,
+                } => output.extend(bytes),
+                ChildEvent::Output {
+                    stream: OutputStream::Stderr,
+                    bytes,
+                } => assert!(bytes.is_empty()),
+                ChildEvent::Exited { code, reason } => {
+                    assert_eq!(code, Some(0));
+                    assert_eq!(reason, ExitReason::Completed);
+                    completed = true;
+                }
+            }
+        }
+        child.close().await.expect("owner cleanup");
+        assert!(completed);
+        String::from_utf8(output).expect("priority report")
+    });
+    let expected = if std::env::var(CHILD_PRIORITY_ENV).as_deref() == Ok("normal") {
+        before.clone()
+    } else {
+        "5\nbest-effort: prio 7\n5\nbest-effort: prio 7".into()
+    };
+    assert_eq!(normalized(&report), expected);
+    assert_eq!(inherited_report(), before, "backend priorities unchanged");
 }

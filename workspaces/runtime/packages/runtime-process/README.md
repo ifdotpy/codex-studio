@@ -165,7 +165,9 @@ not currently in the dependency graph.
 ## Owned local pipe children
 
 [`StreamChild`](src/stream_child.rs) uses Tokio and process-wrap process groups;
-process-wrap's kill-on-drop feature stays disabled. Each child has an owner thread
+process-wrap's kill-on-drop feature stays disabled. Its final command wrapper
+applies the configured child priority inside the owner thread before returning
+the child; see the [priority design note](../../../../docs/plans/rust-child-priority.md). Each child has an owner thread
 with a private Tokio runtime. The owner awaits process-group termination, reaping,
 and pipe closure before destroying that runtime; handle drop signals and joins it.
 `close()` exposes cleanup errors. Cleanup therefore survives application runtime

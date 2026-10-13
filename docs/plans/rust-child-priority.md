@@ -9,18 +9,18 @@ unchanged; malformed settings record a diagnostic and retain Background. The Pyt
 production runtime is unchanged.
 
 Call `ChildPriority::from_environment().apply_before_spawn(&mut command)` on
-the final `process_wrap::std::CommandWrap` before spawning. On Unix the command
+the final `process_wrap::std::CommandWrap` or Unix
+`process_wrap::tokio::CommandWrap` before spawning. On Unix the command
 must already use `ProcessGroup::leader()`. Its parent-side `post_spawn` hook
-calls `apply_after_spawn(&Child)` before returning the child to its consumer.
+uses the shared group policy before returning the child to its consumer;
+`apply_after_spawn(&Child)` also exposes it for standard children.
 There is no pre-exec callback, launcher executable, backend priority change,
 spawn retry, suspension, or job object. The spawn hook performs no diagnostic
 I/O (including tracing) and never waits for a diagnostic consumer. Rejections
 increment an atomic counter; only its first winner publishes a fixed-size
 `PriorityFailure` in a `OnceLock`. `priority_diagnostics()` returns the count
 and first error for a health/diagnostics consumer. Its nonblocking snapshot
-can briefly see a positive count before the first error is published. The
-Rust diagnostics route is not present on this base; its future adapter can
-read this function. No unbounded queue, strings, or error history is retained.
+can briefly see a positive count before the first error is published. A health or diagnostics adapter can read this function. No unbounded queue, strings, or error history is retained.
 
 | Target  | CPU                                                           | Disk                                | Evidence on this Linux host                                   |
 | ------- | ------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------- |
@@ -49,7 +49,7 @@ used. Only safe group nice +5 is applied, with disk priority unchanged.
 Windows children inherit a parent's below-normal or idle class unless they
 request another class, as documented for
 [`CreateProcessW`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
-The enabled process-wrap features are `std` and Unix-only `process-group`;
+The enabled process-wrap features are `std`, `tokio1`, and Unix-only `process-group`;
 none replaces creation flags on Windows. The current callers set no other
 creation flags. A future caller needing additional flags must combine them
 with this policy explicitly; the std API has no flag getter. No job object is installed: process-wrap can terminate a child on job assignment
@@ -103,11 +103,15 @@ prove an effect. See [cgroup v2 I/O](https://docs.kernel.org/admin-guide/cgroup-
 There is no cgroup discovery, migration, weight write, or scheduler mutation
 in this change; the owner explicitly assigned these to host configuration.
 
-On main, `bounded_child` applies Background to agent commands. The Studio-owned
+`bounded_child` and `stream_child` apply the configured policy (Background
+by default) to agent commands. The stream hook is installed after its owned
+process-group wrapper, inside the owner thread and before spawning; its
+lease handling, cancellation, pipe draining, and reaping are unchanged.
+The shared stream path also serves sign-in children. The Studio-owned
 Claude status probe (`account_driver`, eight-second deadline) and model catalog
 exchange (`model_catalog`, 30-second deadline) explicitly use Normal: they
 preserve inherited scheduling even when the configured agent level is Background.
-`provider_stdio` agent sessions, `stream_child`, and the Rust supervisor's
+`provider_stdio` agent sessions and the Rust supervisor's
 agent children live on other branches: their integrator must add the final
 configured `apply_before_spawn` call and preserve an owned Unix group.
 Initialize `from_environment()` at supervisor startup as the server does.
@@ -122,10 +126,13 @@ work to one disk writer instead of blocking on disk itself. An `accepted`
 receipt still follows the durable write. This change implements neither of
 those independent runtime architecture tasks.
 
-Measured checks after review corrections: 203 runtime-process/runtime-services
-tests passed with two existing skips. This includes the full undrained stderr
+The earlier review-correction checks passed 203 runtime-process/runtime-services
+tests with two existing skips. This includes the full undrained stderr
 pipe regression, first-error/count snapshots, mild-priority inheritance, and
-both Studio helper callers preserving inherited scheduling. The two priority crates compile for macOS and
+both Studio helper callers preserving inherited scheduling. A stream integration
+test now exercises default Background, explicit Background, and Normal in fresh
+processes, with a pipe handshake before child and grandchild priority reports;
+it also checks that the parent priorities stay unchanged. The two priority crates compile for macOS and
 Windows; Windows reports existing unused imports/constants in the transport
 and supervisor client, outside this change. Workspace Clippy passes on Linux.
 

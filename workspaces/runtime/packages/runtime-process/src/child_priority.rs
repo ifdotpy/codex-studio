@@ -41,44 +41,82 @@ impl ChildPriority {
 
     /// Install before spawn. Unix callers must use a fresh ProcessGroup::leader().
     /// The wrapper applies Unix scheduling immediately in its parent-side post-spawn hook.
-    pub fn apply_before_spawn(self, command: &mut CommandWrap) {
+    pub fn apply_before_spawn(self, command: &mut impl PriorityCommand) {
         if self == Self::Normal {
             return;
         }
-        command.wrap(self);
+        command.install_priority(self);
     }
 
     /// Apply only to a freshly spawned, unreaped child in its own process group.
     /// The caller must retain the child until this returns (no concurrent reaping).
     /// Errors are recorded without I/O, allocation, or waiting; keep the child running.
     pub fn apply_after_spawn(self, child: &Child) {
+        #[cfg(unix)]
+        self.apply_to_owned_group(Some(child.id()));
+        #[cfg(not(unix))]
+        let _child = child;
+    }
+
+    #[cfg(unix)]
+    fn apply_to_owned_group(self, child_id: Option<u32>) {
         if self == Self::Normal {
             return;
         }
-        #[cfg(unix)]
-        {
-            use rustix::process::{Pid, getpgid, setpriority_pgrp};
-            let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) else {
-                record_failure("child identity", io::ErrorKind::InvalidInput);
-                return;
-            };
-            // Refuse callers that forgot group isolation: never target the backend group.
-            if getpgid(Some(pid)) != Ok(pid) {
-                record_failure("child process group", io::ErrorKind::InvalidInput);
-                return;
-            }
-            report(
-                "CPU priority",
-                setpriority_pgrp(Some(pid), BACKGROUND_NICE).map_err(io::Error::from),
-            );
-            #[cfg(target_os = "linux")]
-            report(
-                "I/O priority",
-                studio_runtime_priority_sys::set_group_io_best_effort(pid.as_raw_nonzero().get()),
-            );
+        use rustix::process::{Pid, getpgid, setpriority_pgrp};
+        let Some(pid) = child_id
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(Pid::from_raw)
+        else {
+            record_failure("child identity", io::ErrorKind::InvalidInput);
+            return;
+        };
+        // Refuse callers that forgot group isolation: never target the backend group.
+        if getpgid(Some(pid)) != Ok(pid) {
+            record_failure("child process group", io::ErrorKind::InvalidInput);
+            return;
         }
-        #[cfg(not(unix))]
-        let _child = child;
+        report(
+            "CPU priority",
+            setpriority_pgrp(Some(pid), BACKGROUND_NICE).map_err(io::Error::from),
+        );
+        #[cfg(target_os = "linux")]
+        report(
+            "I/O priority",
+            studio_runtime_priority_sys::set_group_io_best_effort(pid.as_raw_nonzero().get()),
+        );
+    }
+}
+
+/// Command adapters supported by the shared priority policy.
+pub trait PriorityCommand {
+    fn install_priority(&mut self, priority: ChildPriority);
+}
+
+impl PriorityCommand for CommandWrap {
+    fn install_priority(&mut self, priority: ChildPriority) {
+        self.wrap(priority);
+    }
+}
+
+#[cfg(unix)]
+impl PriorityCommand for process_wrap::tokio::CommandWrap {
+    fn install_priority(&mut self, priority: ChildPriority) {
+        self.wrap(priority);
+    }
+}
+
+#[cfg(unix)]
+impl process_wrap::tokio::CommandWrapper for ChildPriority {
+    fn post_spawn(
+        &mut self,
+        _command: &mut tokio::process::Command,
+        child: &mut tokio::process::Child,
+        _core: &process_wrap::tokio::CommandWrap,
+    ) -> io::Result<()> {
+        // The owner has not started waiting or reaping this child yet.
+        self.apply_to_owned_group(child.id());
+        Ok(())
     }
 }
 
