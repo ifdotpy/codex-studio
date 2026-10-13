@@ -55,7 +55,7 @@ def main():
         directory.mkdir(parents=True)
         environment[key] = str(directory)
     environment.update(PATH=f'{environment["CARGO_HOME"]}/bin:/usr/local/bin:/usr/bin:/bin',
-                       CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
+                       CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS=environment.get("CARGO_BUILD_JOBS", "4"),
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
                args.filter]
