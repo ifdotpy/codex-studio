@@ -195,9 +195,13 @@ def invoke_with_duration(callback, record_duration):
 
 
 @contextmanager
-def measured_runtime_db_context(original_runtime_db, sampled, record=None, *, busy_timeout=None):
+def measured_runtime_db_context(
+    original_runtime_db, sampled, record=None, *, busy_timeout=None, analytics=False
+):
     """Optionally time, but always delegate, the original Runtime.db context."""
     options = {} if busy_timeout is None else {"busy_timeout": busy_timeout}
+    if analytics:
+        options["analytics"] = True
     if not sampled:
         with original_runtime_db(**options) as db:
             yield db
@@ -815,7 +819,7 @@ def main():
     original_runtime_db = runtime.db
 
     @contextmanager
-    def measured_runtime_db(*, busy_timeout=None):
+    def measured_runtime_db(*, busy_timeout=None, analytics=False):
         context = MeasuredRLock._context()
         calls_by_context = getattr(transaction_sample_local, "calls", None)
         if calls_by_context is None:
@@ -834,7 +838,11 @@ def main():
         # Sampling changes only recording. Every entry, yielded connection,
         # exception path and exit still belongs to the bound original Runtime.db.
         with measured_runtime_db_context(
-            original_runtime_db, sampled, record, busy_timeout=busy_timeout
+            original_runtime_db,
+            sampled,
+            record,
+            busy_timeout=busy_timeout,
+            analytics=analytics,
         ) as db:
             yield db
 

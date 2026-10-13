@@ -18,20 +18,20 @@ spec.loader.exec_module(module)
 
 
 class RuntimeLoadHelpersTests(unittest.TestCase):
-    def test_runtime_db_timing_preserves_busy_timeout_keyword(self):
+    def test_runtime_db_timing_forwards_supported_keywords(self):
         observed = []
 
         @contextmanager
-        def original_runtime_db(*, busy_timeout=None):
-            observed.append(busy_timeout)
+        def original_runtime_db(*, busy_timeout=None, analytics=False):
+            observed.append((busy_timeout, analytics))
             yield object()
 
         with module.measured_runtime_db_context(
-            original_runtime_db, False, busy_timeout=50
+            original_runtime_db, False, busy_timeout=50, analytics=True
         ):
             pass
 
-        self.assertEqual(observed, [50])
+        self.assertEqual(observed, [(50, True)])
 
     def test_runtime_fixture_sets_synchronous_mode_on_each_connection(self):
         from codex_runtime import Runtime
