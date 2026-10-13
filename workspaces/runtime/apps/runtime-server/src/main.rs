@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
 use tokio::net::TcpListener;
@@ -74,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let app = router(HttpState::new(
+    let mut http_state = HttpState::new(
         token,
         workspace_id,
         native_path,
@@ -83,7 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         public_origin,
         Some(store),
         Some(account_policy),
-    ))?;
+    );
+    http_state.account_driver = Some(Arc::new(AccountDriver::open(&registry_path)?));
+    let app = router(http_state)?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(
         listener,

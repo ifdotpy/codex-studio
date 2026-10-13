@@ -17,6 +17,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub account_driver:
+        Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -44,6 +46,7 @@ impl HttpState {
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
         Self {
+            account_driver: None,
             token,
             workspace_id,
             native_path,

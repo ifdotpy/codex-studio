@@ -2,6 +2,7 @@ pub(crate) mod compose;
 pub(crate) mod extractors;
 pub(crate) mod manifest;
 
+mod account_login;
 mod agents_create;
 mod catalog;
 mod desktop;
@@ -37,6 +38,7 @@ fn generated_json<T: DeserializeOwned + Serialize>(
 
 pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
+        account_login::routes(),
         agents_create::routes(),
         session::routes(),
         rules::routes(),
