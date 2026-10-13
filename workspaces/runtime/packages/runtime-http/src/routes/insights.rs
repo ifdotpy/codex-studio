@@ -41,23 +41,8 @@ async fn analytics_read(
     State(state): State<HttpState>,
     query: QueryParams,
 ) -> Result<Response, ApiError> {
-    let options = AnalyticsOptions {
-        agent: string(&query, "agent"),
-        scope: string(&query, "scope"),
-        from: number(&query, "from_time"),
-        to: number(&query, "to_time"),
-        limit: integer(&query, "limit"),
-        offset: integer(&query, "offset"),
-        tool: string(&query, "tool").filter(|value| !value.is_empty()),
-        export: string(&query, "export").as_deref() == Some("1"),
-        view: string(&query, "view"),
-        detail: string(&query, "detail"),
-        item: string(&query, "item"),
-        turn: string(&query, "turn"),
-        thread: string(&query, "thread"),
-        turns: string(&query, "turns"),
-        timing: string(&query, "timing"),
-    };
+    let options: AnalyticsOptions = serde_json::from_value(Value::Object(query.into_typed()))
+        .map_err(|_| ApiError::internal())?;
     let export = options.export;
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
@@ -162,17 +147,4 @@ fn valid_agent_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
-}
-
-fn string(query: &QueryParams, name: &str) -> Option<String> {
-    query
-        .typed_value(name)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-fn number(query: &QueryParams, name: &str) -> Option<f64> {
-    query.typed_value(name).and_then(Value::as_f64)
-}
-fn integer(query: &QueryParams, name: &str) -> Option<i64> {
-    query.typed_value(name).and_then(Value::as_i64)
 }

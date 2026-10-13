@@ -161,9 +161,9 @@ fn pricing_signature(root: &Path) -> Option<String> {
     if artifact.get("version").and_then(Value::as_i64) != Some(1) {
         return None;
     }
-    let Some(catalog) = artifact.get("catalog").filter(|value| valid_catalog(value)) else {
-        return None;
-    };
+    let catalog = artifact
+        .get("catalog")
+        .filter(|value| valid_catalog(value))?;
     signature(catalog).ok()
 }
 fn valid_catalog(value: &Value) -> bool {
@@ -314,8 +314,8 @@ fn message_info(
 }
 
 type CostProjection = (String, i64, Option<(u64, u64)>, i64);
-#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CostSource {
     usage: repo::UsageState,
     pricing_signature: Option<String>,
@@ -328,7 +328,7 @@ struct CostSource {
 struct SavedCost {
     version: i64,
     root_id: String,
-    source: CostSource,
+    source: Value,
     cached_at: f64,
     result: Value,
 }
@@ -375,7 +375,7 @@ pub fn persisted_session_cost(
     }
     let cost_projection = repo::cost_projection(&tx, &root)?
         .map(|(token, revision, floor)| (token, revision, file_identity(store.root()), floor));
-    let source = CostSource {
+    let source = serde_json::to_value(CostSource {
         usage: repo::usage_signature(&tx, &root)?,
         pricing_signature: pricing_signature(store.root()),
         cost_projection,
@@ -400,7 +400,7 @@ pub fn persisted_session_cost(
             configs: [],
             files: [],
         })?,
-    };
+    })?;
     tx.commit()?;
     let path = store
         .root()

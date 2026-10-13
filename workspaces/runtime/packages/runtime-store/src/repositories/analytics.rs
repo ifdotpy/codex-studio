@@ -97,15 +97,19 @@ pub enum AnalyticsError {
     Serialization(#[from] serde_json::Error),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default)]
 pub struct AnalyticsOptions {
     pub agent: Option<String>,
     pub scope: Option<String>,
+    #[serde(rename = "from_time")]
     pub from: Option<f64>,
+    #[serde(rename = "to_time")]
     pub to: Option<f64>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub tool: Option<String>,
+    #[serde(deserialize_with = "export_flag")]
     pub export: bool,
     pub view: Option<String>,
     pub detail: Option<String>,
@@ -116,6 +120,10 @@ pub struct AnalyticsOptions {
     pub timing: Option<String>,
 }
 
+fn export_flag<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(<Option<String> as serde::Deserialize>::deserialize(deserializer)?.as_deref() == Some("1"))
+}
+
 pub fn rollup<'a>(
     db: &Connection,
     options: &'a AnalyticsOptions,
@@ -124,90 +132,73 @@ pub fn rollup<'a>(
     let agent_id = options.agent.as_deref();
     let (root, mut agents) = selected_agents(db, options, scope, false)?;
     let limit = options.limit.unwrap_or(50).clamp(1, 500);
+    let cap = |limit| if options.export { -1 } else { limit };
     let offset = options.offset.unwrap_or(0).max(0);
-    let usage_filter = scope_filter(scope, agent_id, &root, options.from, options.to, None);
-    usage_filter.validate(db, "analytics_usage")?;
-    usage_filter.validate(db, "analytics_items")?;
+    let usage_filter = scope_filter(db, scope, &root, options);
+    usage_filter.validate("analytics_usage")?;
+    usage_filter.validate("analytics_items")?;
     let usage_where = usage_filter.sql.as_str();
-    let billable = usage_filter.clone().and(BILLABLE_USAGE, []);
+    // Timeline notices use the original all-time authority test, including an
+    // explicitly empty response id; summary aggregates retain their own rule.
+    let root_match = if scope == "team" {
+        "AND auth.root=analytics_usage.root"
+    } else {
+        ""
+    };
+    let timeline_usage = format!(
+        "(NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM analytics_usage auth WHERE auth.agent=analytics_usage.agent AND COALESCE(auth.thread,'')=COALESCE(analytics_usage.thread,'') AND COALESCE(auth.turn,'')=COALESCE(analytics_usage.turn,'') {root_match} AND json_extract(auth.record,'$.responseId') IS NOT NULL))"
+    );
+    let billable = usage_filter.clone().and(&timeline_usage, []);
     let provisional_filter = usage_filter
         .clone()
-        .and(&format!("NOT ({BILLABLE_USAGE})"), []);
-    let provisional_total = provisional_filter.count(db, "analytics_usage")? as usize;
-    let mut provisional = provisional_filter.page(
-        db,
-        "analytics_usage",
-        "at DESC,seq DESC",
-        if options.export { -1 } else { 100 },
-        0,
-    )?;
+        .and(&format!("NOT ({timeline_usage})"), []);
+    let provisional_total = provisional_filter.count("analytics_usage")? as usize;
+    let mut provisional =
+        provisional_filter.page("analytics_usage", "at DESC,seq DESC", (cap(100), 0))?;
     provisional.reverse();
-    let mut timeline = billable.page(
-        db,
-        "analytics_usage",
-        "at DESC,seq DESC",
-        if options.export { -1 } else { 500 },
-        0,
-    )?;
+    let mut timeline = billable.page("analytics_usage", "at DESC,seq DESC", (cap(500), 0))?;
     timeline.reverse();
-    let chart = chart_rows(db, &billable)?;
-    let usage_totals = usage_grouped(db, &usage_filter, "''")?
+    let chart = chart_rows(&billable)?;
+    let usage_totals = usage_grouped(&usage_filter, "''")?
         .remove("")
         .unwrap_or_default();
-    let per_model = usage_grouped(
-        db,
-        &usage_filter,
-        "COALESCE(json_extract(record,'$.model'),'')",
-    )?;
+    let per_model = usage_grouped(&usage_filter, "COALESCE(json_extract(record,'$.model'),'')")?;
     let per_account = usage_grouped(
-        db,
         &usage_filter,
         "COALESCE(json_extract(record,'$.accountKey'),'default')",
     )?;
-    let per_agent = usage_grouped(db, &usage_filter, "agent")?;
-    let call_filter = scope_filter(
-        scope,
-        agent_id,
-        &root,
-        options.from,
-        options.to,
-        Some(options.tool.as_deref().unwrap_or_default()),
-    );
-    let calls_total = call_filter.count(db, "analytics_items")?;
+    let per_agent = usage_grouped(&usage_filter, "agent")?;
+    let mut call_filter = usage_filter.clone().and("is_tool=1", []);
+    if let Some(tool) = options.tool.as_ref().filter(|s| !s.is_empty()) {
+        call_filter = call_filter.and("name=?", [SqlValue::Text(tool.clone())]);
+    }
+    let calls_total = call_filter.count("analytics_items")?;
     let calls = call_filter.page(
-        db,
         "analytics_items",
         "at DESC,id",
-        if options.export { -1 } else { limit },
-        if options.export { 0 } else { offset },
+        (cap(limit), if options.export { 0 } else { offset }),
     )?;
-    let turns = usage_filter.page(
-        db,
-        "analytics_turns",
-        "at DESC,id DESC",
-        if options.export { -1 } else { 100 },
-        0,
-    )?;
-    let (observed_agents, turns_seen) = observed_counts(db, &usage_filter)?;
+    let turns = usage_filter.page("analytics_turns", "at DESC,id DESC", (cap(100), 0))?;
+    let (observed_agents, turns_seen) = observed_counts(&usage_filter, &billable)?;
     let selected_ids: BTreeSet<String> = agents
         .iter()
         .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect();
-    let total_turns = usage_filter.count(db, "analytics_turns")?;
+    let total_turns = usage_filter.count("analytics_turns")?;
     let tracking: f64 = metadata(db, "trackingSince")?.unwrap_or(0.0);
     let capture: CaptureErrors = metadata(db, "captureErrors")?.unwrap_or_default();
-    let selected = ScopeFilter::new().members("agent", selected_ids.iter().cloned());
+    let selected = ScopeFilter::new(db).members("agent", selected_ids.iter().cloned());
     let selected_json = json!(selected_ids).to_string();
-    let history_filter = ScopeFilter::new().and("(COALESCE(NULLIF(json_extract(record,'$.agent'),''),NULLIF(json_extract(record,'$.agentId'),'')) IS NULL OR json_extract(record,'$.agent') IN (SELECT value FROM json_each(?1)) OR json_extract(record,'$.agentId') IN (SELECT value FROM json_each(?1)))",[SqlValue::Text(selected_json)]);
-    let history = history_filter.optional_page(db, "analytics_history", "rowid")?;
-    let monitors = ScopeFilter::new()
+    let history_filter = ScopeFilter::new(db).and("(COALESCE(NULLIF(json_extract(record,'$.agent'),''),NULLIF(json_extract(record,'$.agentId'),'')) IS NULL OR json_extract(record,'$.agent') IN (SELECT value FROM json_each(?1)) OR json_extract(record,'$.agentId') IN (SELECT value FROM json_each(?1)))",[SqlValue::Text(selected_json)]);
+    let history = history_filter.optional_page("analytics_history", "rowid")?;
+    let monitors = ScopeFilter::new(db)
         .members(
             "json_extract(record,'$.agent')",
             selected_ids.iter().cloned(),
         )
         .range("json_extract(record,'$.created')", options.from, options.to)
         .and("json_extract(record,'$.created')>=0", [])
-        .optional_page(db, "canvas.runtime_monitors", "rowid")?;
+        .optional_page("canvas.runtime_monitors", "rowid")?;
     let visible_monitors = monitors
         .iter()
         .map(|row| {
@@ -230,17 +221,13 @@ pub fn rollup<'a>(
     let event_counts = selected
         .clone()
         .range("created", options.from, options.to)
-        .counts(db, "canvas.runtime_events", "status||':'||kind")?;
-    let approval_counts = ScopeFilter::new()
+        .counts("canvas.runtime_events", "status||':'||kind")?;
+    let approval_counts = ScopeFilter::new(db)
         .members(
             "json_extract(record,'$.agent')",
             selected_ids.iter().cloned(),
         )
-        .counts(
-            db,
-            "canvas.runtime_requests",
-            "json_extract(record,'$.status')",
-        )?;
+        .counts("canvas.runtime_requests", "json_extract(record,'$.status')")?;
     let mut notification_filter = selected.and("hour IS NOT NULL", []);
     if let Some(from) = options.from {
         notification_filter = notification_filter.and("hour+3600>?", [SqlValue::Real(from)]);
@@ -267,7 +254,6 @@ pub fn rollup<'a>(
     )?;
     let tool_filter = usage_filter.clone().and("is_tool=1", []);
     let tools = item_grouped(
-        db,
         &tool_filter,
         "COALESCE(json_extract(record,'$.name'),'')",
         "COALESCE(json_extract(record,'$.type'),'')",
@@ -275,24 +261,20 @@ pub fn rollup<'a>(
     .into_iter()
     .map(|((name, kind), totals)| Tool {
         name,
-        model_input_bytes: if kind == "modelToolCall" {
-            totals.input_bytes
-        } else {
-            None
-        },
-        model_output_bytes: if kind == "modelToolCall" {
-            totals.output_bytes
-        } else {
-            None
-        },
+        model_input_bytes: (kind == "modelToolCall")
+            .then_some(totals.input_bytes)
+            .flatten(),
+        model_output_bytes: (kind == "modelToolCall")
+            .then_some(totals.output_bytes)
+            .flatten(),
         kind,
         totals,
     })
     .collect::<Vec<_>>();
-    let agent_calls: BTreeMap<_, _> = item_grouped(db, &call_filter, "agent", TOOL_BOUNDARY)?
+    let agent_calls: BTreeMap<_, _> = item_grouped(&call_filter, "agent", TOOL_BOUNDARY)?
         .into_iter()
         .collect();
-    let boundary_totals: BTreeMap<_, _> = item_grouped(db, &call_filter, "''", TOOL_BOUNDARY)?
+    let boundary_totals: BTreeMap<_, _> = item_grouped(&call_filter, "''", TOOL_BOUNDARY)?
         .into_iter()
         .collect();
     let model_tool = boundary_totals
@@ -304,21 +286,15 @@ pub fn rollup<'a>(
         .cloned()
         .unwrap_or_default();
     let non_tools = usage_filter.clone().and("is_tool!=1", []);
-    let non_tool_total = non_tools.count(db, "analytics_items")? as usize;
-    let non_tool = non_tools.page(
-        db,
-        "analytics_items",
-        "at DESC,id",
-        if options.export { -1 } else { 100 },
-        0,
-    )?;
+    let non_tool_total = non_tools.count("analytics_items")? as usize;
+    let non_tool = non_tools.page("analytics_items", "at DESC,id", (cap(100), 0))?;
     let native_filter = usage_filter.clone().and(
         "type='contextCompaction' AND json_extract(record,'$.finishedAt') IS NOT NULL",
         [],
     );
-    let mut compactions = native_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
+    let mut compactions = native_filter.page("analytics_items", "at DESC,id", (-1, 0))?;
     let snapshot_filter = usage_filter.clone().and("type='compactionSnapshot'", []);
-    let snapshots = snapshot_filter.page(db, "analytics_items", "at DESC,id", -1, 0)?;
+    let snapshots = snapshot_filter.page("analytics_items", "at DESC,id", (-1, 0))?;
     let native_compactions: HashSet<_> = compactions
         .iter()
         .map(|r| (string(r, "agentId"), string(r, "turnId")))
@@ -344,11 +320,11 @@ pub fn rollup<'a>(
             })
         },
     )?;
-    let breakdown = item_breakdown(db, &usage_filter)?;
+    let breakdown = item_breakdown(&usage_filter)?;
     overlay_agents(db, &mut agents)?;
-    let rate_filter = account_filter(&agents, options);
-    let total_limits = rate_filter.count(db, "analytics_limits")?;
-    let rates = rate_filter.rates(db, if options.export { -1 } else { 100 }, 0)?;
+    let rate_filter = account_filter(db, &agents, options);
+    let total_limits = rate_filter.count("analytics_limits")?;
+    let rates = rate_filter.rates(cap(100), 0)?;
     let hit_rate = if usage_totals.cache_hit_rate_samples == usage_totals.usage_samples
         && usage_totals.cache_input > 0.0
     {
@@ -497,26 +473,21 @@ pub fn rollup<'a>(
         item_breakdown: breakdown,
         compactions,
         compaction_snapshots: snapshots,
-        pagination: AnalyticsPagination {
-            limit,
-            offset,
-            total: calls_total,
-            has_more: !options.export && offset + limit < calls_total,
-        },
+        pagination: AnalyticsPagination::new(limit, offset, calls_total, options.export),
         items: item_counts,
         detail_pagination: AnalyticsDetailPagination {
-            rate_limits: AnalyticsPagination {
-                limit: if options.export { total_limits } else { 100 },
-                offset: 0,
-                total: total_limits,
-                has_more: !options.export && total_limits > 100,
-            },
-            turns: AnalyticsPagination {
-                limit: if options.export { total_turns } else { 100 },
-                offset: 0,
-                total: total_turns,
-                has_more: !options.export && total_turns > 100,
-            },
+            rate_limits: AnalyticsPagination::new(
+                if options.export { total_limits } else { 100 },
+                0,
+                total_limits,
+                options.export,
+            ),
+            turns: AnalyticsPagination::new(
+                if options.export { total_turns } else { 100 },
+                0,
+                total_turns,
+                options.export,
+            ),
         },
     };
     Ok(response)
@@ -658,6 +629,16 @@ struct AnalyticsPagination {
     total: i64,
     has_more: bool,
 }
+impl AnalyticsPagination {
+    fn new(limit: i64, offset: i64, total: i64, export: bool) -> Self {
+        Self {
+            limit,
+            offset,
+            total,
+            has_more: !export && offset + limit < total,
+        }
+    }
+}
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AnalyticsDetailPagination {
@@ -692,10 +673,10 @@ struct UsageTotals {
 }
 
 fn usage_grouped(
-    db: &Connection,
     filter: &ScopeFilter,
     group: &str,
 ) -> Result<BTreeMap<String, UsageTotals>, AnalyticsError> {
+    let db = filter.db;
     let exact = "NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL";
     let cache_ok = "json_extract(record,'$.delta.inputTokens') IS NOT NULL AND json_extract(record,'$.delta.cachedInputTokens') IS NOT NULL AND (json_extract(record,'$.inputTokensAreUncached')=1 OR json_extract(record,'$.delta.cachedInputTokens')<=json_extract(record,'$.delta.inputTokens'))";
     let cache_input = "CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN json_extract(record,'$.delta.inputTokens')+json_extract(record,'$.delta.cachedInputTokens')+COALESCE(json_extract(record,'$.delta.cacheWriteInputTokens'),0) ELSE json_extract(record,'$.delta.inputTokens') END";
@@ -704,8 +685,7 @@ fn usage_grouped(
         "SELECT {group},COUNT(*),SUM(CASE WHEN {exact} THEN 1 ELSE 0 END),SUM(CASE WHEN json_extract(record,'$.baselineMissing')=1 THEN 1 ELSE 0 END),MAX(json_extract(record,'$.last.totalTokens')),MAX(CASE WHEN json_extract(record,'$.modelContextWindow')>0 THEN json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow')*100 END),SUM(CASE WHEN {cache_ok} THEN 1 ELSE 0 END),SUM(CASE WHEN {cache_ok} THEN {cache_input} ELSE 0 END),{sums} FROM analytics_usage {0} AND {BILLABLE_USAGE} GROUP BY {group} ORDER BY {group}",
         filter.sql
     );
-    let mut statement = db.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(filter.params.clone()), |row| {
+    let rows = query(db, &sql, params_from_iter(&filter.params), |row| {
         let count = row.get::<_, i64>(1)?.max(0) as usize;
         let exact = row.get::<_, i64>(2)?.max(0) as usize;
         let totals = UsageTotals {
@@ -736,8 +716,7 @@ fn usage_grouped(
         };
         Ok((row.get::<_, String>(0)?, totals))
     })?;
-    rows.collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(AnalyticsError::from)
+    Ok(rows.into_iter().collect())
 }
 
 #[derive(serde::Serialize)]
@@ -769,10 +748,8 @@ struct RateLimit {
     at: f64,
     data: Value,
 }
-fn item_breakdown(
-    db: &Connection,
-    filter: &ScopeFilter,
-) -> Result<Vec<ItemBreakdown>, AnalyticsError> {
+fn item_breakdown(filter: &ScopeFilter) -> Result<Vec<ItemBreakdown>, AnalyticsError> {
+    let db = filter.db;
     query(
         db,
         &format!(
@@ -825,12 +802,9 @@ struct ItemTotals {
     #[serde(rename = "payloadBoundary")]
     boundary: String,
 }
-fn item_grouped(
-    db: &Connection,
-    filter: &ScopeFilter,
-    key: &str,
-    kind: &str,
-) -> Result<Vec<((String, String), ItemTotals)>, AnalyticsError> {
+type ItemGroups = Vec<((String, String), ItemTotals)>;
+fn item_grouped(filter: &ScopeFilter, key: &str, kind: &str) -> Result<ItemGroups, AnalyticsError> {
+    let db = filter.db;
     let sql = format!("WITH population AS (
         SELECT {key} AS k,{kind} AS t,record,ROW_NUMBER() OVER(ORDER BY at DESC,id) AS position,
             json_extract(record,'$.durationMs') AS duration,
@@ -877,18 +851,21 @@ fn item_grouped(
         })?
         .collect::<Result<_, _>>()?)
 }
-fn observed_counts(db: &Connection, filter: &ScopeFilter) -> Result<(i64, i64), AnalyticsError> {
-    let sql = format!("WITH observations AS (
-        SELECT agent,turn FROM analytics_usage {} AND {BILLABLE_USAGE}
-        UNION SELECT agent,turn FROM analytics_items {})
-        SELECT COUNT(DISTINCT agent),(SELECT COUNT(*) FROM observations WHERE turn IS NOT NULL) FROM observations",filter.sql,filter.sql);
-    Ok(db.query_row(
+fn observed_counts(
+    filter: &ScopeFilter,
+    timeline: &ScopeFilter,
+) -> Result<(i64, i64), AnalyticsError> {
+    let sql = format!("SELECT
+        (SELECT COUNT(*) FROM (SELECT agent FROM analytics_usage {} AND {BILLABLE_USAGE} UNION SELECT agent FROM analytics_items {})),
+        (SELECT COUNT(*) FROM (SELECT agent,turn FROM analytics_usage {} UNION SELECT agent,turn FROM analytics_items {}) WHERE turn IS NOT NULL)",filter.sql,filter.sql,timeline.sql,filter.sql);
+    Ok(filter.db.query_row(
         &sql,
-        params_from_iter(filter.params.iter().chain(&filter.params)),
+        params_from_iter(filter.params.iter().cycle().take(filter.params.len() * 4)),
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?)
 }
-fn chart_rows(db: &Connection, filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
+fn chart_rows(filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
+    let db = filter.db;
     let sql = format!("SELECT id,record FROM (SELECT id,record,at,seq,
         ROW_NUMBER() OVER(PARTITION BY CAST(at/3600 AS INTEGER) ORDER BY json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow') DESC,at,seq) AS rank
         FROM analytics_usage {} AND at>=0 AND json_extract(record,'$.modelContextWindow')!=0 AND json_extract(record,'$.last.totalTokens') IS NOT NULL)
@@ -902,13 +879,19 @@ fn chart_rows(db: &Connection, filter: &ScopeFilter) -> Result<Vec<Value>, Analy
     Ok(points)
 }
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct CaptureErrors {
     count: u64,
-    #[serde(default)]
-    last: Value,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
+}
+impl Default for CaptureErrors {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            extra: BTreeMap::from([("last".into(), Value::Null)]),
+        }
+    }
 }
 fn metadata<T: serde::de::DeserializeOwned>(
     db: &Connection,
@@ -962,25 +945,23 @@ fn records<P: rusqlite::Params>(
     table: &'static str,
 ) -> Result<Vec<Value>, AnalyticsError> {
     let sql = sql.replacen("SELECT record FROM", "SELECT id,record FROM", 1);
-    let mut stmt = db.prepare(&sql)?;
-    let rows = stmt.query_map(params, |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    rows.map(|row| {
-        let (id, raw) = row?;
-        let value: Value =
-            serde_json::from_str(&raw).map_err(|_| AnalyticsError::InvalidStoredRow {
-                table,
-                id: id.clone(),
-            })?;
-        if !value.is_object() || !valid_stored_shape(table, &value) {
+    let table = table.strip_prefix("canvas.").unwrap_or(table);
+    query(db, &sql, params, |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?
+    .into_iter()
+    .map(|(id, raw)| {
+        let value = parse_object(&raw, table).map_err(|_| AnalyticsError::InvalidStoredRow {
+            table,
+            id: id.clone(),
+        })?;
+        if !valid_stored_shape(table, &value) {
             return Err(AnalyticsError::InvalidStoredRow { table, id });
         }
         Ok(value)
     })
     .collect()
 }
-
 fn required_fields(table: &str) -> &[&str] {
     match table.strip_prefix("canvas.").unwrap_or(table) {
         "analytics_agents" => &["id"],
@@ -999,13 +980,15 @@ fn valid_stored_shape(table: &str, value: &Value) -> bool {
         .all(|field| value.get(field).is_some_and(|item| !item.is_null()))
 }
 #[derive(Clone)]
-struct ScopeFilter {
+struct ScopeFilter<'a> {
+    db: &'a Connection,
     sql: String,
     params: Vec<SqlValue>,
 }
-impl ScopeFilter {
-    fn new() -> Self {
+impl<'a> ScopeFilter<'a> {
+    fn new(db: &'a Connection) -> Self {
         Self {
+            db,
             sql: "WHERE 1".into(),
             params: Vec::new(),
         }
@@ -1031,7 +1014,7 @@ impl ScopeFilter {
         }
         self
     }
-    fn validate(&self, db: &Connection, table: &'static str) -> Result<(), AnalyticsError> {
+    fn validate(&self, table: &'static str) -> Result<(), AnalyticsError> {
         let missing = required_fields(table)
             .iter()
             .map(|field| format!("json_extract(record,'$.{field}') IS NULL"))
@@ -1040,7 +1023,8 @@ impl ScopeFilter {
         let invalid = format!(
             "CASE WHEN NOT json_valid(record) THEN 1 WHEN json_type(record)!='object' THEN 1 ELSE {missing} END"
         );
-        let id: Option<String> = db
+        let id: Option<String> = self
+            .db
             .query_row(
                 &format!(
                     "SELECT id FROM {table} {} AND ({invalid}) LIMIT 1",
@@ -1057,27 +1041,22 @@ impl ScopeFilter {
     }
     fn optional_page(
         &self,
-        db: &Connection,
         table: &'static str,
         order: &str,
     ) -> Result<Vec<Value>, AnalyticsError> {
-        if table_exists(db, table)? {
-            self.page(db, table, order, -1, 0)
+        if table_exists(self.db, table)? {
+            ScopeFilter::new(self.db).validate(table)?;
+            self.page(table, order, (-1, 0))
         } else {
             Ok(Vec::new())
         }
     }
-    fn counts(
-        &self,
-        db: &Connection,
-        table: &str,
-        key: &str,
-    ) -> Result<BTreeMap<String, i64>, AnalyticsError> {
-        if !table_exists(db, table)? {
+    fn counts(&self, table: &str, key: &str) -> Result<BTreeMap<String, i64>, AnalyticsError> {
+        if !table_exists(self.db, table)? {
             return Ok(BTreeMap::new());
         }
         Ok(query(
-            db,
+            self.db,
             &format!(
                 "SELECT {key},COUNT(*) FROM {table} {} GROUP BY {key}",
                 self.sql
@@ -1088,8 +1067,8 @@ impl ScopeFilter {
         .into_iter()
         .collect())
     }
-    fn count(&self, db: &Connection, table: &str) -> Result<i64, AnalyticsError> {
-        Ok(db.query_row(
+    fn count(&self, table: &str) -> Result<i64, AnalyticsError> {
+        Ok(self.db.query_row(
             &format!("SELECT COUNT(*) FROM {table} {}", self.sql),
             params_from_iter(&self.params),
             |r| r.get(0),
@@ -1097,16 +1076,14 @@ impl ScopeFilter {
     }
     fn page(
         &self,
-        db: &Connection,
         table: &'static str,
         order: &str,
-        limit: i64,
-        offset: i64,
+        (limit, offset): (i64, i64),
     ) -> Result<Vec<Value>, AnalyticsError> {
         let mut params = self.params.clone();
         params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
         records(
-            db,
+            self.db,
             &format!(
                 "SELECT record FROM {table} {} ORDER BY {order} LIMIT ? OFFSET ?",
                 self.sql
@@ -1115,15 +1092,10 @@ impl ScopeFilter {
             table,
         )
     }
-    fn rates(
-        &self,
-        db: &Connection,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<RateLimit>, AnalyticsError> {
+    fn rates(&self, limit: i64, offset: i64) -> Result<Vec<RateLimit>, AnalyticsError> {
         let mut params = self.params.clone();
         params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
-        let mut stmt = db.prepare(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
+        let mut stmt = self.db.prepare(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
         let rows = stmt.query_map(params_from_iter(params), |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -1144,33 +1116,28 @@ impl ScopeFilter {
         .collect()
     }
 }
-fn scope_filter(
+fn scope_filter<'a>(
+    db: &'a Connection,
     scope: &str,
-    agent: Option<&str>,
     root: &str,
-    from: Option<f64>,
-    to: Option<f64>,
-    tool: Option<&str>,
-) -> ScopeFilter {
-    let mut filter = ScopeFilter::new().range("at", from, to);
-    filter = match scope {
+    options: &AnalyticsOptions,
+) -> ScopeFilter<'a> {
+    let filter = ScopeFilter::new(db).range("at", options.from, options.to);
+    match scope {
         "agent" => filter.and(
             "agent=?",
-            [SqlValue::Text(agent.unwrap_or_default().into())],
+            [SqlValue::Text(options.agent.clone().unwrap_or_default())],
         ),
         "team" => filter.and("root=?", [SqlValue::Text(root.into())]),
         _ => filter,
-    };
-    if let Some(tool) = tool {
-        filter = filter.and("is_tool=1", []);
-        if !tool.is_empty() {
-            filter = filter.and("name=?", [SqlValue::Text(tool.into())]);
-        }
     }
-    filter
 }
-fn account_filter(agents: &[Value], options: &AnalyticsOptions) -> ScopeFilter {
-    ScopeFilter::new()
+fn account_filter<'a>(
+    db: &'a Connection,
+    agents: &[Value],
+    options: &AnalyticsOptions,
+) -> ScopeFilter<'a> {
+    ScopeFilter::new(db)
         .members(
             "account",
             agents
@@ -1291,37 +1258,25 @@ pub fn detail(
     let limit = options.limit.unwrap_or(100).clamp(1, 100);
     let offset = options.offset.unwrap_or(0).max(0);
     let filter = if detail == "turns" {
-        scope_filter(
-            scope,
-            options.agent.as_deref(),
-            &root,
-            options.from,
-            options.to,
-            None,
-        )
+        scope_filter(db, scope, &root, options)
     } else {
-        account_filter(&agents, options)
+        account_filter(db, &agents, options)
     };
     let table = if detail == "turns" {
         "analytics_turns"
     } else {
         "analytics_limits"
     };
-    let total = filter.count(db, table)?;
-    let pagination = AnalyticsPagination {
-        limit,
-        offset,
-        total,
-        has_more: offset + limit < total,
-    };
+    let total = filter.count(table)?;
+    let pagination = AnalyticsPagination::new(limit, offset, total, false);
     let page = if detail == "turns" {
         DetailPage::Turns {
-            turns: filter.page(db, table, "at DESC,id DESC", limit, offset)?,
+            turns: filter.page(table, "at DESC,id DESC", (limit, offset))?,
             pagination,
         }
     } else {
         DetailPage::Limits {
-            rate_limits: filter.rates(db, limit, offset)?,
+            rate_limits: filter.rates(limit, offset)?,
             pagination,
         }
     };
@@ -1440,27 +1395,12 @@ pub fn cost_agents(
     agent: &str,
     root: &str,
 ) -> Result<Vec<(String, Value)>, SessionCostError> {
-    let rows:Vec<(String,String)>=db.prepare("SELECT id,record FROM analytics_agents WHERE id=?1 OR json_extract(record,'$.rootId')=?2 ORDER BY id")?.query_map([root,root],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<Result<_,_>>()?;
-    let mut out = Vec::new();
-    for (id, raw) in rows {
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|_| SessionCostError::InvalidStoredObject("analytics_agents"))?;
-        if id == root || v.get("rootId").and_then(Value::as_str) == Some(root) {
-            out.push((id, v));
-        }
-    }
+    let mut out: Vec<(String,Value)> = query(db,"SELECT id,record FROM analytics_agents WHERE id=?1 OR json_extract(record,'$.rootId')=?1 ORDER BY id",[root],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
+        .into_iter().map(|(id,raw)|serde_json::from_str(&raw).map(|value|(id,value)).map_err(|_|SessionCostError::InvalidStoredObject("analytics_agents"))).collect::<Result<_,_>>()?;
     if !out.iter().any(|(id, _)| id == agent) {
-        let raw = db
-            .query_row(
-                "SELECT record FROM canvas.runtime_agents WHERE id=?1",
-                [agent],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
+        let record = read_runtime_agent(db, agent)?
             .ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
-        let v: Value = serde_json::from_str(&raw)
-            .map_err(|_| SessionCostError::InvalidStoredObject("runtime_agents"))?;
-        out.push((agent.into(), v));
+        out.push((agent.into(), record));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
@@ -1546,10 +1486,9 @@ pub fn require_agent(db: &Connection, agent: &str) -> Result<(), AnalyticsError>
     }
 }
 pub fn turn_errors(db: &Connection, keys: Vec<String>) -> Result<Value, AnalyticsError> {
-    let rows =
-        ScopeFilter::new()
-            .members("id", keys)
-            .page(db, "analytics_turns", "rowid", -1, 0)?;
+    let rows = ScopeFilter::new(db)
+        .members("id", keys)
+        .page("analytics_turns", "id", (-1, 0))?;
     Ok(serde_json::to_value(TurnErrors {
         turns: rows
             .iter()

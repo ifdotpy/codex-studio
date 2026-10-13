@@ -236,6 +236,10 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             if attributed:
                 self.assertEqual(response.json()["tokens"]["totalTokens"], 120)
 
+        errors = self.backend.request("GET", "/api/analytics?agent=analytics-population&view=turn-errors&thread=analytics-thread&turns=fallback,ambiguous", headers=self._headers())
+        self.assertEqual(errors.status, 200, errors.body[:1000])
+        self.assertEqual([row["turnId"] for row in errors.json()["turns"]], ["ambiguous", "fallback"])
+
     def test_refusals_preserve_analytics_rows(self) -> None:
         import sqlite3
         def snapshot():
@@ -309,6 +313,12 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(cost.json()["pricingState"], "loading")
         cache_file = next((self.backend.state / "session-costs").glob("cost-*.json"))
         saved = json.loads(cache_file.read_text())
+        if self.rust_backend:
+            incomplete = json.loads(json.dumps(saved))
+            incomplete["source"].pop("pricingSignature")
+            cache_file.write_text(json.dumps(incomplete))
+            refused = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
+            self.assertEqual(refused.status, 501, refused.body[:1000])
         saved["source"]["usage"]["generation"] += 1
         cache_file.write_text(json.dumps(saved))
         stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
