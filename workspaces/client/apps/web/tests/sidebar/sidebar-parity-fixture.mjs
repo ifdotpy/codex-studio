@@ -167,7 +167,7 @@ function seed(server, owner) {
 
 export async function sidebarParityFixture(
   context,
-  { paired = true, remoteEmpty = false } = {},
+  { paired = true, remoteEmpty = false, hold } = {},
 ) {
   const calls = { local: [], remote: [] };
   const reads = { local: [], remote: [] };
@@ -178,7 +178,34 @@ export async function sidebarParityFixture(
   const documents = { local: new Map(), remote: new Map() };
   const sequences = { local: 0, remote: 0 };
   const servers = {};
-  const handler =
+  // `hold` makes a server slow. It returns a delay in milliseconds before the server reads
+  // and changes its state, or `{ deliver }` to compute the answer at once and deliver it
+  // late, so that a later request can be answered before an earlier one.
+  const handler = (owner) => {
+    const respond = serve(owner);
+    return (value) => {
+      const delay = hold?.({
+        owner,
+        method: value.request.method,
+        path: value.url.pathname,
+        url: value.url,
+        body: value.body,
+      });
+      if (!delay) return respond(value);
+      if (typeof delay === "object")
+        return respond({
+          ...value,
+          json: (...answer) =>
+            setTimeout(() => value.json(...answer), delay.deliver),
+        });
+      setTimeout(() => {
+        if (!respond(value)) value.json({ error: "Unhandled request" }, 500);
+      }, delay);
+      return true;
+    };
+  };
+  const receipts = { local: new Map(), remote: new Map() };
+  const serve =
     (owner) =>
     ({ request, url, body, json, snapshot }) => {
       const path = url.pathname;
@@ -343,6 +370,9 @@ export async function sidebarParityFixture(
         return reply(row(body.id));
       }
       if (path === "/api/leads") {
+        // The server keeps one chat for each creation identity.
+        const existing = snapshot.threads.find((row) => row.id === body.id);
+        if (existing) return reply(existing);
         const base = snapshot.threads[0];
         const chat = {
           ...base,
@@ -360,6 +390,9 @@ export async function sidebarParityFixture(
       }
       if (path === "/api/projects") {
         if (body.action === "reorder") {
+          // A repeated request ID returns the first receipt, as the server does.
+          const receipt = receipts[owner].get(body.request_id);
+          if (receipt) return reply(receipt);
           assert.equal(
             body.expected_revision,
             snapshot.runtime.sidebarOrder.revision,
@@ -368,6 +401,7 @@ export async function sidebarParityFixture(
             revision: body.expected_revision + 1,
             groups: body.groups,
           };
+          receipts[owner].set(body.request_id, snapshot.runtime.sidebarOrder);
           return reply(snapshot.runtime.sidebarOrder);
         }
         const value = project();
@@ -547,6 +581,7 @@ export async function sidebarParityFixture(
     calls,
     reads,
     prefs,
+    preferences,
     async open(page, { combined = true, owner = "local" } = {}) {
       await page.goto(
         local.origin + (combined ? "/" : "/?studio-navigation=classic"),
