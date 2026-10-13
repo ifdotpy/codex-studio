@@ -239,7 +239,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 )
                 database.execute(
                     "INSERT INTO runtime_federation_rooms (id,record) VALUES (?,?)",
-                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "status": "pending", "localApproved": False, "remoteApproved": False, "localMembers": [cls.agent]})),
+                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "status": "pending", "localApproved": False, "remoteApproved": False, "localMembers": [cls.agent], "kind": "federated", "peerId": "fixture-peer", "peerLabel": "Fixture peer", "name": "Pending room", "remoteMembers": [], "shareNames": False, "shareStatus": False, "created": 123.0, "updated": 123.0})),
                 )
                 for identity, room in zip(cls.unavailable_chat_ids, ("deleted-member-room", "pending-federated-room"), strict=True):
                     database.execute(
