@@ -15,12 +15,14 @@ use studio_runtime_store::{
 const CREATE_PYTHON_EVENTS: &str = r#"
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])
+from codex_canvas import Canvas
 from codex_runtime import Runtime
 from codex_wakeups import pending_batch
 class QuietRuntime(Runtime):
     def schedule(self):
         return
 root = pathlib.Path(sys.argv[1])
+Canvas(root)
 runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.create({"name":"scheduler fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
 agent["autoWake"] = True

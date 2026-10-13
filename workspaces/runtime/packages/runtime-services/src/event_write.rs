@@ -805,9 +805,10 @@ mod tests {
         let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
             .expect("agent read")
             .expect("fixture");
-        agent
-            .extra
-            .insert("remoteWorker".into(), json!({"server":"remote"}));
+        agent.extra.insert(
+            "remoteWorker".into(),
+            json!({"server":"remote","link":"remote-link"}),
+        );
         AgentRepository::put(&connection, &agent).expect("remote fixture writes");
         let before = counts(&connection);
         assert!(matches!(

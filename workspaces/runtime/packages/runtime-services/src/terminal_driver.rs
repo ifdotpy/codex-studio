@@ -727,6 +727,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
@@ -851,6 +852,22 @@ mod tests {
                 }
             }
         }
+        let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let output = Command::new("python3")
+            .arg(server_source.join("codex_python.py"))
+            .arg("--exec")
+            .arg("-c")
+            .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; Canvas(pathlib.Path(sys.argv[1]))")
+            .arg(&root)
+            .arg(&server_source)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Canvas schema bootstrap starts");
+        assert!(
+            output.status.success(),
+            "Canvas schema bootstrap succeeds: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let store = Arc::new(RuntimeStore::open(Some(&root)).expect("test runtime store"));
         TestState {
             root,
