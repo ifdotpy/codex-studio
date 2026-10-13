@@ -178,15 +178,6 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
         .lock()
         .expect("queue")
         .push_back(output.clone());
-    port.deliveries.lock().expect("queue").push_back(delivery(
-        &case,
-        "exit",
-        MonitorEvent::Exit {
-            code: Some(0),
-            error: None,
-            finished: 2000.0,
-        },
-    ));
     *port.fail_ack.lock().expect("ack") = true;
     let runtime = runtime(&store, &port);
     assert!(runtime.tick(1999.0).is_err());
@@ -197,7 +188,20 @@ fn output_cursor_and_exit_replay_after_lost_ack_are_exactly_once() {
         bytes: b"tamper".to_vec(),
     };
     assert!(runtime.deliver(&changed, 1999.0).is_err());
-    runtime.tick(2000.0).expect("replay");
+    runtime.tick(1999.0).expect("output replay");
+    port.deliveries.lock().expect("queue").push_back(delivery(
+        &case,
+        "exit",
+        MonitorEvent::Exit {
+            code: Some(0),
+            error: None,
+            finished: 2000.0,
+        },
+    ));
+    *port.fail_ack.lock().expect("ack") = true;
+    assert!(runtime.tick(2000.0).is_err());
+    assert_eq!(record(&store, &id)["status"], "completed");
+    runtime.tick(2000.0).expect("exit replay");
     assert_eq!(record(&store, &id)["bytes"], 6);
     assert_eq!(record(&store, &id)["tail"], "marker");
     assert_eq!(record(&store, &id)["status"], "completed");
