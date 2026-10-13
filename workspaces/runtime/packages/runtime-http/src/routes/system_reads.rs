@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_services::system_reads::{self, SystemReadError};
 
 use super::extractors::QueryParams;
@@ -105,14 +105,9 @@ async fn directories(
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(directory_error)?;
-    super::generated_json::<crate::generated::DirectoriesResponse>(json!({
-        "path": result.path,
-        "parent": result.parent,
-        "directories": result.directories.into_iter().map(|entry| json!({
-            "name": entry.name,
-            "path": entry.path,
-        })).collect::<Vec<_>>(),
-    }))
+    super::generated_json::<crate::generated::DirectoriesResponse>(
+        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
+    )
     .map(Json)
 }
 
@@ -149,14 +144,7 @@ async fn ui_summary(State(state): State<HttpState>) -> Result<Json<Value>, ApiEr
 }
 
 fn directory_error(error: SystemReadError) -> ApiError {
-    match error {
-        SystemReadError::UnavailableDirectory => {
-            ApiError::new(StatusCode::BAD_REQUEST, "This directory is unavailable")
-        }
-        SystemReadError::PermissionDenied => {
-            ApiError::new(StatusCode::BAD_REQUEST, "Permission denied")
-        }
-    }
+    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
 }
 
 fn local_server_id(state_dir: &str) -> Option<String> {
