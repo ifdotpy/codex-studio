@@ -61,7 +61,8 @@ pub enum InputReply {
 /// and cached supervisor proofs. Schedule native work on that owner, never wait
 /// for transport here. `reattach` never starts a command. Only `input_reply` may
 /// wait, within the native request deadline. All calls run outside transactions.
-/// Native children use Background priority through the shared child-priority port.
+/// `command/exec` runs inside the retained provider app-server. Its child priority
+/// is selected by the provider launch environment; this port never spawns it locally.
 pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     fn next(&self) -> Result<Option<Delivery>, MonitorError>;
     fn acknowledge(&self, delivery: &Delivery) -> Result<(), MonitorError>;
