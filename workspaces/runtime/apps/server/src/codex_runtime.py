@@ -5293,6 +5293,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         sender=None,
         sender_epoch=None,
         radio_question=None,
+        mirror_user_message=False,
         _expected_epoch=None,
     ):
         assets = assets or []
@@ -5337,6 +5338,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     or previous.get("assets", []) != assets
                 ):
                     raise ValueError("This message id has different content")
+                if mirror_user_message:
+                    db.execute(
+                        "INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)",
+                        (message_id, key, "user", text.strip(), time.time(),
+                         json.dumps({key: old["status"]})),
+                    )
                 return {"id": message_id, "status": old["status"], "error": old["error"]}
             from codex_worker_accounts import require_not_excluded
             require_not_excluded(self.agent(a["rootId"], db), a.get("accountKey", "default"))
@@ -5365,9 +5372,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        if isinstance(radio_question, dict) and radio_question.get("turnId") else {}),
                     **({"senderId": sender} if sender else {})})),
             )
-            return {"id": self.enqueue(db, a, "user" if manual else "followup",
+            result = {"id": self.enqueue(db, a, "user" if manual else "followup",
                         text.strip(), message_id), "status": "queued",
                     **({"waitingFor": blockers} if blockers else {})}
+            if mirror_user_message:
+                db.execute(
+                    "INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)",
+                    (result["id"], key, "user", text.strip(), time.time(),
+                     json.dumps({key: result["status"]})),
+                )
+            return result
 
     def delivery_receipt(self, message_id):
         with self.db() as db:
