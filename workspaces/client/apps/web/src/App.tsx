@@ -114,6 +114,7 @@ import {
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
   automaticallyUpdateRenderer,
+  untilAnswered,
 } from "./api";
 import {
   useSnapshot,
@@ -1548,9 +1549,10 @@ export default function App() {
       // Save the exact request before sending it. A lost response must retain this identity.
       saveChatCreation(creationKey, creationRequest);
       setPendingCreations(pendingChatCreations(creationKey));
-      const a = await post("/api/leads", creationRequest, {
-        timeoutMs: 15000,
-      });
+      // A slow server keeps this request. Only a real answer or a lost connection ends it.
+      const a = await untilAnswered(() =>
+        post("/api/leads", creationRequest, { timeoutMs: 60000 }),
+      );
       if (a.id !== creationRequest.id)
         throw new Error("The server returned another chat identity.");
       rememberCreated(a, creationScope);

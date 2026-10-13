@@ -1,5 +1,5 @@
 import { Button, Text, SegmentedControl } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   projectLocationOn,
   type LocationProject,
@@ -45,36 +45,65 @@ export default function ProjectServerCards({
   });
   const server = servers.find((row) => row.id === selected);
   const location = server && projectLocationOn(project, server);
-  const [system, setSystem] = useState(server?.system);
-  const [mode, setMode] = useState<"layr" | "image" | "worktree">(
-    defaultWorkspaceMode(server?.system),
-  );
+  // The parent rebuilds its server list often. Only another server or connection starts
+  // a new read; the user's choices stay while the dialog is open.
+  const connection = server?.connection;
+  const connectionKey = JSON.stringify([
+    selected,
+    connection?.id,
+    connection?.origin,
+    connection?.credentialId,
+  ]);
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
+  const [fetched, setFetched] = useState<{
+    key: string;
+    system?: string;
+  } | null>(null);
+  const system =
+    server?.system ??
+    (fetched?.key === connectionKey ? fetched.system : undefined);
+  const fetchedKey = useRef("");
+  fetchedKey.current = fetched?.key || "";
+  const [modeChoice, setModeChoice] = useState<{
+    server: string;
+    mode: "layr" | "image" | "worktree";
+  } | null>(null);
+  const mode =
+    modeChoice?.server === selected
+      ? modeChoice.mode
+      : defaultWorkspaceMode(system);
   const [models, setModels] = useState<Omit<
     NewChatSettings,
     "workspaceMode"
   > | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [platformError, setPlatformError] = useState("");
+  const knownSystem = !!server?.system;
+  const disabled = !!server?.disabled;
+  const available = !!server;
   useEffect(() => {
-    const controller = new AbortController();
-    setSystem(server?.system);
-    setMode(defaultWorkspaceMode(server?.system));
     setPlatformError("");
-    if (server && !server.system && !server.disabled) {
-      void readNewChatResource(server.connection, "/api/ui-summary", {
-        signal: controller.signal,
+    if (
+      !available ||
+      knownSystem ||
+      disabled ||
+      fetchedKey.current === connectionKey
+    )
+      return;
+    const controller = new AbortController();
+    void readNewChatResource(connectionRef.current, "/api/ui-summary", {
+      signal: controller.signal,
+    })
+      .then((value) => {
+        if (!controller.signal.aborted)
+          setFetched({ key: connectionKey, system: value.system });
       })
-        .then((value) => {
-          if (controller.signal.aborted) return;
-          setSystem(value.system);
-          setMode(defaultWorkspaceMode(value.system));
-        })
-        .catch((error) => {
-          if (!controller.signal.aborted) setPlatformError(String(error));
-        });
-    }
+      .catch((error) => {
+        if (!controller.signal.aborted) setPlatformError(String(error));
+      });
     return () => controller.abort();
-  }, [selected, server?.system, server?.connection]);
+  }, [connectionKey, available, knownSystem, disabled]);
   return (
     <div
       className="project-server-choice"
@@ -131,13 +160,15 @@ export default function ProjectServerCards({
             aria-labelledby="new-chat-run-mode-label"
             value={mode}
             onChange={(value) =>
-              setMode(
-                value === "layr"
-                  ? "layr"
-                  : value === "image"
-                    ? "image"
-                    : "worktree",
-              )
+              setModeChoice({
+                server: selected,
+                mode:
+                  value === "layr"
+                    ? "layr"
+                    : value === "image"
+                      ? "image"
+                      : "worktree",
+              })
             }
             data={[
               { value: "layr", label: "layr" },

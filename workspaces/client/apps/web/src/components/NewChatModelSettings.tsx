@@ -17,16 +17,44 @@ type Props = {
   onOpenChange: (opened: boolean) => void;
   onChange: (settings: Omit<NewChatSettings, "workspaceMode"> | null) => void;
 };
+// The parent can pass a new object for the same server. Reads restart only for another
+// server identity, so a rebuilt list does not reset the user's account or models.
+const serverIdentity = (server?: StudioServer) =>
+  JSON.stringify([server?.id, server?.origin, server?.credentialId]);
+
 export default function NewChatModelSettings(props: Props) {
-  const reader = useMemo(
-    () => ({
-      scope: props.server?.id || "current",
-      read: (
-        options: Parameters<typeof readNewChatResource<"/api/models">>[2],
-      ) => readNewChatResource(props.server, "/api/models", options),
-    }),
-    [props.server],
-  );
+  const serverKey = serverIdentity(props.server);
+  const server = useRef(props.server);
+  server.current = props.server;
+  const reader = useMemo(() => {
+    // Several pickers read the same catalog. One read per query keeps the slow server and
+    // the browser's few connections for each server free for other requests.
+    type Options = Parameters<typeof readNewChatResource<"/api/models">>[2];
+    type Catalog = ReturnType<typeof readNewChatResource<"/api/models">>;
+    const reads = new Map<string, Catalog>();
+    return {
+      scope: server.current?.id || "current",
+      read: (options: Options) => {
+        const key = JSON.stringify(options?.query ?? {});
+        let shared = reads.get(key);
+        if (!shared) {
+          shared = readNewChatResource(server.current, "/api/models", {
+            query: options?.query,
+          });
+          reads.set(key, shared);
+          void shared.catch(() => {}).finally(() => reads.delete(key));
+        }
+        const signal = options?.signal;
+        if (!signal) return shared;
+        return new Promise((resolve, reject) => {
+          const abort = () => reject(new DOMException("Aborted", "AbortError"));
+          if (signal.aborted) return abort();
+          signal.addEventListener("abort", abort, { once: true });
+          shared.then(resolve, reject);
+        }) as Catalog;
+      },
+    };
+  }, [serverKey]);
   return (
     <ModelCatalogReader.Provider value={reader}>
       <ModelDraft {...props} />
@@ -64,15 +92,18 @@ function ModelDraft({
   >({});
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const serverKey = serverIdentity(server);
+  const currentServer = useRef(server);
+  currentServer.current = server;
   useEffect(() => {
     const controller = new AbortController();
     setError("");
     onChange(null);
     void Promise.all([
-      readNewChatResource(server, "/api/accounts", {
+      readNewChatResource(currentServer.current, "/api/accounts", {
         signal: controller.signal,
       }),
-      readNewChatResource(server, "/api/projects", {
+      readNewChatResource(currentServer.current, "/api/projects", {
         signal: controller.signal,
       }),
     ])
@@ -90,7 +121,7 @@ function ModelDraft({
         if (!controller.signal.aborted) setError(errorText(failure));
       });
     return () => controller.abort();
-  }, [server, projectId, path, attempt, onChange]);
+  }, [serverKey, projectId, path, attempt, onChange]);
   const catalog = useWorkerModels(accountKey || "default", !!accounts);
   const model =
     settings.model ||
