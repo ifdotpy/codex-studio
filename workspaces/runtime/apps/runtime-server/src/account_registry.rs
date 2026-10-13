@@ -1,7 +1,6 @@
 //! Runtime ownership of the existing account workers; all input and recovery
 //! decisions remain in the worker. Wakes are hints over committed SQLite rows.
 use futures_util::{StreamExt, stream::FuturesUnordered};
-use rusqlite::OptionalExtension;
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
 use studio_runtime_services::{
@@ -11,7 +10,7 @@ use studio_runtime_services::{
     },
     provider_session_task::SessionTaskConfig,
 };
-use studio_runtime_store::{RuntimeStore, StoreError};
+use studio_runtime_store::{RuntimeStore, SchedulerRepository};
 use tokio::sync::{Notify, mpsc};
 
 const MAX_ACCOUNTS: usize = 128;
@@ -174,90 +173,12 @@ impl AccountRegistry {
     }
 }
 
-// One pass is bounded independently of the total durable backlog. Account and
-// agent keyset cursors wrap only at the end; blocked claims cannot monopolize a
-// full wake lane on every pass. Cursor advancement follows successful enqueue.
-const TARGETS: &str = "WITH targets AS (
- SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
- json_type(a.record,'$.accountKey') account_type,
- json_extract(a.record,'$.epoch') epoch,
- (json_extract(a.record,'$.status')='queued'
-  AND json_extract(a.record,'$.autoWake')=1
-  AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
-  AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0
-  AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id
-     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending')) pending,
- ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
-   AND json_extract(a.record,'$.startAttempt.submitted')=1
-   AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
-   AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
- OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
-   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-   OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
- OR (json_type(a.record,'$.restartRecovery')='object' AND (
-   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-   OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
-      NOT IN ('finished','continued','reattached','input_restored')))) recovery
- FROM runtime_agents a WHERE json_extract(a.record,'$.deletedAt') IS NULL
- AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
- AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0)
-";
-
 pub(crate) fn target_page(
     store: &RuntimeStore,
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, Vec<(String, i64)>>, WorkerError> {
     let db = store.read()?;
-    let invalid: Option<String> = db
-        .query_row(
-            &format!(
-                "{TARGETS} SELECT id FROM targets WHERE (pending OR recovery)
-        AND (account='' OR account_type NOT IN ('null','text')) LIMIT 1"
-            ),
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(id) = invalid {
-        return Err(StoreError::InvalidStoredObject {
-            table: "runtime_agents",
-            id,
-        }
-        .into());
-    }
-    let mut accounts = db.prepare(&format!(
-        "{TARGETS} SELECT DISTINCT account FROM targets
-        WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
-    ))?;
-    let mut read_accounts = |after: &str| -> Result<Vec<String>, rusqlite::Error> {
-        accounts
-            .query_map(rusqlite::params![after, MAX_ACCOUNTS as i64], |r| r.get(0))?
-            .collect()
-    };
-    let mut selected = read_accounts(after_account)?;
-    if selected.is_empty() && !after_account.is_empty() {
-        selected = read_accounts("")?;
-    }
-    let mut pending = db.prepare(&format!(
-        "{TARGETS} SELECT id,epoch FROM targets
-        WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
-    ))?;
-    let mut result = BTreeMap::new();
-    for account in selected {
-        let after = after_agent.get(&account).map(String::as_str).unwrap_or("");
-        let mut read_agents = |after: &str| -> Result<Vec<(String, i64)>, rusqlite::Error> {
-            pending
-                .query_map(rusqlite::params![account, after, WAKE_PAGE as i64], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })?
-                .collect()
-        };
-        let mut agents = read_agents(after)?;
-        if agents.is_empty() && !after.is_empty() {
-            agents = read_agents("")?;
-        }
-        result.insert(account, agents);
-    }
-    Ok(result)
+    SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
+        .map_err(Into::into)
 }

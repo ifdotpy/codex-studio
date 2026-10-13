@@ -7,6 +7,14 @@ import socket
 import sys
 
 root = pathlib.Path(__file__).resolve().parent
+turn_count = 0
+(root / "startup-cwd").write_text(os.getcwd(), encoding="utf-8")
+if observation_socket := os.environ.get("FIXTURE_CWD_SOCKET"):
+    with socket.socket(socket.AF_UNIX) as observer:
+        observer.connect(observation_socket)
+        observer.sendall(
+            (json.dumps({"pid": os.getpid(), "cwd": os.getcwd()}) + "\n").encode()
+        )
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get("method")
@@ -15,10 +23,17 @@ for line in sys.stdin:
     if method == "thread/resume":
         result = {"thread": {"id": request["params"]["threadId"]}}
     elif method == "turn/start":
+        turn_count += 1
         with socket.socket(socket.AF_UNIX) as observer:
             observer.connect(str(root / "turn.sock"))
-            observer.sendall((json.dumps({"pid": os.getpid(), "request": request}) + "\n").encode())
+            observer.sendall((json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "count": turn_count,
+                                         "request": request}) + "\n").encode())
         result = {"turn": {"id": "fixture-turn"}}
+    elif method == "fixture/barrier":
+        with socket.socket(socket.AF_UNIX) as observer:
+            observer.connect(str(root / "turn.sock"))
+            observer.sendall((json.dumps({"method": method, "count": turn_count}) + "\n").encode())
+        result = {"count": turn_count}
     elif method == "model/list":
         result = {"data": [{"id": "fake-model", "model": "fake-model", "displayName": "Fixture",
                             "supportedReasoningEfforts": [], "defaultReasoningEffort": "medium"}]}

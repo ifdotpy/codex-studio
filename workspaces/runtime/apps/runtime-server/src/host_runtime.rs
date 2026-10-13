@@ -10,7 +10,7 @@ use studio_runtime_process::{
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_services::{
-    account_driver::{AccountDriver, AccountStatus},
+    account_driver::{AccountDriver, AccountStatus, ProviderAuthReader},
     account_worker::{WorkerError, preparation::PreparationResources},
     provider_session_task::SessionTaskConfig,
     thread_prepare::{CatalogSnapshot, CatalogSource},
@@ -217,10 +217,28 @@ pub(crate) fn codex_launch(
     ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd()
 }
 
-pub(crate) fn account_home(
-    accounts: &AccountDriver,
+pub(crate) fn account_home<R: ProviderAuthReader>(
+    accounts: &AccountDriver<R>,
     key: &str,
 ) -> Result<(String, bool), WorkerError> {
+    let initial = accounts
+        .snapshot()
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let initial_profile = initial
+        .accounts
+        .iter()
+        .find(|profile| profile["id"] == key)
+        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    if initial_profile
+        .get("provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("codex")
+        != "codex"
+    {
+        return Err(WorkerError::PreparationRefused(
+            "provider-session/claude-runtime-launch".into(),
+        ));
+    }
     if accounts
         .get(key)
         .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?

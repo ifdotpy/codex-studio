@@ -564,8 +564,8 @@ fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<Stri
         for i in 0..count {
             let id = format!("00000000-0000-4000-8000-{i:012}");
             let account = if each_account {format!("page-{i:06}")} else {"default".into()};
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,json_set(?2,'$.id',?1,'$.accountKey',?3,'$.contextRepairWait','blocked'))", rusqlite::params![id,raw,account])?;
-            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?1,'annotation','fixture','pending',0,json_extract(?2,'$.epoch'))", rusqlite::params![id,raw])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,json_set(?2,'$.id',?1,'$.accountKey',?3,'$.contextRepairWait','blocked'))", (id.as_str(), raw.as_str(), account.as_str()))?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?1,'annotation','fixture','pending',0,json_extract(?2,'$.epoch'))", (id.as_str(), raw.as_str()))?;
             ids.push(id);
         }
         Ok(ids)
@@ -586,6 +586,19 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
         after.insert("default".into(), rows.last().unwrap().0.clone());
     }
     assert_eq!(actual, expected);
+    let wrapped_agents = account_registry::target_page(
+        &fixture.store,
+        "",
+        &BTreeMap::from([("default".into(), actual.last().unwrap().clone())]),
+    )
+    .unwrap();
+    assert_eq!(
+        wrapped_agents["default"]
+            .iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        actual.iter().take(32).collect::<Vec<_>>()
+    );
     let fixture = Fixture::new();
     seed_backlog(&fixture, 130, true);
     let first = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
@@ -598,6 +611,30 @@ fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
     .unwrap();
     assert_eq!(second.len(), 2);
     assert!(second.keys().all(|account| !first.contains_key(account)));
+    let wrapped_accounts = account_registry::target_page(
+        &fixture.store,
+        second.last_key_value().unwrap().0,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(wrapped_accounts.len(), 128);
+    assert_eq!(
+        wrapped_accounts.first_key_value().unwrap().0,
+        first.first_key_value().unwrap().0
+    );
+
+    let fixture = Fixture::new();
+    let source = fixture.agents[0]["id"].as_str().unwrap();
+    fixture.store.transaction(|tx| {
+        let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [source], |row| row.get(0))?;
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('bad-account-key',json_set(?1,'$.id','bad-account-key','$.accountKey',7))", [raw])?;
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','annotation','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(matches!(
+        account_registry::target_page(&fixture.store, "", &BTreeMap::new()),
+        Err(WorkerError::Store(StoreError::InvalidStoredObject { table: "runtime_agents", id })) if id == "bad-account-key"
+    ));
 }
 
 #[tokio::test]
@@ -666,6 +703,40 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .write_all(format!("{value}\n").as_bytes())
         .await
         .unwrap();
+}
+
+async fn provider_input_barrier(root: &std::path::Path) -> Value {
+    use tokio::io::AsyncWriteExt;
+    let mut peer = tokio::io::BufReader::new(
+        tokio::net::UnixStream::connect(root.join("supervisor.sock"))
+            .await
+            .unwrap(),
+    );
+    wire_send(
+        &mut peer,
+        json!({"protocol":1,"stateDir":root,"backendId":"python-cutover-fixture"}),
+    )
+    .await;
+    assert!(wire_read(&mut peer).await["error"].is_null());
+    wire_send(
+        &mut peer,
+        json!({
+            "requestId":1,
+            "action":"write",
+            "handle":"account:default",
+            "operationId":"fixture:provider-input-barrier",
+            "nativeId":9001,
+            "message":{"id":9001,"method":"fixture/barrier","params":{}}
+        }),
+    )
+    .await;
+    let result = wire_read(&mut peer).await;
+    assert!(
+        result["error"].is_null(),
+        "barrier request must reach provider"
+    );
+    peer.get_mut().shutdown().await.unwrap();
+    result
 }
 
 #[tokio::test]
@@ -744,6 +815,119 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn supervised_child_observes_explicit_and_inherited_working_directories() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::AsyncBufReadExt;
+    let root = tempfile::tempdir().unwrap();
+    let executable = root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let stderr = root.path().join("supervisor.log");
+    let child = std::process::Command::new("python3")
+        .arg("-B")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../server/src/codex_process_supervisor.py"),
+        )
+        .arg("--state")
+        .arg(root.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&stderr).unwrap())
+        .spawn()
+        .unwrap();
+    let identity = studio_runtime_process::BackendIdentity {
+        backend_id: studio_runtime_process::BackendId("cwd-fixture".into()),
+        state_dir: root.path().into(),
+    };
+    let mut supervisor = SupervisorFixture {
+        child,
+        native: Vec::new(),
+    };
+    supervisor_ready::wait(&mut supervisor.child, identity.clone(), &stderr);
+    let factory =
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity);
+    let explicit = root.path().join("explicit-cwd");
+    std::fs::create_dir(&explicit).unwrap();
+    for (name, working_dir) in [("explicit", Some(explicit.clone())), ("inherited", None)] {
+        let observation_socket = root.path().join(format!("{name}.sock"));
+        let observation_listener = tokio::net::UnixListener::bind(&observation_socket).unwrap();
+        let mut environment: BTreeMap<String, String> = std::env::vars().collect();
+        environment.insert(
+            "CODEX_HOME".into(),
+            root.path()
+                .join("codex-home")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        environment.insert(
+            "FIXTURE_CWD_SOCKET".into(),
+            observation_socket.to_string_lossy().into_owned(),
+        );
+        let launch = match working_dir {
+            Some(ref path) => ProviderLaunchSpec::new(
+                vec![
+                    executable.to_string_lossy().into_owned(),
+                    "app-server".into(),
+                    "--listen".into(),
+                    "stdio://".into(),
+                ],
+                environment,
+                path.clone(),
+            ),
+            None => ProviderLaunchSpec::new(
+                vec![
+                    executable.to_string_lossy().into_owned(),
+                    "app-server".into(),
+                    "--listen".into(),
+                    "stdio://".into(),
+                ],
+                environment,
+                root.path().into(),
+            )
+            .with_inherited_cwd(),
+        };
+        let prepared = factory
+            .prepare(
+                ProviderHandle::for_account(name),
+                OpenOptions {
+                    launch,
+                    clock: SessionClock::default(),
+                    expected_generation: None,
+                },
+                Shutdown::default(),
+            )
+            .await
+            .unwrap();
+        let (stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            observation_listener.accept(),
+        )
+        .await
+        .expect("child cwd observation hang guard")
+        .unwrap();
+        let mut observed = tokio::io::BufReader::new(stream);
+        let mut line = String::new();
+        observed.read_line(&mut line).await.unwrap();
+        let observed: Value = serde_json::from_str(&line).unwrap();
+        let expected = working_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap());
+        let expected = expected.to_string_lossy();
+        assert_eq!(observed["cwd"], expected.as_ref());
+        supervisor
+            .native
+            .push(observed["pid"].as_u64().unwrap() as u32);
+        drop(prepared);
+    }
+}
+
 fn account_driver(
     root: &std::path::Path,
 ) -> (
@@ -784,16 +968,65 @@ fn launch_admission_refreshes_restored_and_changed_credentials() {
     assert_eq!(driver.snapshot().unwrap().accounts[0]["status"], "changed");
 }
 
+#[test]
+fn claude_launch_refusal_precedes_auth_refresh_and_registry_write() {
+    use std::sync::atomic::AtomicUsize;
+    struct CountingReader(Arc<AtomicUsize>);
+    impl studio_runtime_services::account_driver::ProviderAuthReader for CountingReader {
+        fn read(
+            &self,
+            _profile: &studio_runtime_services::account_driver::AuthProfile,
+        ) -> studio_runtime_services::account_driver::AuthMetadata {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            studio_runtime_services::account_driver::AuthMetadata {
+                status: studio_runtime_services::account_driver::AuthStatus::Ready,
+                account_id: Some("would-have-refreshed".into()),
+                email: None,
+                plan: None,
+                credential_identity: Some("would-have-refreshed".into()),
+                error: None,
+                error_kind: None,
+            }
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let (_, home) = account_driver(root.path());
+    let registry = root.path().join("accounts/registry.json");
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&registry).unwrap()).unwrap();
+    value["accounts"]["default"]["provider"] = json!("claude");
+    value["accounts"]["default"]["status"] = json!("signedOut");
+    value["accounts"]["default"]["home"] = json!(home);
+    std::fs::write(&registry, serde_json::to_vec(&value).unwrap()).unwrap();
+    let before = std::fs::read(&registry).unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let driver = studio_runtime_services::account_driver::AccountDriver::open_with_reader(
+        &registry,
+        CountingReader(reads.clone()),
+    )
+    .unwrap();
+    let revision = driver.revision().unwrap();
+
+    assert!(matches!(
+        host_runtime::account_home(&driver, "default"),
+        Err(WorkerError::PreparationRefused(reason))
+            if reason == "provider-session/claude-runtime-launch"
+    ));
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert_eq!(driver.revision().unwrap(), revision);
+    assert_eq!(std::fs::read(registry).unwrap(), before);
+}
+
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
 mod supervisor_ready;
 
 struct SupervisorFixture {
     child: std::process::Child,
-    native: Option<u32>,
+    native: Vec<u32>,
 }
 impl Drop for SupervisorFixture {
     fn drop(&mut self) {
-        if let Some(pid) = self.native {
+        for pid in &self.native {
             let _result = std::process::Command::new("kill")
                 .args(["-KILL", &pid.to_string()])
                 .status();
@@ -871,7 +1104,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
             .unwrap();
         let mut fixture = SupervisorFixture {
             child,
-            native: None,
+            native: Vec::new(),
         };
         supervisor_ready::wait(
             &mut fixture.child,
@@ -901,7 +1134,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     assert!(opened["error"].is_null(), "supervisor fixture open failed");
     let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
     let generation = opened["result"]["generation"].as_u64().unwrap();
-    supervisor.native = Some(pid);
+    supervisor.native.push(pid);
     peer.get_mut().shutdown().await.unwrap();
     let mut discarded = Vec::new();
     peer.read_to_end(&mut discarded).await.unwrap();
@@ -955,7 +1188,16 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     reported.read_to_end(&mut bytes).await.unwrap();
     let request: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(request["pid"], pid);
+    assert_eq!(request["count"], 1);
+    assert_eq!(
+        request["cwd"],
+        std::env::current_dir().unwrap().to_string_lossy().as_ref()
+    );
     assert_eq!(request["request"]["method"], "turn/start");
+    assert_eq!(
+        std::fs::read_to_string(fixture._root.path().join("startup-cwd")).unwrap(),
+        std::env::current_dir().unwrap().to_string_lossy().as_ref()
+    );
     runtime_shutdown::close(runtime, &state).await.unwrap();
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
     let launch = host_runtime::codex_launch(
@@ -985,13 +1227,21 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         .unwrap();
     assert_eq!(retained.generation(), Generation(generation));
     drop(retained);
-    // Replay produced no second provider connection/request after shutdown joined the worker.
-    let mut next = Box::pin(observer.accept());
-    assert!(
-        std::future::poll_fn(|cx| std::task::Poll::Ready(
-            std::future::Future::poll(next.as_mut(), cx).is_pending()
-        ))
-        .await
+    // The provider consumes this barrier after all earlier stdin messages;
+    // shutdown joined the Rust worker before the barrier was written.
+    provider_input_barrier(fixture._root.path()).await;
+    let (mut barrier, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), observer.accept())
+            .await
+            .expect("provider barrier hang guard")
+            .unwrap();
+    let mut bytes = Vec::new();
+    barrier.read_to_end(&mut bytes).await.unwrap();
+    let barrier: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(barrier["method"], "fixture/barrier");
+    assert_eq!(
+        barrier["count"], 1,
+        "exactly one turn/start reached provider"
     );
     tokio::task::spawn_blocking(move || drop(supervisor))
         .await
