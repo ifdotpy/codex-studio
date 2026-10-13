@@ -9,7 +9,7 @@ use studio_runtime_services::{
     usage_resume,
 };
 use studio_runtime_store::{ContinuationTable, RuntimeStore};
-fn template() -> tempfile::TempDir {
+fn template_kind(kind: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("isolated template");
     let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/turn_lifecycle/continuation_oracle.py");
@@ -17,6 +17,7 @@ fn template() -> tempfile::TempDir {
         .arg(oracle)
         .arg("template")
         .arg(dir.path())
+        .arg(kind)
         .output()
         .expect("Python writer");
     assert!(
@@ -25,6 +26,9 @@ fn template() -> tempfile::TempDir {
         String::from_utf8_lossy(&result.stderr)
     );
     dir
+}
+fn template() -> tempfile::TempDir {
+    template_kind("usage")
 }
 fn clone_template(root: &Path) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("case");
@@ -190,4 +194,79 @@ fn foreign_followup_identity_refuses_and_rolls_back() {
     );
     assert!(matches!(result,Err(ContinuationError::Invalid(ref at)) if at=="/events/identity"));
     assert_eq!(read(&store), before);
+}
+
+fn wake_state(store: &RuntimeStore) -> (Vec<(String, String, String)>, Vec<(String, String)>) {
+    let db = store.read().expect("reader");
+    let mut events = db
+        .prepare("SELECT id,status,text FROM runtime_events ORDER BY id")
+        .expect("events");
+    let rows = events
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("rows")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("event rows");
+    let mut metadata = db
+        .prepare("SELECT id,record FROM runtime_event_meta ORDER BY id")
+        .expect("metadata");
+    let meta = metadata
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("rows")
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .expect("metadata rows");
+    (rows, meta)
+}
+#[test]
+fn wakeup_event_and_metadata_writes_restart_atomically() {
+    let template = template_kind("wake");
+    let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");
+    for boundary in [
+        Boundary::BeforeEvent,
+        Boundary::AfterEvent,
+        Boundary::BeforeMetadata,
+        Boundary::AfterMetadata,
+        Boundary::BeforeCommit,
+        Boundary::AfterCommit,
+    ] {
+        if !full && !matches!(boundary, Boundary::AfterEvent | Boundary::AfterMetadata) {
+            continue;
+        }
+        let root = clone_template(template.path());
+        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let before = wake_state(&store);
+        let result = continuation_driver::drive_with_fault(
+            &store,
+            "a",
+            ContinuationTable::Usage,
+            None,
+            1000.0,
+            |s| Ok(studio_runtime_services::wakeups::pending_batch(s)),
+            &mut StopAt(boundary),
+        );
+        assert!(result.is_err(), "fault {boundary:?} reached");
+        if boundary != Boundary::AfterCommit {
+            assert_eq!(wake_state(&store), before);
+        }
+        drop(store);
+        let store = RuntimeStore::open(Some(root.path())).expect("restart");
+        continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
+            Ok(studio_runtime_services::wakeups::pending_batch(s))
+        })
+        .expect("replay");
+        let after = wake_state(&store);
+        assert_eq!(
+            after
+                .0
+                .iter()
+                .filter(|(_, status, _)| status == "pending")
+                .count(),
+            1
+        );
+        assert_eq!(after.1.len(), 1);
+        continuation_driver::drive(&store, "a", ContinuationTable::Usage, None, 1000.0, |s| {
+            Ok(studio_runtime_services::wakeups::pending_batch(s))
+        })
+        .expect("idempotent replay");
+        assert_eq!(wake_state(&store), after);
+    }
 }

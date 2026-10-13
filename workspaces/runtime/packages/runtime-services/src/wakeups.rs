@@ -96,26 +96,24 @@ pub fn pending_batch(s: &Snapshot) -> Decision {
         }
         if text(&event, "kind") == "agent_message" {
             event["preserveProgress"] = json!(true);
-            if let Ok(payload) = serde_json::from_str::<Value>(text(&event, "text")) {
-                if text(&payload, "importance") == "progress"
-                    && ["sender", "room", "progress_key"]
-                        .iter()
-                        .all(|k| !text(&payload, k).is_empty())
-                {
-                    if let Some(version) = payload.get("progress_version").and_then(Value::as_u64) {
-                        if !flag(metadata, "preserveProgress") {
-                            crate::continuation::remove(&mut event, "preserveProgress");
-                        }
-                        groups
-                            .entry((
-                                text(&payload, "sender").into(),
-                                text(&payload, "room").into(),
-                                text(&payload, "progress_key").into(),
-                            ))
-                            .or_default()
-                            .push((d.batch.len(), version));
-                    }
+            if let Ok(payload) = serde_json::from_str::<Value>(text(&event, "text"))
+                && text(&payload, "importance") == "progress"
+                && ["sender", "room", "progress_key"]
+                    .iter()
+                    .all(|k| !text(&payload, k).is_empty())
+                && let Some(version) = payload.get("progress_version").and_then(Value::as_u64)
+            {
+                if !flag(metadata, "preserveProgress") {
+                    crate::continuation::remove(&mut event, "preserveProgress");
                 }
+                groups
+                    .entry((
+                        text(&payload, "sender").into(),
+                        text(&payload, "room").into(),
+                        text(&payload, "progress_key").into(),
+                    ))
+                    .or_default()
+                    .push((d.batch.len(), version));
             }
         }
         d.batch.push(event);
@@ -169,11 +167,21 @@ pub fn pending_batch(s: &Snapshot) -> Decision {
         metadata["earlierProgressUpdates"] = json!(count);
         d.metadata.insert(latest_id, metadata.clone());
     }
-    d.batch=d.batch.into_iter().enumerate().filter_map(|(i,mut e)|{
-        if retired.contains(&i){return None;}
-        let count=meta.get(text(&e,"id")).and_then(|m|m.get("earlierProgressUpdates")).and_then(Value::as_u64).unwrap_or(0);
-        if count>0 {if let Ok(mut payload)=serde_json::from_str::<Value>(text(&e,"text")){if payload.is_object(){patch(&mut payload,json!({"earlierProgressUpdates":count,"history":"Read earlier progress with orchestration_chat_read in this room."}));e["text"]=json!(crate::event_write::python_json(&payload));}}}
-        Some(e)
+    d.batch = d.batch.into_iter().enumerate().filter_map(|(i, mut event)| {
+        if retired.contains(&i) {
+            return None;
+        }
+        let count = meta.get(text(&event, "id"))
+            .and_then(|m| m.get("earlierProgressUpdates"))
+            .and_then(Value::as_u64).unwrap_or(0);
+        if count > 0
+            && let Ok(mut payload) = serde_json::from_str::<Value>(text(&event, "text"))
+            && payload.is_object()
+        {
+            patch(&mut payload, json!({"earlierProgressUpdates":count,"history":"Read earlier progress with orchestration_chat_read in this room."}));
+            event["text"] = json!(crate::event_write::python_json(&payload));
+        }
+        Some(event)
     }).collect();
     d
 }
