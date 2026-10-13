@@ -193,7 +193,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     });
     let mut second = second;
     let second_wire = tokio::select! {
-        wire = peer.next_write() => wire.value,
+        wire = peer.write("thread/read") => wire,
         _result = &mut second => panic!("repeated history read reused an earlier receipt"),
     };
     assert_eq!(second_wire["method"], "thread/read");
