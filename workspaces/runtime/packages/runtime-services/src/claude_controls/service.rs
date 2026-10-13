@@ -29,9 +29,25 @@ impl ControlBinding {
         &self.account
     }
 }
+/// Agent/epoch come from the checked stored snapshot. A mutation's request ID
+/// is the durable control identity; read-only calls need no replay identity.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ControlScope {
+    pub agent: String,
+    pub epoch: u64,
+    pub request_id: Option<String>,
+}
 pub trait ControlSession: Send + Sync {
     fn binding(&self) -> ControlBinding;
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value>;
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        method: &str,
+        params: Value,
+    ) -> ControlFuture<'_, Value> {
+        self.call(method, params)
+    }
 }
 /// Every method compares source, epoch and reservation inside the same transaction.
 /// `reserve` resolves shared workspace idle evidence before its comparison transaction.
@@ -122,6 +138,11 @@ impl Controls {
         snapshot: &mut ControlSnapshot,
         uncertain: &mut bool,
     ) -> Result<Value> {
+        let scope = ControlScope {
+            agent: snapshot.agent.id.clone(),
+            epoch: snapshot.epoch(),
+            request_id: Some(request.request_id.clone()),
+        };
         if snapshot
             .saved
             .as_ref()
@@ -132,11 +153,23 @@ impl Controls {
                     return Err(ControlError::Unknown);
                 }
                 let native = self
-                    .bound_call(binding, "claude/state", json!({"threadId":thread}), 20)
+                    .bound_call(
+                        binding,
+                        &scope,
+                        "claude/state",
+                        json!({"threadId":thread}),
+                        20,
+                    )
                     .await?;
                 let queue = if request.action == Action::Rollback {
-                    self.bound_call(binding, "thread/queue/list", json!({"threadId":thread}), 20)
-                        .await?
+                    self.bound_call(
+                        binding,
+                        &scope,
+                        "thread/queue/list",
+                        json!({"threadId":thread}),
+                        20,
+                    )
+                    .await?
                 } else {
                     json!({})
                 };
@@ -168,7 +201,7 @@ impl Controls {
                         json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id}),
                     )
                 };
-                self.bound_call(binding, method, params, 25).await?
+                self.bound_call(binding, &scope, method, params, 25).await?
             } else {
                 json!({"settings":request.settings})
             };
@@ -180,6 +213,7 @@ impl Controls {
     async fn bound_call(
         &self,
         binding: &ControlBinding,
+        scope: &ControlScope,
         method: &str,
         params: Value,
         seconds: u64,
@@ -187,16 +221,22 @@ impl Controls {
         if &self.session.binding() != binding {
             return Err(ControlError::Changed);
         }
-        let result = self.call(method, params, seconds).await?;
+        let result = self.call(scope.clone(), method, params, seconds).await?;
         if &self.session.binding() != binding {
             return Err(ControlError::Unknown);
         }
         Ok(result)
     }
-    async fn call(&self, method: &str, params: Value, seconds: u64) -> Result<Value> {
+    async fn call(
+        &self,
+        scope: ControlScope,
+        method: &str,
+        params: Value,
+        seconds: u64,
+    ) -> Result<Value> {
         tokio::time::timeout(
             Duration::from_secs(seconds),
-            self.session.call(method, params),
+            self.session.call_scoped(scope, method, params),
         )
         .await
         .map_err(|_| ControlError::Unknown)?
@@ -210,6 +250,14 @@ impl Controls {
     ) -> Result<Value> {
         let snapshot = ControlSnapshot::from_records(agent.clone(), operation)?;
         let binding = self.session.binding();
+        let scope = ControlScope {
+            agent: snapshot.agent.id.clone(),
+            epoch: snapshot.epoch(),
+            request_id: body
+                .get("request_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
         let action = body.get("action").and_then(Value::as_str);
         let lazy = agent.get("lazyAccountTransfer").filter(|v| truthy(Some(v)));
         let account = if action == Some("state") {
@@ -232,8 +280,14 @@ impl Controls {
         match action {
             Some("state") => {
                 let mut result = if let Some(thread) = thread {
-                    self.bound_call(&binding, "claude/state", json!({"threadId":thread}), 20)
-                        .await?
+                    self.bound_call(
+                        &binding,
+                        &scope,
+                        "claude/state",
+                        json!({"threadId":thread}),
+                        20,
+                    )
+                    .await?
                 } else {
                     json!({"settings":agent.get("claudeOptions").cloned().unwrap_or(json!({})),"turns":[],"tasks":[]})
                 };
@@ -248,6 +302,7 @@ impl Controls {
             Some("commands") => {
                 self.bound_call(
                     &binding,
+                    &scope,
                     "claude/commands",
                     json!({"cwd":snapshot.agent.cwd}),
                     25,
@@ -263,8 +318,14 @@ impl Controls {
                     .and_then(Value::as_str)
                     .filter(|t| !t.is_empty() && t.len() <= 1024)
                     .ok_or(ControlError::Request)?;
+                let mut scope = scope;
+                // The task identity is stable even when a client omits request_id.
+                scope.request_id.get_or_insert_with(|| {
+                    format!("stop-task:{}:{task}", thread.as_deref().unwrap_or(""))
+                });
                 self.bound_call(
                     &binding,
+                    &scope,
                     "claude/stopTask",
                     json!({"threadId":thread.ok_or(ControlError::Request)?,"taskId":task}),
                     20,
