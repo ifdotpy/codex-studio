@@ -701,6 +701,31 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                     {"path": name, "entry": {"kind": "file", "bytes": 15, "mode": 0o600, "sha256": "0" * 64}}]}, "mode:" + name)
             self.assertEqual(caught.exception.code, "sync_conflict")
 
+    async def test_a_large_file_is_cloned_from_the_project_folder_instead_of_sent(self):
+        same, other = os.urandom(700 * 1024), os.urandom(400 * 1024)
+        self.mac_project({"assets/big.bin": same, "assets/other.bin": os.urandom(400 * 1024)})
+        (self.line / "assets").mkdir()
+        (self.line / "assets/big.bin").write_bytes(same)
+        (self.line / "assets/big.bin").chmod(0o600)
+        (self.line / "assets/other.bin").write_bytes(other)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        await asyncio.sleep(0.01)
+        read = []
+        real = host_exec_protocol.hashlib.file_digest
+        def recording(stream, digest):
+            read.append(Path(stream.name).name)
+            return real(stream, digest)
+        self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest", side_effect=recording))
+        result = await self.execute("clone-file", 'import pathlib,stat;p=pathlib.Path("assets/big.bin");'
+            'assert p.read_bytes()==pathlib.Path(%r).read_bytes();assert stat.S_IMODE(p.stat().st_mode)==0o600'
+            % str(self.line / "assets/big.bin"))
+        self.assertEqual(result["exitCode"], 0)
+        # The same file is a clone; the file with other content of the same size travels.
+        self.assertEqual(result["clonedBytes"], len(same))
+        self.assertEqual(result["transferredBytes"], len(other) + len('print("Hello")\n'))
+        # The guest scan and the check of the project file read it; the run check does not.
+        self.assertEqual(read.count("big.bin"), 2)
+
     async def test_small_files_travel_in_batches_below_the_frame_limit(self):
         for index in range(300):
             (self.line / "small" / ("f%03d" % index)).parent.mkdir(parents=True, exist_ok=True)
