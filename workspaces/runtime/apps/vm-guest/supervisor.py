@@ -45,7 +45,8 @@ class Supervisor:
     async def terminate(self, reason):
         if self.child is None or self.child.returncode is not None:
             return
-        self.reason = reason
+        if self.reason == "exited":
+            self.reason = reason
         try:
             os.killpg(self.child.pid, signal.SIGTERM)
         except ProcessLookupError:
