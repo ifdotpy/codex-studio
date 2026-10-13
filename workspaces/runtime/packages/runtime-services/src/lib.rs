@@ -96,3 +96,6 @@ mod registration_tests {
         assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
     }
 }
+
+pub mod recovery_absence;
+pub mod task_recovery_store;
