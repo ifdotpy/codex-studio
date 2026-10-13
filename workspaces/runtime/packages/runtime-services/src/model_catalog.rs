@@ -3,24 +3,21 @@
 use crate::provider_session::{
     ProviderProcess, ProviderSession, ProviderSessionConfig, ProviderSessionEvent,
 };
+use process_wrap::std::CommandWrap;
 #[cfg(unix)]
-use process_wrap::std::{CommandWrap, ProcessGroup};
+use process_wrap::std::ProcessGroup;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-#[cfg(windows)]
-use std::process::Child;
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use studio_runtime_process::child_priority::ChildPriority;
 use studio_runtime_providers::{Method, ResponseBody};
-#[cfg(unix)]
 type ManagedChildProcess = Box<dyn process_wrap::std::ChildWrapper>;
-#[cfg(windows)]
-type ManagedChildProcess = Box<Child>;
 
 const CATALOG_TTL: Duration = Duration::from_secs(300);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
@@ -364,46 +361,23 @@ impl ProviderProcess for ChildProcess {
 }
 
 fn spawn_provider(command: Command) -> io::Result<ManagedChildProcess> {
+    let mut command = CommandWrap::from(command);
     #[cfg(unix)]
-    {
-        let mut command = CommandWrap::from(command);
-        command.wrap(ProcessGroup::leader());
-        command.spawn()
-    }
-    #[cfg(windows)]
-    {
-        command.spawn().map(Box::new)
-    }
+    command.wrap(ProcessGroup::leader());
+    ChildPriority::Normal.apply_before_spawn(&mut command);
+    command.spawn()
 }
 
-#[cfg(unix)]
 fn take_stdin(child: &mut ManagedChildProcess) -> Option<ChildStdin> {
     child.stdin().take()
 }
 
-#[cfg(windows)]
-fn take_stdin(child: &mut ManagedChildProcess) -> Option<ChildStdin> {
-    child.stdin.take()
-}
-
-#[cfg(unix)]
 fn take_stdout(child: &mut ManagedChildProcess) -> Option<ChildStdout> {
     child.stdout().take()
 }
 
-#[cfg(windows)]
-fn take_stdout(child: &mut ManagedChildProcess) -> Option<ChildStdout> {
-    child.stdout.take()
-}
-
-#[cfg(unix)]
 fn take_stderr(child: &mut ManagedChildProcess) -> Option<ChildStderr> {
     child.stderr().take()
-}
-
-#[cfg(windows)]
-fn take_stderr(child: &mut ManagedChildProcess) -> Option<ChildStderr> {
-    child.stderr.take()
 }
 
 fn stop_child(child: &mut ManagedChildProcess) -> io::Result<()> {
@@ -709,5 +683,41 @@ mod tests {
             .stop()
             .expect("provider group should be killed and reaped");
         assert!(process.child.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn model_catalog_probe_preserves_inherited_priority() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "read -r ready; ps -o ni= -p $$; ionice -p $$"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = spawn_provider(command).expect("catalog caller");
+        child
+            .stdin()
+            .take()
+            .expect("stdin")
+            .write_all(b"ready\n")
+            .expect("release probe");
+        let output = child.wait_with_output().expect("catalog child completes");
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).expect("catalog output");
+        let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            rustix::process::getpriority_process(None)
+                .expect("parent nice")
+                .to_string()
+        );
+        let inherited_io = Command::new("ionice")
+            .args(["-p", &std::process::id().to_string()])
+            .output()
+            .expect("parent I/O priority");
+        assert!(inherited_io.status.success());
+        assert_eq!(
+            lines[1],
+            String::from_utf8_lossy(&inherited_io.stdout).trim()
+        );
     }
 }

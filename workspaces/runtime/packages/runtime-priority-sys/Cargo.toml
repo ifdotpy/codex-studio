@@ -1,0 +1,21 @@
+[package]
+name = "studio-runtime-priority-sys"
+version.workspace = true
+edition.workspace = true
+description = "Parent-side Linux I/O priority for owned child process groups"
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libc.workspace = true
+
+# The only exception to the runtime's unsafe ban: one scalar-only Linux syscall.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+let_underscore_future = "deny"
+let_underscore_must_use = "deny"
+unwrap_used = "warn"

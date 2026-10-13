@@ -14,7 +14,6 @@ use crate::event_write::python_strip;
 use base64::Engine as _;
 #[cfg(unix)]
 use process_wrap::std::ChildWrapper;
-#[cfg(unix)]
 use process_wrap::std::CommandWrap;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
@@ -29,6 +28,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use studio_runtime_process::child_priority::ChildPriority;
 use thiserror::Error;
 
 const AUTH_FILE_LIMIT: u64 = 1024 * 1024;
@@ -381,25 +381,14 @@ fn run_claude_status_with_timeout(
     options: Option<&Value>,
     timeout: Duration,
 ) -> Result<(Vec<u8>, bool), &'static str> {
-    #[cfg(unix)]
-    let mut child = CommandWrap::with_new(binary, |command| {
+    let mut command = CommandWrap::with_new(binary, |command| {
         configure_claude_status_command(command, options);
-    })
-    .wrap(ProcessGroup::leader())
-    .spawn()
-    .map_err(|_| "spawn")?;
-    #[cfg(windows)]
-    let mut child = {
-        let mut command = Command::new(binary);
-        configure_claude_status_command(&mut command, options);
-        command.spawn().map_err(|_| "spawn")?
-    };
+    });
     #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    ChildPriority::Normal.apply_before_spawn(&mut command);
+    let mut child = command.spawn().map_err(|_| "spawn")?;
     let Some(stdout) = child.stdout().take() else {
-        return Err("spawn");
-    };
-    #[cfg(windows)]
-    let Some(stdout) = child.stdout.take() else {
         return Err("spawn");
     };
     let exceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1620,6 +1609,49 @@ mod tests {
         ] {
             assert_eq!(metadata(rejected).email, None, "payload {rejected}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claude_status_probe_preserves_inherited_priority() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("isolated status fixture");
+        let command = directory.path().join("status-probe");
+        fs::write(
+            &command,
+            r#"#!/usr/bin/env python3
+import fcntl, os, subprocess, sys
+# The bounded reader starts only after the parent's priority hook returns.
+# Block on this finite prefix until that reader starts, then report.
+fcntl.fcntl(1, fcntl.F_SETPIPE_SZ, 4096)
+sys.stdout.write(' ' * 8192)
+sys.stdout.flush()
+print(os.getpriority(os.PRIO_PROCESS, 0), flush=True)
+sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], text=True))
+"#,
+        )
+        .expect("probe script");
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).expect("executable");
+        let (output, success) = run_claude_status(command.to_str().expect("fixture path"), None)
+            .expect("status caller");
+        assert!(success);
+        let text = String::from_utf8(output).expect("status output");
+        let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            rustix::process::getpriority_process(None)
+                .expect("parent nice")
+                .to_string()
+        );
+        let inherited_io = Command::new("ionice")
+            .args(["-p", &std::process::id().to_string()])
+            .output()
+            .expect("parent I/O priority");
+        assert!(inherited_io.status.success());
+        assert_eq!(
+            lines[1],
+            String::from_utf8_lossy(&inherited_io.stdout).trim()
+        );
     }
 
     #[cfg(target_os = "linux")]
