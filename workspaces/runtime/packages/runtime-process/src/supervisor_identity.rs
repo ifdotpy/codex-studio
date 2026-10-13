@@ -1,6 +1,6 @@
 //! Linux kernel identity, with legacy comparison only for durable journal upgrades.
 use super::supervisor_daemon::{Error, Result};
-use rustix::process::{Pid, Signal, getpgid, kill_process_group};
+use rustix::process::{Pid, Signal, getpgid, getsid, kill_process_group};
 use std::{
     fs,
     io::Read,
@@ -12,7 +12,7 @@ use std::{
 use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start};
 
 pub(super) const RETRY: Duration = Duration::from_millis(20);
-pub(super) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
+pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
     if pid == 0 {
         return Ok(None);
     }
@@ -40,6 +40,42 @@ pub(super) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
         .ok_or(Error::Refused("Cannot read kernel process start ticks"))?;
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     Ok(Some(format!("linux:{}:{ticks}", boot.trim())))
+}
+
+/// Signal a process group only while a captured member still has its exact
+/// Linux boot/start identity and remains in the captured group and session.
+/// Callers capture all group members before starting teardown so leader reap
+/// cannot hide surviving jobs from the later KILL pass.
+pub(crate) fn signal_verified_group_member(
+    pid: u32,
+    pgid: u32,
+    sid: u32,
+    expected_start: &str,
+    signal: Signal,
+) -> Result<bool> {
+    if start_time(pid, false)?.as_deref() != Some(expected_start) {
+        return Ok(false);
+    }
+    let member =
+        Pid::from_raw(i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?)
+            .ok_or(Error::Refused("Invalid child PID"))?;
+    let group =
+        Pid::from_raw(i32::try_from(pgid).map_err(|_| Error::Refused("Invalid process group"))?)
+            .ok_or(Error::Refused("Invalid process group"))?;
+    let session =
+        Pid::from_raw(i32::try_from(sid).map_err(|_| Error::Refused("Invalid process session"))?)
+            .ok_or(Error::Refused("Invalid process session"))?;
+    if getpgid(Some(member)).map_err(std::io::Error::from)? != group
+        || getsid(Some(member)).map_err(std::io::Error::from)? != session
+        || start_time(pid, false)?.as_deref() != Some(expected_start)
+    {
+        return Ok(false);
+    }
+    match kill_process_group(group, signal) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::SRCH) => Ok(false),
+        Err(error) => Err(std::io::Error::from(error).into()),
+    }
 }
 
 pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Option<String>)> {

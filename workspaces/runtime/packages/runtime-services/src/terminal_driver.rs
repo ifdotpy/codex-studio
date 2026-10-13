@@ -771,10 +771,6 @@ fn new_id() -> Result<String, TerminalError> {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/prepared_python.rs"]
-pub(crate) mod prepared_python;
-
-#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
@@ -793,7 +789,7 @@ mod tests {
         TerminalsRepository,
     };
 
-    use super::prepared_python;
+    use crate::agents_create;
 
     #[derive(Default)]
     struct FakeSession {
@@ -804,6 +800,7 @@ mod tests {
         resize_barrier: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
         closed: Mutex<bool>,
         orphan_identities: Mutex<Vec<Value>>,
+        orphan_failure: Mutex<Option<usize>>,
     }
 
     impl TerminalSession for FakeSession {
@@ -849,10 +846,14 @@ mod tests {
         }
 
         fn cleanup_orphan(&self, identity: &Value) -> Result<bool, SessionError> {
-            self.orphan_identities
-                .lock()
-                .expect("orphan identity lock")
-                .push(identity.clone());
+            let mut identities = self.orphan_identities.lock().expect("orphan identity lock");
+            identities.push(identity.clone());
+            let should_fail =
+                *self.orphan_failure.lock().expect("orphan failure lock") == Some(identities.len());
+            drop(identities);
+            if should_fail {
+                return Err(SessionError::Disconnected);
+            }
             Ok(true)
         }
     }
@@ -919,7 +920,7 @@ mod tests {
             }
         }
         let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python::prepared_python(&server_source);
+        let python = agents_create::prepared_python(&server_source);
         let output = Command::new(python)
             .arg(server_source.join("codex_python.py"))
             .arg("--exec")
@@ -1296,6 +1297,10 @@ mod tests {
                 })
                 .is_err()
         );
+        assert!(
+            driver.session.requests.lock().expect("requests").is_empty(),
+            "reservation failure must happen before process/spawn"
+        );
         let connection = state.store.as_ref().expect("store").read().expect("read");
         assert_eq!(
             TerminalsRepository::list(&connection).expect("list"),
@@ -1343,6 +1348,121 @@ mod tests {
     }
 
     #[test]
+    fn rejected_create_compensation_failure_preserves_reservation_and_receipt() {
+        let state = test_state();
+        let session = FakeSession::default();
+        *session.error.lock().expect("fake error") = Some(SessionError::Rejected);
+        let driver = test_driver(&state, session);
+        let request =
+            serde_json::json!({"id":"create-delete-fail","agent":"agent","cols":100,"rows":28});
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open rejected create database");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_terminal_delete BEFORE DELETE ON user_terminals
+             BEGIN SELECT RAISE(ABORT, 'injected compensation failure'); END;",
+            )
+            .expect("install rejected create fail point");
+        assert!(
+            driver
+                .create(TerminalCreate {
+                    request_id: "create-delete-fail",
+                    agent: "agent",
+                    agent_cwd: state.root.to_str().expect("cwd"),
+                    cwd: &state.root,
+                    columns: 100,
+                    rows: 28,
+                    shell: "/bin/sh",
+                    environment: serde_json::json!({}),
+                    submitted_request: &request,
+                })
+                .is_err()
+        );
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        assert_eq!(
+            TerminalsRepository::list(&connection).expect("list").len(),
+            1
+        );
+        assert!(
+            TerminalsRepository::receipt(&connection, "create-delete-fail")
+                .expect("receipt")
+                .is_some()
+        );
+        assert_eq!(driver.session.requests.lock().expect("requests").len(), 1);
+    }
+
+    #[test]
+    fn create_identity_and_error_record_failpoints_keep_durable_reservation() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let created = create(&driver, &state.root);
+        let id = created["id"].as_str().expect("terminal id").to_owned();
+        let identity = studio_runtime_process::PtyIdentity {
+            pid: 2345,
+            process_group: 2345,
+            session: 2345,
+            start_time_ticks: 98765,
+            boot_id: "00000000-0000-0000-0000-000000000001".into(),
+        };
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open identity persistence database");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_identity_persist BEFORE UPDATE ON user_terminals
+             WHEN json_extract(NEW.record,'$._processIdentity') IS NOT NULL
+             BEGIN SELECT RAISE(ABORT,'identity commit'); END;",
+            )
+            .expect("install identity persistence fail point");
+        assert!(
+            driver
+                .persist_process_identity(&id, Some(&identity))
+                .is_err()
+        );
+        let row = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("row")
+        .expect("terminal");
+        assert!(row.record.get("_processIdentity").is_none());
+        database
+            .execute_batch("DROP TRIGGER fail_identity_persist;")
+            .expect("remove identity fail point");
+
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_spawn_error_record BEFORE UPDATE ON user_terminals
+             WHEN json_extract(NEW.record,'$.error') IS NOT NULL
+             BEGIN SELECT RAISE(ABORT,'spawn error record'); END;",
+            )
+            .expect("install spawn error record fail point");
+        let outcome = TerminalOutcome {
+            operation_id: format!("terminal-spawn:create:request:{id}"),
+            result: Err(SessionError::Rejected),
+        };
+        assert!(driver.settle_outcome(outcome).is_err());
+        let row = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("row")
+        .expect("terminal");
+        assert_eq!(
+            row.record.get("status").and_then(Value::as_str),
+            Some("running")
+        );
+        assert!(row.record.get("error").is_none());
+        assert!(
+            TerminalsRepository::receipt(
+                &state.store.as_ref().expect("store").read().expect("read"),
+                "create:request",
+            )
+            .expect("receipt")
+            .is_some()
+        );
+    }
+
+    #[test]
     fn input_reservation_failpoint_does_not_write_to_the_process() {
         let state = test_state();
         let session = FakeSession::default();
@@ -1384,6 +1504,127 @@ mod tests {
     }
 
     #[test]
+    fn input_unknown_and_settlement_failures_replay_without_resending() {
+        let state = test_state();
+        let session = FakeSession::default();
+        let driver = test_driver(&state, session);
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        *driver.session.error.lock().expect("fake error") = Some(SessionError::UnknownOutcome);
+        let uncertain = serde_json::json!({"ok":false,"delivery":"uncertain","error":"Input delivery is uncertain. Check the terminal before sending it again."});
+        let unknown_request =
+            serde_json::json!({"id":id,"text":"once","request_id":"input-unknown"});
+        assert_eq!(
+            driver
+                .action("input", &unknown_request)
+                .expect("unknown result"),
+            uncertain
+        );
+        assert_eq!(
+            driver
+                .action("input", &unknown_request)
+                .expect("unknown replay"),
+            uncertain
+        );
+
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open settlement fail-point database");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_input_settlement BEFORE UPDATE ON user_terminal_receipts
+             WHEN OLD.id='input-settlement'
+             BEGIN SELECT RAISE(ABORT, 'injected settlement failure'); END;",
+            )
+            .expect("install receipt settlement fail point");
+        let settlement_request =
+            serde_json::json!({"id":id,"text":"once-too","request_id":"input-settlement"});
+        assert!(driver.action("input", &settlement_request).is_err());
+        database
+            .execute_batch("DROP TRIGGER fail_input_settlement;")
+            .expect("remove settlement fail point");
+        let sent = driver
+            .session
+            .requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|(_, method, _)| method == "process/writeStdin")
+            .count();
+        assert_eq!(sent, 2, "one write for each distinct receipt");
+        assert_eq!(
+            driver
+                .action("input", &settlement_request)
+                .expect("settlement replay"),
+            uncertain
+        );
+        assert_eq!(
+            driver
+                .session
+                .requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .filter(|(_, method, _)| method == "process/writeStdin")
+                .count(),
+            sent
+        );
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        for request_id in ["input-unknown", "input-settlement"] {
+            let receipt = TerminalsRepository::receipt(&connection, request_id)
+                .expect("receipt")
+                .expect("reserved");
+            assert_eq!(receipt.1, uncertain.to_string());
+        }
+
+        let before_send = serde_json::json!({"action":"input","id":id,"text":"not-sent","request_id":"input-before-send"});
+        let signature = receipt_signature(&before_send);
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                TerminalsRepository::save_receipt(
+                    transaction,
+                    "input-before-send",
+                    &signature,
+                    &uncertain.to_string(),
+                )
+            })
+            .expect("persist reservation before simulated process interruption");
+        let sent_before = driver
+            .session
+            .requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|(_, method, _)| method == "process/writeStdin")
+            .count();
+        assert_eq!(
+            driver
+                .action(
+                    "input",
+                    &serde_json::json!({"id":id,"text":"not-sent","request_id":"input-before-send"})
+                )
+                .expect("reserved replay"),
+            uncertain
+        );
+        assert_eq!(
+            driver
+                .session
+                .requests
+                .lock()
+                .expect("requests")
+                .iter()
+                .filter(|(_, method, _)| method == "process/writeStdin")
+                .count(),
+            sent_before,
+            "a durable reservation from before delivery must not be resent after restart"
+        );
+    }
+
+    #[test]
     fn close_and_restart_failpoints_preserve_current_identity_and_do_not_send_kill() {
         let state = test_state();
         let session = FakeSession::default();
@@ -1392,6 +1633,21 @@ mod tests {
             .as_str()
             .expect("id")
             .to_owned();
+        let saved_identity = serde_json::json!({"pid":7,"process_group":7,"session":7,"start_time_ticks":11,"boot_id":"boot"});
+        let mut seeded = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("row")
+        .expect("terminal exists")
+        .record;
+        seeded.set("_processIdentity", saved_identity.clone());
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|tx| TerminalsRepository::update_record(tx, &id, &seeded))
+            .expect("seed identity before close fail point");
         let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
             .expect("open close fail-point database");
         database
@@ -1415,23 +1671,17 @@ mod tests {
                 .iter()
                 .all(|(_, method, _)| method != "process/kill")
         );
-        database
-            .execute_batch("DROP TRIGGER fail_terminal_close;")
-            .expect("remove close fail point");
-        let mut row = TerminalsRepository::get(
+        let failed_close = TerminalsRepository::get(
             &state.store.as_ref().expect("store").read().expect("read"),
             &id,
         )
         .expect("row")
         .expect("exists")
         .record;
-        row.set("_processIdentity", serde_json::json!({"pid":7,"process_group":7,"session":7,"start_time_ticks":11,"boot_id":"boot"}));
-        state
-            .store
-            .as_ref()
-            .expect("store")
-            .transaction(|tx| TerminalsRepository::update_record(tx, &id, &row))
-            .expect("seed persisted identity");
+        assert_eq!(failed_close.get("_processIdentity"), Some(&saved_identity));
+        database
+            .execute_batch("DROP TRIGGER fail_terminal_close;")
+            .expect("remove close fail point");
         database
             .execute_batch(
                 "CREATE TRIGGER fail_restart_cleanup BEFORE UPDATE ON user_terminals
@@ -1458,6 +1708,291 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn close_commit_survives_a_lost_kill_response() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        *driver.session.error.lock().expect("fake error") = Some(SessionError::UnknownOutcome);
+        assert!(
+            driver
+                .action("close", &serde_json::json!({"id":id}))
+                .is_err()
+        );
+        let row = TerminalsRepository::get(
+            &state.store.as_ref().expect("store").read().expect("read"),
+            &id,
+        )
+        .expect("row")
+        .expect("terminal");
+        assert_eq!(
+            row.record.get("status").and_then(Value::as_str),
+            Some("closed")
+        );
+        let kills = driver
+            .session
+            .requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|(_, method, _)| method == "process/kill")
+            .count();
+        assert_eq!(kills, 1, "close commit precedes one possibly-lost kill");
+    }
+
+    #[test]
+    fn exit_transaction_failpoints_rollback_record_archive_decoder_and_cursor() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let id = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("id")
+            .to_owned();
+        driver
+            .apply_notification(TerminalNotification {
+                terminal_id: id.clone(),
+                sequence: 1,
+                event: TerminalEvent::Output(b"prefix".to_vec()),
+            })
+            .expect("seed output");
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                TerminalsRepository::save_decoder_pending(transaction, &id, b"tail")
+            })
+            .expect("seed incomplete UTF-8 decoder bytes");
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open exit transaction database");
+        let baseline_archive: i64 = state
+            .store
+            .as_ref()
+            .expect("store")
+            .read()
+            .expect("read")
+            .query_row(
+                "SELECT COUNT(*) FROM user_terminal_output WHERE terminal=?1",
+                [&id],
+                |record| record.get(0),
+            )
+            .expect("baseline archive count");
+        for (trigger, statement) in [
+            (
+                "fail_exit_record",
+                "CREATE TRIGGER fail_exit_record BEFORE UPDATE ON user_terminals BEGIN SELECT RAISE(ABORT,'record'); END;",
+            ),
+            (
+                "fail_exit_archive",
+                "CREATE TRIGGER fail_exit_archive BEFORE UPDATE ON user_terminal_output BEGIN SELECT RAISE(ABORT,'archive'); END;",
+            ),
+            (
+                "fail_exit_decoder",
+                "CREATE TRIGGER fail_exit_decoder BEFORE UPDATE ON user_terminal_decoder_state BEGIN SELECT RAISE(ABORT,'decoder'); END;",
+            ),
+            (
+                "fail_exit_cursor",
+                "CREATE TRIGGER fail_exit_cursor BEFORE UPDATE ON user_terminal_event_cursor BEGIN SELECT RAISE(ABORT,'cursor'); END;",
+            ),
+        ] {
+            database
+                .execute_batch(statement)
+                .expect("install exit fail point");
+            assert!(
+                driver
+                    .apply_notification(TerminalNotification {
+                        terminal_id: id.clone(),
+                        sequence: 2,
+                        event: TerminalEvent::Exit(Some(0)),
+                    })
+                    .is_err(),
+                "injected {trigger} failure must abort exit transaction"
+            );
+            let connection = state.store.as_ref().expect("store").read().expect("read");
+            let row = TerminalsRepository::get(&connection, &id)
+                .expect("row")
+                .expect("terminal");
+            assert_eq!(
+                row.record.get("status").and_then(Value::as_str),
+                Some("running")
+            );
+            assert_eq!(row.output, "prefix");
+            assert_eq!(
+                TerminalsRepository::event_cursor(&connection, &id).expect("cursor"),
+                Some(1)
+            );
+            assert_eq!(
+                TerminalsRepository::decoder_pending(&connection, &id)
+                    .expect("decoder")
+                    .as_deref(),
+                Some(&b"tail"[..])
+            );
+            let archived: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM user_terminal_output WHERE terminal=?1",
+                    [&id],
+                    |record| record.get(0),
+                )
+                .expect("archive count");
+            assert_eq!(
+                archived, baseline_archive,
+                "archive changed after {trigger} failure"
+            );
+            drop(connection);
+            database
+                .execute_batch(&format!("DROP TRIGGER {trigger};"))
+                .expect("remove exit fail point");
+        }
+    }
+
+    #[test]
+    fn restart_cleanup_store_failure_rolls_back_all_rows_after_multiple_cleanups() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let first = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("first ID")
+            .to_owned();
+        let second_request =
+            serde_json::json!({"id":"create:second","agent":"agent","cols":100,"rows":28});
+        let second = driver
+            .create(TerminalCreate {
+                request_id: "create:second",
+                agent: "agent",
+                agent_cwd: state.root.to_str().expect("cwd"),
+                cwd: &state.root,
+                columns: 100,
+                rows: 28,
+                shell: "/bin/sh",
+                environment: serde_json::json!({}),
+                submitted_request: &second_request,
+            })
+            .expect("second create")["id"]
+            .as_str()
+            .expect("second ID")
+            .to_owned();
+        let identity = serde_json::json!({"pid":2345,"process_group":2345,"session":2345,"start_time_ticks":98765,"boot_id":"boot"});
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                for id in [&first, &second] {
+                    let mut row = TerminalsRepository::get(transaction, id)?
+                        .expect("terminal")
+                        .record;
+                    row.set("_processIdentity", identity.clone());
+                    TerminalsRepository::update_record(transaction, id, &row)?;
+                }
+                Ok(())
+            })
+            .expect("seed two persisted identities");
+        let database = rusqlite::Connection::open(state.root.join("canvas.sqlite3"))
+            .expect("open restart cleanup database");
+        database
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_second_restart BEFORE UPDATE ON user_terminals
+             WHEN OLD.id='{}' AND json_extract(NEW.record,'$.status')='exited'
+             BEGIN SELECT RAISE(ABORT,'restart commit'); END;",
+                second
+            ))
+            .expect("install restart commit fail point");
+        assert!(driver.reconcile_after_restart().is_err());
+        assert_eq!(
+            driver
+                .session
+                .orphan_identities
+                .lock()
+                .expect("cleanup calls")
+                .len(),
+            2
+        );
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        for id in [&first, &second] {
+            let row = TerminalsRepository::get(&connection, id)
+                .expect("row")
+                .expect("terminal");
+            assert_eq!(
+                row.record.get("status").and_then(Value::as_str),
+                Some("running")
+            );
+            assert_eq!(row.record.get("_processIdentity"), Some(&identity));
+        }
+    }
+
+    #[test]
+    fn restart_cleanup_error_after_first_identity_keeps_all_rows_reconcilable() {
+        let state = test_state();
+        let driver = test_driver(&state, FakeSession::default());
+        let first = create(&driver, &state.root)["id"]
+            .as_str()
+            .expect("first ID")
+            .to_owned();
+        let second_request =
+            serde_json::json!({"id":"create:second-error","agent":"agent","cols":100,"rows":28});
+        let second = driver
+            .create(TerminalCreate {
+                request_id: "create:second-error",
+                agent: "agent",
+                agent_cwd: state.root.to_str().expect("cwd"),
+                cwd: &state.root,
+                columns: 100,
+                rows: 28,
+                shell: "/bin/sh",
+                environment: serde_json::json!({}),
+                submitted_request: &second_request,
+            })
+            .expect("second create")["id"]
+            .as_str()
+            .expect("second ID")
+            .to_owned();
+        let identity = serde_json::json!({"pid":2345,"process_group":2345,"session":2345,"start_time_ticks":98765,"boot_id":"boot"});
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .transaction(|transaction| {
+                for id in [&first, &second] {
+                    let mut row = TerminalsRepository::get(transaction, id)?
+                        .expect("terminal")
+                        .record;
+                    row.set("_processIdentity", identity.clone());
+                    TerminalsRepository::update_record(transaction, id, &row)?;
+                }
+                Ok(())
+            })
+            .expect("seed identities");
+        *driver
+            .session
+            .orphan_failure
+            .lock()
+            .expect("orphan failure") = Some(2);
+        assert!(driver.reconcile_after_restart().is_err());
+        assert_eq!(
+            driver
+                .session
+                .orphan_identities
+                .lock()
+                .expect("cleanups")
+                .len(),
+            2
+        );
+        let connection = state.store.as_ref().expect("store").read().expect("read");
+        for id in [&first, &second] {
+            let row = TerminalsRepository::get(&connection, id)
+                .expect("row")
+                .expect("terminal");
+            assert_eq!(
+                row.record.get("status").and_then(Value::as_str),
+                Some("running")
+            );
+            assert_eq!(row.record.get("_processIdentity"), Some(&identity));
+        }
     }
 
     #[test]
@@ -1630,6 +2165,195 @@ mod tests {
                     |(_, method, params)| method == "process/kill" && params["processHandle"] == id
                 )
         );
+    }
+
+    #[test]
+    fn python_terminal_action_differential_compares_all_returns_and_rows() {
+        use crate::agents_create;
+
+        fn normalize(value: &mut Value, terminal_id: &str, root: &Path) {
+            match value {
+                Value::Object(object) => {
+                    for (key, value) in object.iter_mut() {
+                        if key == "id" && value.as_str() == Some(terminal_id) {
+                            *value = Value::String("$terminal".into());
+                        } else if matches!(key.as_str(), "created" | "updated") && value.is_number()
+                        {
+                            *value = serde_json::json!(0);
+                        } else if key == "cwd" && value.as_str() == root.to_str() {
+                            *value = Value::String("$ROOT".into());
+                        } else {
+                            normalize(value, terminal_id, root);
+                        }
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        normalize(value, terminal_id, root);
+                    }
+                }
+                Value::String(text) => {
+                    if text == terminal_id {
+                        *text = "$terminal".into();
+                        return;
+                    }
+                    if let Ok(mut nested) = serde_json::from_str::<Value>(text) {
+                        normalize(&mut nested, terminal_id, root);
+                        *text = nested.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn snapshot(store: &RuntimeStore) -> Value {
+            fn rows(connection: &rusqlite::Connection, table: &str) -> Value {
+                let mut statement = connection
+                    .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                    .expect("prepare action corpus table");
+                let count = statement.column_count();
+                let rows = statement
+                    .query_map([], |row| {
+                        (0..count)
+                            .map(|index| {
+                                let value: rusqlite::types::Value = row.get(index)?;
+                                Ok(match value {
+                                    rusqlite::types::Value::Null => Value::Null,
+                                    rusqlite::types::Value::Integer(value) => Value::from(value),
+                                    rusqlite::types::Value::Real(value) => Value::from(value),
+                                    rusqlite::types::Value::Text(value) => Value::String(value),
+                                    rusqlite::types::Value::Blob(value) => {
+                                        Value::Array(value.into_iter().map(Value::from).collect())
+                                    }
+                                })
+                            })
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .expect("query action corpus table")
+                    .map(|row| Value::Array(row.expect("read action corpus row")))
+                    .collect::<Vec<_>>();
+                Value::Array(rows)
+            }
+            let connection = store.read().expect("read action corpus rows");
+            serde_json::json!({
+                "user_terminals":rows(&connection,"user_terminals"),
+                "user_terminal_receipts":rows(&connection,"user_terminal_receipts"),
+                "user_terminal_output":rows(&connection,"user_terminal_output"),
+                "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor"),
+                "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state"),
+            })
+        }
+
+        let state = test_state();
+        let rust_directory = tempfile::Builder::new()
+            .prefix("terminal-action-rust-")
+            .tempdir_in("/dev/shm/cs-rust-terminals-tests")
+            .expect("Rust action corpus root");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = agents_create::prepared_python(&source);
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/terminal_actions_oracle.py");
+        let output = Command::new(python)
+            .arg(script)
+            .arg(&source)
+            .arg(&state.root)
+            .arg(rust_directory.path())
+            .env_clear()
+            .env("HOME", rust_directory.path().join("home"))
+            .env("PATH", "/usr/bin:/bin")
+            .env("TMPDIR", "/dev/shm/cs-rust-terminals-tests")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("run real Python terminal actions");
+        assert!(
+            output.status.success(),
+            "Python terminal action oracle failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let oracle: Value = serde_json::from_slice(&output.stdout).expect("action oracle JSON");
+        let python_actions = oracle["actions"].as_array().expect("Python actions");
+        assert_eq!(python_actions.len(), 5);
+
+        let store = Arc::new(
+            RuntimeStore::open(Some(rust_directory.path())).expect("open Python-written pre-state"),
+        );
+        let driver = TerminalDriver::new(store.clone(), FakeSession::default());
+        let create_request = serde_json::json!({
+            "id":"action-create", "agent":"agent", "cols":91, "rows":33
+        });
+        let create_result = driver
+            .create(TerminalCreate {
+                request_id: "action-create",
+                agent: "agent",
+                agent_cwd: state.root.to_str().expect("test cwd"),
+                cwd: &state.root,
+                columns: 91,
+                rows: 33,
+                shell: "/bin/sh",
+                environment: serde_json::json!({}),
+                submitted_request: &create_request,
+            })
+            .expect("Rust create action");
+        let rust_id = create_result["id"]
+            .as_str()
+            .expect("Rust terminal ID")
+            .to_owned();
+        let python_id = python_actions[0]["result"]["id"]
+            .as_str()
+            .expect("Python terminal ID");
+
+        let mut rust_results = vec![create_result];
+        let mut rust_tables = vec![snapshot(&store)];
+        for (action, data) in [
+            (
+                "rename",
+                serde_json::json!({"id":rust_id,"title":"  Shell  "}),
+            ),
+            (
+                "input",
+                serde_json::json!({"id":rust_id,"text":"hi🙂","request_id":"actions-input"}),
+            ),
+            (
+                "resize",
+                serde_json::json!({"id":rust_id,"cols":91,"rows":33}),
+            ),
+            ("close", serde_json::json!({"id":rust_id})),
+        ] {
+            rust_results.push(driver.action(action, &data).expect("Rust action"));
+            rust_tables.push(snapshot(&store));
+        }
+
+        for (index, (python, rust)) in python_actions.iter().zip(rust_results.iter()).enumerate() {
+            let mut expected_result = python["result"].clone();
+            let mut actual_result = rust.clone();
+            normalize(&mut expected_result, python_id, &state.root);
+            normalize(&mut actual_result, &rust_id, &state.root);
+            assert_eq!(
+                actual_result, expected_result,
+                "complete return for Python action {}",
+                python["action"]
+            );
+
+            let mut expected_tables = python["tables"].clone();
+            let mut actual_tables = rust_tables[index].clone();
+            normalize(&mut expected_tables, python_id, &state.root);
+            normalize(&mut actual_tables, &rust_id, &state.root);
+            if let Some(receipts) = expected_tables["user_terminal_receipts"].as_array_mut() {
+                for receipt in receipts {
+                    if receipt[0] == "actions-input" {
+                        receipt[1] = Value::String(receipt_signature(&serde_json::json!({
+                            "action":"input", "id":rust_id, "text":"hi🙂",
+                            "request_id":"actions-input"
+                        })));
+                    }
+                }
+            }
+            assert_eq!(
+                actual_tables, expected_tables,
+                "stored rows after action {} (index {index})",
+                python["action"]
+            );
+        }
     }
 
     #[test]

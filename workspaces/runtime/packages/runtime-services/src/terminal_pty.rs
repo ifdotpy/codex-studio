@@ -1,6 +1,7 @@
 //! Live terminal sessions backed by the local PTY process port.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread::{self, JoinHandle};
@@ -8,7 +9,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
-use studio_runtime_process::{LocalPtyHost, PtyHost, PtyIdentity, PtySession, cleanup_orphan};
+use studio_runtime_process::{
+    LocalPtyHost, PtyHost, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
+};
 
 use crate::terminal_driver::{
     SessionError, TerminalEvent, TerminalNotification, TerminalOutcome, TerminalSession,
@@ -77,7 +80,7 @@ impl PtyTerminalSession {
             .get("cwd")
             .and_then(Value::as_str)
             .ok_or(SessionError::Rejected)?;
-        let environment = params
+        let overlay = params
             .get("env")
             .and_then(Value::as_object)
             .map(|values| {
@@ -89,6 +92,11 @@ impl PtyTerminalSession {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let mut environment = terminal_environment();
+        for (key, value) in overlay {
+            environment.insert(OsString::from(key), OsString::from(value));
+        }
+        let environment = environment.into_iter().collect::<Vec<_>>();
         let size = params.get("size").ok_or(SessionError::Rejected)?;
         let cols = field_u16(size, "cols")?;
         let rows = field_u16(size, "rows")?;
@@ -340,16 +348,20 @@ fn field_u16(value: &Value, name: &str) -> Result<u16, SessionError> {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::OsStringExt;
     use std::process::Command;
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use base64::Engine as _;
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::PtyTerminalSession;
-    use crate::terminal_driver::prepared_python;
+    use crate::agents_create;
     use crate::terminal_driver::{TerminalEvent, TerminalNotification, TerminalSession};
+    use studio_runtime_process::{LocalPtyHost, PtyHost};
 
     fn terminal_cwd() -> TempDir {
         let root = std::path::Path::new("/dev/shm/cs-rust-terminals-tests");
@@ -544,91 +556,208 @@ mod tests {
         let cwd = terminal_cwd();
         let source =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python::prepared_python(&source);
+        let python = agents_create::prepared_python(&source);
+        let oracle = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/terminal_environment_oracle.py");
+        let raw_key = OsString::from_vec(b"STUDIO_RAW_\xff".to_vec());
         for supervisor in [false, true] {
-            let base = BTreeMap::from([
-                ("HOME".into(), "/home/test-user".into()),
-                ("PATH".into(), "/usr/bin:/bin".into()),
-                ("SSH_AUTH_SOCK".into(), "/tmp/ssh-agent.sock".into()),
-                ("DISPLAY".into(), ":42".into()),
-                ("XDG_CONFIG_HOME".into(), "/home/test-user/.config".into()),
-                ("CODEX_HOME".into(), "/home/test-user/.codex".into()),
-                ("OPENAI_API_KEY".into(), "redacted-test-value".into()),
-                ("CODEX_API_KEY".into(), "redacted-test-value".into()),
-                ("CODEX_AGENTS_BACKEND_ID".into(), "server-only".into()),
-                ("CODEX_NODE".into(), "/server/node".into()),
-                ("STUDIO_TERMINAL_SERVER_ONLY".into(), "inherited".into()),
-                (
-                    "CODEX_AGENTS_SUPERVISOR_MODE".into(),
-                    if supervisor { "1" } else { "0" }.into(),
-                ),
-            ]);
-            let terminal_home = cwd.path().join("terminal-home");
-            let rust_env = studio_runtime_process::terminal_environment_from(
-                &base,
-                &terminal_home,
-                supervisor,
-            );
-            let mut python_command = Command::new(python.as_os_str());
-            python_command.env_clear().envs(&base)
-                .arg("-c")
-                .arg("import json, os, subprocess; home=os.environ.pop('TERMINAL_PRIVATE_HOME'); env=os.environ.copy(); env['CODEX_HOME']=home; env.pop('OPENAI_API_KEY',None); env.pop('CODEX_API_KEY',None); names=('CODEX_HOME','OPENAI_API_KEY','CODEX_API_KEY'); overlay={k:os.environ[k] for k in names if k in os.environ}; overlay.update(TERM='xterm-256color',COLORTERM='truecolor'); env.update(overlay);\nif os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE')=='1':\n  [env.pop(k,None) for k in ('CODEX_AGENTS_BACKEND_ID','CODEX_RUNTIME_LOCK_METRICS','CODEX_AGENTS_PROVIDER_CAPTURE','CODEX_AGENTS_PROVIDER_CAPTURE_FILE','CODEX_NODE')]\nr=subprocess.run(['/usr/bin/env','-0'],env=env,check=True,capture_output=True); print(json.dumps(sorted(x.split(b'=',1)[0].decode() for x in r.stdout.split(b'\\0') if x)))")
-                .env("TERMINAL_PRIVATE_HOME", &terminal_home);
-            let python_output = python_command
-                .output()
-                .expect("run Python environment oracle");
-            assert!(python_output.status.success(), "Python oracle starts");
-            let python_keys: BTreeSet<String> =
-                serde_json::from_slice(&python_output.stdout).expect("Python key set only");
+            for backend_overrides in [false, true] {
+                for locale_case in [
+                    "utf8",
+                    "c",
+                    "all-c",
+                    "ctype-c",
+                    "disabled",
+                    "none",
+                    "all-empty",
+                    "ctype-empty",
+                ] {
+                    let mut base = BTreeMap::from([
+                        (OsString::from("HOME"), OsString::from("/tmp/terminal-home")),
+                        (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+                        (OsString::from("LANG"), OsString::from("C.UTF-8")),
+                        (
+                            OsString::from("SSH_AUTH_SOCK"),
+                            OsString::from("/tmp/ssh-agent.sock"),
+                        ),
+                        (OsString::from("DISPLAY"), OsString::from(":42")),
+                        (
+                            OsString::from("XDG_CONFIG_HOME"),
+                            OsString::from("/tmp/terminal-config"),
+                        ),
+                        (
+                            OsString::from("CODEX_AGENTS_BACKEND_ID"),
+                            OsString::from("sentinel"),
+                        ),
+                        (
+                            OsString::from("CODEX_RUNTIME_LOCK_METRICS"),
+                            OsString::from("sentinel"),
+                        ),
+                        (
+                            OsString::from("CODEX_AGENTS_PROVIDER_CAPTURE"),
+                            OsString::from("sentinel"),
+                        ),
+                        (
+                            OsString::from("CODEX_AGENTS_PROVIDER_CAPTURE_FILE"),
+                            OsString::from("sentinel"),
+                        ),
+                        (OsString::from("CODEX_NODE"), OsString::from("/server/node")),
+                        (
+                            OsString::from("STUDIO_TERMINAL_SERVER_ONLY"),
+                            OsString::from("inherited"),
+                        ),
+                        (
+                            OsString::from("CODEX_AGENTS_SUPERVISOR_MODE"),
+                            OsString::from(if supervisor { "1" } else { "0" }),
+                        ),
+                    ]);
+                    if locale_case == "c" {
+                        base.insert("LANG".into(), "C".into());
+                    } else if locale_case == "all-c" {
+                        base.remove(OsStr::new("LANG"));
+                        base.insert("LC_ALL".into(), "C".into());
+                    } else if locale_case == "ctype-c" {
+                        base.insert("LC_CTYPE".into(), "C".into());
+                    } else if locale_case == "disabled" {
+                        base.insert("LANG".into(), "C".into());
+                        base.insert("PYTHONCOERCECLOCALE".into(), "0".into());
+                    } else if locale_case == "none" {
+                        base.remove(OsStr::new("LANG"));
+                    } else if locale_case == "all-empty" {
+                        base.insert("LANG".into(), "C".into());
+                        base.insert("LC_ALL".into(), "".into());
+                    } else if locale_case == "ctype-empty" {
+                        base.insert("LANG".into(), "C".into());
+                        base.insert("LC_CTYPE".into(), "".into());
+                    }
+                    if backend_overrides {
+                        for (key, value) in [
+                            ("CODEX_HOME", "/tmp/backend-codex-home"),
+                            ("OPENAI_API_KEY", "synthetic-openai-key"),
+                            ("CODEX_API_KEY", "synthetic-codex-key"),
+                        ] {
+                            base.insert(key.into(), value.into());
+                        }
+                    }
+                    base.insert(
+                        raw_key.clone(),
+                        OsString::from_vec(b"raw-value-\xfe".to_vec()),
+                    );
+                    let rust_env =
+                        studio_runtime_process::terminal_environment_from(&base, supervisor);
+                    let mut python_command = Command::new(python.as_os_str());
+                    python_command
+                        .env_clear()
+                        .envs(&base)
+                        .arg(&oracle)
+                        .arg(source.as_os_str())
+                        .arg(cwd.path())
+                        .arg(cwd.path().join("private-codex-home"));
+                    let python_output = python_command
+                        .output()
+                        .expect("run Python environment oracle");
+                    assert!(
+                        python_output.status.success(),
+                        "Python launch oracle failed: {}",
+                        String::from_utf8_lossy(&python_output.stderr)
+                    );
+                    let python_keys = python_output
+                        .stdout
+                        .split(|byte| *byte == b'\n')
+                        .filter(|key| !key.is_empty())
+                        .map(Vec::from)
+                        .collect::<BTreeSet<_>>();
 
-            let adapter = PtyTerminalSession::new();
-            let (sender, receiver) = mpsc::channel::<TerminalNotification>();
-            adapter.set_notification_callback(std::sync::Arc::new(move |event| {
-                let _sent = sender.send(event);
-            }));
-            adapter
-                .send_request(
-                    "spawn-env-parity",
-                    "process/spawn",
-                    json!({
-                        "processHandle": if supervisor {"env-supervised"} else {"env-normal"},
-                        "cwd":cwd.path(), "command":["/usr/bin/env","-0"],
-                        "env":rust_env, "size":{"cols":100,"rows":28}
-                    }),
-                )
-                .expect("spawn env probe");
-            let mut bytes = Vec::new();
-            while let TerminalEvent::Output(chunk) =
-                receiver.recv().expect("environment child event").event
-            {
-                bytes.extend(chunk);
-            }
-            let rust_keys: BTreeSet<String> = bytes
-                .split(|byte| *byte == 0)
-                .filter(|pair| !pair.is_empty())
-                .filter_map(|pair| {
-                    let mut fields = pair.splitn(2, |byte| *byte == b'=');
-                    fields
-                        .next()
-                        .and_then(|key| std::str::from_utf8(key).ok())
-                        .map(str::to_owned)
-                })
-                .collect();
-            assert_eq!(
-                rust_keys, python_keys,
-                "shell key set differs (supervisor={supervisor})"
-            );
-            assert!(
-                rust_keys.contains("HOME")
-                    && rust_keys.contains("PATH")
-                    && rust_keys.contains("SSH_AUTH_SOCK")
-            );
-            assert!(rust_keys.contains("STUDIO_TERMINAL_SERVER_ONLY"));
-            if supervisor {
-                assert!(
-                    !rust_keys.contains("CODEX_AGENTS_BACKEND_ID")
-                        && !rust_keys.contains("CODEX_NODE")
-                );
+                    let host = LocalPtyHost;
+                    let rust_environment = rust_env.into_iter().collect::<Vec<_>>();
+                    let mut session = host
+                        .open(
+                            &["/usr/bin/env".into(), "-0".into()],
+                            cwd.path(),
+                            &rust_environment,
+                        )
+                        .expect("spawn Rust environment probe");
+                    let mut bytes = Vec::new();
+                    let mut chunk = [0; 4096];
+                    while let Ok(count) = host.read(&mut session, &mut chunk) {
+                        if count == 0 {
+                            break;
+                        }
+                        bytes.extend_from_slice(&chunk[..count]);
+                    }
+                    let _exit_code = host.wait(&mut session).expect("wait for env probe");
+                    let rust_keys: BTreeSet<Vec<u8>> = bytes
+                        .split(|byte| *byte == 0)
+                        .filter(|pair| !pair.is_empty())
+                        .map(|pair| {
+                            pair.split(|byte| *byte == b'=')
+                                .next()
+                                .unwrap_or_default()
+                                .to_vec()
+                        })
+                        .collect();
+                    let encode = |key: &[u8]| base64::engine::general_purpose::STANDARD.encode(key);
+                    let rust_keys = rust_keys
+                        .iter()
+                        .map(|key| encode(key))
+                        .collect::<BTreeSet<_>>();
+                    let python_keys = python_keys
+                        .iter()
+                        .map(|key| {
+                            String::from_utf8(key.clone()).expect("base64 key output is ASCII")
+                        })
+                        .collect::<BTreeSet<_>>();
+                    assert_eq!(
+                        rust_keys, python_keys,
+                        "environment keys differ (supervisor={supervisor}, backend-overrides={backend_overrides}, locale={locale_case})"
+                    );
+                    assert!(
+                        bytes
+                            .windows(b"STUDIO_RAW_\xff=raw-value-\xfe".len())
+                            .any(|window| window == b"STUDIO_RAW_\xff=raw-value-\xfe")
+                    );
+                    let encode = |key: &str| encode(key.as_bytes());
+                    for key in [
+                        "HOME",
+                        "PATH",
+                        "SSH_AUTH_SOCK",
+                        "STUDIO_TERMINAL_SERVER_ONLY",
+                    ] {
+                        assert!(rust_keys.contains(&encode(key)));
+                    }
+                    for key in ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"] {
+                        assert_eq!(
+                            rust_keys.contains(&encode(key)),
+                            backend_overrides,
+                            "overlay presence for {key}"
+                        );
+                    }
+                    if supervisor {
+                        for key in [
+                            "CODEX_AGENTS_BACKEND_ID",
+                            "CODEX_RUNTIME_LOCK_METRICS",
+                            "CODEX_AGENTS_PROVIDER_CAPTURE",
+                            "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
+                            "CODEX_NODE",
+                        ] {
+                            assert!(
+                                !rust_keys.contains(&encode(key)),
+                                "supervisor-only key leaked: {key}"
+                            );
+                        }
+                    } else {
+                        assert!(rust_keys.contains(&encode("CODEX_AGENTS_BACKEND_ID")));
+                    }
+                    let python_coerces = matches!(
+                        locale_case,
+                        "c" | "ctype-c" | "none" | "all-empty" | "ctype-empty"
+                    );
+                    assert_eq!(
+                        rust_keys.contains(&encode("LC_CTYPE")),
+                        python_coerces,
+                        "Python locale coercion parity for {locale_case}"
+                    );
+                }
             }
         }
     }
@@ -670,6 +799,136 @@ mod tests {
                 json!({"processHandle":"identity-check"}),
             )
             .expect("close verified test process");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn identity_persistence_failure_reaps_the_new_child_before_refusing_spawn() {
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        let (pid_sender, pid_receiver) = mpsc::channel();
+        adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
+            let _send_result = pid_sender.send(identity.expect("Linux identity").pid);
+            Err(crate::terminal_driver::SessionError::Disconnected)
+        }));
+        let result = adapter.send_request(
+            "spawn-identity-failure",
+            "process/spawn",
+            json!({
+                "processHandle":"identity-failure",
+                "cwd":cwd.path(),
+                "command":["/bin/cat"],
+                "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                "size":{"cols":100,"rows":28}
+            }),
+        );
+        assert_eq!(
+            result,
+            Err(crate::terminal_driver::SessionError::Disconnected)
+        );
+        let pid = pid_receiver.recv().expect("spawned child identity");
+        let remains = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .and_then(|(_, fields)| fields.split_whitespace().next())
+                .is_some_and(|state| state != "Z")
+        });
+        assert!(!remains, "child survived refusal to persist its identity");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn restart_cleanup_does_not_signal_session_jobs_when_leader_identity_is_gone() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let cwd = terminal_cwd();
+        let fifo = cwd.path().join("terminal-fifo");
+        let status = Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("create harmless FIFO for blocked cat");
+        assert!(status.success());
+        let mut leader = Command::new("/usr/bin/setsid")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("set -m; /bin/sh -c 'trap \\\"\\\" HUP TERM; echo JOB_READY; exec /bin/cat terminal-fifo >/dev/null' & job=$!; echo CHILD_PID:$job; IFS= read -r release; exit 0")
+            .current_dir(cwd.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start disposable session leader");
+        let leader_pid = leader.id();
+        let mut stdout = BufReader::new(leader.stdout.take().expect("leader output"));
+        let mut child_pid = None;
+        let mut saw_ready = false;
+        while child_pid.is_none() || !saw_ready {
+            let mut line = String::new();
+            stdout.read_line(&mut line).expect("read child readiness");
+            if let Some(pid) = line.trim().strip_prefix("CHILD_PID:") {
+                child_pid = pid.parse::<u32>().ok();
+            }
+            saw_ready |= line.contains("JOB_READY");
+        }
+        let child_pid = child_pid.expect("background child PID");
+        let stat = std::fs::read_to_string(format!("/proc/{leader_pid}/stat"))
+            .expect("leader identity before controlled exit");
+        let (_, fields) = stat.rsplit_once(')').expect("leader stat fields");
+        let fields = fields.split_whitespace().collect::<Vec<_>>();
+        let start_time_ticks = fields
+            .get(19)
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("leader kernel start ticks");
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .expect("Linux boot ID")
+            .trim()
+            .to_owned();
+        let identity = studio_runtime_process::PtyIdentity {
+            pid: leader_pid,
+            process_group: leader_pid,
+            session: leader_pid,
+            start_time_ticks,
+            boot_id,
+        };
+        let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"))
+            .expect("session job alive before leader exit");
+        let (_, fields) = stat.rsplit_once(')').expect("child stat fields");
+        let fields = fields.split_whitespace().collect::<Vec<_>>();
+        let child_group = fields
+            .get(2)
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("child process group");
+        assert_eq!(
+            fields.get(3).and_then(|value| value.parse::<u32>().ok()),
+            Some(leader_pid)
+        );
+        struct KillGroup(i32);
+        impl Drop for KillGroup {
+            fn drop(&mut self) {
+                let _kill_result = Command::new("/bin/kill")
+                    .args(["-KILL", "--", &format!("-{}", self.0)])
+                    .status();
+            }
+        }
+        let _cleanup_group = KillGroup(child_group);
+        leader
+            .stdin
+            .take()
+            .expect("leader input")
+            .write_all(b"exit\n")
+            .expect("release leader");
+        leader.wait().expect("reap session leader");
+
+        assert!(super::cleanup_persisted_identity(&identity).is_err());
+        let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"))
+            .expect("surviving session job");
+        assert_ne!(
+            stat.rsplit_once(')')
+                .and_then(|(_, fields)| fields.split_whitespace().next()),
+            Some("Z"),
+            "unverified stale session identity must not signal a surviving job"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -747,6 +1006,77 @@ mod tests {
         }
         close_result.expect("close and reap session groups");
         assert!(remains, "background process group survived terminal close");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn close_kills_term_ignoring_job_after_reaping_term_responsive_leader() {
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        let (sender, receiver) = mpsc::channel::<TerminalNotification>();
+        adapter.set_notification_callback(std::sync::Arc::new(move |event| {
+            let _send_result = sender.send(event);
+        }));
+        adapter
+            .send_request(
+                "spawn-surviving-job",
+                "process/spawn",
+                json!({
+                    "processHandle":"surviving-job-session",
+                    "cwd":cwd.path(),
+                    "command":["/bin/sh","-c","set -m; /bin/sh -c 'trap \\\"\\\" TERM; echo JOB_READY; exec /bin/cat' & job=$!; echo CHILD_PID:$job; wait"],
+                    "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("spawn leader and TERM-ignoring job");
+
+        let mut output = String::new();
+        let mut child_pid = None;
+        while child_pid.is_none() || !output.contains("JOB_READY") {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("readiness handshake from TERM-ignoring job");
+            if let TerminalEvent::Output(bytes) = event.event {
+                output.push_str(&String::from_utf8_lossy(&bytes));
+                child_pid = output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("CHILD_PID:")?.trim().parse::<u32>().ok());
+            }
+        }
+        let child_pid = child_pid.expect("reported child PID");
+        let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat"))
+            .expect("TERM-ignoring child remains before close");
+        let (_, fields) = stat.rsplit_once(") ").expect("proc stat fields");
+        let process_group = fields
+            .split_whitespace()
+            .nth(2)
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("child process group");
+        assert_ne!(process_group, std::process::id() as i32);
+
+        adapter
+            .send_request(
+                "close-surviving-job",
+                "process/kill",
+                json!({"processHandle":"surviving-job-session"}),
+            )
+            .expect("KILL surviving job after leader reap");
+        let remains =
+            std::fs::read_to_string(format!("/proc/{child_pid}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .and_then(|(_, fields)| fields.split_whitespace().next())
+                    .is_some_and(|state| state != "Z")
+            });
+        if remains {
+            let _kill_result = std::process::Command::new("/bin/kill")
+                .args(["-KILL", "--", &format!("-{process_group}")])
+                .status();
+        }
+        assert!(
+            !remains,
+            "TERM-ignoring session job survived leader reap and close"
+        );
     }
 
     #[cfg(target_os = "linux")]

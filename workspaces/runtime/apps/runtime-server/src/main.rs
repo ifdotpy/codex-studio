@@ -111,8 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await;
+    let terminal_state = shutdown_state.clone();
     let terminal_cleanup =
-        tokio::task::spawn_blocking(move || shutdown_state.close_terminal_sessions())
+        tokio::task::spawn_blocking(move || terminal_state.close_terminal_sessions())
             .await
             .map_err(|error| format!("terminal shutdown worker failed: {error}"))?;
     sync_changes.close();

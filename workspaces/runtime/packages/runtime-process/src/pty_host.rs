@@ -1,5 +1,7 @@
 //! Unix PTY host backed by the blocking `pty-process` API.
 
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ExitStatus};
@@ -14,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::PtyHost;
+use crate::supervisor_identity::{signal_verified_group_member, start_time};
 
 #[derive(Debug, Error)]
 pub enum PtyHostError {
@@ -43,30 +46,25 @@ pub struct PtyIdentity {
 /// The provider app-server starts from the backend environment, removes its
 /// supervisor-only variables when supervised, then applies the five terminal
 /// overrides from `codex_terminals.py`.
-pub fn terminal_environment(terminal_home: &Path) -> Vec<(String, String)> {
-    let inherited = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
-    let supervisor = inherited
-        .get("CODEX_AGENTS_SUPERVISOR_MODE")
-        .map(String::as_str)
-        == Some("1");
-    terminal_environment_from(&inherited, terminal_home, supervisor)
-        .into_iter()
-        .collect()
+pub fn terminal_environment() -> BTreeMap<OsString, OsString> {
+    let inherited = std::env::vars_os().collect::<BTreeMap<_, _>>();
+    let supervisor =
+        inherited.get(OsStr::new("CODEX_AGENTS_SUPERVISOR_MODE")) == Some(&OsString::from("1"));
+    terminal_environment_from(&inherited, supervisor)
 }
 
 pub fn terminal_environment_from(
-    inherited: &std::collections::BTreeMap<String, String>,
-    terminal_home: &Path,
+    inherited: &BTreeMap<OsString, OsString>,
     supervisor: bool,
-) -> std::collections::BTreeMap<String, String> {
+) -> BTreeMap<OsString, OsString> {
     let mut environment = inherited.clone();
-    // CPython's locale coercion exports LC_CTYPE when the process started
-    // without one; AppServer then passes that adjusted environment to children.
-    environment
-        .entry("LC_CTYPE".into())
-        .or_insert_with(|| "C.UTF-8".into());
-    environment.remove("OPENAI_API_KEY");
-    environment.remove("CODEX_API_KEY");
+    if python_coerced_locale(inherited) {
+        #[cfg(target_os = "macos")]
+        let locale = "UTF-8";
+        #[cfg(not(target_os = "macos"))]
+        let locale = "C.UTF-8";
+        environment.insert("LC_CTYPE".into(), locale.into());
+    }
     if supervisor {
         for name in [
             "CODEX_AGENTS_BACKEND_ID",
@@ -75,20 +73,46 @@ pub fn terminal_environment_from(
             "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
             "CODEX_NODE",
         ] {
-            environment.remove(name);
+            environment.remove(OsString::from(name).as_os_str());
         }
     }
-    environment
-        .entry("CODEX_HOME".into())
-        .or_insert_with(|| terminal_home.to_string_lossy().into_owned());
+    // Python's terminal overlay copies these values from its backend process
+    // only when present; absent variables stay absent.
     for name in ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"] {
-        if let Some(value) = inherited.get(name) {
+        if let Some(value) = inherited.get(OsString::from(name).as_os_str()) {
             environment.insert(name.into(), value.clone());
         }
     }
     environment.insert("TERM".into(), "xterm-256color".into());
     environment.insert("COLORTERM".into(), "truecolor".into());
     environment
+}
+
+fn python_coerced_locale(inherited: &BTreeMap<OsString, OsString>) -> bool {
+    if inherited
+        .get(OsStr::new("LC_ALL"))
+        .is_some_and(|value| !value.is_empty())
+        || inherited
+            .get(OsStr::new("PYTHONCOERCECLOCALE"))
+            .and_then(|value| value.to_str())
+            == Some("0")
+    {
+        return false;
+    }
+    let ctype = inherited
+        .get(OsStr::new("LC_CTYPE"))
+        .filter(|value| !value.is_empty());
+    let language = inherited
+        .get(OsStr::new("LANG"))
+        .filter(|value| !value.is_empty());
+    let current = ctype
+        .or(language)
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("C") || value.eq_ignore_ascii_case("POSIX")
+        });
+    let no_locale = ctype.is_none() && language.is_none();
+    current || no_locale
 }
 
 /// A PTY master and the process-group leader attached to it.
@@ -100,12 +124,25 @@ struct PtyShared {
     child: Mutex<PtyChild>,
     identity: Option<PtyIdentity>,
     session: u32,
+    process_group: u32,
     termination_attempted: AtomicBool,
 }
 
 struct PtyChild {
     process: Child,
-    reaped: bool,
+    status: Option<ExitStatus>,
+}
+
+#[derive(Clone)]
+struct GroupMember {
+    pid: u32,
+    start_time: String,
+}
+
+#[derive(Clone)]
+struct SessionGroup {
+    id: u32,
+    members: Vec<GroupMember>,
 }
 
 impl PtyShared {
@@ -118,25 +155,51 @@ impl PtyShared {
     fn terminate(&self, deadline: Instant) -> Result<ExitStatus, PtyHostError> {
         let mut child = self.child()?;
         self.termination_attempted.store(true, Ordering::Release);
-        if child.reaped {
-            return child.process.try_wait()?.ok_or_else(|| {
+        let already_reaped = child.status.is_some();
+        // Freeze all session groups and member identities before TERM. The
+        // KILL pass uses this same snapshot even if TERM reaps the leader.
+        let groups = session_groups(self.session);
+        let term_deadline = (Instant::now() + Duration::from_millis(500)).min(deadline);
+        let _term_result = signal_groups(
+            &groups,
+            self.session,
+            self.process_group,
+            child.process.id(),
+            Signal::TERM,
+            !already_reaped,
+        );
+        #[cfg(target_os = "linux")]
+        while !already_reaped && Instant::now() < term_deadline {
+            if let Some(status) = child.process.try_wait()? {
+                child.status = Some(status);
+                break;
+            }
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+        #[cfg(not(target_os = "linux"))]
+        while !already_reaped && Instant::now() < term_deadline {
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+        let signal_error = signal_groups(
+            &groups,
+            self.session,
+            self.process_group,
+            child.process.id(),
+            Signal::KILL,
+            false,
+        )
+        .err();
+        if already_reaped {
+            if let Some(error) = signal_error {
+                return Err(PtyHostError::Signal(error));
+            }
+            return child.status.ok_or_else(|| {
                 PtyHostError::Io(std::io::Error::other("reaped terminal child has no status"))
             });
         }
-        let term_deadline = (Instant::now() + Duration::from_millis(500)).min(deadline);
-        let _hangup_result =
-            signal_session_groups(self.session, self.identity.as_ref(), Signal::TERM);
-        while Instant::now() < term_deadline {
-            if child.process.try_wait()?.is_some() {
-                break;
-            }
-            std::thread::park_timeout(Duration::from_millis(5));
-        }
-        let signal_error =
-            signal_session_groups(self.session, self.identity.as_ref(), Signal::KILL).err();
         let status = loop {
             if let Some(status) = child.process.try_wait()? {
-                child.reaped = true;
+                child.status = Some(status);
                 break status;
             }
             if Instant::now() >= deadline {
@@ -174,7 +237,7 @@ impl PtyHost for LocalPtyHost {
         &self,
         command: &[String],
         cwd: &Path,
-        env: &[(String, String)],
+        env: &[(OsString, OsString)],
     ) -> Result<Self::Session, Self::Error> {
         let Some((program, args)) = command.split_first() else {
             return Err(PtyHostError::Io(std::io::Error::new(
@@ -205,16 +268,18 @@ impl PtyHost for LocalPtyHost {
             return Err(PtyHostError::ProcessId);
         }
         let identity = process_identity(raw_pid);
-        let session = identity
-            .as_ref()
-            .map_or(child.id(), |identity| identity.session);
+        // pty-process calls setsid in the child before exec, so the child PID
+        // is the known session and process-group ID on every supported Unix.
+        let session = child.id();
+        let process_group = child.id();
         Ok(PtySession(Arc::new(PtyShared {
             master: Arc::new(master),
             child: Mutex::new(PtyChild {
                 process: child,
-                reaped: false,
+                status: None,
             }),
             session,
+            process_group,
             identity,
             termination_attempted: AtomicBool::new(false),
         })))
@@ -244,14 +309,10 @@ impl PtyHost for LocalPtyHost {
 
     fn wait(&self, session: &mut Self::Session) -> Result<Option<i32>, Self::Error> {
         let mut child = session.0.child()?;
-        let status = if child.reaped {
-            child.process.try_wait()?
-        } else {
-            let status = child.process.wait()?;
-            child.reaped = true;
-            Some(status)
-        };
-        Ok(status.map(exit_code))
+        if child.status.is_none() {
+            child.status = child.process.try_wait()?;
+        }
+        Ok(child.status.map(exit_code))
     }
 
     fn close(&self, session: Self::Session) -> Result<(), Self::Error> {
@@ -270,44 +331,83 @@ impl PtySession {
     }
 }
 
-/// Verify a persisted PID against its start time and session before signaling.
+/// Verify a persisted Linux leader identity, then clean every captured group.
+/// Platforms without the shared Linux identity/session source never signal a
+/// persisted identity; live close still owns and terminates its child group.
 pub fn cleanup_orphan(identity: &PtyIdentity) -> Result<bool, PtyHostError> {
-    if identity.pid != identity.session || identity.pid != identity.process_group {
-        return Ok(false);
-    }
-    if process_identity(i32::try_from(identity.pid).map_err(|_| PtyHostError::ProcessId)?).as_ref()
-        != Some(identity)
+    #[cfg(not(target_os = "linux"))]
     {
+        let _ = identity;
         return Ok(false);
     }
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let _term = signal_session_groups(identity.session, Some(identity), Signal::TERM);
-    while Instant::now() < deadline {
-        std::thread::park_timeout(Duration::from_millis(5));
-    }
-    signal_session_groups(identity.session, Some(identity), Signal::KILL)
+    #[cfg(target_os = "linux")]
+    {
+        let expected = identity.start_token();
+        if identity.pid != identity.session || identity.pid != identity.process_group {
+            return Ok(false);
+        }
+        let groups = session_groups(identity.session);
+        if start_time(identity.pid, false)
+            .map_err(supervisor_error)?
+            .as_deref()
+            != Some(&expected)
+        {
+            if groups.is_empty() {
+                return Ok(false);
+            }
+            return Err(PtyHostError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "terminal leader identity is unavailable while session jobs remain; refusing to signal",
+            )));
+        }
+        signal_groups(
+            &groups,
+            identity.session,
+            identity.process_group,
+            identity.pid,
+            Signal::TERM,
+            false,
+        )
         .map_err(PtyHostError::Signal)?;
-    Ok(true)
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+        signal_groups(
+            &groups,
+            identity.session,
+            identity.process_group,
+            identity.pid,
+            Signal::KILL,
+            false,
+        )
+        .map_err(PtyHostError::Signal)?;
+        Ok(true)
+    }
+}
+
+impl PtyIdentity {
+    fn start_token(&self) -> String {
+        format!("linux:{}:{}", self.boot_id, self.start_time_ticks)
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn process_identity(pid: i32) -> Option<PtyIdentity> {
+    let pid = u32::try_from(pid).ok()?;
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, fields) = stat.rsplit_once(") ")?;
+    let (_, fields) = stat.rsplit_once(')')?;
     let fields = fields.split_whitespace().collect::<Vec<_>>();
-    let session = fields.get(3)?.parse().ok()?;
     let process_group = fields.get(2)?.parse().ok()?;
-    let start_time_ticks = fields.get(19)?.parse().ok()?;
-    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .ok()?
-        .trim()
-        .to_owned();
+    let session = fields.get(3)?.parse().ok()?;
+    let start = start_time(pid, false).ok()??;
+    let (boot_id, ticks) = start.strip_prefix("linux:")?.split_once(':')?;
     Some(PtyIdentity {
-        pid: u32::try_from(pid).ok()?,
+        pid,
         process_group,
         session,
-        start_time_ticks,
-        boot_id,
+        start_time_ticks: ticks.parse().ok()?,
+        boot_id: boot_id.to_owned(),
     })
 }
 
@@ -317,8 +417,8 @@ fn process_identity(_pid: i32) -> Option<PtyIdentity> {
 }
 
 #[cfg(target_os = "linux")]
-fn session_groups(session: u32) -> Vec<(u32, u32)> {
-    let mut groups = std::collections::BTreeMap::new();
+fn session_groups(session: u32) -> Vec<SessionGroup> {
+    let mut groups = BTreeMap::<u32, Vec<GroupMember>>::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -326,125 +426,130 @@ fn session_groups(session: u32) -> Vec<(u32, u32)> {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let Ok(pid) = name.parse::<i32>() else {
+        let Ok(pid) = name.parse::<u32>() else {
             continue;
         };
-        let Some(stat) = process_identity(pid) else {
-            continue;
-        };
-        if stat.session != session {
-            continue;
-        }
         let Ok(raw) = std::fs::read_to_string(entry.path().join("stat")) else {
             continue;
         };
-        let Some((_, fields)) = raw.rsplit_once(") ") else {
+        let Some((_, tail)) = raw.rsplit_once(')') else {
             continue;
         };
-        let fields = fields.split_whitespace().collect::<Vec<_>>();
-        if fields.first() == Some(&"Z") {
+        let fields = tail.split_whitespace().collect::<Vec<_>>();
+        if fields.first() == Some(&"Z")
+            || fields.get(3).and_then(|v| v.parse::<u32>().ok()) != Some(session)
+        {
             continue;
         }
-        if let Some(group) = fields.get(2).and_then(|value| value.parse::<u32>().ok()) {
-            groups.entry(group).or_insert(pid as u32);
-        }
+        let Some(group) = fields.get(2).and_then(|v| v.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Some(start_time) = start_time(pid, false).ok().flatten() else {
+            continue;
+        };
+        groups
+            .entry(group)
+            .or_default()
+            .push(GroupMember { pid, start_time });
     }
-    groups.into_iter().collect()
+    groups
+        .into_iter()
+        .map(|(id, mut members)| {
+            members.sort_by_key(|member| member.pid);
+            SessionGroup { id, members }
+        })
+        .collect()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn session_groups(session: u32) -> Vec<(u32, u32)> {
-    use std::process::Command;
-    let Ok(output) = Command::new("/bin/ps")
-        .args(["-axo", "pid=,pgid=,sid=,stat="])
-        .env_clear()
-        .env("LC_ALL", "C")
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let mut groups = std::collections::BTreeMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.len() >= 4
-            && !fields[3].starts_with('Z')
-            && fields[2].parse::<u32>().ok() == Some(session)
-            && let (Ok(group), Ok(pid)) = (fields[1].parse::<u32>(), fields[0].parse::<u32>())
-        {
-            groups.entry(group).or_insert(pid);
-        }
-    }
-    groups.into_iter().collect()
+fn session_groups(_session: u32) -> Vec<SessionGroup> {
+    Vec::new()
 }
 
-fn signal_session_groups(
+fn signal_groups(
+    groups: &[SessionGroup],
     session: u32,
-    expected: Option<&PtyIdentity>,
+    owned_group: u32,
+    owned_pid: u32,
     signal: Signal,
+    allow_owned_fallback: bool,
 ) -> Result<(), rustix::io::Errno> {
-    let mut first_error = None;
-    for (group_id, member_id) in session_groups(session) {
-        #[cfg(target_os = "linux")]
-        {
-            if expected.is_some_and(|identity| {
-                process_identity(identity.pid as i32).as_ref() != Some(identity)
-            }) {
+    #[cfg(target_os = "linux")]
+    {
+        let mut ordered = groups.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|group| group.id == session);
+        let mut first_error = None;
+        let mut captured_owned_group = false;
+        for group in ordered {
+            if group.id <= 1 {
                 continue;
             }
-            let Some(member) = process_identity(member_id as i32) else {
-                continue;
-            };
-            if member.session != session || member.process_group != group_id {
-                continue;
+            captured_owned_group |= group.id == owned_group;
+            let mut signalled = false;
+            for member in &group.members {
+                match signal_verified_group_member(
+                    member.pid,
+                    group.id,
+                    session,
+                    &member.start_time,
+                    signal,
+                ) {
+                    Ok(true) => {
+                        signalled = true;
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(_) => {
+                        first_error.get_or_insert(rustix::io::Errno::PERM);
+                    }
+                }
             }
-            // Revalidate both the persisted session leader and a live member
-            // of this exact group immediately before the numeric group signal.
-            if process_identity(member_id as i32).as_ref() != Some(&member) {
-                continue;
+            if allow_owned_fallback && !signalled && group.id == owned_group {
+                // The fallback is only used during TERM, before the child is
+                // reaped. The later KILL pass relies on captured members.
+                if let Some(pid) = i32::try_from(owned_pid).ok().and_then(Pid::from_raw)
+                    && let Err(error) = kill_process_group(pid, signal)
+                    && error != rustix::io::Errno::SRCH
+                {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            if expected.is_some() || !non_linux_group_matches(session, group_id, member_id) {
-                continue;
-            }
-        }
-        let Some(group) = i32::try_from(group_id).ok().and_then(Pid::from_raw) else {
-            continue;
-        };
-        if let Err(error) = kill_process_group(group, signal)
+        if allow_owned_fallback
+            && !captured_owned_group
+            && let Some(pid) = i32::try_from(owned_pid).ok().and_then(Pid::from_raw)
+            && let Err(error) = kill_process_group(pid, signal)
             && error != rustix::io::Errno::SRCH
         {
             first_error.get_or_insert(error);
         }
+        first_error.map_or(Ok(()), Err)
     }
-    first_error.map_or(Ok(()), Err)
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (groups, session, owned_pid, allow_owned_fallback);
+        let pid = i32::try_from(owned_group).ok().and_then(Pid::from_raw);
+        let Some(pid) = pid else {
+            return Err(rustix::io::Errno::INVAL);
+        };
+        match kill_process_group(pid, signal) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn non_linux_group_matches(session: u32, group: u32, member: u32) -> bool {
-    use std::process::Command;
-    let Ok(output) = Command::new("/bin/ps")
-        .args(["-o", "pgid=", "-o", "sid=", "-p"])
-        .arg(member.to_string())
-        .env_clear()
-        .env("LC_ALL", "C")
-        .output()
-    else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
+fn supervisor_io_error(error: &crate::supervisor_daemon::Error) -> std::io::Error {
+    match error {
+        crate::supervisor_daemon::Error::Io(error) => {
+            std::io::Error::new(error.kind(), "identity check failed")
+        }
+        _ => std::io::Error::other("identity check failed"),
     }
-    let fields = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    fields.first().and_then(|value| value.parse::<u32>().ok()) == Some(group)
-        && fields.get(1).and_then(|value| value.parse::<u32>().ok()) == Some(session)
+}
+
+fn supervisor_error(error: crate::supervisor_daemon::Error) -> PtyHostError {
+    PtyHostError::Io(supervisor_io_error(&error))
 }
 
 fn exit_code(status: ExitStatus) -> i32 {

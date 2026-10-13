@@ -24,29 +24,6 @@ const ROUTE_DEPENDENCIES: &[&str] = &[];
 #[cfg(not(unix))]
 const ROUTE_DEPENDENCIES: &[&str] = &["runtime-process/local-pty-unix"];
 
-#[cfg(unix)]
-fn terminal_home(root: &Path) -> Result<PathBuf, ApiError> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    let base = root.join("terminal-server");
-    let home = base.join("home");
-    for directory in [&base, &home] {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.mode(0o700);
-        match builder.create(directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(ApiError::internal()),
-        }
-    }
-    std::fs::write(
-        home.join("config.toml"),
-        "[features]\nplugins = false\nremote_plugin = false\napps = false\nskip_host_skill_discovery = true\n",
-    )
-    .map_err(|_| ApiError::internal())?;
-    Ok(home)
-}
-
 fn live_operation_status() -> OperationStatus {
     #[cfg(unix)]
     {
@@ -160,13 +137,10 @@ async fn create(
             .unwrap_or_default()
             .to_owned();
         let shell = terminal_shell();
-        let home = terminal_home(store.root())?;
-        let environment = Value::Object(
-            studio_runtime_process::terminal_environment(&home)
-                .into_iter()
-                .map(|(key, value)| (key, Value::String(value)))
-                .collect(),
-        );
+        let environment = serde_json::json!({
+            "TERM":"xterm-256color",
+            "COLORTERM":"truecolor"
+        });
         let driver = state
             .terminal_driver_handle()
             .ok_or_else(ApiError::internal)?;
