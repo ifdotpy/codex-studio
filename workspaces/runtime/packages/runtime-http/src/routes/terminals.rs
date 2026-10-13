@@ -62,6 +62,24 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(routes)
 }
 
+#[cfg(unix)]
+async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
+    let Some(gate) = state.terminal_write_gate_handle() else {
+        return Ok(());
+    };
+    let reconciled = tokio::task::spawn_blocking(move || gate())
+        .await
+        .map_err(|_| ApiError::internal())?;
+    if reconciled {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires terminal-driver/restart-cleanup",
+        ))
+    }
+}
+
 async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || terminal_driver::listing(&store))
@@ -113,6 +131,7 @@ async fn create(
 ) -> Result<Json<Value>, ApiError> {
     #[cfg(unix)]
     {
+        require_reconciled_driver(&state).await?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let agent_id = body
             .get("agent")
@@ -183,6 +202,7 @@ async fn action(
 ) -> Result<Json<Value>, ApiError> {
     #[cfg(unix)]
     {
+        require_reconciled_driver(&state).await?;
         let driver = state
             .terminal_driver_handle()
             .ok_or_else(ApiError::internal)?;
