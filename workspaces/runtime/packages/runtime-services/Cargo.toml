@@ -10,6 +10,10 @@ publish.workspace = true
 base64 = { workspace = true }
 chrono = { workspace = true }
 getrandom = { workspace = true }
+ring = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+spki = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -21,6 +25,7 @@ studio-runtime-store = { path = "../runtime-store" }
 tokio = { workspace = true, features = ["sync"] }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+ureq = { workspace = true }
 jsonschema = { version = "=0.49.9", default-features = false }
 uuid = { workspace = true, features = ["v5"] }
 

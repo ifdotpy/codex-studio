@@ -12,6 +12,7 @@ pub(crate) mod profiles;
 pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
+pub(crate) mod remote_transport;
 pub(crate) mod queue_write;
 pub(crate) mod rules;
 pub(crate) mod scheduler;

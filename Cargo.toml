@@ -60,3 +60,8 @@ getrandom = "=0.3.4"
 subtle = "=2.6.1"
 tokio = { version = "=1.53.2", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }
+ring = "=0.17.14"
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "=1.15.1", features = ["std"] }
+spki = { version = "=0.7.3", features = ["std"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }

@@ -10,6 +10,7 @@ pub use repositories::account_state;
 pub use repositories::checkpoints::{
     CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
+pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
