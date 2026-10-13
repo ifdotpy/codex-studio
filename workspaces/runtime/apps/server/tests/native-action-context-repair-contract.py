@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import unittest
+import uuid
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -64,7 +65,7 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.fail(f"The entity feed omitted agent {identifier}")
 
     def send_instruction_and_wait_for_completion(self, identifier: str) -> None:
-        message_id = f"http-native-instruction-{identifier}"
+        message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"http-native-instruction:{identifier}"))
         sent = self.backend.request(
             "POST", "/api/messages",
             body={"id": message_id, "room": identifier,

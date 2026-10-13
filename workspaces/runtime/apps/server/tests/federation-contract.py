@@ -217,8 +217,9 @@ class FederationContract(unittest.TestCase):
 
     def test_two_private_servers_pair_and_exchange_messages_both_ways(self):
         room = self._room()
-        user_message = self._canvas_user_message(0, room, "hello Sasha from Messages", "ui-message-igor")
-        self.assertEqual(user_message["id"], "ui-message-igor")
+        message_id = "10000000-0000-4000-8000-000000000104"
+        user_message = self._canvas_user_message(0, room, "hello Sasha from Messages", message_id)
+        self.assertEqual(user_message["id"], message_id)
         self.assertEqual(user_message["status"], "queued")
         self.services[0]._deliver_peer(self.services[0].snapshot()["peers"][0])
         with self.runtimes[0].lock, self.runtimes[0].db() as db:
