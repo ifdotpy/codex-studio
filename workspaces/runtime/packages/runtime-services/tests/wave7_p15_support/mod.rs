@@ -57,7 +57,10 @@ impl MonitorPort for Port {
         }))
     }
     fn probe(&self, id: &str, generation: i64, command: &str) -> Result<(), MonitorError> {
-        self.probes.lock().expect("probes").push((id.into(), generation, command.into()));
+        self.probes
+            .lock()
+            .expect("probes")
+            .push((id.into(), generation, command.into()));
         Ok(())
     }
     fn input_reply(&self, _: &Operation, _: &str) -> InputReply {

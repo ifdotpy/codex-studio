@@ -142,7 +142,9 @@ pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(),
 /// Bounded startup/timer recovery, including receipts for already terminal rows.
 /// A corrupt receipt stops this batch visibly and is retained for diagnosis.
 pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
-    if limit == 0 { return Ok(0); }
+    if limit == 0 {
+        return Ok(0);
+    }
     let directory = store.root().join("monitor-results");
     match fs::symlink_metadata(&directory) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),

@@ -61,7 +61,7 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
                 "tick-10-0--1-",
                 "tick-0-0--1-",
                 "tick-owner-epoch",
-                "tick-probe-expiry-1910",
+                "tick-probe-expiry-1910.0",
             ]
             .contains(&case["name"].as_str().expect("name"))
         {
@@ -301,7 +301,7 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
                 finished: case["now"].as_f64().expect("now"),
             },
         );
-        store.transaction(|tx| { tx.execute_batch("CREATE TRIGGER injected AFTER INSERT ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END")?; Ok(()) }).expect("failure");
+        store.transaction(|tx| { for operation in ["INSERT", "UPDATE"] { tx.execute_batch(&format!("CREATE TRIGGER injected_{operation} AFTER {operation} ON runtime_monitors BEGIN SELECT RAISE(ABORT,'injected'); END"))?; } Ok(()) }).expect("failure");
         assert!(
             runtime
                 .deliver(&result, case["now"].as_f64().expect("now"))
@@ -317,7 +317,7 @@ fn monitor_completion_commits_the_python_rule_result_and_wake_atomically() {
         assert_eq!(fixtures::events(&store), json!([]));
         store
             .transaction(|tx| {
-                tx.execute_batch("DROP TRIGGER injected")?;
+                tx.execute_batch("DROP TRIGGER injected_INSERT; DROP TRIGGER injected_UPDATE")?;
                 Ok(())
             })
             .expect("release");
