@@ -794,12 +794,28 @@ class Client:
                 return False
             before_stop(state)
             self._host('host.stop')
-            deadline = time.monotonic() + timeout
-            while self.status()['state'] != 'stopped':
-                if time.monotonic() >= deadline:
-                    raise LinuxVMError('The Linux VM did not stop within its timeout.', uncertain=True)
-                time.sleep(0.1)
-        return True
+        # Wait without the lock: a dead kernel ignores the ACPI stop, and the helper forces
+        # it after 20 seconds. A stop on purpose in that time still runs (see stop()).
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if self.status()['state'] == 'stopped':
+                    return True
+            except LinuxVMError:
+                pass  # The helper exits and no longer answers.
+            if time.monotonic() >= deadline:
+                raise LinuxVMError('The Linux VM did not stop within its timeout.', uncertain=True)
+            time.sleep(0.1)
+
+    def ping(self, timeout: float = 15) -> str | None:
+        """None when the guest service answers, else why not. Any answer counts, also an
+        error: the guest answers this unknown method from its event loop, without the disk,
+        layr or the root broker, which `health` waits for. A transport failure has no code."""
+        try:
+            self.call('ping', {}, timeout=timeout)
+        except LinuxVMError as error:
+            return None if error.code is not None else str(error)
+        return None
 
     def create(self, settings: Settings | None = None, *, timeout: float = 1500) -> dict[str, Any]:
         if not 0 < timeout <= 3600:
@@ -981,6 +997,8 @@ class Client:
                 if not self.helper.is_file() or not os.access(self.helper, os.X_OK):
                     raise LinuxVMError('The signed Linux VM helper is unavailable. Build desktop/native/linux-vm first.')
                 self._write_intent('running', 'start' if watchdog_restart is None else 'watchdog', watchdog_restart)
+                # A new helper can get the PID of an old one: start its probe record empty.
+                (self.state_dir / _HEALTH_FILE).unlink(missing_ok=True)
                 log_path = self.state_dir / 'helper.log'
                 if log_path.exists() and log_path.stat().st_size > 1024 * 1024:
                     log_path.write_bytes(log_path.read_bytes()[-512 * 1024:])
@@ -1004,6 +1022,9 @@ class Client:
                 raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}. Log: {self.state_dir / "helper.log"}')
             state = self.status()
             if state['state'] == 'failed':
+                if (state.get('guestFailure') or {}).get('kind') == 'unanswered' and self.ping(5) is None:
+                    self.record_health(state.get('pid'), None)
+                    continue
                 raise LinuxVMError(f"The Linux VM failed: {state.get('error')}")
             if state['state'] == 'running':
                 try:
@@ -1039,9 +1060,10 @@ class Client:
             raise LinuxVMError('The Linux VM clock did not synchronize within its timeout.')
 
     def stop(self, *, timeout: float = 40) -> dict[str, Any]:
+        # A stop on purpose, also of a stopped VM: it cancels a pending automatic restart.
+        # It is saved before the lock, so it counts even when the lock is busy.
+        self._write_intent('stopped', 'stop')
         with self._lock():
-            # A stop on purpose, also of a stopped VM: it cancels a pending automatic restart.
-            self._write_intent('stopped', 'stop')
             if self.status()['state'] == 'stopped':
                 return {'state': 'stopped'}
             self._host('host.stop')

@@ -117,8 +117,10 @@ class Watchdog:
             return 'absent'
         try:
             status = client.status()
-            if status['state'] == 'running':
-                self.probe(status)
+            answered = False
+            # Probe an unanswered guest too: one answer clears that verdict.
+            if status['state'] == 'running' or (status.get('guestFailure') or {}).get('kind') == 'unanswered':
+                answered = self.probe(status)
                 status = client.status()
         except LinuxVMError:
             return 'unknown'
@@ -126,17 +128,30 @@ class Watchdog:
             return self.resume()
         if status['state'] == 'running':
             self._hold(None)
+            if answered:
+                self._settle()
         if status['state'] != 'failed':
             return str(status['state'])
         return self.restart(status)
 
-    def probe(self, status: dict[str, Any]) -> None:
-        error = None
-        try:
-            self.client.call('health', {}, timeout=PROBE_TIMEOUT)
-        except LinuxVMError as failure:
-            error = str(failure)
+    def probe(self, status: dict[str, Any]) -> bool:
+        error = self.client.ping(PROBE_TIMEOUT)
         self.client.record_health(status.get('pid'), error, now=self.clock())
+        return error is None
+
+    def _settle(self) -> None:
+        """Close a restart whose start a backend stop interrupted after the launch: the
+        guest answers, so the VM must not start again after a later stop."""
+        restart = self.client.intent().get('restart')
+        if not isinstance(restart, str):
+            return
+        record = next((row for row in load(self.client.state_dir)['restarts'] if row.get('id') == restart), None)
+        if record is not None and record.get('stage') in {'stopping', 'starting'}:
+            record.update(stage='done', outcome='restarted', finishedAt=self.clock())
+            self._update(record)
+            if self.on_finished is not None:
+                self.on_finished(record)
+        self._finish_intent(restart)
 
     def _hold(self, held: dict[str, Any] | None) -> None:
         saved = load(self.client.state_dir)
@@ -206,9 +221,12 @@ class Watchdog:
         try:
             self.client.ensure_running(timeout=RESTART_TIMEOUT, watchdog_restart=record['id'])
         except Exception as error:
-            cancelled = isinstance(error, LinuxVMError) and error.code == 'stopped_on_purpose'
+            # A stop on purpose before the launch, or one that ended the new helper.
+            cancelled = ((isinstance(error, LinuxVMError) and error.code == 'stopped_on_purpose')
+                         or self.client.intent().get('state') == 'stopped')
             try:
-                running = not cancelled and self.client.status()['state'] == 'running'
+                running = (not cancelled and self.client.status()['state'] == 'running'
+                           and self.client.ping(PROBE_TIMEOUT) is None)
             except LinuxVMError:
                 running = False
             # A late step (host_exec, share mounts) can fail after the guest answered.
@@ -245,6 +263,8 @@ class Watchdog:
                     self._update(record)
                     return 'abandoned'
                 record['stage'] = 'starting'
+                if 'chats' not in record and self.on_stopped is not None:
+                    record['chats'] = self.on_stopped(record)
                 self._update(record)
                 return self._start(record)
         except LinuxVMError as error:
@@ -329,8 +349,8 @@ def start(runtime: Any, *, interval: float = PROBE_INTERVAL) -> None:
     from codex_linux_workspaces import client
     try:
         vm_client: Client = client(runtime)
-    except (LinuxVMError, OSError):
-        # A state path too long for the VM sockets: this backend has no VM to watch.
+    except (RuntimeError, OSError):
+        # A state path too long for the VM sockets, or one in .claude: no VM to watch.
         return
     if not vm_client.state_dir.is_relative_to(Path(runtime.root).resolve()):
         return
