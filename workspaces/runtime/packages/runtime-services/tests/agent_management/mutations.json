@@ -1,0 +1,72 @@
+[
+  {
+    "id": "actor_epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "|| actor.identity.epoch != epoch",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "foreign_team",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "|| target.identity.root_id != actor.identity.root_id",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "epoch_fence",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": ".epoch\n        .checked_add(1)",
+        "after": ".epoch\n        .checked_add(0)"
+      }
+    ]
+  },
+  {
+    "id": "restore_epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "archive.get(\"epoch\").and_then(Value::as_i64) != Some(agent.identity.epoch)",
+        "after": "false"
+      }
+    ]
+  },
+  {
+    "id": "release_owner",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "work[\"owner\"] = Value::Null;",
+        "after": "work[\"owner\"] = json!(agent.id());"
+      }
+    ]
+  },
+  {
+    "id": "cleanup_pending",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+    "edits": [
+      {
+        "before": "if truthy(archive.get(\"cleanupPending\")) {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "pending_only",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
+    "edits": [
+      {
+        "before": "AND status='pending'",
+        "after": "AND status IN ('pending','uncertain')"
+      }
+    ]
+  }
+]
