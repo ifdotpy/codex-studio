@@ -32,11 +32,19 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
-        let caches = if a.has("--caches") { repo.cache_paths(&repo.working(&l)) } else { Vec::new() };
+        let (caches, versioned) = if a.has("--caches") { repo.line_cache_paths(&l)? } else { Default::default() };
         let st = if a.has("--caches") {
             // A cache folder that a tool made again as a plain folder becomes a cache first, so
-            // its files stay out of the state.
+            // its files stay out of the state. A folder with versioned files is no cache; one
+            // that an older layr made a cache becomes a plain folder again, so the state keeps
+            // its files.
             let (u, g) = repo.owner_ids(&l);
+            for p in &versioned {
+                let again = crate::repo::uncache(&repo.working(&l), p, u, g)?;
+                if !a.has("-q") {
+                    outln!(ctx, "{p}: {}", if again { VERSIONED_AGAIN } else { VERSIONED });
+                }
+            }
             for p in &caches {
                 let _ = crate::repo::convert_cache(&repo.working(&l), p, u, g);
             }
@@ -1487,6 +1495,12 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// Why a cache path is no cache (`save --caches`, `cache list`, `cache add`): its folder holds
+/// files of the head state, and a cache would hide them from the states that follow.
+const VERSIONED: &str = "not a cache: has versioned files; remove them from history first";
+/// A folder with versioned files that an older layr made a cache, after it became plain again.
+const VERSIONED_AGAIN: &str = "not a cache: has versioned files; a plain folder again";
+
 /// Regenerable caches: folders kept as nested subvolumes, outside automatic states.
 pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
@@ -1495,20 +1509,20 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
     match sub {
         "list" => {
             // The machine setting, and in a line also the regenerable folders of `.layrattributes`.
-            let paths = match &h.line {
-                Some(l) => repo.cache_paths(&repo.working(l)),
-                None => repo.p.config_strings("regenerable"),
+            let (paths, versioned) = match &h.line {
+                Some(l) => (repo.cache_paths(&repo.working(l)), repo.line_cache_paths(l)?.1),
+                None => (repo.p.config_strings("regenerable"), Vec::new()),
             };
             for p in paths {
                 let state = match &h.line {
                     Some(l) => {
                         let cp = repo.working(l).join(&p);
-                        if btrfs::is_subvolume(&cp) {
-                            "cache"
-                        } else if cp.exists() {
-                            "plain folder (run layr cache repair)"
-                        } else {
-                            "absent"
+                        match (versioned.contains(&p), btrfs::is_subvolume(&cp)) {
+                            (true, true) => "not a cache: has versioned files (run layr cache repair)",
+                            (true, false) => VERSIONED,
+                            (false, true) => "cache",
+                            (false, false) if cp.exists() => "plain folder (run layr cache repair)",
+                            (false, false) => "absent",
                         }
                     }
                     None => "",
@@ -1533,21 +1547,32 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
             set_config(ctx, repo, "regenerable", serde_json::json!(v))?;
             if sub == "add" {
                 if let Some(l) = &h.line {
-                    let (u, g) = repo.owner_ids(l);
-                    crate::repo::convert_cache(&repo.working(l), path, u, g)?;
+                    if crate::repo::holds_files(&repo.state_root(&l.head)?, path) {
+                        outln!(ctx, "{path}: {VERSIONED}");
+                    } else {
+                        let (u, g) = repo.owner_ids(l);
+                        crate::repo::convert_cache(&repo.working(l), path, u, g)?;
+                    }
                 }
             }
             Ok(0)
         }
         "repair" => {
             // Cache folders that a tool deleted and made again as plain folders become caches
-            // again. Best at a quiet point, when no build runs in the line.
+            // again. Best at a quiet point, when no build runs in the line. A cache folder that
+            // holds versioned files (an older layr made it a cache) becomes a plain folder again.
             let l = h.line()?.clone();
             repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
             let _lock = repo.p.lock()?;
             let l = repo.line(&l.id)?;
             let (u, g) = repo.owner_ids(&l);
-            for p in repo.cache_paths(&repo.working(&l)) {
+            let (caches, versioned) = repo.line_cache_paths(&l)?;
+            for p in versioned {
+                if crate::repo::uncache(&repo.working(&l), &p, u, g)? {
+                    outln!(ctx, "{p}: {VERSIONED_AGAIN}");
+                }
+            }
+            for p in caches {
                 if crate::repo::convert_cache(&repo.working(&l), &p, u, g)? {
                     outln!(ctx, "{p}: a cache again");
                 }
@@ -1714,5 +1739,114 @@ mod tests {
         let a1 = t.line("p", "a1");
         assert_eq!(read(&a1.join("seed1/data")), "0\n");
         assert_eq!(read(&a1.join("seed2/data")), "1\n");
+    }
+
+    const KEPT: &[(&str, &str)] = &[("artifacts/kept.txt", "kept\n")];
+
+    /// A regenerable folder that the ignore rules ignore, but whose files are in the head state
+    /// (tracked although ignored, or a nested repository that the import kept), is no cache:
+    /// `save --caches` says why and leaves it a plain folder, so its files stay in history.
+    #[test]
+    fn a_folder_with_versioned_files_is_no_cache() {
+        let Some(t) = TestFs::new("versioned") else { return };
+        let (admin, u1) = project(&t, KEPT, &["artifacts", "out"]);
+        let main = t.line("p", "main");
+        let in_main = [("LAYR_PROJECT", "p"), ("LAYR_LINE", "main")];
+        // A build in main writes into both folders.
+        t.write(&main, "out/bin", "bin\n");
+        t.write(&main, "artifacts/new.bin", "new\n");
+        for d in ["out", "artifacts"] {
+            assert!(sh(&["chown", "-R", "layr-admin:layr-admin", main.join(d).to_str().unwrap()]));
+        }
+        let said = t.ok(admin, &in_main, &["save", "--caches"]);
+        assert!(said.contains("artifacts: not a cache: has versioned files; remove them from history first"), "{said}");
+        assert!(crate::btrfs::is_subvolume(&main.join("out")));
+        assert!(!crate::btrfs::is_subvolume(&main.join("artifacts")));
+        assert_eq!(
+            t.ok(admin, &in_main, &["cache", "list"]),
+            "artifacts\tnot a cache: has versioned files; remove them from history first\nout\tcache\n"
+        );
+        let status = t.ok(admin, &in_main, &["status", "-s"]);
+        assert!(!status.contains("kept.txt"), "{status}");
+        let ctx = t.ctx(0, &in_main, Box::new(std::io::sink()));
+        let repo = Repo::open(&ctx, "p").unwrap();
+        let head = repo.line("main").unwrap().head;
+        assert_eq!(repo.state(&head).unwrap().caches.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["out"]);
+        drop(repo);
+        // A new line gets the folder from the state, and the cache warm.
+        t.ok(u1, &[("LAYR_PROJECT", "p")], &["branch", "-q", "a1", "main"]);
+        let a1 = t.line("p", "a1");
+        assert_eq!(read(&a1.join("artifacts/kept.txt")), "kept\n");
+        assert!(!crate::btrfs::is_subvolume(&a1.join("artifacts")));
+        assert_eq!(read(&a1.join("out/bin")), "bin\n");
+    }
+
+    /// An older layr made such a folder a cache: the working folder holds it as a subvolume, and
+    /// a record lists it as a cache of the head. Versioned files win: a new line takes the
+    /// folder from the state, and `cache repair` makes the subvolume a plain folder again.
+    #[test]
+    fn versioned_files_win_over_an_older_cache_record() {
+        let Some(t) = TestFs::new("versioned-old") else { return };
+        let (admin, u1) = project(&t, KEPT, &["artifacts"]);
+        let main = t.line("p", "main");
+        let in_main = [("LAYR_PROJECT", "p"), ("LAYR_LINE", "main")];
+        let gid = crate::sys::user_by_uid(admin).unwrap().gid;
+        assert!(crate::repo::convert_cache(&main, "artifacts", admin, gid).unwrap());
+        t.write(&main, "artifacts/stale.bin", "stale\n");
+        let ctx = t.ctx(admin, &in_main, Box::new(std::io::sink()));
+        let repo = Repo::open(&ctx, "p").unwrap();
+        let head = repo.line("main").unwrap().head;
+        super::record_caches(&ctx, &repo, &head, &main, &["artifacts".to_string()], true).unwrap();
+        assert!(repo.state(&head).unwrap().caches.contains_key("artifacts"));
+        drop(repo);
+        t.ok(u1, &[("LAYR_PROJECT", "p")], &["branch", "-q", "a1", "main"]);
+        let a1 = t.line("p", "a1");
+        assert_eq!(read(&a1.join("artifacts/kept.txt")), "kept\n");
+        assert!(!a1.join("artifacts/stale.bin").exists());
+        assert!(!crate::btrfs::is_subvolume(&a1.join("artifacts")));
+        assert_eq!(
+            t.ok(admin, &in_main, &["cache", "list"]),
+            "artifacts\tnot a cache: has versioned files (run layr cache repair)\n"
+        );
+        let said = t.ok(admin, &in_main, &["cache", "repair"]);
+        assert_eq!(said, "artifacts: not a cache: has versioned files; a plain folder again\n");
+        assert!(!crate::btrfs::is_subvolume(&main.join("artifacts")));
+        assert_eq!(read(&main.join("artifacts/kept.txt")), "kept\n");
+        assert_eq!(read(&main.join("artifacts/stale.bin")), "stale\n");
+        let status = t.ok(admin, &in_main, &["status", "-s"]);
+        assert!(!status.contains("kept.txt"), "{status}");
+    }
+
+    /// Studio ends each agent turn with `cache repair`, then `save --force`. Neither that repair
+    /// nor `cache add` makes a cache of a folder with versioned files, so the turn's state keeps
+    /// them; and one that an older layr made a cache becomes a plain folder again.
+    #[test]
+    fn cache_repair_and_cache_add_keep_a_versioned_folder_plain() {
+        let Some(t) = TestFs::new("versioned-repair") else { return };
+        let (admin, _) = project(&t, KEPT, &["artifacts"]);
+        let main = t.line("p", "main");
+        let in_main = [("LAYR_PROJECT", "p"), ("LAYR_LINE", "main")];
+        t.write(&main, "artifacts/new.bin", "new\n");
+        assert!(sh(&["chown", "-R", "layr-admin:layr-admin", main.join("artifacts").to_str().unwrap()]));
+        assert_eq!(t.ok(admin, &in_main, &["cache", "repair"]), "");
+        assert!(!crate::btrfs::is_subvolume(&main.join("artifacts")));
+        let said = t.ok(admin, &in_main, &["cache", "add", "artifacts"]);
+        assert_eq!(said, "artifacts: not a cache: has versioned files; remove them from history first\n");
+        assert!(!crate::btrfs::is_subvolume(&main.join("artifacts")));
+        t.ok(admin, &in_main, &["save", "-q", "--force", "-m", "turn 1"]);
+        assert_eq!(t.ok(admin, &in_main, &["show", "HEAD@{0}:artifacts/kept.txt"]), "kept\n");
+        // A folder that an older layr turned into a cache: the next turn end repairs it.
+        let gid = crate::sys::user_by_uid(admin).unwrap().gid;
+        assert!(crate::repo::convert_cache(&main, "artifacts", admin, gid).unwrap());
+        assert_eq!(
+            t.ok(admin, &in_main, &["cache", "repair"]),
+            "artifacts: not a cache: has versioned files; a plain folder again\n"
+        );
+        assert!(!crate::btrfs::is_subvolume(&main.join("artifacts")));
+        assert_eq!(read(&main.join("artifacts/new.bin")), "new\n");
+        t.ok(admin, &in_main, &["save", "-q", "--force", "-m", "turn 2"]);
+        assert_eq!(t.ok(admin, &in_main, &["show", "HEAD@{0}:artifacts/kept.txt"]), "kept\n");
+        let status = t.ok(admin, &in_main, &["status", "-s"]);
+        assert!(!status.contains("kept.txt"), "{status}");
     }
 }
