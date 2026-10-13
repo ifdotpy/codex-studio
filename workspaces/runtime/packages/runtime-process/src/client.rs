@@ -1,13 +1,14 @@
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+use crate::provider_shared::{
+    handshake_request, request_value, response_value, validate_handshake,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use crate::protocol::*;
 use crate::transport::{SupervisorTransport, read_frame, write_frame};
 
-const PROTOCOL_VERSION: u64 = 1;
 const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub struct SupervisorClient<T: SupervisorTransport> {
@@ -31,37 +32,16 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         identity: BackendIdentity,
         operator: bool,
     ) -> Result<Self, SupervisorError> {
-        let mut handshake = serde_json::json!({
-            "protocol": PROTOCOL_VERSION,
-            "stateDir": identity.state_dir,
-            "backendId": identity.backend_id,
-        });
-        if operator && let Some(object) = handshake.as_object_mut() {
-            object.remove("backendId");
-            object.insert("operator".into(), Value::Bool(true));
-        }
+        let handshake = handshake_request(&identity, operator);
         write_frame(&mut transport, &handshake)?;
         let mut stream = BufReader::new(transport);
         let response = read_frame(&mut stream)?.ok_or(SupervisorError::ConnectionLost)?;
-        let value: Value = serde_json::from_str(&response)?;
-        if value.get("ok") == Some(&Value::Bool(true)) {
-            Ok(Self {
-                stream,
-                next_request_id: 0,
-                backend_identity: identity,
-            })
-        } else {
-            let detail = value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unexpected handshake response")
-                .to_owned();
-            Err(SupervisorError::ProtocolMismatch {
-                expected: PROTOCOL_VERSION,
-                received: None,
-                detail,
-            })
-        }
+        validate_handshake(&response)?;
+        Ok(Self {
+            stream,
+            next_request_id: 0,
+            backend_identity: identity,
+        })
     }
 
     pub fn backend_identity(&self) -> &BackendIdentity {
@@ -141,24 +121,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
             SupervisorError::InvalidFrame("request identity space exhausted".into())
         })?;
         let request_id = self.next_request_id;
-        let mut value = serde_json::to_value(request)?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| SupervisorError::InvalidFrame("request must be an object".into()))?;
-        object.insert("requestId".into(), Value::from(request_id));
-        object.insert("action".into(), Value::from(action.wire_name()));
-        if !matches!(
-            action,
-            SupervisorAction::Health
-                | SupervisorAction::FinishFallback
-                | SupervisorAction::AdminCloseHandle
-        ) && !object.contains_key("handle")
-        {
-            return Err(SupervisorError::InvalidFrame(format!(
-                "{} request requires handle",
-                action
-            )));
-        }
+        let value = request_value(action, request_id, request)?;
         if let Err(error) = write_frame(self.stream.get_mut(), &value) {
             return match error {
                 SupervisorError::Io(_) => {
@@ -174,25 +137,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
             }
             Err(_) => return Err(SupervisorError::UnknownOutcome { action, request_id }),
         };
-        let response: Value = match serde_json::from_str(&response) {
-            Ok(response) => response,
-            Err(_) => return Err(SupervisorError::UnknownOutcome { action, request_id }),
-        };
-        if response.get("requestId").and_then(Value::as_u64) != Some(request_id) {
-            return Err(SupervisorError::UnknownOutcome { action, request_id });
-        }
-        if let Some(message) = response.get("error").and_then(Value::as_str) {
-            return Err(SupervisorError::Remote {
-                action,
-                message: message.to_owned(),
-            });
-        }
-        let result = response
-            .get("result")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        serde_json::from_value(result)
-            .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })
+        response_value(action, request_id, &response)
     }
 }
 

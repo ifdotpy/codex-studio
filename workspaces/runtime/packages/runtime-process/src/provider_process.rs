@@ -12,6 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+use crate::provider_shared::{clean_environment, initialized_operation_id, provider_native_id};
+#[cfg(target_os = "linux")]
+use crate::provider_shared::{parse_process_environment, verify_environment};
+
 use crate::{
     AckRequest, BackendIdentity, CursorRequest, EventCursor, EventKind, Generation, HandleRequest,
     OpenRequest, OperationId, ProviderProcess, ProviderProcessReader, SupervisorClient,
@@ -85,34 +89,12 @@ pub struct ProviderLaunchSpec {
     pub handled_cursor: u64,
 }
 
-const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
-    "CODEX_AGENTS_BACKEND_ID",
-    "CODEX_RUNTIME_LOCK_METRICS",
-    "CODEX_AGENTS_PROVIDER_CAPTURE",
-    "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
-    "CODEX_NODE",
-];
-const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
-    "PATH",
-    "LANG",
-    "LC_CTYPE",
-    "LC_ALL",
-    "__PYVENV_LAUNCHER__",
-    "COMMAND_MODE",
-    "MallocNanoZone",
-    "XPC_SERVICE_NAME",
-    "__CFBundleIdentifier",
-];
-
 fn normalize_environment(
     requested: &BTreeMap<String, String>,
     identity: &BackendIdentity,
     handle: &ProviderHandle,
 ) -> Result<(BTreeMap<String, String>, bool), ProviderFactoryError> {
-    let mut clean = requested.clone();
-    for key in BACKEND_ONLY_ENVIRONMENT {
-        clean.remove(*key);
-    }
+    let clean = clean_environment(requested);
     let Ok(mut client) = SupervisorClient::connect(&identity.state_dir, identity.clone()) else {
         return Ok((clean, false));
     };
@@ -128,19 +110,7 @@ fn normalize_environment(
     #[cfg(target_os = "linux")]
     {
         let original = process_environment(status.pid).map_err(|_| ProviderFactoryError::Launch)?;
-        let without_launcher = |values: &BTreeMap<String, String>| {
-            values
-                .iter()
-                .filter(|(key, _)| {
-                    !BACKEND_ONLY_ENVIRONMENT.contains(&key.as_str())
-                        && !RETAINED_LAUNCHER_ENVIRONMENT.contains(&key.as_str())
-                })
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<BTreeMap<_, _>>()
-        };
-        if without_launcher(&original) != without_launcher(&clean) {
-            return Err(ProviderFactoryError::Launch);
-        }
+        verify_environment(&original, &clean)?;
         Ok((original, true))
     }
     #[cfg(not(target_os = "linux"))]
@@ -160,28 +130,6 @@ fn process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
         ));
     }
     parse_process_environment(&raw)
-}
-
-#[cfg(target_os = "linux")]
-fn parse_process_environment(raw: &[u8]) -> io::Result<BTreeMap<String, String>> {
-    let mut environment = BTreeMap::new();
-    for entry in raw
-        .split(|byte| *byte == 0)
-        .take_while(|entry| !entry.is_empty())
-    {
-        let Some(separator) = entry.iter().position(|byte| *byte == b'=') else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid process environment",
-            ));
-        };
-        let key = std::str::from_utf8(&entry[..separator])
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let value = std::str::from_utf8(&entry[separator + 1..])
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        environment.insert(key.to_owned(), value.to_owned());
-    }
-    Ok(environment)
 }
 
 impl ProviderLaunchSpec {
@@ -844,14 +792,6 @@ fn remap_provider_reply(
     Ok(())
 }
 
-fn provider_native_id(message: &Value) -> Option<u64> {
-    message
-        .get("method")
-        .and_then(Value::as_str)
-        .and_then(|_| message.get("id"))
-        .and_then(Value::as_u64)
-}
-
 fn send_output(shared: &SharedProcess, item: OutputItem) -> io::Result<()> {
     shared.output.send(item, false)
 }
@@ -1180,7 +1120,7 @@ impl ProviderInputWriter {
                 self.shared.connection.lock().map_err(|_| {
                     io::Error::other("provider supervisor connection lock poisoned")
                 })?;
-            OperationId(format!("initialized:{}", connection.handle.0))
+            initialized_operation_id(&connection.handle)
         } else {
             match self.pending_operation_id.clone() {
                 Some(operation_id) => operation_id,

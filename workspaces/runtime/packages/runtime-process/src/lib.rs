@@ -4,6 +4,7 @@ mod client;
 mod ports;
 mod protocol;
 pub mod provider_process;
+mod provider_shared;
 mod transport;
 
 pub use client::SupervisorClient;

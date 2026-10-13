@@ -12,13 +12,7 @@ pub trait SupervisorTransport: Read + Write {}
 impl<T: Read + Write> SupervisorTransport for T {}
 
 pub(crate) fn write_frame(writer: &mut impl Write, value: &Value) -> Result<(), SupervisorError> {
-    let mut frame = serde_json::to_vec(value)?;
-    if frame.len() + 1 > MAX_FRAME_BYTES {
-        return Err(SupervisorError::InvalidFrame(
-            "request exceeds 1 MiB".into(),
-        ));
-    }
-    frame.push(b'\n');
+    let frame = crate::provider_shared::serialize_frame(value)?;
     writer.write_all(&frame)?;
     writer.flush()?;
     Ok(())
