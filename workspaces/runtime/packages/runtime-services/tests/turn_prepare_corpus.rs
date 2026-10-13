@@ -7,6 +7,9 @@ use studio_runtime_services::turn_prepare::{
     ContextManifest, Event, NativeReceipt, PreparationSnapshot, PrepareError, accept, compile,
 };
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -14,8 +17,8 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the equipped isolated interpreter (read-only)");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = prepared_python::prepared_python(&source);
         let mut child = Command::new(python)
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_prepare/oracle.py"))

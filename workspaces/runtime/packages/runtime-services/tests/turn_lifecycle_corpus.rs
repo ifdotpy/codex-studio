@@ -9,6 +9,9 @@ use studio_runtime_services::scheduler::{
 };
 use studio_runtime_store::{RuntimeStore, SchedulerRepository, TurnAttemptIdentity};
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -16,8 +19,8 @@ struct Oracle {
 }
 impl Oracle {
     fn new(root: &Path) -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared interpreter (read-only)");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = prepared_python::prepared_python(&source);
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(root)

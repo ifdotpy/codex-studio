@@ -10,6 +10,9 @@ use studio_runtime_services::submit_gates::{
     validate_execution,
 };
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -17,8 +20,8 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared isolated interpreter");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = prepared_python::prepared_python(&source);
         for key in ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
             assert!(
                 std::env::var(key)

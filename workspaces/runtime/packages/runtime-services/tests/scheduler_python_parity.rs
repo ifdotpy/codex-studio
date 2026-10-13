@@ -11,6 +11,9 @@ use studio_runtime_services::scheduler::{
 };
 use studio_runtime_store::{AgentId, AgentRepository, AgentStatus, RuntimeStore};
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 const CREATE_PYTHON_EVENTS: &str = r#"
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])
@@ -382,23 +385,7 @@ fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
 }
 
 fn python_executable() -> PathBuf {
-    if let Some(python) = std::env::var_os("CODEX_AGENTS_PYTHON") {
-        return python.into();
-    }
-    let output = Command::new("python3")
-        .arg(server_source().join("codex_python.py"))
-        .output()
-        .expect("python resolver starts");
-    assert!(
-        output.status.success(),
-        "python resolver succeeds: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    PathBuf::from(
-        String::from_utf8(output.stdout)
-            .expect("resolved interpreter is UTF-8")
-            .trim(),
-    )
+    prepared_python::prepared_python(&server_source())
 }
 
 fn server_source() -> PathBuf {

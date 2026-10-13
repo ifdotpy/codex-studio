@@ -6,6 +6,9 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_services::thread_prepare::*;
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -13,8 +16,8 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the equipped isolated interpreter");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = prepared_python::prepared_python(&source);
         let mut child = Command::new(python)
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
