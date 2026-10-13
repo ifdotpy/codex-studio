@@ -160,12 +160,13 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             generation: step["generation"].as_u64().unwrap_or(7),
             cursor: step["cursor"].as_u64().unwrap_or(index as u64 + 1),
         };
-        if let Some(service) = case["requires_service"].as_str() {
-            assert_eq!(case["steps"].as_array().expect("steps").len(), 1);
+        if let Some(service) = step["required_service"].as_str() {
+            assert_eq!(case["requires_service"], service);
+            assert_eq!(index + 1, case["steps"].as_array().expect("steps").len());
             return store.transaction_with(|tx| {
                 let before = raw_rows(tx);
-                let error = studio_runtime_services::notification_dispatch::dispatch_notification(
-                    tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5,
+                let error = dispatch_notification(
+                    tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects,
                 ).expect_err("missing service must refuse before acknowledgement");
                 assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
@@ -279,6 +280,25 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         results.push(json!(result.outcome));
         if let Some(update) = result.stream_update {
             streams = update;
+        }
+        if let Some(bytes) = step["expected_pending_bytes"].as_u64() {
+            let buffered = serde_json::to_value(&streams).expect("stream state");
+            let actual: usize = buffered["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .map(|entry| {
+                    assert!(
+                        entry["params"].get("delta").is_none(),
+                        "do not retain delta twice"
+                    );
+                    entry["pending"].as_str().expect("pending text").len()
+                })
+                .sum();
+            assert_eq!(
+                actual as u64, bytes,
+                "bounded pending bytes before timer flush"
+            );
         }
         if step["tick"] == true {
             flush_agents(store, case, &mut streams)?;
@@ -652,16 +672,15 @@ fn corpus(full: bool) {
                 Some(format!("Not implemented: requires {service}").as_str())
             );
             assert_eq!(
-                actual, expected["before"],
+                actual, expected["beforeRefusal"],
                 "named refusal changed stored state"
             );
-            let table = case["python_writes"]
-                .as_str()
-                .expect("missing service's real Python table witness");
-            assert_ne!(
-                expected["after"][table], expected["before"][table],
-                "Python service witness must store a real effect"
-            );
+            if let Some(table) = case["python_writes"].as_str() {
+                assert_ne!(
+                    expected["after"][table], expected["beforeRefusal"][table],
+                    "Python service witness must store a real effect"
+                );
+            }
             refusals += 1;
             report.push(json!({"id":id,"contract":"named-service-refusal","dependency":service,
                 "pythonExpectedStoredState":expected["after"],"rustStoredState":actual,"error":error,

@@ -17,7 +17,7 @@ import codex_runtime
 import codex_streaming
 from codex_runtime import Runtime
 
-TABLES = ('runtime_native_limit_refreshes', 'runtime_plans', 'runtime_compactions', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
+TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_plans', 'runtime_compactions', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
           'runtime_events', 'runtime_event_meta', 'runtime_operation_receipts',
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
@@ -240,16 +240,17 @@ def transition(runtime, case):
                                      'item/reasoning/textDelta', 'item/reasoning/summaryTextDelta'}
                   and params.get('turnId') and params['turnId'] != agent.get('turnId')):
                 outcome = {'status':'ignored','reason':'stale-turn-item'}
+            if step.get('required_service'):
+                runtime.corpus_before_refusal = snapshot(runtime.root)
             runtime.notification(frame, 'default', 'connection-' + str(generation))
             if frame['method'] == 'thread/tokenUsage/updated':
                 updated = runtime.agent(agent_id)
                 runtime.corpus_captures.append({'params': params, 'tokensUsed': updated['tokensUsed'],
                                                 'tokenUsageAccounting': updated['tokenUsageAccounting']})
-            if step.get('required_service'):
-                outcome = {'status': 'requiresservice', 'service': step['required_service']}
             identity = {'providerHandle': 'account:default', 'generation': generation, 'cursor': step.get('cursor', index + 1)}
-            with runtime.db() as db:
-                runtime.save_receipt(db, 'provider-notification:' + digest(identity), signature, outcome)
+            if not step.get('required_service'):
+                with runtime.db() as db:
+                    runtime.save_receipt(db, 'provider-notification:' + digest(identity), signature, outcome)
             if step.get('tick'):
                 runtime._stream_buffer._tick()
         with runtime.db() as db:
@@ -324,8 +325,9 @@ def run_case(command, template, runtime_type):
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
     runtime.corpus_captures = []
+    runtime.corpus_before_refusal = None
     transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures}
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'beforeRefusal': runtime.corpus_before_refusal}
 
 
 def close():

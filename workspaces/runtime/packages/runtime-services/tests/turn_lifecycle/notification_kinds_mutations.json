@@ -76,5 +76,31 @@
     ],
     "witnesses": ["command-output-sequence"],
     "lifecycleCombinations": []
+  },
+  {
+    "id": "NK7",
+    "description": "injected missing-service outcome must never be acknowledged",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "DispatchOutcome::RequiresService { service } => {\n            Err(NotificationDispatchError::Dependency(service.name()))\n        }",
+        "after": "DispatchOutcome::RequiresService { .. } => Ok(DispatchOutcome::Written),"
+      }
+    ],
+    "witnesses": ["unhandled-account-login-completed"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK8",
+    "description": "byte boundary must flush rather than retain pending text",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "edits": [
+      {
+        "before": "const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;",
+        "after": "const MAX_PENDING_TEXT_BYTES: usize = usize::MAX;"
+      }
+    ],
+    "witnesses": ["text-stream-byte-boundary", "text-stream-oversized-frame"],
+    "lifecycleCombinations": []
   }
 ]
