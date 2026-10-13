@@ -45,8 +45,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/work_write.rs",
     "edits": [
       {
-        "before": "format!(\"work-released:{id}:{}\",",
-        "after": "format!(\"work-released-mutant:{id}:{}\","
+        "before": "work-released:{id}:{}",
+        "after": "work-released-mutant:{id}:{}"
       }
     ],
     "witnesses": [

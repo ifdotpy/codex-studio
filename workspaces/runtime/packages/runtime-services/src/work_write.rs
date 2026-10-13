@@ -1295,12 +1295,17 @@ mod release_tests {
             "title":"Task","created":1.0,"updated":1.0,"version":2,
             "dependencies":[],"results":[],"decisions":[]
         });
+        let blocked_work = json!({
+            "id":"blocked-task","rootId":"lead","owner":"worker","status":"blocked",
+            "title":"Blocked task","created":1.0,"updated":1.0,"version":2,
+            "dependencies":[],"results":[],"decisions":[]
+        });
         connection
             .execute(
-                "INSERT INTO runtime_work(id,record) VALUES ('task',?1)",
-                [work.to_string()],
+                "INSERT INTO runtime_work(id,record) VALUES ('task',?1),('blocked-task',?2)",
+                rusqlite::params![work.to_string(), blocked_work.to_string()],
             )
-            .expect("work inserts");
+            .expect("work items insert");
         let failed = AgentRecord::from_value(json!({
             "id":"worker","rootId":"lead","epoch":2,"status":"failed",
             "parentId":"lead","autoWake":false,"error":"worker exited"
@@ -1309,7 +1314,9 @@ mod release_tests {
 
         let tx = connection.transaction().expect("transaction starts");
         let released = release_failed_work(&tx, &[failed], 10.0).expect("claims release");
-        assert_eq!(released.task_ids, ["task"]);
+        let mut released_ids = released.task_ids.clone();
+        released_ids.sort();
+        assert_eq!(released_ids, ["blocked-task", "task"]);
         assert!(released.event_inserted);
         let stored: Value = serde_json::from_str(
             &tx.query_row(
@@ -1323,6 +1330,18 @@ mod release_tests {
         assert_eq!(stored["owner"], Value::Null);
         assert_eq!(stored["status"], "ready");
         assert_eq!(stored["releases"][0]["reason"], "worker exited");
+        let blocked: Value = serde_json::from_str(
+            &tx.query_row(
+                "SELECT record FROM runtime_work WHERE id='blocked-task'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("blocked release reads"),
+        )
+        .expect("blocked work JSON parses");
+        assert_eq!(blocked["owner"], Value::Null);
+        assert_eq!(blocked["status"], "blocked");
+        assert_eq!(blocked["version"], 3);
         let event = tx
             .query_row(
                 "SELECT kind,text FROM runtime_events WHERE id='work-released:task:3'",
