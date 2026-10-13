@@ -17,6 +17,7 @@ mod sync;
 mod sync_documents;
 mod terminals;
 mod transcript;
+mod usage;
 mod work_items;
 mod work_write;
 mod workspace_files;
@@ -54,5 +55,6 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         workspace_views::routes(),
         desktop::routes(),
         catalog::routes(),
+        usage::routes(),
     ]
 }
