@@ -6,8 +6,8 @@ use axum::response::Response;
 use axum::routing::any;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use studio_runtime_store::RuntimeStore;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
+use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
 
 use crate::error::error_response;
@@ -50,10 +50,11 @@ impl HttpState {
     ) -> Self {
         let sync_changes = Arc::new(ChangeNotificationHub::new());
         let model_changes = Arc::clone(&sync_changes);
-        let model_catalog = studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
-            native_path.clone(),
-            Arc::new(move || model_changes.notify_one()),
-        );
+        let model_catalog =
+            studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
+                native_path.clone(),
+                Arc::new(move || model_changes.notify_one()),
+            );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
