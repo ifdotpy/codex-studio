@@ -64,7 +64,7 @@ async fn directories(
             let tx = connection.transaction().map_err(|_| ApiError::internal())?;
             use studio_runtime_store::system_reads as records;
             let client =
-                records::get(&tx, "runtime_access_clients", &server).map_err(stored_error)?;
+                records::get(&tx, "runtime_access_clients", &server).map_err(ApiError::stored)?;
             if let Some(client) = client {
                 return Ok::<bool, ApiError>(
                     client["kind"] == "server"
@@ -73,7 +73,7 @@ async fn directories(
                 );
             }
             if records::get(&tx, "runtime_access_discovered", &server)
-                .map_err(stored_error)?
+                .map_err(ApiError::stored)?
                 .is_some()
             {
                 return Err(ApiError::new(
@@ -140,7 +140,7 @@ async fn ui_summary(State(state): State<HttpState>) -> Result<Json<Value>, ApiEr
         };
         let mut connection = store.read().map_err(|_| ApiError::internal())?;
         let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
-        let value = system_reads::ui_summary(&transaction, accounts).map_err(stored_error)?;
+        let value = system_reads::ui_summary(&transaction, accounts).map_err(ApiError::stored)?;
         super::generated_json::<crate::generated::UiSummaryResponse>(value)
     })
     .await
@@ -172,15 +172,6 @@ fn local_server_id(state_dir: &str) -> Option<String> {
 
 fn dependency_error(method: &str, path: &str, deps: &[Dependency]) -> ApiError {
     dependency_unavailable(method, path, deps).unwrap_or_else(|_| ApiError::internal())
-}
-fn stored_error(error: studio_runtime_store::StoreError) -> ApiError {
-    match error {
-        studio_runtime_store::StoreError::InvalidSyncObject { scope, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {scope}/{id}"),
-        ),
-        _ => ApiError::internal(),
-    }
 }
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {

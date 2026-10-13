@@ -14,9 +14,7 @@ pub fn invalid(table: &str, id: &str) -> StoreError {
 pub fn validate(table: &str, id: &str, value: Value) -> StoreResult<Value> {
     let schema = studio_runtime_schema::table_schema(table)
         .ok_or_else(|| StoreError::SchemaValidation(format!("no storage schema for {table}")))?;
-    if !studio_runtime_schema::validate(schema, &value).map_err(StoreError::SchemaValidation)? {
-        return Err(invalid(table, id));
-    }
+    let value = crate::records::validate_value(schema, value, || invalid(table, id))?;
     let key = if table == "sync_entities" {
         value.pointer("/value/id")
     } else {
@@ -40,13 +38,7 @@ pub fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
     validate(table, id, value)
 }
 
-pub fn exists(connection: &Connection, table: &str) -> StoreResult<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |row| row.get(0),
-    )?)
-}
+pub use crate::schema::table_exists as exists;
 
 pub fn get(connection: &Connection, table: &'static str, id: &str) -> StoreResult<Option<Value>> {
     if !exists(connection, table)? {

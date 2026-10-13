@@ -48,6 +48,30 @@ impl ApiError {
     pub fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     }
+
+    pub(crate) fn dependency(name: &str) -> Self {
+        Self::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {name}"),
+        )
+    }
+}
+
+impl ApiError {
+    pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
+        use studio_runtime_store::StoreError;
+        match error {
+            StoreError::InvalidSyncObject { scope, id } => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {scope}/{id}"),
+            ),
+            StoreError::InvalidStoredObject { table, id } => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {table}/{id}"),
+            ),
+            _ => Self::internal(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
