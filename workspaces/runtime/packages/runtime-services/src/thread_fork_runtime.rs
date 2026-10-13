@@ -24,7 +24,18 @@ pub fn claim(
     let actor = CheckpointsRepository::agent(tx, &ticket.agent)?.ok_or(NativeError::Changed)?;
     check(&operation, &actor.record, ticket)?;
     if operation.get("providerTicket").is_some() {
-        return Err(NativeError::Unknown);
+        let saved: NativeRequest =
+            decode(operation["nativeRequest"].clone(), "fork.nativeRequest")?;
+        let retry = NativeRequest {
+            ticket: ticket.clone(),
+            method: "thread/fork".into(),
+            params: params.clone(),
+        };
+        return if saved == retry {
+            Err(NativeError::Unknown)
+        } else {
+            Err(NativeError::Conflict)
+        };
     }
     if operation["phase"] != "provider_pending"
         || !matches!(operation["kind"].as_str(), Some("branch" | "restore"))

@@ -62,9 +62,9 @@ class RuntimePort:
         child.pop('concurrency',None)
         return child
 
-output = {"outcomes":[],"actions":[],"reviews":[],"rewrites":[],"commands":[]}
+output = {"outcomes":[],"actions":[],"reviews":[],"rewrites":[],"commands":[],"cancellations":[],"forks":[]}
 for action in ("compact","review"):
-    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3}):
+    for context in ({},{"epoch":3},{"accountKey":"default","threadId":"thread","epoch":3},{"note":"Unicode Ω 😀"}):
         a=agent(); rt=RuntimePort(a)
         request=dict(requestId="action-request",agent="lead",action=action,context=context)
         with patch("codex_runtime.uid",return_value="attempt"), patch("time.time",return_value=NOW), patch("codex_budget.budget_admission"), patch("codex_agent_modes.assert_worker_input"):
@@ -125,8 +125,36 @@ for text in ('', 'line\nnext', 'Ω\\"quote', 'x'*16000):
         def send(self,aid,instruction): return dict(agent=aid,text=instruction)
     result=WorkspaceMixin.native_command_action(CommandPort(),dict(id='task',action='input',text=text))
     output['commands'].append(dict(agent=a,task=task,text=text,result=result))
+
+for pages in (([{'itemId':'other','processId':'17'}], [{'itemId':'item','processId':'17'}]),
+              ([{'itemId':'item','processId':'17'}],)):
+    a=agent(); task=dict(id='task',agent='lead',kind='command',status='running',processId='17',itemId='item',created=1.0)
+    class NativeServer:
+        def __init__(self): self.calls=[]
+        def call(self, method, params):
+            self.calls.append((method,copy.deepcopy(params)))
+            if method == 'thread/backgroundTerminals/list':
+                index=len([call for call in self.calls if call[0] == method])-1
+                return {'data':pages[index],'nextCursor':'next' if index+1 < len(pages) else None}
+            return {'terminated':True}
+    class CancelPort:
+        def task_detail(self, _): return task
+        def agent(self, _): return a
+        def connect_agent(self, _): return server
+    server=NativeServer()
+    result=WorkspaceMixin.native_command_action(CancelPort(), {'id':'task','action':'cancel'})
+    output['cancellations'].append(dict(task=task,agent=a,pages=pages,calls=server.calls,result=result))
+
+# Execute the deterministic Python identity/source paths for branch and
+# restore. Full execution requires a real Git worktree and native fork I/O,
+# which the guarded oracle deliberately blocks.
+branch_data={'id':'branch-request','message_id':'lead:message','before':True}
+restore_data={'checkpoint_id':'checkpoint','expectedTree':'tree-hash'}
 a=agent()
-a.update(workspaceOperation='branch',workspaceReservationId='branch-request')
-source=WorkspaceMixin._workspace_source(a)
-output['fork']=dict(agent=a,operation=dict(id='branch-request',agent='lead',kind='branch',phase='provider_pending',source=source,signature='frozen',created=1.0))
+output['forks'].append(dict(agent=a,source=WorkspaceMixin._workspace_source(a),
+    branch=dict(data=branch_data,id=WorkspaceMixin._workspace_operation_id('branch','lead',branch_data)),
+    restore=dict(data=restore_data,id=WorkspaceMixin._workspace_operation_id('restore','lead',restore_data),
+                 signature=WorkspaceMixin._workspace_restore_signature('lead',restore_data)),
+    operation=dict(id='branch-request',agent='lead',kind='branch',phase='provider_pending',
+                   source=WorkspaceMixin._workspace_source(a),signature='frozen',created=1.0)))
 print(json.dumps(output,ensure_ascii=False))

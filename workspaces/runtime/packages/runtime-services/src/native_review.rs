@@ -40,7 +40,13 @@ pub fn target(args: &Value) -> Result<Value> {
                 .as_str()
                 .ok_or(NativeError::Invalid("review.options"))?;
             let limit = if key == "cwd" { 4096 } else { 200 };
-            if text.trim().is_empty() || text.chars().count() > limit || text.contains('\0') {
+            let invalid_request_id = key == "request_id"
+                && (text.trim() != text || text.chars().any(|character| character <= '\u{1f}'));
+            if text.trim().is_empty()
+                || text.chars().count() > limit
+                || text.contains('\0')
+                || invalid_request_id
+            {
                 return Err(NativeError::Invalid("review.options"));
             }
         }

@@ -280,6 +280,17 @@ fn review_worker_identity_and_saved_response_match_python() {
         );
     }
 }
+#[test]
+fn review_request_ids_match_python_whitespace_and_control_validation() {
+    for request_id in [" padded", "padded ", "line\nbreak", "tab\tkey"] {
+        let args = json!({"request_id":request_id});
+        assert!(
+            native_review::target(&args).is_err(),
+            "accepted {request_id:?}"
+        );
+    }
+    assert!(native_review::target(&json!({"request_id":"valid-key"})).is_ok());
+}
 struct Summaries(Value);
 impl RepairEventSummary for Summaries {
     fn summarize(&self, event: &Value) -> std::result::Result<String, RepairError> {
@@ -336,6 +347,62 @@ fn native_command_input_and_process_item_scope_match_python() {
                 .listed(&json!({"data":[{"itemId":"item","processId":"17"}]}))
                 .expect("page")
         );
+    }
+}
+#[test]
+fn native_command_cancel_list_terminate_and_replay_match_python() {
+    for case in corpus()["cancellations"].as_array().expect("cancellations") {
+        let mut db = db(case);
+        db.execute(
+            "INSERT INTO runtime_tasks VALUES(?1,?2)",
+            [
+                case["task"]["id"].as_str().expect("task id"),
+                case["task"].to_string().as_str(),
+            ],
+        )
+        .expect("task");
+        let snapshot = CommandSnapshot::from_records(case["task"].clone(), case["agent"].clone())
+            .expect("snapshot");
+        let mut cancel_ticket = ticket();
+        cancel_ticket.operation = case["task"]["id"].as_str().expect("task id").to_owned();
+        cancel_ticket.request = "cancel-corpus".into();
+        let mut list_ticket = cancel_ticket.clone();
+        list_ticket.request.push_str(":list");
+        let list = TransportReceipt {
+            ticket: list_ticket,
+            delivery: Delivery::Written(
+                json!({"data":case["pages"].as_array().expect("pages").last().expect("last page")}),
+            ),
+        };
+        let tx = db.transaction().expect("begin");
+        let CommandCancelClaim::Send(request) =
+            command_cancel_claim(&tx, &snapshot, &cancel_ticket, &list).expect("claim")
+        else {
+            panic!("first cancellation must send")
+        };
+        tx.commit().expect("commit intent");
+        let python_terminate = case["calls"]
+            .as_array()
+            .expect("calls")
+            .last()
+            .expect("terminate")[1]
+            .clone();
+        assert_eq!(request.params, python_terminate);
+        let settled = TransportReceipt {
+            ticket: request.ticket,
+            delivery: Delivery::Written(case["result"].clone()),
+        };
+        let tx = db.transaction().expect("begin");
+        assert_eq!(
+            command_cancel_settle(&tx, &settled).expect("settle"),
+            case["result"]
+        );
+        tx.commit().expect("commit result");
+        let tx = db.transaction().expect("begin");
+        assert!(matches!(
+            command_cancel_claim(&tx, &snapshot, &cancel_ticket, &list),
+            Ok(CommandCancelClaim::Replay(ref value)) if value == &case["result"]
+        ));
     }
 }
 struct Hanging;
@@ -431,7 +498,7 @@ fn review_reservation_rolls_back_and_replays_without_second_child() {
 #[test]
 fn fork_persisted_ticket_holds_and_accepts_only_exact_receipt() {
     use studio_runtime_services::thread_fork_runtime as fork;
-    let case = &corpus()["fork"];
+    let case = &corpus()["forks"][0];
     let mut db = db(case);
     db.execute_batch(
         "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -446,14 +513,38 @@ fn fork_persisted_ticket_holds_and_accepts_only_exact_receipt() {
     ticket.operation = "branch-request".into();
     {
         let tx = db.transaction().expect("begin");
-        fork::claim(&tx, &ticket, json!({"threadId":"thread"})).expect("claim");
+        fork::claim(
+            &tx,
+            &ticket,
+            json!({"threadId":"thread","lastTurnId":"turn"}),
+        )
+        .expect("claim");
     }
     let tx = db.transaction().expect("begin");
-    fork::claim(&tx, &ticket, json!({"threadId":"thread"})).expect("claim after rollback");
+    fork::claim(
+        &tx,
+        &ticket,
+        json!({"threadId":"thread","lastTurnId":"turn"}),
+    )
+    .expect("claim after rollback");
     tx.commit().expect("commit");
     let tx = db.transaction().expect("begin");
     assert!(matches!(
-        fork::claim(&tx, &ticket, json!({"threadId":"thread"})),
+        fork::claim(
+            &tx,
+            &ticket,
+            json!({"threadId":"thread","lastTurnId":"changed"})
+        ),
+        Err(NativeError::Conflict)
+    ));
+    drop(tx);
+    let tx = db.transaction().expect("begin");
+    assert!(matches!(
+        fork::claim(
+            &tx,
+            &ticket,
+            json!({"threadId":"thread","lastTurnId":"turn"})
+        ),
         Err(NativeError::Unknown)
     ));
     drop(tx);
@@ -558,7 +649,11 @@ fn commands_commit_before_send_and_reject_changed_input() {
         delivery: Delivery::Written(json!({"data":[{"itemId":"item","processId":"17"}]})),
     };
     let tx = db.transaction().expect("begin");
-    let request = command_cancel_claim(&tx, &snapshot, &t, &receipt).expect("persist handoff");
+    let CommandCancelClaim::Send(request) =
+        command_cancel_claim(&tx, &snapshot, &t, &receipt).expect("persist handoff")
+    else {
+        panic!("first cancel must send")
+    };
     tx.commit().expect("commit");
     let tx = db.transaction().expect("begin");
     assert!(matches!(
@@ -582,6 +677,31 @@ fn commands_commit_before_send_and_reject_changed_input() {
         );
         tx.commit().expect("commit");
     }
+    let tx = db.transaction().expect("begin");
+    assert!(matches!(
+        command_cancel_claim(&tx, &snapshot, &t, &receipt),
+        Ok(CommandCancelClaim::Replay(ref value)) if value == &json!({"terminated":true})
+    ));
+}
+
+#[test]
+fn stored_native_action_errors_name_the_table_and_row() {
+    let case = &corpus()["actions"][0];
+    let db = db(case);
+    assert!(matches!(
+        checked_agent(&json!({"id":"broken-agent"})),
+        Err(NativeError::InvalidStored { table: "runtime_agents", ref id, .. }) if id == "broken-agent"
+    ));
+    db.execute(
+        "INSERT INTO runtime_native_action_receipts(id,signature,receipt,outcome) VALUES('broken-receipt','sig','{','{}')",
+        [],
+    )
+    .expect("corrupt receipt fixture");
+    let tx = db.unchecked_transaction().expect("begin");
+    assert!(matches!(
+        claim(&tx, "broken-receipt", &ticket()),
+        Err(NativeError::InvalidStored { table: "runtime_native_action_receipts", ref id, .. }) if id == "broken-receipt"
+    ));
 }
 #[test]
 fn malformed_agent_receipt_and_scope_fail_without_panicking() {

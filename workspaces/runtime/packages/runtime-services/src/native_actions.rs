@@ -19,6 +19,12 @@ pub type NativeFuture<'a> = Pin<Box<dyn Future<Output = Result<TransportReceipt>
 pub enum NativeError {
     #[error("Invalid native action object at {0}")]
     Invalid(&'static str),
+    #[error("Invalid stored object {table}/{id} at {location}")]
+    InvalidStored {
+        table: &'static str,
+        id: String,
+        location: String,
+    },
     #[error("This action request ID belongs to different input")]
     Conflict,
     #[error("The native action belongs to an earlier account, thread or epoch")]
@@ -56,7 +62,8 @@ impl Request {
             return Err(NativeError::Invalid("requestId"));
         }
         bounded(&self.context, "context")?;
-        Ok(json!({"agent":self.agent,"action":self.action,"context":self.context}).to_string())
+        let signature = json!({"agent":self.agent,"action":self.action,"context":self.context});
+        Ok(python_json(&signature))
     }
 }
 
@@ -401,7 +408,14 @@ pub async fn execute(
 }
 
 fn agent(tx: &Transaction<'_>, id: &str) -> Result<Value> {
-    ContextRepairRepository::agent(tx, id)?.ok_or(NativeError::Invalid("agent.id"))
+    let value =
+        ContextRepairRepository::agent(tx, id)?.ok_or_else(|| NativeError::InvalidStored {
+            table: "runtime_agents",
+            id: id.to_owned(),
+            location: "record missing".into(),
+        })?;
+    checked_agent(&value).map_err(|error| located(error, "runtime_agents", id))?;
+    Ok(value)
 }
 fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>> {
     if !crate::sync_policy::table_exists(tx, "runtime_native_action_receipts")? {
@@ -425,8 +439,16 @@ fn row(tx: &Transaction<'_>, id: &str) -> Result<Option<(String, Value, Value)>>
     row.map(|(signature, r, o)| {
         Ok((
             signature,
-            serde_json::from_str(&r).map_err(|_| NativeError::Invalid("receipt"))?,
-            serde_json::from_str(&o).map_err(|_| NativeError::Invalid("outcome"))?,
+            serde_json::from_str(&r).map_err(|_| NativeError::InvalidStored {
+                table: "runtime_native_action_receipts",
+                id: id.to_owned(),
+                location: "receipt JSON".into(),
+            })?,
+            serde_json::from_str(&o).map_err(|_| NativeError::InvalidStored {
+                table: "runtime_native_action_receipts",
+                id: id.to_owned(),
+                location: "outcome JSON".into(),
+            })?,
         ))
     })
     .transpose()
@@ -437,6 +459,7 @@ fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot> {
         .as_str()
         .ok_or(NativeError::Invalid("receipt.agentId"))?;
     Snapshot::from_records(agent(tx, id)?, receipt, outcome)
+        .map_err(|error| located(error, "runtime_native_action_receipts", id))
 }
 fn write_outcome(tx: &Transaction<'_>, id: &str, outcome: &Outcome) -> Result<()> {
     tx.execute(
@@ -464,9 +487,45 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
 
 pub(crate) fn checked_agent(value: &Value) -> Result<AgentRecord> {
     bounded(value, "agent")?;
-    crate::context_repair::validate("PersistedAgentRecord", value, "agent")
-        .map_err(|_| NativeError::Invalid("agent"))?;
+    crate::context_repair::validate("PersistedAgentRecord", value, "agent").map_err(|_| {
+        NativeError::InvalidStored {
+            table: "runtime_agents",
+            id: value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>")
+                .to_owned(),
+            location: "record".into(),
+        }
+    })?;
     Ok(AgentRecord::from_value(value.clone())?)
+}
+
+fn located(error: NativeError, table: &'static str, id: &str) -> NativeError {
+    match error {
+        NativeError::Invalid(location) => NativeError::InvalidStored {
+            table,
+            id: id.to_owned(),
+            location: location.to_owned(),
+        },
+        other => other,
+    }
+}
+
+fn python_json(value: &Value) -> String {
+    let encoded = value.to_string();
+    let mut output = String::with_capacity(encoded.len());
+    for character in encoded.chars() {
+        if character.is_ascii() {
+            output.push(character);
+        } else {
+            let mut utf16 = [0_u16; 2];
+            for unit in character.encode_utf16(&mut utf16).iter() {
+                output.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    output
 }
 
 /// Native command IDs are scoped to both their task item and owning thread.
@@ -583,12 +642,17 @@ pub fn command_input(
 
 /// Only the retained owner may supply a matching list response. Persist its
 /// exact scope before terminate; the operation receipt never authorizes resend.
+pub enum CommandCancelClaim {
+    Send(NativeRequest),
+    Replay(Value),
+}
+
 pub fn command_cancel_claim(
     tx: &Transaction<'_>,
     snapshot: &CommandSnapshot,
     ticket: &ProviderTicket,
     list: &TransportReceipt,
-) -> Result<NativeRequest> {
+) -> Result<CommandCancelClaim> {
     use studio_runtime_store::EventWriteRepository;
     snapshot.current(tx)?;
     let mut list_ticket = ticket.clone();
@@ -613,12 +677,6 @@ pub fn command_cancel_claim(
     {
         return Err(NativeError::Changed);
     }
-    let Delivery::Written(page) = &list.delivery else {
-        return Err(NativeError::Unknown);
-    };
-    if !snapshot.listed(page)? {
-        return Err(NativeError::Invalid("command.session"));
-    }
     let id = format!("native-command:{}", ticket.request);
     let request = NativeRequest {
         ticket: ticket.clone(),
@@ -630,7 +688,22 @@ pub fn command_cancel_claim(
         if saved.signature != signature {
             return Err(NativeError::Conflict);
         }
+        let saved_result: Value = serde_json::from_str(&saved.result)?;
+        return match saved_result["status"].as_str() {
+            Some("acknowledged") => Ok(CommandCancelClaim::Replay(saved_result["result"].clone())),
+            Some("unknown") => Err(NativeError::Unknown),
+            _ => Err(NativeError::InvalidStored {
+                table: "runtime_operation_receipts",
+                id,
+                location: "cancel result".into(),
+            }),
+        };
+    }
+    let Delivery::Written(page) = &list.delivery else {
         return Err(NativeError::Unknown);
+    };
+    if !snapshot.listed(page)? {
+        return Err(NativeError::Invalid("command.session"));
     }
     EventWriteRepository::put_receipt(
         tx,
@@ -638,7 +711,7 @@ pub fn command_cancel_claim(
         &signature,
         &json!({"status":"unknown","request":request}).to_string(),
     )?;
-    Ok(request)
+    Ok(CommandCancelClaim::Send(request))
 }
 pub fn command_cancel_settle(tx: &Transaction<'_>, receipt: &TransportReceipt) -> Result<Value> {
     use studio_runtime_store::EventWriteRepository;
