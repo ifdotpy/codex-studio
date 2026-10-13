@@ -445,6 +445,106 @@ fn capture_failpoints_restart_and_lost_response() {
     }
 }
 #[test]
+fn capture_rejects_stale_durable_identity() {
+    let (case, records) = fixture();
+    for source in [CaptureSource::Live, CaptureSource::History] {
+        for initialized in [false, true] {
+            for (field, value) in [
+                ("rootId", json!("other-root")),
+                ("accountKey", json!("other-account")),
+                ("threadId", json!("other-thread")),
+                ("turnId", json!("other-turn")),
+                ("epoch", json!(1)),
+            ] {
+                let mut connection = db(&records, &case);
+                sync_fixture(&connection);
+                let mut supplied = records["agents"]["a"].clone();
+                if initialized {
+                    let tx = connection.transaction().expect("seed transaction");
+                    budget_service::capture(
+                        &tx,
+                        &mut supplied,
+                        &case["steps"][0]["params"],
+                        101.,
+                        source,
+                        100.,
+                    )
+                    .expect("initial capture");
+                    tx.commit().expect("seed commit");
+                }
+                let supplied_before = supplied.clone();
+                let tx = connection.transaction().expect("transaction");
+                // Change the durable identity inside the same writer transaction.
+                // A pre-transaction check of the supplied copy cannot detect this.
+                let mut durable = supplied.clone();
+                durable[field] = value;
+                studio_runtime_store::budget::BudgetRepository::save_agent(&tx, &durable)
+                    .expect("durable identity changed");
+                let before = all_stored(&tx);
+                let result = budget_service::capture(
+                    &tx,
+                    &mut supplied,
+                    &case["steps"][0]["params"],
+                    101.,
+                    source,
+                    100.,
+                );
+                assert!(
+                    matches!(result, Err(studio_runtime_services::budget::BudgetError::Invalid(ref location))
+                    if location == &format!("runtime_agents/{field}/identity")),
+                    "{field}: {result:?}"
+                );
+                assert_eq!(supplied, supplied_before, "refusal must not patch caller");
+                tx.commit().expect("commit surrounding identity change");
+                assert_eq!(all_stored(&connection), before, "{field}: no budget writes");
+            }
+        }
+    }
+}
+
+#[test]
+fn capture_partial_copy_uses_durable_identity() {
+    let (mut case, _) = fixture();
+    case["agents"][0]["turnId"] = json!("durable-turn");
+    case["agents"][0]["created"] = json!(50);
+    case["steps"] = json!([{"op":"capture", "at":101, "params":{
+        "tokenUsage":{"total":{"totalTokens":20},"last":{"totalTokens":20}}
+    }}]);
+    let mut oracle = Oracle::new();
+    for source in [CaptureSource::Live, CaptureSource::History] {
+        case["steps"][0]["source"] = json!(source);
+        let expected = oracle.call(&case);
+        let mut connection = db(&expected["records"], &case);
+        let mut supplied = json!({"id":"a", "created":999, "notificationField":"preserved"});
+        for _ in 0..2 {
+            let tx = connection.transaction().expect("transaction");
+            assert_eq!(
+                budget_service::capture(
+                    &tx,
+                    &mut supplied,
+                    &case["steps"][0]["params"],
+                    101.,
+                    source,
+                    100.
+                )
+                .expect("partial agent capture"),
+                20
+            );
+            tx.commit().expect("commit");
+            compare(
+                &stored(&connection),
+                &expected["outputs"][0]["stored"],
+                "durable identity",
+            );
+        }
+        assert_eq!(supplied["created"], 999);
+        assert_eq!(supplied["notificationField"], "preserved");
+        assert!(supplied.get("accountKey").is_none());
+        assert_eq!(supplied["tokensUsed"], 20);
+    }
+}
+
+#[test]
 fn malformed_budget_inputs_refuse_without_writes() {
     let (case, records) = fixture();
     for field in [

@@ -129,8 +129,8 @@ fn default_account() -> String {
     "default".into()
 }
 
-/// One checked constructor for Python-written records. The durable agent seeds
-/// the floor; a historical agent copy supplies charge identity and creation time.
+/// One checked constructor for Python-written records. The durable agent owns
+/// accounting and identity; supplied identity fields are assertions, not overrides.
 #[derive(Clone, Debug)]
 pub struct BudgetSnapshot {
     agent: Agent,
@@ -149,10 +149,22 @@ impl BudgetSnapshot {
         if let Some(state) = state {
             validate("PersistedBudgetState", state, "runtime_budget")?;
         }
-        let agent: Agent = decode(agent, "runtime_agents/budget")?;
+        let supplied: Agent = decode(agent, "runtime_agents/budget")?;
         let durable: Agent = decode(durable_agent, "runtime_agents/budget")?;
-        if agent.id.is_empty() || durable.id != agent.id || !now.is_finite() {
+        if supplied.id.is_empty() || durable.id != supplied.id || !now.is_finite() {
             return Err(invalid("runtime_agents/id"));
+        }
+        for name in ["rootId", "accountKey", "threadId", "turnId", "epoch"] {
+            let expected = durable_agent.get(name).cloned().unwrap_or_else(|| {
+                if name == "accountKey" {
+                    json!("default")
+                } else {
+                    Value::Null
+                }
+            });
+            if agent.get(name).is_some_and(|value| *value != expected) {
+                return Err(invalid(&format!("runtime_agents/{name}/identity")));
+            }
         }
         let floor = durable.tokens_used.unwrap_or(0);
         let initialized = state.is_none();
@@ -167,7 +179,7 @@ impl BudgetSnapshot {
                 historical_notices: 0,
                 notice_spent: floor,
                 counter: (floor != 0).then_some(floor),
-                thread: durable.thread_id,
+                thread: durable.thread_id.clone(),
                 notice_at: 0.,
                 created: durable.created,
                 last_amount: None,
@@ -177,7 +189,7 @@ impl BudgetSnapshot {
             },
         };
         Ok(Self {
-            agent,
+            agent: durable,
             state,
             initialized,
         })

@@ -2973,7 +2973,7 @@
           "epoch": 0,
           "status": "starting",
           "accountKey": "account",
-          "threadId": "old-thread",
+          "threadId": "thread",
           "created": 0,
           "tokensUsed": 0,
           "tokenBudget": null,
@@ -5099,6 +5099,197 @@
           "responseId": "r"
         },
         "source": "history"
+      }
+    ]
+  },
+  {
+    "name": "legacy-missing-created",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "accountKey": "account",
+        "threadId": "thread",
+        "tokensUsed": 0,
+        "tokenBudget": null,
+        "autoWake": true,
+        "inFlight": true,
+        "turnId": null,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "legacy-optional-accounting-fields",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting",
+        "autoWake": true,
+        "inFlight": true,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 0,
+          "accountKey": "account",
+          "submitted": false,
+          "events": ["event"]
+        }
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      },
+      {
+        "op": "admission"
+      }
+    ]
+  },
+  {
+    "name": "legacy-optional-wait-fields",
+    "agents": [
+      {
+        "id": "a",
+        "rootId": "a",
+        "epoch": 0,
+        "status": "starting"
+      }
+    ],
+    "steps": [
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 20
+          }
+        }
+      },
+      {
+        "op": "capture",
+        "at": 101,
+        "params": {
+          "responseId": "r",
+          "rawTokenUsageRecord": {
+            "response_id": "r"
+          },
+          "requestUsage": {
+            "totalTokens": 21
+          }
+        }
+      },
+      {
+        "op": "admission"
+      },
+      {
+        "op": "claim"
       }
     ]
   }
