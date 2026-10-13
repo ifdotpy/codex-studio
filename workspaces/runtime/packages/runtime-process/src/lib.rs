@@ -10,6 +10,12 @@ mod provider_shared;
 pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
+#[cfg(unix)]
+mod supervisor_child;
+#[cfg(unix)]
+pub mod supervisor_daemon;
+#[cfg(unix)]
+mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;
