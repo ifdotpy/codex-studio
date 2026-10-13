@@ -1,6 +1,6 @@
 //! Read persisted transcript items without projecting live event state.
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId,
@@ -23,6 +23,8 @@ pub enum TranscriptError {
     Store,
     #[error("this search result is unavailable")]
     SearchResultUnavailable,
+    #[error("this chat is unavailable")]
+    ChatUnavailable,
     #[error("search query is invalid")]
     InvalidSearch,
     #[error("transcript operation requires {0}")]
@@ -196,6 +198,9 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
         .optional()
         .map_err(|_| TranscriptError::Store)?
     {
+        if !chat_room_available(&connection, &room)? {
+            return Err(TranscriptError::ChatUnavailable);
+        }
         let deliveries = serde_json::from_str::<Value>(&deliveries)
             .map_err(|_| invalid_stored("runtime_chat_messages", &id))?;
         return Ok(json!({"id":id,"room":room,"sender":sender,"text":text,
@@ -244,6 +249,87 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
     object.insert("kind".to_owned(), Value::String(kind.to_owned()));
     object.insert("text".to_owned(), Value::String(text));
     Ok(record)
+}
+
+fn chat_room_available(connection: &Connection, room_id: &str) -> Result<bool, TranscriptError> {
+    let raw = connection
+        .query_row(
+            "SELECT record FROM runtime_rooms WHERE id=?1",
+            [room_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| TranscriptError::Store)?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let room: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_rooms", room_id))?;
+
+    let members = if room.get("kind").and_then(Value::as_str) == Some("federated") {
+        let raw = connection
+            .query_row(
+                "SELECT record FROM runtime_federation_rooms WHERE id=?1",
+                [room_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| TranscriptError::Store)?;
+        let Some(raw) = raw else {
+            return Ok(false);
+        };
+        let federation: Value = serde_json::from_str(&raw)
+            .map_err(|_| invalid_stored("runtime_federation_rooms", room_id))?;
+        if federation.get("status").and_then(Value::as_str) != Some("approved")
+            || federation.get("localApproved").and_then(Value::as_bool) != Some(true)
+            || federation.get("remoteApproved").and_then(Value::as_bool) != Some(true)
+        {
+            return Ok(false);
+        }
+        federation
+            .get("localMembers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    } else if room.get("kind").and_then(Value::as_str) == Some("broadcast") {
+        let root = room
+            .get("rootId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if root != "all"
+            && !TranscriptRepository::agent(connection, root)?
+                .is_some_and(|agent| !agent.get("deletedAt").is_some_and(is_truthy))
+        {
+            return Ok(false);
+        }
+        Table::<AgentRecord>::new(connection)
+            .list()
+            .map_err(|_| TranscriptError::Store)?
+            .into_iter()
+            .filter(|agent| !agent.value().get("deletedAt").is_some_and(is_truthy))
+            .filter(|agent| root == "all" || agent.root_id.0 == root)
+            .map(|agent| Value::String(agent.id().0.clone()))
+            .collect()
+    } else {
+        room.get("members")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    if members.is_empty() {
+        return Ok(false);
+    }
+    for member in members {
+        let Some(member) = member.as_str() else {
+            return Ok(false);
+        };
+        if !TranscriptRepository::agent(connection, member)?
+            .is_some_and(|agent| !agent.get("deletedAt").is_some_and(is_truthy))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn search_work(

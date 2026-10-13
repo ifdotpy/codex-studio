@@ -207,6 +207,33 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "GET", "/api/search/item?" + urlencode({"id": cls.item_id}),
                 headers=cls.headers,
             )
+            cls.unavailable_chat_ids = ("chat-from-deleted-member", "chat-from-pending-room")
+            with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
+                database.execute(
+                    "INSERT INTO runtime_rooms (id,record) VALUES (?,?)",
+                    ("deleted-member-room", json.dumps({"id": "deleted-member-room", "kind": "private", "members": ["deleted-chat-member"]})),
+                )
+                database.execute(
+                    "INSERT INTO runtime_rooms (id,record) VALUES (?,?)",
+                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "kind": "federated", "members": [cls.agent]})),
+                )
+                database.execute(
+                    "INSERT INTO runtime_federation_rooms (id,record) VALUES (?,?)",
+                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "status": "pending", "localApproved": False, "remoteApproved": False, "localMembers": [cls.agent]})),
+                )
+                for identity, room in zip(cls.unavailable_chat_ids, ("deleted-member-room", "pending-federated-room"), strict=True):
+                    database.execute(
+                        "INSERT INTO runtime_chat_messages (id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                        (identity, room, cls.agent, "private unavailable text", 2_000_000_100.0, "{}"),
+                    )
+                database.commit()
+            cls.python_unavailable_chat_items = {
+                identity: cls.backend.request(
+                    "GET", "/api/search/item?" + urlencode({"id": identity}),
+                    headers=cls.headers,
+                )
+                for identity in cls.unavailable_chat_ids
+            }
             cls.python_transcript_pull = cls.backend.request(
                 "GET", f"/api/sync/pull?scope=transcript:{cls.agent}&after=0",
                 headers=cls.headers,
@@ -272,8 +299,15 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         search_path = "/api/search?" + urlencode({"q": "Recovered output."})
         rust_search = self.backend.request("GET", search_path, headers=self.headers)
-        self.assertEqual(rust_search.status, self.python_workspace_search.status)
-        self.assertEqual(rust_search.json(), self.python_workspace_search.json())
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(rust_search.status, 501, rust_search.body[:1000])
+            self.assertEqual(
+                rust_search.json()["error"],
+                "Not implemented: requires transcript/room-search",
+            )
+        else:
+            self.assertEqual(rust_search.status, self.python_workspace_search.status)
+            self.assertEqual(rust_search.json(), self.python_workspace_search.json())
 
         item_path = "/api/search/item?" + urlencode({"id": self.item_id})
         rust_search_item = self.backend.request("GET", item_path, headers=self.headers)
@@ -307,6 +341,18 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(_snapshot(self.backend.state / "canvas.sqlite3"), replay_snapshot)
         self.assertEqual(replay.json()["documents"], pull.json()["documents"])
+
+    def test_search_item_refuses_unavailable_chat_rooms(self) -> None:
+        for identity in self.unavailable_chat_ids:
+            with self.subTest(identity=identity):
+                response = self.backend.request(
+                    "GET", "/api/search/item?" + urlencode({"id": identity}),
+                    headers=self.headers,
+                )
+                python = self.python_unavailable_chat_items[identity]
+                self.assertEqual(response.status, python.status, response.body[:1000])
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response.json(), python.json())
 
     def test_unknown_transcript_item_does_not_write_state(self) -> None:
         before = _snapshot(self.backend.state / "canvas.sqlite3")
@@ -607,6 +653,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         expected = {
             "/api/transcript": "transcript/event-driver",
             "/api/transcript/page": "transcript/event-driver",
+            "/api/search": "transcript/room-search",
         }
         for path, dependency in expected.items():
             with self.subTest(path=path):
