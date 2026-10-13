@@ -8413,10 +8413,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.store_completed_broadcasts(db, a)
                 self.capacity_completed(db, a, turn, known_capacity_source)
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
+                # A reserved, dispatching, or uncertain input still owns the
+                # child's continuation until its exact delivery is resolved.
                 pending = db.execute(
-                    "SELECT 1 FROM runtime_events WHERE agent=? AND status IN "
-                    "('pending','reserved') AND epoch=?",
-                    (a["id"], a["epoch"]),
+                    "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
+                    "(status IN ('pending','reserved') OR "
+                    "(id<>? AND status IN ('dispatching','uncertain'))) LIMIT 1",
+                    (a["id"], a["epoch"], a["id"] + ":initial"),
                 ).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
                 if (not a.get('executionMove') and not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
