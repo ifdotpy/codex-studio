@@ -6,6 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Instant;
 use studio_runtime_services::analytics::{self, AnalyticsOptions};
 use studio_runtime_services::costs::{self, CostsError};
@@ -106,10 +107,29 @@ async fn session_cost(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || costs::session_cost(&store, &agent))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_costs_error)?;
+    let account_providers = state
+        .account_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .accounts()
+                .accounts
+                .into_iter()
+                .filter_map(|account| {
+                    Some((
+                        account.get("id")?.as_str()?.to_owned(),
+                        account.get("provider")?.as_str()?.to_owned(),
+                    ))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let value = tokio::task::spawn_blocking(move || {
+        costs::session_cost_with_accounts(&store, &agent, &account_providers)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_costs_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SessionCostResponse,
     >(value)?))
