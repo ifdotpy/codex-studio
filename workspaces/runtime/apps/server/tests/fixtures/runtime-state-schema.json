@@ -222,6 +222,12 @@
     "pragma_user_version": 0,
     "sqlite_master": [
       {
+        "name": "messages_room",
+        "sql": "CREATE INDEX messages_room ON messages(room, at)",
+        "table": "messages",
+        "type": "index"
+      },
+      {
         "name": "runtime_access_nonce_age",
         "sql": "CREATE INDEX runtime_access_nonce_age ON runtime_access_nonces(created)",
         "table": "runtime_access_nonces",
@@ -682,6 +688,30 @@
         "sql": "CREATE INDEX sync_scope_seq ON sync_documents(scope,seq)",
         "table": "sync_documents",
         "type": "index"
+      },
+      {
+        "name": "graph_agents",
+        "sql": "CREATE TABLE graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "graph_agents",
+        "type": "table"
+      },
+      {
+        "name": "graph_edges",
+        "sql": "CREATE TABLE graph_edges (\n                  id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,\n                  kind TEXT NOT NULL, UNIQUE(source, target, kind))",
+        "table": "graph_edges",
+        "type": "table"
+      },
+      {
+        "name": "groups",
+        "sql": "CREATE TABLE groups (\n                  id TEXT PRIMARY KEY, name TEXT NOT NULL, members TEXT NOT NULL)",
+        "table": "groups",
+        "type": "table"
+      },
+      {
+        "name": "messages",
+        "sql": "CREATE TABLE messages (\n                  id TEXT PRIMARY KEY, room TEXT NOT NULL, author TEXT NOT NULL,\n                  text TEXT NOT NULL, at REAL NOT NULL, deliveries TEXT NOT NULL)",
+        "table": "messages",
+        "type": "table"
       },
       {
         "name": "runtime_access_alias_requests",
