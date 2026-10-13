@@ -266,8 +266,8 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
     let registry = registry.as_object().expect("class declarations");
     assert_eq!(
         registry.len(),
-        8,
-        "the approved three lifecycle and five notification classes are closed"
+        5,
+        "the approved three lifecycle and two notification classes are closed"
     );
     let owners: std::collections::BTreeSet<_> = cases
         .iter()
