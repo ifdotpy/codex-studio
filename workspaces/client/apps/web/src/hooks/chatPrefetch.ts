@@ -15,8 +15,6 @@ import {
   TranscriptRefreshGate,
 } from "./chatPrefetchState";
 
-const MAX_TRANSCRIPT_WATCHES = 12;
-
 // History stays warm only while a targeted transcript notification says it
 // changed. Progress is fetched lazily for an explicit navigation target.
 export function useChatPrefetch(
@@ -169,11 +167,11 @@ export function useChatPrefetch(
           Number(b.updated || b.created) - Number(a.updated || a.created),
       );
       const mobile = window.matchMedia("(max-width: 760px)").matches;
-      const targets = mobile
-        ? new Set(ranked.slice(0, 2).map((agent) => agent.id))
-        : new Set(
-            ranked.slice(0, MAX_TRANSCRIPT_WATCHES).map((agent) => agent.id),
-          );
+      // Keep only the top-ranked offscreen history warm; foreground chat has
+      // its own subscription and switching to another target can fetch cold.
+      const targets = new Set(
+        ranked.slice(0, mobile ? 2 : 1).map((agent) => agent.id),
+      );
       for (const [id, stop] of transcriptStops) {
         if (!targets.has(id)) {
           stop();

@@ -213,6 +213,46 @@ class ServerSuiteRunner(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_suite_children_skip_protected_codex_paths_when_discovering_node(self):
+        import shutil
+        safe_path = os.pathsep.join(
+            entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+            if entry and not RUNNER._is_protected_home_path(entry)
+        )
+        safe_node = shutil.which("node", path=safe_path)
+        self.assertIsNotNone(safe_node, "Node is required for the isolated suite environment")
+        home = Path(RUNNER.pwd.getpwuid(os.getuid()).pw_dir) if RUNNER.pwd is not None else Path.home()
+        protected_home = home / ".codex"
+        protected_node = protected_home / "packages" / "app-server" / "codex-path" / "node"
+        protected_package_path = protected_node.parent
+        protected_arg0_path = protected_home / "tmp" / "arg0" / "codex-arg0fixture"
+        with tempfile.TemporaryDirectory(prefix="server-protected-node-path-") as directory:
+            root = Path(directory)
+            suite_root = root / "suite"
+            suite_root.mkdir()
+            inherited_path = os.pathsep.join(
+                (str(protected_package_path), str(protected_arg0_path), safe_path)
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PATH": inherited_path, "CODEX_NODE": str(protected_node)},
+                clear=True,
+            ):
+                environment = RUNNER._suite_environment(ROOT, suite_root)
+
+            self.assertEqual(environment["CODEX_NODE"], safe_node)
+            self.assertEqual(
+                shutil.which("node", path=environment["PATH"]),
+                str(suite_root / "tools" / "node"),
+            )
+            self.assertNotIn(str(protected_home), environment["PATH"])
+            result = subprocess.run(
+                ["node", "-e", "require('node:crypto').generateKeyPairSync('ed25519')"],
+                env=environment, capture_output=True, text=True,
+                timeout=HANG_GUARD_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_resolved_codex_binary_is_scoped_to_pty_integration_suites(self):
         with tempfile.TemporaryDirectory(prefix="server-codex-bin-scope-") as directory:
             root = Path(directory)
