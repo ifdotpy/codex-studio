@@ -137,6 +137,11 @@ impl ReplyIdentity {
             attempt: String::new(),
         }
     }
+    /// Retained transport identity; includes the attempt so late NotSent receipts
+    /// cannot settle a replacement reply with the same provider RPC id.
+    pub fn operation_id(&self) -> String {
+        format!("{}:{}", self.key(), self.attempt)
+    }
     pub(super) fn key(&self) -> String {
         format!(
             "provider-callback:{}",
@@ -181,6 +186,8 @@ impl Reply {
 pub enum CallbackDecision {
     Answer(Reply),
     Pending(String),
+    /// Durable delivery or resolution proof: acknowledge, never rebuild a reply.
+    Settled(ReplyIdentity),
     Unsupported,
 }
 #[derive(Clone, Debug)]

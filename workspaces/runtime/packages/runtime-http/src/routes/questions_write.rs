@@ -1,7 +1,7 @@
 //! HTTP adapters for question delivery and durable complaint writes.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -16,11 +16,18 @@ use crate::router::HttpState;
 const QUESTION_ANSWER_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("provider-session/question-answer")];
 
+const ANSWER_DEPENDENCIES: [Dependency; 4] = [
+    Dependency::new("provider-session/question-answer"),
+    Dependency::new("question-answer/async-question"),
+    Dependency::new("question-answer/browser-open"),
+    Dependency::new("question-answer/monitor-approval"),
+];
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/answer",
-            OperationStatus::partial(&QUESTION_ANSWER_DEPENDENCY),
+            OperationStatus::partial(&ANSWER_DEPENDENCIES),
             answer,
         ),
         post("/api/complaints", OperationStatus::Implemented, complaints),
@@ -38,13 +45,45 @@ pub(crate) fn routes() -> RouteGroup {
 }
 
 async fn answer(
-    State(_state): State<HttpState>,
-    ApiJson(_body): ApiJson<crate::generated::AnswerBody>,
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(
-        dependency_unavailable("POST", "/api/answer", &QUESTION_ANSWER_DEPENDENCY)
-            .map_err(|_| ApiError::internal())?,
-    )
+    let runtime = state
+        .callback_runtime
+        .clone()
+        .ok_or_else(|| ApiError::dependency("provider-session/question-answer"))?;
+    let id = body.id.clone();
+    let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
+    let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(callback_error)?;
+    state.event_wake.notify_one();
+    Ok(Json(
+        super::generated_json::<crate::generated::AnswerResult>(value)?,
+    ))
+}
+
+fn callback_clock() -> Result<f64, studio_runtime_services::provider_callbacks::CallbackError> {
+    studio_runtime_services::event_write::unix_time().map_err(|_| {
+        studio_runtime_services::provider_callbacks::CallbackError::Invalid(
+            "The system clock is unavailable",
+        )
+    })
+}
+fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackError) -> ApiError {
+    use studio_runtime_services::provider_callbacks::CallbackError as E;
+    match error {
+        E::Dependency(name) => ApiError::dependency(name),
+        E::Store(error) => ApiError::stored(error),
+        E::Stored(location) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored callback at {location}"),
+        ),
+        E::Invalid(_) | E::Conflict | E::Unknown | E::Stale => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
+    }
 }
 
 async fn defer_question(
@@ -69,6 +108,15 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<Value>, ApiError> {
     let id = body.id;
+    if let Some(runtime) = state.callback_runtime.clone() {
+        let value =
+            tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
+                .await
+                .map_err(|_| ApiError::internal())?
+                .map_err(callback_error)?;
+        state.event_wake.notify_one();
+        return Ok(Json(generated_receipt(value)?));
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let result = write(store, move |transaction| {
@@ -200,6 +248,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "questions_write",
         routes: Some(routes),
-        dependencies: &["provider-session/question-answer"],
+        dependencies: &["provider-session/question-answer", "question-answer/async-question", "question-answer/browser-open", "question-answer/monitor-approval"],
     }
 }

@@ -5,12 +5,7 @@ use crate::submit_gates::{
 use std::collections::BTreeMap;
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 
-fn authorize(
-    tx: &Transaction<'_>,
-    recipient: &str,
-    sender: &str,
-    room: &Value,
-) -> Result<(), CallbackError> {
+fn authorization_records(tx: &Transaction<'_>) -> Result<AuthorizationRecords, CallbackError> {
     let agents = records::all(tx, "runtime_agents")?;
     let mut paths = BTreeMap::new();
     for actor in &agents {
@@ -24,29 +19,39 @@ fn authorize(
             paths.insert(path.into(), path.into());
         }
     }
-    let room_id = text(room, "id")?;
-    let rows = AuthorizationRecords {
-        recipient_id: recipient.into(),
+    Ok(AuthorizationRecords {
+        recipient_id: String::new(),
         agents: agents
             .into_iter()
             .map(|a| Ok((text(&a, "id")?.to_owned(), a.to_string())))
             .collect::<Result<_, CallbackError>>()?,
-        rooms: BTreeMap::from([(room_id.into(), room.to_string())]),
+        rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
         projects: projects
             .into_iter()
             .map(|p| Ok((text(&p, "path")?.to_owned(), p.to_string())))
             .collect::<Result<_, CallbackError>>()?,
         event_meta: BTreeMap::new(),
-        events: vec![StoredEvent {
-            id: "callback-authority".into(),
-            kind: "agent_message".into(),
-            text: json!({"sender":sender,"room":room_id}).to_string(),
-        }],
+        events: Vec::new(),
         resolved_paths: paths,
-    };
-    let snapshot = AuthorizationSnapshot::from_records(&rows)
-        .map_err(|e| CallbackError::Stored(e.location))?;
+    })
+}
+fn authorize(
+    rows: &mut AuthorizationRecords,
+    recipient: &str,
+    sender: &str,
+    room: &Value,
+) -> Result<(), CallbackError> {
+    let room_id = text(room, "id")?;
+    rows.recipient_id = recipient.into();
+    rows.rooms = BTreeMap::from([(room_id.into(), room.to_string())]);
+    rows.events = vec![StoredEvent {
+        id: "callback-authority".into(),
+        kind: "agent_message".into(),
+        text: json!({"sender":sender,"room":room_id}).to_string(),
+    }];
+    let snapshot =
+        AuthorizationSnapshot::from_records(rows).map_err(|e| CallbackError::Stored(e.location))?;
     authorize_events(&snapshot).map_err(|_| {
         CallbackError::Invalid("Communication is limited to your team or user-grouped peer chat")
     })
@@ -56,6 +61,17 @@ pub(super) fn authorize_room(
     snapshot: &CallbackSnapshot,
     id: &str,
 ) -> Result<(), CallbackError> {
+    let mut rows = authorization_records(tx)?;
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    authorize_room_with(tx, snapshot, id, &mut rows, &directory)
+}
+fn authorize_room_with(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    id: &str,
+    rows: &mut AuthorizationRecords,
+    directory: &crate::sync_entity_context::RoomDirectory,
+) -> Result<(), CallbackError> {
     if id.starts_with("feed:") {
         return Err(CallbackError::Invalid(
             "The combined feed is available only in the user interface",
@@ -63,7 +79,6 @@ pub(super) fn authorize_room(
     }
     let room = records::get(tx, "runtime_rooms", id)?
         .ok_or(CallbackError::Invalid("Unknown agent chat"))?;
-    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, false)?)
         .ok_or(CallbackError::Invalid("Chat room is no longer visible"))?;
     if !view["members"]
@@ -85,7 +100,7 @@ pub(super) fn authorize_room(
     } else {
         &snapshot.context().agent
     };
-    authorize(tx, &snapshot.context().agent, sender, &room)
+    authorize(rows, &snapshot.context().agent, sender, &room)
 }
 pub(super) fn send(
     tx: &Transaction<'_>,
@@ -158,8 +173,9 @@ pub(super) fn send(
         ids.sort();
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
+    let mut authority = authorization_records(tx)?;
     for recipient in &recipients {
-        authorize(tx, text(recipient, "id")?, who, &room)?;
+        authorize(&mut authority, text(recipient, "id")?, who, &room)?;
         if recipient["id"] != recipient["rootId"] {
             let root = event_write::checked_agent(tx, text(recipient, "rootId")?)?;
             event_write::assert_delegation(&root)?;
@@ -250,12 +266,15 @@ pub(super) fn peers(
     agents.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let mut rooms = Vec::new();
     let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    let mut authority = authorization_records(tx)?;
     for room in records::all(tx, "runtime_rooms")? {
-        let visible = match authorize_room(tx, snapshot, text(&room, "id")?) {
-            Ok(()) => true,
-            Err(CallbackError::Invalid(_)) => false,
-            Err(error) => return Err(error),
-        };
+        let visible =
+            match authorize_room_with(tx, snapshot, text(&room, "id")?, &mut authority, &directory)
+            {
+                Ok(()) => true,
+                Err(CallbackError::Invalid(_)) => false,
+                Err(error) => return Err(error),
+            };
         if visible {
             let Some(room) =
                 crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, false)?)
@@ -322,6 +341,7 @@ fn visible_agents(
 ) -> Result<Vec<Value>, CallbackError> {
     let actor = snapshot.actor();
     let mut visible = Vec::new();
+    let mut authority = authorization_records(tx)?;
     for agent in records::all(tx, "runtime_agents")? {
         if studio_runtime_store::truthy(agent.get("deletedAt")) {
             continue;
@@ -332,7 +352,12 @@ fn visible_agents(
         let allowed = if agent["rootId"] == actor["rootId"] {
             true
         } else {
-            match authorize(tx, text(&agent, "id")?, text(actor, "id")?, &room) {
+            match authorize(
+                &mut authority,
+                text(&agent, "id")?,
+                text(actor, "id")?,
+                &room,
+            ) {
                 Ok(()) => true,
                 Err(CallbackError::Invalid(_)) => false,
                 Err(error) => return Err(error),
