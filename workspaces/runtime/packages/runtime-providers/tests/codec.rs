@@ -39,6 +39,37 @@ fn known_method_set_has_unique_reversible_wire_names() {
 }
 
 #[test]
+fn one_off_catalog_and_terminal_methods_keep_their_wire_names() {
+    let methods = [
+        (Method::SkillsList, "skills/list"),
+        (Method::McpServerStatusList, "mcpServerStatus/list"),
+        (
+            Method::ThreadBackgroundTerminalsList,
+            "thread/backgroundTerminals/list",
+        ),
+        (
+            Method::ThreadBackgroundTerminalsTerminate,
+            "thread/backgroundTerminals/terminate",
+        ),
+    ];
+    for (operation, wire) in methods {
+        assert_eq!(operation.as_str(), wire);
+        assert_eq!(Method::from_wire(wire), Some(operation));
+        let frame = method(
+            operation,
+            Some(RequestId::String("request".into())),
+            Some(json!({})),
+        );
+        let encoded = encode_line(&frame).expect("known method encodes");
+        let mut decoder = LineDecoder::new();
+        assert_eq!(
+            decoder.push(&encoded).expect("known method decodes"),
+            vec![frame]
+        );
+    }
+}
+
+#[test]
 fn line_decoder_handles_every_split_and_concatenation() {
     let frames = [
         method(
