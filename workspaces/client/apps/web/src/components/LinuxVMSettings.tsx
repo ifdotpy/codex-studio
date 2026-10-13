@@ -64,6 +64,9 @@ export function LinuxVMSettings({ active }: { active: boolean }) {
       {configuration && (
         <>
           <p role="status">VM state: {configuration.state}</p>
+          {configuration.state === "failed" && configuration.error && (
+            <p role="alert">Reason: {configuration.error}</p>
+          )}
           {fields.map(({ key, label, divisor, min, max }) => (
             <NumberInput
               key={key}
