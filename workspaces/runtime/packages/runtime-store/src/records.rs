@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -12,6 +13,8 @@ macro_rules! row_key_accessor {
     ($name:ident, $id:ty, PayloadId) => {
         impl $name {
             pub fn id(&self) -> &$id {
+                // `from_value` caches the required payload ID before a record
+                // can enter a typed table operation.
                 self.row_key.as_ref().expect("payload-id record has no id")
             }
         }
@@ -21,7 +24,7 @@ macro_rules! row_key_accessor {
 
 macro_rules! record_newtype {
     ($name:ident, $id:ty, table = $table:literal, schema = $schema:literal,
-     key = $key:ident, optional = $optional:literal, query = $query:ident) => {
+     key = $key:ident, query = $query:ident) => {
         #[derive(Clone, Debug, PartialEq)]
         pub struct $name {
             row_key: Option<$id>,
@@ -49,6 +52,10 @@ macro_rules! record_newtype {
                 if let Some(object) = self.value.as_object_mut() {
                     object.insert(key.into(), value);
                 }
+            }
+
+            pub fn remove(&mut self, key: &str) -> Option<Value> {
+                self.value.as_object_mut()?.remove(key)
             }
         }
 
@@ -79,7 +86,6 @@ macro_rules! record_newtype {
             const TABLE: &'static str = $table;
             const SCHEMA: &'static str = $schema;
             const KEY_MODE: RecordKeyMode = RecordKeyMode::$key;
-            const OPTIONAL: bool = $optional;
             const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::$query;
 
             fn record_key(&self) -> Option<&Self::Id> {
@@ -160,7 +166,7 @@ macro_rules! stored_string_enum {
                 }
             }
 
-            fn as_str(&self) -> &str {
+            pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $value,)+
                     Self::Other(value) => value,
@@ -188,41 +194,50 @@ stored_string_enum!(AgentStatus {
     CapacityRetry => "capacity-retry",
 });
 
-record_newtype!(
-    AgentRecord,
-    AgentId,
-    table = "runtime_agents",
-    schema = "AgentRecordResponse",
-    key = PayloadId,
-    optional = false,
-    query = None
-);
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRecord {
+    pub id: AgentId,
+    pub root_id: AgentId,
+    pub epoch: i64,
+    pub status: AgentStatus,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
 impl AgentRecord {
-    pub fn root_id(&self) -> Option<AgentId> {
-        self.value
-            .get("rootId")
-            .and_then(Value::as_str)
-            .map(AgentId::from)
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(value)
     }
 
-    pub fn epoch(&self) -> Option<i64> {
-        self.value.get("epoch").and_then(Value::as_i64)
+    pub fn id(&self) -> &AgentId {
+        &self.id
     }
 
-    pub fn status(&self) -> Option<AgentStatus> {
-        self.value
-            .get("status")
-            .and_then(Value::as_str)
-            .map(AgentStatus::parse)
+    pub fn value(&self) -> Value {
+        let mut value = Value::Object(self.extra.clone().into_iter().collect());
+        value["id"] = Value::String(self.id.0.clone());
+        value["rootId"] = Value::String(self.root_id.0.clone());
+        value["epoch"] = Value::from(self.epoch);
+        value["status"] = Value::String(self.status.as_str().to_owned());
+        value
     }
 
     pub fn set_status(&mut self, status: AgentStatus) {
-        if let Some(object) = self.value.as_object_mut() {
-            object.insert(
-                "status".to_owned(),
-                Value::String(status.as_str().to_owned()),
-            );
-        }
+        self.status = status;
+    }
+}
+
+impl JsonRecord for AgentRecord {
+    type Id = AgentId;
+
+    const TABLE: &'static str = "runtime_agents";
+    const SCHEMA: &'static str = "AgentRecordResponse";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.id)
     }
 }
 
@@ -241,8 +256,71 @@ record_newtype!(
     table = "runtime_tasks",
     schema = "TaskDetailResponse",
     key = PayloadId,
-    optional = false,
     query = JsonAgent
+);
+record_newtype!(
+    PlanRecord,
+    AgentId,
+    table = "runtime_plans",
+    schema = "PlanView",
+    key = External,
+    query = None
+);
+record_newtype!(
+    AnnotationRecord,
+    String,
+    table = "runtime_annotations",
+    schema = "AnnotationReceipt",
+    key = PayloadId,
+    query = None
+);
+record_newtype!(
+    RequestRecord,
+    String,
+    table = "runtime_requests",
+    schema = "RequestRecordResponse",
+    key = PayloadId,
+    query = JsonAgent
+);
+record_newtype!(
+    ComplaintRecord,
+    String,
+    table = "runtime_complaints",
+    schema = "ComplaintRecordResponse",
+    key = PayloadId,
+    query = None
+);
+record_newtype!(
+    CheckpointRecord,
+    String,
+    table = "runtime_checkpoints",
+    schema = "CheckpointSummary",
+    key = PayloadId,
+    query = JsonAgent
+);
+record_newtype!(
+    MonitorRecord,
+    String,
+    table = "runtime_monitors",
+    schema = "MonitorRecordResponse",
+    key = PayloadId,
+    query = JsonAgent
+);
+record_newtype!(
+    TerminalRecord,
+    String,
+    table = "user_terminals",
+    schema = "TerminalRecord",
+    key = PayloadId,
+    query = None
+);
+record_newtype!(
+    UsageResumeRecord,
+    String,
+    table = "runtime_usage_resumes",
+    schema = "UsageResumeRecordResponse",
+    key = External,
+    query = UsageResumeRecovery
 );
 record_newtype!(
     WorkItemRecord,
@@ -250,7 +328,6 @@ record_newtype!(
     table = "runtime_work",
     schema = "WorkItem",
     key = PayloadId,
-    optional = true,
     query = None
 );
 record_newtype!(
@@ -259,7 +336,6 @@ record_newtype!(
     table = "runtime_rules",
     schema = "RuleRecordResponse",
     key = PayloadId,
-    optional = false,
     query = None
 );
 record_newtype!(
@@ -268,7 +344,6 @@ record_newtype!(
     table = "runtime_items",
     schema = "PersistedTranscriptRecord",
     key = PayloadId,
-    optional = false,
     query = PhysicalAgent
 );
 record_newtype!(
@@ -277,7 +352,6 @@ record_newtype!(
     table = "runtime_assets",
     schema = "PersistedTranscriptAsset",
     key = PayloadId,
-    optional = true,
     query = JsonAgent
 );
 record_newtype!(
@@ -286,7 +360,14 @@ record_newtype!(
     table = "runtime_event_meta",
     schema = "RuntimeEventMetadataRecord",
     key = External,
-    optional = true,
+    query = None
+);
+record_newtype!(
+    GraphAgentRecord,
+    String,
+    table = "graph_agents",
+    schema = "JsonObjectResponse",
+    key = PayloadId,
     query = None
 );
 
@@ -331,6 +412,7 @@ pub enum RecordQueryShape {
     None,
     JsonAgent,
     PhysicalAgent,
+    UsageResumeRecovery,
 }
 
 /// The only row filters shared by JSON-record tables.
@@ -340,6 +422,7 @@ pub enum RecordPredicate<'a> {
     PhysicalAgentIn(&'a [String]),
     JsonAgentEquals(&'a str),
     JsonAgentIn(&'a [String]),
+    UsageResumeAuthRecoveryBefore(f64),
 }
 
 /// Supported orderings have fixed SQL expressions and tie-breakers.
@@ -359,7 +442,6 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const TABLE: &'static str;
     const SCHEMA: &'static str;
     const KEY_MODE: RecordKeyMode;
-    const OPTIONAL: bool;
     const QUERY_SHAPE: RecordQueryShape;
 
     fn record_key(&self) -> Option<&Self::Id>;
@@ -388,10 +470,23 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         id: &R::Id,
         predicate: Option<RecordPredicate<'_>>,
     ) -> StoreResult<Option<R>> {
+        Ok(self
+            .get_with_raw_matching(id, predicate)?
+            .map(|(record, _)| record))
+    }
+
+    /// Keep the original JSON text for consumers whose contract depends on
+    /// object property order, such as elicitation schemas.
+    pub fn get_with_raw(&self, id: &R::Id) -> StoreResult<Option<(R, String)>> {
+        self.get_with_raw_matching(id, None)
+    }
+
+    fn get_with_raw_matching(
+        &self,
+        id: &R::Id,
+        predicate: Option<RecordPredicate<'_>>,
+    ) -> StoreResult<Option<(R, String)>> {
         ensure_query::<R>(predicate, RecordOrder::RowId)?;
-        if !self.table_is_present()? {
-            return Ok(None);
-        }
         let (where_sql, mut values) = predicate_sql(predicate);
         let id_predicate = where_sql.map_or_else(String::new, |sql| format!(" AND {sql}"));
         values.insert(0, SqlValue::Text(id.as_ref().to_owned()));
@@ -405,12 +500,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return Ok(None);
         };
         let encoded = stored_text(row.get_ref(0)?, R::TABLE, id.as_ref())?;
-        decode_record::<R>(id.as_ref(), &encoded).map(Some)
+        decode_record::<R>(id.as_ref(), &encoded).map(|record| Some((record, encoded)))
     }
 
-    /// Returns None only when an optional table is absent; an empty present
-    /// table returns Some(Vec::new()).
-    pub fn list(&self) -> StoreResult<Option<Vec<R>>> {
+    pub fn list(&self) -> StoreResult<Vec<R>> {
         self.list_matching(None, RecordOrder::RowId)
     }
 
@@ -418,11 +511,24 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         &self,
         predicate: Option<RecordPredicate<'_>>,
         order: RecordOrder,
-    ) -> StoreResult<Option<Vec<R>>> {
+    ) -> StoreResult<Vec<R>> {
+        Ok(self
+            .list_with_raw_matching(predicate, order)?
+            .into_iter()
+            .map(|(record, _)| record)
+            .collect())
+    }
+
+    pub fn list_with_raw(&self) -> StoreResult<Vec<(R, String)>> {
+        self.list_with_raw_matching(None, RecordOrder::RowId)
+    }
+
+    fn list_with_raw_matching(
+        &self,
+        predicate: Option<RecordPredicate<'_>>,
+        order: RecordOrder,
+    ) -> StoreResult<Vec<(R, String)>> {
         ensure_query::<R>(predicate, order)?;
-        if !self.table_is_present()? {
-            return Ok(None);
-        }
         let (where_sql, values) = predicate_sql(predicate);
         let where_clause = where_sql.map_or_else(String::new, |sql| format!(" WHERE {sql}"));
         let sql = format!(
@@ -436,9 +542,9 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         while let Some(row) = rows.next()? {
             let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
             let encoded = stored_text(row.get_ref(1)?, R::TABLE, &id)?;
-            records.push(decode_record::<R>(&id, &encoded)?);
+            records.push((decode_record::<R>(&id, &encoded)?, encoded));
         }
-        Ok(Some(records))
+        Ok(records)
     }
 
     pub fn put(&self, record: &R) -> StoreResult<()> {
@@ -455,6 +561,81 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         self.put_at_key(key.as_ref(), record, true).map(|_| ())
     }
 
+    /// Upsert a record and related non-record columns in a hybrid table.
+    pub fn put_with_columns(&self, record: &R, columns: &[(&str, SqlValue)]) -> StoreResult<()> {
+        if R::KEY_MODE != RecordKeyMode::PayloadId {
+            return Err(crate::StoreError::RecordContract(
+                "external-key records must be written with put_at",
+            ));
+        }
+        let key = record
+            .record_key()
+            .ok_or(crate::StoreError::RecordContract(
+                "payload-id record has no cached id",
+            ))?;
+        let encoded = encode_record(record, key.as_ref())?;
+        let mut names = vec!["id".to_owned(), "record".to_owned()];
+        let mut placeholders = vec!["?1".to_owned(), "?2".to_owned()];
+        let mut updates = vec!["record=excluded.record".to_owned()];
+        let mut values = vec![
+            SqlValue::Text(key.as_ref().to_owned()),
+            SqlValue::Text(encoded),
+        ];
+        for (index, (name, value)) in columns.iter().enumerate() {
+            let mut bytes = name.bytes();
+            let valid_identifier = bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            if !valid_identifier
+                || *name == "id"
+                || *name == "record"
+                || columns[..index].iter().any(|(prior, _)| prior == name)
+            {
+                return Err(crate::StoreError::RecordContract(
+                    "hybrid-table column name is invalid",
+                ));
+            }
+            names.push(format!("\"{name}\""));
+            placeholders.push(format!("?{}", index + 3));
+            updates.push(format!("\"{name}\"=excluded.\"{name}\""));
+            values.push(value.clone());
+        }
+        let sql = format!(
+            "INSERT INTO {}({}) VALUES ({}) ON CONFLICT(id) DO UPDATE SET {}",
+            quoted_table::<R>(),
+            names.join(","),
+            placeholders.join(","),
+            updates.join(","),
+        );
+        self.connection
+            .execute(&sql, params_from_iter(values.iter()))?;
+        Ok(())
+    }
+
+    pub fn validate(&self, record: &R) -> StoreResult<()> {
+        if R::KEY_MODE != RecordKeyMode::PayloadId {
+            return Err(crate::StoreError::RecordContract(
+                "external-key records must be validated with validate_at",
+            ));
+        }
+        let key = record
+            .record_key()
+            .ok_or(crate::StoreError::RecordContract(
+                "payload-id record has no cached id",
+            ))?;
+        encode_record(record, key.as_ref()).map(|_| ())
+    }
+
+    pub fn validate_at(&self, id: &R::Id, record: &R) -> StoreResult<()> {
+        if R::KEY_MODE != RecordKeyMode::External {
+            return Err(crate::StoreError::RecordContract(
+                "validate_at is only valid for external-key records",
+            ));
+        }
+        encode_record(record, id.as_ref()).map(|_| ())
+    }
+
     /// Upsert a payload without adding the external table key to its JSON.
     pub fn put_at(&self, id: &R::Id, record: &R) -> StoreResult<()> {
         if R::KEY_MODE != RecordKeyMode::External {
@@ -463,6 +644,38 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             ));
         }
         self.put_at_key(id.as_ref(), record, true).map(|_| ())
+    }
+
+    pub fn update(&self, record: &R) -> StoreResult<bool> {
+        if R::KEY_MODE != RecordKeyMode::PayloadId {
+            return Err(crate::StoreError::RecordContract(
+                "external-key records must be updated with update_at",
+            ));
+        }
+        let key = record
+            .record_key()
+            .ok_or(crate::StoreError::RecordContract(
+                "payload-id record has no cached id",
+            ))?;
+        self.update_at_key(key.as_ref(), record)
+    }
+
+    pub fn update_at(&self, id: &R::Id, record: &R) -> StoreResult<bool> {
+        if R::KEY_MODE != RecordKeyMode::External {
+            return Err(crate::StoreError::RecordContract(
+                "update_at is only valid for external-key records",
+            ));
+        }
+        self.update_at_key(id.as_ref(), record)
+    }
+
+    fn update_at_key(&self, id: &str, record: &R) -> StoreResult<bool> {
+        let encoded = encode_record(record, id)?;
+        let changed = self.connection.execute(
+            &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
+            params![encoded, id],
+        )?;
+        Ok(changed == 1)
     }
 
     fn put_at_key(&self, id: &str, record: &R, update: bool) -> StoreResult<bool> {
@@ -503,15 +716,12 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         self.put_at_key(id.as_ref(), record, false)
     }
 
-    fn table_is_present(&self) -> StoreResult<bool> {
-        if !R::OPTIONAL {
-            return Ok(true);
-        }
-        Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE)",
-            [R::TABLE],
-            |row| row.get(0),
-        )?)
+    pub fn delete(&self, id: &R::Id) -> StoreResult<bool> {
+        let changed = self.connection.execute(
+            &format!("DELETE FROM {} WHERE id=?1", quoted_table::<R>()),
+            [id.as_ref()],
+        )?;
+        Ok(changed == 1)
     }
 }
 
@@ -542,6 +752,9 @@ fn ensure_query<R: JsonRecord>(
         }
         Some(RecordPredicate::JsonAgentEquals(_) | RecordPredicate::JsonAgentIn(_)) => {
             R::QUERY_SHAPE == RecordQueryShape::JsonAgent
+        }
+        Some(RecordPredicate::UsageResumeAuthRecoveryBefore(_)) => {
+            R::QUERY_SHAPE == RecordQueryShape::UsageResumeRecovery
         }
     };
     let valid_order = match order {
@@ -577,6 +790,18 @@ fn predicate_sql(predicate: Option<RecordPredicate<'_>>) -> (Option<String>, Vec
         Some(RecordPredicate::JsonAgentIn(values)) => {
             in_predicate("json_extract(record,'$.agent')", values)
         }
+        Some(RecordPredicate::UsageResumeAuthRecoveryBefore(failed_before)) => (
+            Some(
+                concat!(
+                    "CASE WHEN json_valid(record) THEN ",
+                    "json_extract(record,'$.status')='scheduled' ",
+                    "AND json_extract(record,'$.cause')='auth' ",
+                    "AND json_extract(record,'$.failedAt')<=?1 ELSE 0 END"
+                )
+                .to_owned(),
+            ),
+            vec![SqlValue::Real(failed_before)],
+        ),
     }
 }
 
@@ -687,7 +912,7 @@ pub struct MessageRepository;
 mod tests {
     use super::{
         AgentId, AgentRecord, AgentStatus, EventMetadataRecord, QueueEventId, RecordOrder,
-        RecordPredicate, Table, TaskId, TaskRecord, TranscriptAssetId, TranscriptAssetRecord,
+        RecordPredicate, Table, TaskRecord, TranscriptAssetId, TranscriptAssetRecord,
         TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
     };
     use crate::StoreError;
@@ -755,8 +980,8 @@ mod tests {
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(
-            record.status(),
-            Some(AgentStatus::Other("future-agent-state".into()))
+            record.status,
+            AgentStatus::Other("future-agent-state".into())
         );
         assert_eq!(
             serde_json::to_value(record).expect("record serializes"),
@@ -789,12 +1014,8 @@ mod tests {
             .put(&changed)
             .expect("put updates the existing record");
         assert_eq!(
-            table
-                .list()
-                .expect("records list")
-                .expect("required table exists")[0]
-                .status(),
-            Some(AgentStatus::Running)
+            table.list().expect("records list")[0].status,
+            AgentStatus::Running
         );
     }
 
@@ -876,36 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn optional_tables_distinguish_absent_from_present_empty_and_keep_sql_errors() {
-        let connection = Connection::open_in_memory().expect("memory database opens");
-        let table = Table::<WorkItemRecord>::new(&connection);
-        assert_eq!(
-            table.get(&TaskId::from("missing")).expect("optional read"),
-            None
-        );
-        assert_eq!(table.list().expect("absent optional list"), None);
-
-        connection
-            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
-            .expect("optional table creates");
-        assert_eq!(
-            table.list().expect("present optional list"),
-            Some(Vec::new())
-        );
-
-        let malformed = Connection::open_in_memory().expect("second memory database opens");
-        malformed
-            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY);")
-            .expect("malformed optional table creates");
-        assert!(matches!(
-            Table::<WorkItemRecord>::new(&malformed)
-                .list()
-                .expect_err("present table SQL failure propagates"),
-            StoreError::Sqlite(_)
-        ));
-    }
-
-    #[test]
     fn external_keys_do_not_become_json_fields() {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
@@ -951,7 +1142,6 @@ mod tests {
     fn persisted_asset_table_keeps_path_and_extension_fields() {
         let connection = Connection::open_in_memory().expect("memory database opens");
         let table = Table::<TranscriptAssetRecord>::new(&connection);
-        assert_eq!(table.list().expect("absent assets table"), None);
         connection
             .execute_batch("CREATE TABLE runtime_assets(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("assets table creates");
@@ -1023,8 +1213,7 @@ mod tests {
                 Some(RecordPredicate::PhysicalAgentEquals("a")),
                 RecordOrder::PhysicalCreatedDescIdDesc,
             )
-            .expect("physical owner query")
-            .expect("required transcript table exists");
+            .expect("physical owner query");
         assert_eq!(
             records
                 .iter()
@@ -1056,8 +1245,7 @@ mod tests {
                 Some(RecordPredicate::JsonAgentIn(&agents)),
                 RecordOrder::JsonEffectiveCreatedAscIdAsc,
             )
-            .expect("JSON field filter")
-            .expect("required runtime task table exists");
+            .expect("JSON field filter");
         assert_eq!(
             tasks
                 .iter()
