@@ -605,6 +605,454 @@ struct RegistryState {
     revision: u64,
 }
 
+#[derive(Clone, serde::Deserialize)]
+pub struct CodexLoginRequest {
+    pub login_id: String,
+    pub account_key: Option<String>,
+    pub email: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum AccountMutationError {
+    #[error(transparent)]
+    Driver(#[from] AccountDriverError),
+    #[error("{0}")]
+    Refused(&'static str),
+}
+
+pub enum LoginReservation {
+    Dispatch(Value),
+    Replay(Value),
+}
+
+fn login_terminal(receipt: &Value) -> bool {
+    matches!(
+        receipt["status"].as_str(),
+        Some("ready" | "duplicate" | "cancelled" | "error")
+    )
+}
+
+fn existing_login(
+    value: &Value,
+    request: &CodexLoginRequest,
+) -> Result<Option<Value>, AccountMutationError> {
+    let Some(receipt) = value
+        .get("logins")
+        .and_then(|logins| logins.get(&request.login_id))
+    else {
+        return Ok(None);
+    };
+    for (field, expected) in [
+        ("reauthAccountKey", &request.account_key),
+        ("emailHint", &request.email),
+        ("requestedLabel", &request.label),
+    ] {
+        if receipt.get(field).and_then(Value::as_str) != expected.as_deref() {
+            return Err(AccountMutationError::Refused(
+                "This sign-in request belongs to a different account",
+            ));
+        }
+    }
+    Ok(Some(receipt.clone()))
+}
+
+impl<R: ProviderAuthReader> AccountDriver<R> {
+    /// Inspect before preparing an isolated login home. Reserving below repeats
+    /// the identity check under the registry lock, so concurrent callers send once.
+    pub fn codex_login_receipt(
+        &self,
+        request: &CodexLoginRequest,
+    ) -> Result<Option<Value>, AccountMutationError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        existing_login(&state.value, request)
+    }
+
+    /// `home` is prepared by the caller without holding this registry lock or a
+    /// store transaction. A successful return is the durable intent commit point.
+    pub fn reserve_codex_login(
+        &self,
+        request: &CodexLoginRequest,
+        home: &Path,
+        now: f64,
+    ) -> Result<LoginReservation, AccountMutationError> {
+        if uuid::Uuid::parse_str(&request.login_id).is_err() || !now.is_finite() {
+            return Err(AccountMutationError::Refused("Supply a UUID request_id"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        if let Some(receipt) = existing_login(&state.value, request)? {
+            return Ok(LoginReservation::Replay(receipt));
+        }
+        let mut value = state.value.clone();
+        let mut order = state.order.clone();
+        let key = request
+            .account_key
+            .clone()
+            .unwrap_or_else(|| format!("login-{}", request.login_id));
+        let mut receipt = serde_json::json!({"requestId":request.login_id,"accountKey":key,"status":"starting","createdAt":now});
+        if let Some(account) = &request.account_key {
+            let row = registry_account(&value, account)?;
+            if row
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("codex")
+                != "codex"
+                || !row.get("accountId").is_some_and(python_truthy)
+                || row.get("duplicateOf").is_some_and(python_truthy)
+            {
+                return Err(AccountMutationError::Refused(
+                    "Select a saved Codex subscription account",
+                ));
+            }
+            if value
+                .get("logins")
+                .and_then(Value::as_object)
+                .is_some_and(|logins| {
+                    logins.values().any(|receipt| {
+                        receipt["accountKey"] == *account
+                            && matches!(
+                                receipt["status"].as_str(),
+                                Some("starting" | "pending" | "uncertain")
+                            )
+                    })
+                })
+            {
+                return Err(AccountMutationError::Refused(
+                    "Sign-in is already active for this account. Check its status first.",
+                ));
+            }
+            receipt["reauthAccountKey"] = serde_json::json!(account);
+            receipt["expectedAccountId"] = row["accountId"].clone();
+            receipt["email"] = row.get("email").cloned().unwrap_or(Value::Null);
+        } else {
+            value["accounts"][&key] = serde_json::json!({"id":key,"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
+            order.accounts.push(key);
+            receipt["emailHint"] = serde_json::json!(request.email);
+            receipt["requestedLabel"] = serde_json::json!(request.label);
+        }
+        if value.get("logins").is_none() {
+            value["logins"] = serde_json::json!({});
+        }
+        value["logins"][&request.login_id] = receipt.clone();
+        order.logins.push(request.login_id.clone());
+        persist_registry(&self.path, &mut state, value, &order)?;
+        Ok(LoginReservation::Dispatch(receipt))
+    }
+
+    pub fn finish_codex_login(
+        &self,
+        request: &str,
+        account: &str,
+        response: Option<&Value>,
+        sent: bool,
+        now: f64,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt)
+            || receipt["status"] == "pending"
+            || (receipt["status"] == "uncertain"
+                && receipt.get("loginId").is_some_and(python_truthy))
+        {
+            return Ok(receipt.clone());
+        }
+        if let Some(response) = response.filter(|response| {
+            response["type"] == "chatgptDeviceCode"
+                && ["loginId", "verificationUrl", "userCode"]
+                    .iter()
+                    .all(|key| {
+                        response
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.is_empty() && value.len() <= 8192)
+                    })
+        }) {
+            receipt["status"] = serde_json::json!("pending");
+            if let Some(object) = receipt.as_object_mut() {
+                object.remove("error");
+            }
+            for key in ["loginId", "verificationUrl", "userCode"] {
+                receipt[key] = response[key].clone();
+            }
+            let expiry = response
+                .get("expiresAt")
+                .and_then(Value::as_f64)
+                .or_else(|| {
+                    response
+                        .get("expiresIn")
+                        .and_then(Value::as_f64)
+                        .filter(|seconds| *seconds > 0.0)
+                        .map(|seconds| now + seconds)
+                });
+            if let Some(expiry) = expiry.filter(|expiry| expiry.is_finite() && *expiry > now) {
+                receipt["expiresAt"] = serde_json::json!(expiry);
+            }
+        } else {
+            receipt["status"] = serde_json::json!(if sent { "uncertain" } else { "error" });
+            receipt["error"] = serde_json::json!(if sent {
+                "Sign-in response is unconfirmed. Check its status before starting again."
+            } else {
+                "Could not start sign-in. Try again."
+            });
+        }
+        let result = receipt.clone();
+        if !sent && result.get("reauthAccountKey").is_none() {
+            value["accounts"][account]["status"] = serde_json::json!("error");
+            value["accounts"][account]["error"] = result["error"].clone();
+        }
+        self.persist(&mut state, value)?;
+        Ok(result)
+    }
+
+    /// Latch cancellation before hand-off. Uncertain cancellation is inspected,
+    /// never automatically sent again, including after restarting the process.
+    pub fn reserve_codex_cancel(
+        &self,
+        request: &str,
+    ) -> Result<LoginReservation, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if login_terminal(receipt) {
+            return Ok(LoginReservation::Replay(receipt.clone()));
+        }
+        if !receipt.get("loginId").is_some_and(python_truthy) {
+            return Err(AccountDriverError::LoginResponseUnknown.into());
+        }
+        if receipt["status"] == "uncertain" {
+            return Ok(LoginReservation::Replay(receipt.clone()));
+        }
+        receipt["status"] = serde_json::json!("uncertain");
+        receipt["error"] = serde_json::json!(
+            "Cancellation is pending confirmation. Check status for a late receipt or completed sign-in."
+        );
+        let result = receipt.clone();
+        self.persist(&mut state, value)?;
+        Ok(LoginReservation::Dispatch(result))
+    }
+
+    pub fn finish_codex_cancel(
+        &self,
+        request: &str,
+        account: &str,
+        confirmed: bool,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt) || !confirmed {
+            return Ok(receipt.clone());
+        }
+        receipt["status"] = serde_json::json!("cancelled");
+        if let Some(object) = receipt.as_object_mut() {
+            for field in ["error", "userCode", "verificationUrl"] {
+                object.remove(field);
+            }
+        }
+        let result = receipt.clone();
+        if result.get("reauthAccountKey").is_none() {
+            value["accounts"][account]["status"] = serde_json::json!("signedOut");
+        }
+        self.persist(&mut state, value)?;
+        Ok(result)
+    }
+
+    pub fn recover_codex_logins(&self) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        if let Some(logins) = value.get_mut("logins").and_then(Value::as_object_mut) {
+            for receipt in logins
+                .values_mut()
+                .filter(|receipt| receipt["status"] == "starting")
+            {
+                receipt["status"] = serde_json::json!("uncertain");
+                receipt["error"] = serde_json::json!(
+                    "Sign-in response is unconfirmed. Check status or start a separate attempt."
+                );
+            }
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(())
+    }
+
+    /// The retained-session notification adapter supplies the exact operation
+    /// and verified metadata obtained outside any store/registry transaction.
+    pub fn complete_codex_login(
+        &self,
+        request: &str,
+        account: &str,
+        native_id: &str,
+        success: bool,
+        metadata: Option<&AuthMetadata>,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if native_id.is_empty()
+            || receipt["accountKey"] != account
+            || receipt
+                .get("loginId")
+                .and_then(Value::as_str)
+                .is_some_and(|saved| saved != native_id)
+        {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another native request",
+            ));
+        }
+        if matches!(
+            receipt["status"].as_str(),
+            Some("ready" | "duplicate" | "cancelled")
+        ) {
+            return Ok(receipt.clone());
+        }
+        receipt["loginId"] = serde_json::json!(native_id);
+        if success {
+            if receipt.get("reauthAccountKey").is_some() {
+                receipt["nativeCompleted"] = serde_json::json!(true);
+            }
+            if let Some(metadata) = metadata {
+                let row = registry_account_mut(&mut value, account)?
+                    .as_object_mut()
+                    .ok_or(AccountDriverError::InvalidRegistry)?;
+                apply_metadata(row, metadata);
+                if metadata.status == AuthStatus::Ready {
+                    reconcile_local_login(&mut value, &state.order, request, account)?;
+                }
+            }
+        } else {
+            receipt["status"] = serde_json::json!("error");
+            receipt["error"] = serde_json::json!("Sign-in failed or expired. Try again.");
+            if let Some(object) = receipt.as_object_mut() {
+                object.remove("userCode");
+                object.remove("verificationUrl");
+            }
+            if receipt.get("reauthAccountKey").is_none() {
+                value["accounts"][account]["status"] = serde_json::json!("error");
+                value["accounts"][account]["error"] =
+                    serde_json::json!("Sign-in failed or expired. Try again.");
+            }
+        }
+        let result = value["logins"][request].clone();
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(result)
+    }
+
+    pub fn update_claude_settings(
+        &self,
+        key: &str,
+        options: Value,
+        label: Option<&str>,
+    ) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let row = registry_account_mut(&mut value, key)?;
+        if row["provider"] != "claude" {
+            return Err(AccountMutationError::Refused(
+                "Select a Claude Code profile",
+            ));
+        }
+        if ["binaryPath", "configDir"]
+            .iter()
+            .any(|field| row["claudeOptions"].get(*field) != options.get(*field))
+        {
+            return Err(AccountMutationError::Refused(
+                "Add a separate Claude profile to change the executable or config directory",
+            ));
+        }
+        if label.is_some_and(|label| python_strip(label).is_empty() || label.chars().count() > 200)
+        {
+            return Err(AccountMutationError::Refused(
+                "Invalid Claude profile label",
+            ));
+        }
+        row["claudeOptions"] = options;
+        if let Some(label) = label {
+            row["label"] = serde_json::json!(python_strip(label));
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(())
+    }
+
+    pub fn discover_claude_verified(
+        &self,
+        home: &Path,
+        metadata: &AuthMetadata,
+    ) -> Result<(), AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        if state.value["accounts"].get("claude-local").is_some() {
+            return Ok(());
+        }
+        let mut value = state.value.clone();
+        let mut row = serde_json::json!({"id":"claude-local","provider":"claude","home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
+        apply_metadata(
+            row.as_object_mut()
+                .ok_or(AccountDriverError::InvalidRegistry)?,
+            metadata,
+        );
+        value["accounts"]["claude-local"] = row;
+        let mut order = state.order.clone();
+        order.accounts.push("claude-local".into());
+        persist_registry(&self.path, &mut state, value, &order)?;
+        Ok(())
+    }
+}
+
 impl AccountDriver<SystemProviderAuthReader> {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AccountDriverError> {
         Self::open_with_reader(path, SystemProviderAuthReader)
