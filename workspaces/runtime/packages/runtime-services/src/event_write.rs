@@ -297,26 +297,13 @@ fn enqueue(
     recovery: bool,
 ) -> Result<bool, EventWriteError> {
     let auto_wake = agent_auto_wake(agent)?;
-    if recovery && recovery_pending(agent) {
-        let event = QueueEvent {
-            id: QueueEventId::from(id.as_str()),
-            agent: AgentId::from(agent.id.0.as_str()),
-            kind: kind.to_owned(),
-            text,
-            status: "pending".to_owned(),
-            created,
-            epoch: agent.epoch,
-            turn_id: None,
-            error: None,
-        };
-        return Ok(EventWriteRepository::insert_event(transaction, &event)?);
-    }
+    let recovery_pending = recovery && recovery_pending(agent);
     let event = QueueEvent {
         id: QueueEventId::from(id.as_str()),
         agent: AgentId::from(agent.id.0.as_str()),
         kind: kind.to_owned(),
         text,
-        status: if auto_wake || recovery && recovery_pending(agent) {
+        status: if auto_wake || recovery_pending {
             "pending"
         } else {
             "cancelled"
@@ -328,7 +315,7 @@ fn enqueue(
         error: None,
     };
     let inserted = EventWriteRepository::insert_event(transaction, &event)?;
-    if inserted {
+    if inserted && !recovery_pending {
         if auto_wake {
             queue_agent(transaction, agent)?;
         }

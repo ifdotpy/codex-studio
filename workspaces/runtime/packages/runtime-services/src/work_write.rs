@@ -1,7 +1,9 @@
 //! Atomic work-item writes that need no worker or filesystem driver.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,6 +134,13 @@ fn write_internal(
     signature: &str,
     command: WorkWrite,
 ) -> Result<WorkWriteResult, WorkWriteError> {
+    #[cfg(not(unix))]
+    if matches!(&command, WorkWrite::Submit(_)) {
+        return Err(WorkWriteError::NotImplemented(
+            "workspace-state/submission-files",
+        ));
+    }
+
     let agent = event_write::checked_agent(tx, agent_id)?;
     let actor = if let Some(actor_id) = actor_id {
         let actor = event_write::checked_agent(tx, actor_id)?;
@@ -236,10 +245,6 @@ pub fn write_action_as_agent(
     signature: &str,
     command: WorkWrite,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    let actor = event_write::checked_agent(tx, actor_id)?;
-    if !event_write::truthy(actor.extra.get("autoWake")) {
-        return Err(Error::InvalidRequest("The caller is stopped").into());
-    }
     write_internal(tx, agent_id, Some(actor_id), request_id, signature, command)
 }
 
@@ -292,7 +297,7 @@ pub fn write_result_artifact(artifact: &ResultArtifact) -> Result<(), std::io::E
 
 #[cfg(unix)]
 fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Error> {
-    use rustix::fs::{AtFlags, Mode, OFlags, linkat, mkdirat, openat, unlinkat};
+    use rustix::fs::{AtFlags, Mode, OFlags, linkat, mkdirat, openat};
 
     let root = fs::canonicalize(&artifact.state_dir)?;
     let relative = artifact
@@ -302,7 +307,23 @@ fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Er
     let parent_path = relative
         .parent()
         .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?;
-    let mut parent = fs::File::open(root)?;
+    let mut parent = fs::File::open("/")?;
+    for component in root.components() {
+        let std::path::Component::Normal(name) = component else {
+            if matches!(component, std::path::Component::RootDir) {
+                continue;
+            }
+            return Err(std::io::Error::other("invalid result artifact root"));
+        };
+        parent = openat(
+            &parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(fs::File::from)
+        .map_err(std::io::Error::from)?;
+    }
     for component in parent_path.components() {
         let std::path::Component::Normal(name) = component else {
             return Err(std::io::Error::other("invalid result artifact path"));
@@ -355,6 +376,10 @@ fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Er
     }
     let mut temporary_file = temporary_file
         .ok_or_else(|| std::io::Error::other("could not allocate result artifact temporary"))?;
+    let mut temporary_guard = TemporaryArtifact {
+        parent: &parent,
+        name: Some(temporary_name.clone()),
+    };
     temporary_file.write_all(artifact.body.as_bytes())?;
     temporary_file.sync_all()?;
     drop(temporary_file);
@@ -370,7 +395,7 @@ fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Er
             let existing = openat(
                 &parent,
                 file_name,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::empty(),
             )
             .map(fs::File::from)
@@ -395,11 +420,38 @@ fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Er
         }
         Err(error) => Err(error.into()),
     };
-    let cleanup = unlinkat(&parent, temporary_name.as_str(), AtFlags::empty());
-    match (result, cleanup) {
-        (Err(error), _) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(error)) => Err(error.into()),
+    result?;
+    temporary_guard.cleanup()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+struct TemporaryArtifact<'a> {
+    parent: &'a fs::File,
+    name: Option<String>,
+}
+
+#[cfg(unix)]
+impl TemporaryArtifact<'_> {
+    fn cleanup(&mut self) -> Result<(), std::io::Error> {
+        let Some(name) = self.name.as_deref() else {
+            return Ok(());
+        };
+        rustix::fs::unlinkat(self.parent, name, rustix::fs::AtFlags::empty())
+            .map_err(std::io::Error::from)?;
+        self.name.take();
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TemporaryArtifact<'_> {
+    fn drop(&mut self) {
+        if let Some(name) = self.name.take() {
+            match rustix::fs::unlinkat(self.parent, name.as_str(), rustix::fs::AtFlags::empty()) {
+                Ok(()) | Err(_) => {}
+            }
+        }
     }
 }
 
@@ -422,7 +474,10 @@ pub fn release_failed_work(
         {
             continue;
         }
-        let deleted = worker.extra.get("deletedAt").is_some_and(truthy);
+        let deleted = worker
+            .extra
+            .get("deletedAt")
+            .is_some_and(|value| event_write::truthy(Some(value)));
         if worker.id == worker.root_id
             || (!deleted && worker.status.as_str() != "failed")
             || (!deleted && continuation_work_pending(&worker))
@@ -444,8 +499,12 @@ pub fn release_failed_work(
                 .as_str()
                 .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
             let root = AgentRepository::get(tx, &worker.root_id)?;
-            if let Some(root) = root.filter(|root| !root.extra.get("deletedAt").is_some_and(truthy))
-            {
+            if let Some(root) = root.filter(|root| {
+                !root
+                    .extra
+                    .get("deletedAt")
+                    .is_some_and(|value| event_write::truthy(Some(value)))
+            }) {
                 let owner = released["releases"]
                     .as_array()
                     .and_then(|history| history.last())
@@ -481,8 +540,14 @@ pub fn release_failed_work(
 }
 
 fn continuation_work_pending(agent: &AgentRecord) -> bool {
-    if !agent.extra.get("autoWake").is_some_and(truthy)
-        || agent.extra.get("deletedAt").is_some_and(truthy)
+    if !agent
+        .extra
+        .get("autoWake")
+        .is_some_and(|value| event_write::truthy(Some(value)))
+        || agent
+            .extra
+            .get("deletedAt")
+            .is_some_and(|value| event_write::truthy(Some(value)))
     {
         return false;
     }
@@ -512,22 +577,13 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
     matches(capacity, &["scheduled", "starting", "unknown"], "turnId")
         || matches(usage, &["scheduled", "started", "unknown"], "turnId")
         || (restart.get("stage").and_then(Value::as_str) == Some("pending")
-            && restart.get("autoWake").is_some_and(truthy)
+            && restart
+                .get("autoWake")
+                .is_some_and(|value| event_write::truthy(Some(value)))
             && restart.get("accountKey").unwrap_or(&default_account) == account
             && restart.get("threadId").and_then(Value::as_str) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
             && restart.get("epoch").and_then(Value::as_i64) == Some(epoch))
-}
-
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }
 
 struct WorkSnapshot<'a> {
@@ -1450,6 +1506,66 @@ mod artifact_tests {
 
     #[cfg(unix)]
     #[test]
+    fn replay_of_fifo_is_bounded_and_does_not_leave_a_temporary_file() {
+        use rustix::fs::{Mode, mkfifoat};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temporary = tempfile::tempdir().expect("temporary root opens");
+        let state = temporary.path().join("state");
+        let parent = state.join("results/task");
+        fs::create_dir_all(&parent).expect("artifact parent creates");
+        let directory = fs::File::open(&parent).expect("artifact parent opens");
+        mkfifoat(&directory, "result.md", Mode::from_raw_mode(0o600))
+            .expect("FIFO artifact creates");
+        let artifact = ResultArtifact {
+            state_dir: state,
+            path: parent.join("result.md"),
+            body: "committed result".to_owned(),
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(sender.send(write_result_artifact(&artifact)));
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("FIFO replay returns without blocking")
+            .expect_err("FIFO is not a valid result artifact");
+        let entries: Vec<_> = fs::read_dir(&parent)
+            .expect("artifact parent lists")
+            .map(|entry| entry.expect("directory entry reads").file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("result.md")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_artifact_replay_removes_its_temporary_file() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root opens");
+        let state = temporary.path().join("state");
+        let parent = state.join("results/task");
+        let outside = temporary.path().join("outside.md");
+        fs::create_dir_all(&parent).expect("artifact parent creates");
+        fs::write(&outside, "foreign content").expect("outside file writes");
+        symlink(&outside, parent.join("result.md")).expect("artifact symlink creates");
+        let artifact = ResultArtifact {
+            state_dir: state,
+            path: parent.join("result.md"),
+            body: "committed result".to_owned(),
+        };
+
+        assert!(write_result_artifact(&artifact).is_err());
+        let entries: Vec<_> = fs::read_dir(&parent)
+            .expect("artifact parent lists")
+            .map(|entry| entry.expect("directory entry reads").file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("result.md")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn result_artifact_writer_is_anchored_to_open_directory_handles() {
         use std::os::unix::fs::symlink;
 
@@ -1484,6 +1600,8 @@ mod artifact_tests {
 
 #[cfg(test)]
 mod actor_tests {
+    #[cfg(not(unix))]
+    use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
         write_action_as_agent, write_as_agent,
@@ -1516,6 +1634,34 @@ mod actor_tests {
         connection
     }
 
+    #[cfg(not(unix))]
+    #[test]
+    fn submit_refuses_before_database_access_without_directory_relative_operations() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
+        let tx = connection.transaction().expect("transaction starts");
+        let result = super::write(
+            &tx,
+            "lead",
+            None,
+            "submit-unsupported-platform",
+            WorkWrite::Submit(SubmitWork {
+                task_id: "task".to_owned(),
+                version: Some(1),
+                result: "result".to_owned(),
+                checks: "checks".to_owned(),
+                revision: "abc1234".to_owned(),
+                files: vec![],
+                state_dir: std::env::temp_dir(),
+            }),
+        );
+        assert!(matches!(
+            result,
+            Err(WorkWriteError::NotImplemented(
+                "workspace-state/submission-files"
+            ))
+        ));
+    }
+
     fn insert_work(connection: &Connection, work: &Value) {
         connection
             .execute(
@@ -1523,6 +1669,17 @@ mod actor_tests {
                 rusqlite::params![work["id"].as_str().expect("work id"), work.to_string()],
             )
             .expect("work row inserts");
+    }
+
+    fn events(connection: &Connection) -> Vec<(String, String, String)> {
+        let mut statement = connection
+            .prepare("SELECT id,agent,kind FROM runtime_events ORDER BY id")
+            .expect("events query prepares");
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("events query runs")
+            .map(|row| row.expect("event row reads"))
+            .collect()
     }
 
     fn work(id: &str, owner: Option<&str>, status: &str, results: Value) -> Value {
@@ -1636,19 +1793,13 @@ mod actor_tests {
         )
         .expect("owner cancellation succeeds");
         assert_eq!(result.record["status"], "cancelled");
-        let event: (String, String) = tx
-            .query_row(
-                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("self notification exists");
         assert_eq!(
-            event,
-            (
+            events(&tx),
+            vec![(
                 "work-decision:cancel:cancel".to_owned(),
-                "worker".to_owned()
-            )
+                "worker".to_owned(),
+                "work_decision".to_owned(),
+            )]
         );
         tx.commit().expect("transaction commits");
     }
@@ -1675,16 +1826,13 @@ mod actor_tests {
         )
         .expect("lead cancellation succeeds");
         assert_eq!(result.record["decisions"][0]["by"], "lead");
-        let event: (String, String) = tx
-            .query_row(
-                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("worker decision notification exists");
         assert_eq!(
-            event,
-            ("work-decision:lead-cancel:cancel".into(), "worker".into())
+            events(&tx),
+            vec![(
+                "work-decision:lead-cancel:cancel".into(),
+                "worker".into(),
+                "work_decision".into(),
+            )]
         );
         tx.commit().expect("transaction commits");
     }
@@ -1794,16 +1942,13 @@ mod actor_tests {
         )
         .expect("lead rejection succeeds");
         assert_eq!(result.record["decisions"][0]["by"], "lead");
-        let event: (String, String) = tx
-            .query_row(
-                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("worker decision notification exists");
         assert_eq!(
-            event,
-            ("work-decision:reject-worker:2".into(), "worker".into())
+            events(&tx),
+            vec![(
+                "work-decision:reject-worker:2".into(),
+                "worker".into(),
+                "work_decision".into(),
+            )]
         );
         tx.commit().expect("transaction commits");
     }
@@ -1834,23 +1979,18 @@ mod actor_tests {
         )
         .expect("worker submission succeeds");
         assert_eq!(result.record["results"][0]["agent"], "worker");
-        let event: (String, String, String) = tx
-            .query_row(
-                "SELECT id,agent,kind FROM runtime_events WHERE kind='work_review'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("lead review notification exists");
-        assert_eq!(event.1, "lead");
-        assert_eq!(event.2, "work_review");
         assert_eq!(
-            event.0,
-            format!(
-                "work-result:{}",
-                result.record["results"][0]["id"]
-                    .as_str()
-                    .expect("result ID")
-            )
+            events(&tx),
+            vec![(
+                format!(
+                    "work-result:{}",
+                    result.record["results"][0]["id"]
+                        .as_str()
+                        .expect("result ID")
+                ),
+                "lead".to_owned(),
+                "work_review".to_owned(),
+            )]
         );
         tx.commit().expect("transaction commits");
     }

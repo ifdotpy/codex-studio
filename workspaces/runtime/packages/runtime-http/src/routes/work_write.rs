@@ -35,6 +35,13 @@ pub(crate) async fn work_action(
     if action == "list" {
         return work_items::work_for_agent(state, agent).await.map(Json);
     }
+    #[cfg(not(unix))]
+    if action == "submit" {
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires workspace-state/submission-files",
+        ));
+    }
     let request_id = body
         .get("id")
         .and_then(Value::as_str)
