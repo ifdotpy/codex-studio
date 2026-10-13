@@ -184,11 +184,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/multi-server"): {
         "primary": {"expected": "2xx"},
         "additional": [{
-            "name": "local identity dependency",
+            "name": "cached local identity",
             "fixture_mutations": {"remove_identity": True},
             "restore": ["identity_file"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires server-credentials/local-identity",
+            "expected": "2xx",
         }],
     },
     ("GET", "/api/multi-server/v1/pair"): {
@@ -388,7 +387,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
             "replace_body": True,
             "expected": "501",
-            "expected_error": "Not implemented: requires federation-credentials/private-key, multi-server-runtime/orchestration, remote-transport/identity-write, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery, server-credentials/local-identity",
+            "expected_error": "Not implemented: requires multi-server-runtime/orchestration, multi-server-runtime/pairing, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery",
             "assert_no_write": True,
         }],
     },

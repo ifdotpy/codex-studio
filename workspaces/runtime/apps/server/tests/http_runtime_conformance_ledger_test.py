@@ -98,7 +98,6 @@ class LedgerTraceContract(unittest.TestCase):
         for operation in (
             ("GET", "/api/changes"),
             ("GET", "/api/models"),
-            ("GET", "/api/multi-server"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),

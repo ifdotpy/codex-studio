@@ -17,6 +17,7 @@ pub mod checkpoints;
 pub mod coordination;
 pub mod event_write;
 pub mod federation;
+pub mod federation_credentials;
 pub mod model_catalog;
 pub mod multi_server;
 pub mod panels;
