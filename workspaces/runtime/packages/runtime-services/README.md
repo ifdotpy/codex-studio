@@ -263,7 +263,9 @@ dependency to reproduce that behavior.
 records before producing pure state transitions. [`monitor_runtime`](src/monitor_runtime.rs)
 commits monitor rows, approval expiry, canonical sync projections, and exit/stall
 notifications in one transaction. [`monitor_driver`](src/monitor_driver.rs) calls
-an injected native transport only after that transaction commits. Preparation
+an injected native transport only after that transaction commits. A bounded striped
+lock serializes launch, input and cancellation through submission; a concurrent
+request is refused while a native operation is pending, before any write. Preparation
 supplies the exact actor, monitor, operation and permission-bearing native params;
 a changed actor or monitor rejects the prepared submission.
 

@@ -448,10 +448,16 @@ fn stall_payload(id: &str, quiet: u64) -> Value {
 pub struct Input {
     #[serde(default)]
     pub text: String,
+    #[serde(default, deserialize_with = "present_dimension")]
     pub rows: Option<u16>,
+    #[serde(default, deserialize_with = "present_dimension")]
     pub cols: Option<u16>,
     #[serde(default)]
     pub close_stdin: bool,
+}
+
+fn present_dimension<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<u16>, D::Error> {
+    u16::deserialize(input).map(Some)
 }
 
 pub fn begin_input(

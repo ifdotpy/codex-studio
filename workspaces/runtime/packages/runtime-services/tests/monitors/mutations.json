@@ -68,5 +68,65 @@
         "after": "if offset < count && false {"
       }
     ]
+  },
+  {
+    "id": "launch-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_driver.rs",
+    "edits": [
+      {
+        "before": "let _sequence = native_sequence(id)?;\n    let effect = monitor_runtime::reserve_start",
+        "after": "let effect = monitor_runtime::reserve_start"
+      }
+    ]
+  },
+  {
+    "id": "start-state",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "decision.record[\"status\"] = json!(\"running\");\n    decision.record[\"error\"] = Value::Null;",
+        "after": "decision.record[\"status\"] = json!(\"starting\");\n    decision.record[\"error\"] = Value::Null;"
+      }
+    ]
+  },
+  {
+    "id": "reattach-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "proof.operation_id != format!(\"monitor:{}\", snapshot.id())",
+        "after": "false"
+      }
+    ]
+  },
+  {
+    "id": "operation-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "if self.operation() != Some(operation) {",
+        "after": "if false && self.operation() != Some(operation) {"
+      }
+    ]
+  },
+  {
+    "id": "owner-auto-wake",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "&& self.actor.auto_wake",
+        "after": "&& true"
+      }
+    ]
+  },
+  {
+    "id": "stale-probe-result",
+    "file": "workspaces/runtime/packages/runtime-services/src/monitor_policy.rs",
+    "edits": [
+      {
+        "before": "|| f.stall_probe_generation != Some(generation)",
+        "after": "|| false"
+      }
+    ]
   }
 ]

@@ -303,8 +303,9 @@ fn exit_event(
             && Some(existing.epoch) == monitor_epoch
             && previous.get("id").and_then(Value::as_str) == Some(id)
             && previous.get("exitCode").is_none_or(Value::is_null)
-            && existing.error.as_deref()
+            && (existing.error.as_deref()
                 == Some("Native command reattached; discard the provisional disconnect notice.")
+                || legacy_reattach_notice(actor, monitor, &existing, &previous))
             && monitor.pointer("/operation/agent").and_then(Value::as_str)
                 == Some(actor.id.0.as_str())
             && monitor.pointer("/operation/epoch").and_then(Value::as_i64) == monitor_epoch
@@ -402,6 +403,67 @@ fn invalid(id: &str, location: &str) -> MonitorError {
         id: id.into(),
         location: location.into(),
     }
+}
+
+// Python's old restore path did not stamp cancelled notices. Exact restart/turn
+// evidence proves these identities too; unrelated cancelled events stay cancelled.
+fn legacy_reattach_notice(
+    actor: &studio_runtime_store::AgentRecord,
+    monitor: &Value,
+    event: &studio_runtime_store::QueueEvent,
+    previous: &Value,
+) -> bool {
+    let created = event.created;
+    if event.error.is_some()
+        || event.turn_id.is_some()
+        || previous["error"] != "Server restarted. Command outcome unknown; not rerun."
+        || !created.is_finite()
+        || !monitor["created"]
+            .as_f64()
+            .is_some_and(|at| at.is_finite() && at > 0.0 && at <= created)
+    {
+        return false;
+    }
+    let epoch = &monitor["epoch"];
+    let default_account = json!("default");
+    let account = actor.extra.get("accountKey").unwrap_or(&default_account);
+    let scoped_account = |receipt: &Value| {
+        receipt.get("epoch") == Some(epoch)
+            && receipt.get("accountKey").unwrap_or(&default_account) == account
+    };
+    let recent = |at: &Value| {
+        at.as_f64()
+            .is_some_and(|at| at.is_finite() && at >= created)
+    };
+    let receipt = &monitor["reattachRecovery"];
+    if receipt["status"] == "running"
+        && scoped_account(receipt)
+        && recent(&receipt["cancelledNoticeLostAt"])
+    {
+        return true;
+    }
+    if monitor["status"] == "lost" {
+        return false;
+    }
+    let scoped_turn = |receipt: &Value, at: &Value| {
+        scoped_account(receipt)
+            && recent(at)
+            && actor
+                .extra
+                .get("threadId")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            && receipt.get("threadId") == actor.extra.get("threadId")
+            && receipt["turnId"].as_str().is_some_and(|s| !s.is_empty())
+    };
+    let restore = actor.extra.get("supervisorRestore").unwrap_or(&Value::Null);
+    let restart = actor.extra.get("restartRecovery").unwrap_or(&Value::Null);
+    (restore["status"] == "restored"
+        && restore["reason"] == "live_handle_resumed"
+        && scoped_turn(restore, &restore["at"]))
+        || (matches!(restart["stage"].as_str(), Some("reattached" | "finished"))
+            && event_write::truthy(restart.get("autoWake"))
+            && scoped_turn(restart, &restart["reattachedAt"]))
 }
 
 pub struct PreparedStart {
