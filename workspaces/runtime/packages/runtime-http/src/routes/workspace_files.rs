@@ -98,18 +98,23 @@ fn read_info(
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
             .map_err(|_| ApiError::internal())?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let (asset_value, owner_id) = validate_asset(&asset.id, &asset.record)?;
+        let asset_value = asset.value();
+        let owner_id = asset_value
+            .get("agent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
+            .to_owned();
         drop(connection);
         validate_agent(store, &owner_id)?;
         let path = asset_value
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?;
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
         let mut info = workspace_files::file_info(path, None).map_err(file_error)?;
         info.mime = asset_value
             .get("mime")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
             .to_owned();
         return Ok(info);
     }
@@ -130,18 +135,23 @@ fn read_content(
         let asset = WorkspaceFilesRepository::asset(&connection, asset_id)
             .map_err(|_| ApiError::internal())?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown attachment"))?;
-        let (asset_value, owner_id) = validate_asset(&asset.id, &asset.record)?;
+        let asset_value = asset.value();
+        let owner_id = asset_value
+            .get("agent")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
+            .to_owned();
         drop(connection);
         validate_agent(store, &owner_id)?;
         let path = asset_value
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?;
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?;
         let mut content = workspace_files::file_content(path, None).map_err(file_error)?;
         content.mime = asset_value
             .get("mime")
             .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("assets", &asset.id))?
+            .ok_or_else(|| invalid_stored("assets", asset.id().as_ref()))?
             .to_owned();
         return Ok(content);
     }
@@ -166,10 +176,7 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
     let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))
         .map_err(|_| ApiError::internal())?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-    let record = serde_json::to_value(agent).map_err(|_| ApiError::internal())?;
-    let dto = serde_json::from_value::<crate::generated::AgentRecordResponse>(record)
-        .map_err(|_| invalid_stored("agents", agent_id))?;
-    let record = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
+    let record = agent.value();
     if record.get("deletedAt").is_some_and(json_truthy) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -180,22 +187,6 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
         WorkspaceFilesError::InvalidAgent(id) => invalid_stored("agents", &id),
         other => file_error(other),
     })
-}
-
-fn validate_asset(id: &str, record: &str) -> Result<(Value, String), ApiError> {
-    let value = serde_json::from_str::<Value>(record).map_err(|_| invalid_stored("assets", id))?;
-    let dto = serde_json::from_value::<crate::generated::AssetRecord>(value)
-        .map_err(|_| invalid_stored("assets", id))?;
-    let value = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
-    if value.get("id").and_then(Value::as_str) != Some(id) {
-        return Err(invalid_stored("assets", id));
-    }
-    let owner = value
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("assets", id))?
-        .to_owned();
-    Ok((value, owner))
 }
 
 fn ensure_local_workspace(
