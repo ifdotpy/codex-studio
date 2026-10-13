@@ -4,7 +4,10 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
-pub use schema::{python_float_json, python_json, python_json_compact, sha256_hex, truthy};
+pub use schema::{
+    python_float_json, python_json, python_json_compact, python_json_with_separators, sha256_hex,
+    truthy,
+};
 mod state_check;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 

@@ -1,0 +1,8267 @@
+[
+  {
+    "family": "parameters",
+    "name": "parameters-0",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-1",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-2",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-3",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-4",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-5",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-6",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-7",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-8",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-9",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-10",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-11",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-12",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-13",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-14",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-15",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-16",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-17",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-18",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-19",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-20",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-21",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-22",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-23",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-24",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-25",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-26",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-27",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-28",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-29",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-30",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-31",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-32",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-33",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-34",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-35",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-36",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-37",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-38",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-39",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-40",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-41",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-42",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-43",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-44",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-45",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-46",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-47",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-48",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-49",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-50",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-51",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-52",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-53",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-54",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-55",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-56",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-57",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-58",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-59",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-60",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-61",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-62",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-63",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-64",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-65",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-66",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-67",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-68",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-69",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-70",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-71",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-72",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-73",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-74",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-75",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-76",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-77",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-78",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-79",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-80",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-81",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-82",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-83",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-84",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-85",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-86",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-87",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-88",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-89",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-90",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-91",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-92",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-93",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-94",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-95",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-96",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-97",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-98",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-99",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-100",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-101",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-102",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-103",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-104",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-105",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-106",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-107",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-108",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-109",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-110",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-111",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-112",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-113",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-114",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-115",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-116",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-117",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-118",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-119",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "orchestrator",
+        "is_lead": true,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-120",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-121",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-122",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-123",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-124",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-125",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-126",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-127",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-128",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-129",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-130",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-131",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-132",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-133",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-134",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-135",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": null,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-136",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-137",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-138",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-139",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": false,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-140",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-141",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": false,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-142",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": null
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "parameters",
+    "name": "parameters-143",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "role": "reviewer",
+        "is_lead": false,
+        "yolo_mode": true,
+        "fast_mode": true,
+        "native_effort": "xhigh"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-0",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-1",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-2",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-3",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-4",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-5",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-6",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-7",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-8",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-9",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-10",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-11",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-12",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-13",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-14",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-15",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-16",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-17",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-18",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-19",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-20",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-21",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-22",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-23",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-24",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-25",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-26",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-27",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-28",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-29",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-30",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-31",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-32",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-33",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-34",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-35",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-36",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-37",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-38",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-39",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-40",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-41",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": false,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-42",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "tools",
+    "name": "tools-43",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-44",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": false
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-45",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": null
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-46",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_move"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "tools",
+    "name": "tools-47",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_teleport_tool": "orchestration_teleport"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "root": {
+        "can_delegate": true,
+        "federation_enabled": true
+      },
+      "settings": {
+        "role": "implementer",
+        "is_lead": false
+      }
+    },
+    "fast": false
+  },
+  {
+    "family": "guidance",
+    "name": "saved-role",
+    "snapshot": {
+      "actor": {
+        "native_role_guidance": "Saved role caf\u00e9 \ud83e\udd80"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "profile-title",
+    "snapshot": {
+      "settings": {
+        "needs_title": true,
+        "profile_instructions": "Profile\nKeep all user text."
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "claude-options",
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "claude_options": {
+          "permissionMode": "acceptEdits",
+          "maxThinkingTokens": 16000
+        }
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "no-progress",
+    "snapshot": {
+      "workspace": {
+        "progress_directory": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "empty-progress",
+    "snapshot": {
+      "guidance": {
+        "progress": ""
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "empty-model",
+    "snapshot": {
+      "settings": {
+        "model": ""
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "null-model",
+    "snapshot": {
+      "settings": {
+        "model": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "native-null",
+    "snapshot": {
+      "settings": {
+        "effort": "high",
+        "native_effort": null
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "role-in-profile",
+    "snapshot": {
+      "settings": {
+        "is_lead": false,
+        "profile_instructions": "Your progress file is /workspace/progress/PROGRESS.md."
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "saved-source-current",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_tool_source": "current"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": "thread"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "guidance",
+    "name": "new-source-legacy",
+    "snapshot": {
+      "actor": {
+        "native_tool_source": "legacy"
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-0",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-1",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-2",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-3",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-4",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-5",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-6",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-7",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-8",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-9",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-10",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-11",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-12",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-13",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-14",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-15",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-16",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-17",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-18",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-19",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-20",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-21",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-22",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-23",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-24",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-25",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-26",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-27",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-28",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-29",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-30",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-31",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-32",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": true,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-33",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-34",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": null,
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "receipts",
+    "name": "receipts-35",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "fast": false
+  },
+  {
+    "family": "uncertainty",
+    "name": "missing",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      }
+    },
+    "receipt": null,
+    "fast": true
+  },
+  {
+    "family": "uncertainty",
+    "name": "missing-id",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      }
+    },
+    "receipt": {
+      "thread_id": null,
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "uncertainty",
+    "name": "empty-id",
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      }
+    },
+    "receipt": {
+      "thread_id": "",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "uncertainty",
+    "name": "wrong-resume",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      }
+    },
+    "receipt": {
+      "thread_id": "wrong",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "release",
+    "name": "released",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "phase": "released",
+          "resetPending": false,
+          "id": "release",
+          "threadId": "thread",
+          "connectionId": "connection"
+        }
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "release",
+    "name": "resumed",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "phase": "resumed",
+          "resetPending": false,
+          "id": "release",
+          "threadId": "thread",
+          "connectionId": "connection"
+        }
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "catalog",
+    "name": "clear-notice-catalog updating",
+    "snapshot": {
+      "actor": {
+        "native_tool_update": {
+          "message": "catalog updating"
+        },
+        "error": "catalog updating"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "catalog",
+    "name": "clear-notice-other error",
+    "snapshot": {
+      "actor": {
+        "native_tool_update": {
+          "message": "catalog updating"
+        },
+        "error": "other error"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "catalog",
+    "name": "clear-notice-None",
+    "snapshot": {
+      "actor": {
+        "native_tool_update": {
+          "message": "catalog updating"
+        },
+        "error": null
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "epoch",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "actor": {
+        "epoch": 8
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "account",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "account": {
+        "key": "other"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "connection",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "account": {
+        "connection_id": "other"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "cwd",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "actor": {
+        "cwd": "/other"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "settings",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "model": "changed"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "thread",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "actor": {
+        "thread_id": "changed"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "attempt",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "actor": {
+        "prepare_attempt": "other"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "closed",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "closed": true
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "deleted",
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "actor": {
+        "deleted": true
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "stale",
+    "name": "unloaded",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {},
+    "fast": true,
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": null
+    }
+  },
+  {
+    "family": "replacement",
+    "name": "replacement-False-False",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "prepare_attempt": "previous"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "pending": {
+        "attempt_id": "previous",
+        "connection_id": "connection",
+        "thread_id": null,
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "replacement",
+    "name": "replacement-False-True",
+    "snapshot": {
+      "actor": {
+        "thread_id": null,
+        "prepare_attempt": "previous"
+      },
+      "catalog": {
+        "source": "current",
+        "saved_thread_id": null,
+        "saved_digest": null
+      },
+      "pending": {
+        "attempt_id": "previous",
+        "connection_id": "old",
+        "thread_id": null,
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "replacement",
+    "name": "replacement-True-False",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "prepare_attempt": "previous"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "pending": {
+        "attempt_id": "previous",
+        "connection_id": "connection",
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "replacement",
+    "name": "replacement-True-True",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "prepare_attempt": "previous"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "pending": {
+        "attempt_id": "previous",
+        "connection_id": "old",
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "loaded",
+    "name": "codex",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "loaded": {
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account",
+        "connection_id": "connection",
+        "thread_id": "thread"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "loaded",
+    "name": "claude",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "loaded": {
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account",
+        "connection_id": "connection",
+        "thread_id": "thread"
+      }
+    },
+    "fast": true
+  },
+  {
+    "family": "replacement",
+    "name": "replacement-resume-changed-parameters",
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "prepare_attempt": "previous"
+      },
+      "catalog": {
+        "source": "legacy",
+        "saved_thread_id": "thread",
+        "saved_digest": "old-digest"
+      },
+      "pending": {
+        "attempt_id": "previous",
+        "connection_id": "old",
+        "thread_id": "thread",
+        "agent_id": "agent",
+        "epoch": 7,
+        "account_key": "account"
+      }
+    },
+    "fast": true,
+    "saved_params": {
+      "settings": {
+        "fast_mode": true
+      }
+    },
+    "expected_attempt_id": "attempt"
+  },
+  {
+    "name": "saved-empty-role",
+    "family": "guidance",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_role_guidance": ""
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "missing-native-effort-high",
+    "family": "native-effort",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_effort_present": false
+      },
+      "settings": {
+        "effort": "high",
+        "native_effort": "high"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "missing-native-effort-None",
+    "family": "native-effort",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "native_effort_present": false
+      },
+      "settings": {
+        "effort": null,
+        "native_effort": "medium"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-None",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-False",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": false
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-daybreak_enabled-True",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": true
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-None",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": null
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-standard",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "standard"
+        }
+      }
+    }
+  },
+  {
+    "name": "settings-cyber_access_program-other",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {},
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "other"
+        }
+      }
+    }
+  },
+  {
+    "name": "command-'/compact'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-'  $skill  '",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "  $skill  "
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-' /compact\\n'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": " /compact\n"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-' /compact\\r'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": " /compact\r"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-'ordinary'",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "ordinary"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-assets",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": true
+    }
+  },
+  {
+    "name": "command-multiple",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        },
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-followup",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "claude"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "followup",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "command-codex",
+    "family": "turn-command",
+    "fast": true,
+    "snapshot": {
+      "account": {
+        "provider": "codex"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "turn_input": {
+      "events": [
+        {
+          "kind": "user",
+          "text": "/compact"
+        }
+      ],
+      "has_assets": false
+    }
+  },
+  {
+    "name": "inspection-blocked",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-saved-error",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "inspectionError": "original error"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-superseded",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": null,
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "inspectionPhase": "superseded"
+        }
+      },
+      "admission": "native_release",
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-submitted",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "submittedAt": null
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-closed",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": null
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-foreign-epoch",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 8,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-foreign-root",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "foreign",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-future",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 1001,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-invalid-at",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": true,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "inspection-negative-at",
+    "family": "inspection",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "blocked",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": -1,
+          "error": "inspection failed"
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "release-close-same-connection",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-unrelated-close",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed"
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "other-release"
+    }
+  },
+  {
+    "name": "release-close-retained",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "retained",
+            "generation": 1
+          }
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-foreign-supervisor",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "other",
+            "generation": 1
+          }
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-retained-closed-null",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "old",
+          "at": 100,
+          "error": "inspection failed",
+          "supervisorIdentity": {
+            "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+            "handle": "retained",
+            "generation": 1
+          },
+          "closedAt": null
+        }
+      },
+      "account": {
+        "supervisor_identity": {
+          "stateDir": "/var/tmp/cs-rust-thread-prepare/supervisor",
+          "handle": "retained",
+          "generation": 1
+        }
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "claude-working-read",
+    "family": "receipts",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": true
+    },
+    "claude_working": true
+  },
+  {
+    "name": "release-close-falsey-False",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": false
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-0",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": 0
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-''",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": ""
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-[]",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": []
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "release-close-falsey-{}",
+    "family": "release-association",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread",
+        "native_release": {
+          "id": "release",
+          "phase": "released",
+          "resetPending": false,
+          "threadId": "thread",
+          "targetEpoch": 7,
+          "targetRootId": "root",
+          "targetParentId": null,
+          "accountKey": "account",
+          "connectionId": "connection",
+          "at": 100,
+          "error": "inspection failed",
+          "closedAt": {}
+        }
+      },
+      "account": {
+        "supervisor_identity": null
+      },
+      "catalog": {
+        "source": "legacy"
+      }
+    },
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model"
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    },
+    "close": {
+      "agent_id": "agent",
+      "account_key": "account",
+      "connection_id": "connection",
+      "thread_id": "thread",
+      "release_id": "release"
+    }
+  },
+  {
+    "name": "settings-remove-daybreakEnabled",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "present",
+          "value": false
+        }
+      }
+    },
+    "current": {
+      "settings": {
+        "daybreak_enabled": {
+          "state": "absent"
+        }
+      }
+    },
+    "removed_setting": "daybreakEnabled",
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  },
+  {
+    "name": "settings-remove-cyberAccessProgram",
+    "family": "stale",
+    "fast": true,
+    "snapshot": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "present",
+          "value": "standard"
+        }
+      }
+    },
+    "current": {
+      "settings": {
+        "cyber_access_program": {
+          "state": "absent"
+        }
+      }
+    },
+    "removed_setting": "cyberAccessProgram",
+    "receipt": {
+      "thread_id": "thread",
+      "fields": {
+        "model": "native-model",
+        "sandbox": {
+          "type": "workspaceWrite"
+        },
+        "approvalPolicy": "on-request",
+        "activePermissionProfile": {
+          "id": "profile"
+        }
+      },
+      "reattached": false,
+      "claude_read_submitted": false
+    }
+  }
+]
