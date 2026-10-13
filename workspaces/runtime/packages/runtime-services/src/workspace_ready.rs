@@ -2,7 +2,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use studio_runtime_store::workspace_ready::{ProvisionIdentity, workspace_generation};
+use studio_runtime_store::workspace_ready::{ProvisionIdentity, overlaps, workspace_generation};
+pub use studio_runtime_store::workspace_ready::{ReadyToken, Reservation};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,15 +40,6 @@ pub struct WorkspaceActor {
     pub workspace_operation: Option<String>,
     #[serde(default)]
     pub workspace_reservation_id: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reservation {
-    pub agent: String,
-    pub cwd: PathBuf,
-    pub operation: String,
-    pub id: Option<String>,
-    pub phase: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -90,7 +82,7 @@ pub enum WorkspaceRefusal {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceDecision {
-    Ready { cwd: PathBuf },
+    Ready { cwd: PathBuf, token: ReadyToken },
     Provision(WorktreePlan),
     Defer { reservation: Option<String> },
     Refuse(WorkspaceRefusal),
@@ -153,7 +145,10 @@ pub fn decide_workspace(
         if own_provision {
             continue;
         }
-        if cwd == Some(&reservation.cwd) || reservation.agent == actor.id {
+        if cwd.is_some_and(|p| overlaps(p, &reservation.cwd))
+            || plan.is_some_and(|p| overlaps(&p.destination, &reservation.cwd))
+            || reservation.agent == actor.id
+        {
             if matches!(reservation.operation.as_str(), "capture" | "checkpoint")
                 && reservation.phase.as_deref() != Some("recovery_required")
             {
@@ -170,7 +165,10 @@ pub fn decide_workspace(
     }
     if !actor.worktree && actor.workspace_mode.as_deref() != Some("worktree") {
         return match cwd {
-            Some(cwd) => WorkspaceDecision::Ready { cwd: cwd.clone() },
+            Some(cwd) => WorkspaceDecision::Ready {
+                cwd: cwd.clone(),
+                token: ReadyToken::new(record, cwd.clone()),
+            },
             None => recovery(None, actor.cwd.clone(), "Workspace directory is missing"),
         };
     }
@@ -184,7 +182,10 @@ pub fn decide_workspace(
             && actor.branch.is_some()
             && actor.branch == observed.branch
         {
-            return WorkspaceDecision::Ready { cwd: cwd.clone() };
+            return WorkspaceDecision::Ready {
+                cwd: cwd.clone(),
+                token: ReadyToken::new(record, cwd.clone()),
+            };
         }
         return recovery(
             None,

@@ -196,7 +196,8 @@ fn ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree() {
             &observed
         ),
         WorkspaceDecision::Ready {
-            cwd: plan.cwd.clone()
+            cwd: plan.cwd.clone(),
+            token: ReadyToken::new(&record, plan.cwd.clone())
         }
     );
     observed.branch = Some("other".into());

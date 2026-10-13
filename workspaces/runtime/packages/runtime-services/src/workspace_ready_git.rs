@@ -1,4 +1,12 @@
 //! Bounded host Git effects. The durable journal precedes every creation attempt.
+//!
+//! Like Python `apps/server/src/codex_worktree_creation.py:234`, worktree creation
+//! preserves repository hooks, filters and fsmonitor configuration. Only prompts and
+//! Git network transports are disabled. Tests configure hooks off in disposable repos.
+//! One state root per installation is guaranteed by RuntimeStore's ownership lock;
+//! the common-directory mutex serializes workers of that installation.
+//! Ready carries a token: the submission transaction MUST validate it before consuming
+//! queued input. Provider/account-worker wiring is owned by the account-worker slice.
 use crate::bounded_child::{self, ChildError};
 use crate::workspace_ready::{
     GitObservation, ProvisionEffect, Reservation, WorkspaceActor, WorkspaceDecision,
@@ -10,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::workspace_ready::{
-    ProvisionIdentity, WorkspaceReadyRepository, workspace_generation,
+    ProvisionIdentity, ReadyToken, WorkspaceReadyRepository, reservations, workspace_generation,
 };
 use studio_runtime_store::{CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot};
 
@@ -28,12 +36,14 @@ pub enum WorkspaceError {
     Git,
     #[error("Workspace Git deadline expired; inspect the journal before retrying")]
     Deadline,
+    #[error("Checkpoint reference already names a different commit")]
+    CheckpointRefConflict,
     #[error("Workspace serialization lock is poisoned")]
     Lock,
 }
 
 /// Call on a blocking preparation worker. Queued events belong to the caller and are never mutated.
-/// Re-run immediately before provider submission; this does not replace other admission gates.
+/// Validate the returned Ready token inside the submission transaction; other admission gates remain.
 pub fn prepare(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceDecision, WorkspaceError> {
     prepare_with_timeout(store, agent_id, GIT_TIMEOUT)
 }
@@ -125,7 +135,7 @@ fn provision(
             &observed,
         );
         if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
-            || identity.cwd.canonicalize().ok().as_ref() != Some(&identity.cwd)
+            || !confined(identity)
         {
             return Err(WorkspaceError::Git);
         }
@@ -149,18 +159,51 @@ fn provision(
     let outcome = checkpoint
         .as_ref()
         .map_err(|_| checkpoint_error.as_deref().unwrap_or("Checkpoint skipped"));
-    let attached =
-        store.transaction(|tx| WorkspaceReadyRepository::publish(tx, identity, outcome, now()))?;
-    if attached {
-        Ok(WorkspaceDecision::Ready {
+    publish_verified(store, identity, outcome, git)
+}
+
+fn confined(identity: &ProvisionIdentity) -> bool {
+    identity.destination.canonicalize().ok().is_some_and(|p| {
+        p == identity.destination
+            && p.starts_with(identity.repository.join(".worktrees/codex-agents"))
+    }) && identity.cwd.canonicalize().ok().as_ref() == Some(&identity.cwd)
+}
+
+/// Git re-observation is bounded by the original deadline and occurs while publication's
+/// transaction excludes reservation/actor writers, after every checkpoint command.
+fn publish_verified(
+    store: &RuntimeStore,
+    identity: &ProvisionIdentity,
+    checkpoint: Result<&Value, &str>,
+    git: &Git,
+) -> Result<WorkspaceDecision, WorkspaceError> {
+    let token = store.transaction(|tx| {
+        let current = CheckpointsRepository::workspace_snapshot(tx, &identity.agent)?;
+        let valid = current.as_ref().is_some_and(|current| {
+            let Ok(actor) = actor(current) else { return false };
+            let Ok(observed) = git.worktree(identity) else { return false };
+            let decision = decide_workspace(&actor, &current.agent.record,
+                Some(&actor.cwd), &reservations(current), Some(identity), true, &observed);
+            confined(identity) && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
+        });
+        if !valid {
+            WorkspaceReadyRepository::uncertain(tx, identity, "Workspace evidence changed before publication", now())?;
+            return Ok(None);
+        }
+        if !WorkspaceReadyRepository::publish(tx, identity, checkpoint, now())? { return Ok(None); }
+        let record = CheckpointsRepository::agent(tx, &identity.agent)?.expect("published actor");
+        Ok(Some(ReadyToken::new(&record.record, identity.cwd.clone())))
+    })?;
+    match token {
+        Some(token) => Ok(WorkspaceDecision::Ready {
             cwd: identity.cwd.clone(),
-        })
-    } else {
-        Ok(recovery(
+            token,
+        }),
+        None => Ok(recovery(
             Some(identity.id.clone()),
             identity.destination.clone(),
-            "Actor changed; created worktree remains unattached",
-        ))
+            "Workspace changed; created worktree remains unattached",
+        )),
     }
 }
 
@@ -205,75 +248,7 @@ fn observe(
 ) -> Result<Context, WorkspaceError> {
     let actor = actor(&snapshot)?;
     let cwd = actor.cwd.canonicalize().ok().filter(|path| path.is_dir());
-    let mut reservations = Vec::new();
-    for other in &snapshot.agents {
-        if let Some(kind) = other
-            .record
-            .get("workspaceOperation")
-            .and_then(Value::as_str)
-        {
-            let path = other
-                .record
-                .get("cwd")
-                .and_then(Value::as_str)
-                .ok_or(WorkspaceError::InvalidRecord)?;
-            let path = Path::new(path)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(path));
-            let id = other
-                .record
-                .get("workspaceReservationId")
-                .and_then(Value::as_str);
-            let op = snapshot
-                .operations
-                .iter()
-                .find(|op| Some(op.id.as_str()) == id)
-                .or_else(|| {
-                    snapshot
-                        .operations
-                        .iter()
-                        .find(|op| op.record["agent"] == other.id)
-                });
-            reservations.push(Reservation {
-                agent: other.id.clone(),
-                cwd: path,
-                operation: kind.to_owned(),
-                id: id.map(str::to_owned).or_else(|| op.map(|o| o.id.clone())),
-                phase: op
-                    .and_then(|o| o.record["phase"].as_str())
-                    .map(str::to_owned),
-            });
-        }
-    }
-    // Marker loss must not hide an unresolved durable restore, branch, or provision operation.
-    for operation in &snapshot.operations {
-        if reservations
-            .iter()
-            .any(|r| r.id.as_deref() == Some(&operation.id))
-        {
-            continue;
-        }
-        let record = &operation.record;
-        let path = record
-            .get("cwd")
-            .and_then(Value::as_str)
-            .ok_or(WorkspaceError::InvalidRecord)?;
-        reservations.push(Reservation {
-            agent: record["agent"]
-                .as_str()
-                .ok_or(WorkspaceError::InvalidRecord)?
-                .to_owned(),
-            cwd: Path::new(path)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(path)),
-            operation: record["kind"]
-                .as_str()
-                .ok_or(WorkspaceError::InvalidRecord)?
-                .to_owned(),
-            id: Some(operation.id.clone()),
-            phase: record["phase"].as_str().map(str::to_owned),
-        });
-    }
+    let reservations = reservations(&snapshot);
     let mut context = Context {
         snapshot,
         actor,
@@ -314,22 +289,22 @@ fn observe(
         return Err(WorkspaceError::InvalidRecord);
     }
     let id = format!("provision:{}:{}", context.actor.id, context.actor.epoch);
+    let repository = PathBuf::from(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())
+        .canonicalize()
+        .map_err(|_| WorkspaceError::Git)?;
+    let common_dir = git.common(&repository)?;
+    let relative = cwd
+        .strip_prefix(&repository)
+        .map_err(|_| WorkspaceError::InvalidRecord)?;
+    let destination = repository
+        .join(".worktrees/codex-agents")
+        .join(&context.actor.id);
     let journal = WorkspaceReadyRepository::journal(&store.read()?, &id)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())
             .map_err(|_| WorkspaceError::InvalidRecord)?
     } else {
-        let repository = PathBuf::from(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())
-            .canonicalize()
-            .map_err(|_| WorkspaceError::Git)?;
-        let common_dir = git.common(&repository)?;
-        let relative = cwd
-            .strip_prefix(&repository)
-            .map_err(|_| WorkspaceError::InvalidRecord)?;
-        let destination = repository
-            .join(".worktrees/codex-agents")
-            .join(&context.actor.id);
         let source = &context.snapshot.agent.record;
         let base = source
             .get("workerBaseCommit")
@@ -352,23 +327,14 @@ fn observe(
             agent: context.actor.id.clone(),
             source: workspace_generation(source),
             cwd: destination.join(relative),
-            destination,
+            destination: destination.clone(),
             branch: format!("codex-agent/{}", context.actor.id),
-            repository,
+            repository: repository.clone(),
             common_dir,
             base_commit,
         }
     };
     // A stored journal is data, not authority to choose another path or branch.
-    let repository = PathBuf::from(git.run(cwd, &["rev-parse", "--show-toplevel"])?.trim())
-        .canonicalize()
-        .map_err(|_| WorkspaceError::Git)?;
-    let relative = cwd
-        .strip_prefix(&repository)
-        .map_err(|_| WorkspaceError::InvalidRecord)?;
-    let destination = repository
-        .join(".worktrees/codex-agents")
-        .join(&context.actor.id);
     if plan.repository != repository
         || plan.destination != destination
         || plan.cwd != destination.join(relative)
@@ -417,18 +383,36 @@ impl Git {
         if timeout.is_zero() {
             return Err(WorkspaceError::Deadline);
         }
-        let mut safe_args = vec![
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "protocol.allow=never",
-        ];
+        let mut safe_args = vec!["-c", "protocol.allow=never"];
+        // Never inherit GIT_DIR, GIT_INDEX_FILE, GIT_CONFIG_COUNT, or other Git overrides.
+        let inherited = [
+            "PATH",
+            "HOME",
+            "USERPROFILE",
+            "SYSTEMROOT",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+            "XDG_CONFIG_HOME",
+        ]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key, value)))
+        .collect::<Vec<_>>();
+        let mut environment = inherited
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect::<Vec<_>>();
+        environment.extend([
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_ALLOW_PROTOCOL", ""),
+        ]);
         safe_args.extend_from_slice(args);
-        let output = bounded_child::run(bounded_child::Request {
+        let output = bounded_child::run_isolated(bounded_child::Request {
             program: std::ffi::OsStr::new("git"),
             cwd: cwd.as_os_str(),
             args: &safe_args,
-            environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0")],
+            environment: &environment,
             input: None,
             stdout_limit: GIT_OUTPUT_LIMIT,
             stderr_limit: 4096,
@@ -509,12 +493,33 @@ impl Git {
                 observation.head = fields.get("HEAD").map(|s| (*s).to_owned());
                 if observation.directory.as_deref() == Some(destination) {
                     observation.common_dir = Some(self.common(destination)?);
-                    observation.clean = self
-                        .run(
-                            destination,
-                            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-                        )?
-                        .is_empty();
+                    let flags = self.run(destination, &["ls-files", "-v", "-z"])?;
+                    let safe_index = flags
+                        .split('\0')
+                        .filter(|s| !s.is_empty())
+                        .all(|entry| entry.starts_with("H "));
+                    let sparse = self.run(
+                        destination,
+                        &[
+                            "config",
+                            "--type=bool",
+                            "--default=false",
+                            "--get",
+                            "core.sparseCheckout",
+                        ],
+                    )?;
+                    observation.clean = safe_index
+                        && sparse.trim() == "false"
+                        && self
+                            .run(
+                                destination,
+                                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                            )?
+                            .is_empty();
+                    if observation.clean {
+                        self.run(destination, &["diff", "--cached", "--quiet", "HEAD", "--"])?;
+                        self.run(destination, &["diff-files", "--quiet", "--"])?;
+                    }
                 }
             }
         }
@@ -532,7 +537,7 @@ impl Git {
             &plan.repository,
             &[
                 "-c",
-                "core.sparseCheckout=false",
+                "checkout.workers=16",
                 "worktree",
                 "add",
                 "-b",
@@ -550,14 +555,32 @@ impl Git {
             .to_owned();
         let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, plan.id.as_bytes()).to_string();
         let reference = format!("refs/codex-agents/checkpoints/{}/{id}", plan.agent);
-        self.run(
+        let existing = self.run(
             &plan.destination,
-            &["update-ref", &reference, &plan.base_commit],
+            &["for-each-ref", "--format=%(objectname)", &reference],
         )?;
+        if existing.trim() != plan.base_commit {
+            self.run(
+                &plan.destination,
+                &[
+                    "update-ref",
+                    &reference,
+                    &plan.base_commit,
+                    &"0".repeat(plan.base_commit.len()),
+                ],
+            )
+            .map_err(|error| {
+                if existing.trim().is_empty() {
+                    error
+                } else {
+                    WorkspaceError::CheckpointRefConflict
+                }
+            })?;
+        }
         Ok(
             json!({"id":id,"agent":plan.agent,"rootId":plan.source.get("rootId"),"label":"Before first turn",
             "tree":tree,"commit":plan.base_commit,"ref":reference,"threadId":plan.source.get("threadId"),
-            "turnId":null,"created":now(),"cwd":plan.cwd,"historyParent":null,"historyDelta":[],"historyBoundary":null}),
+            "created":now(),"cwd":plan.cwd}),
         )
     }
 }

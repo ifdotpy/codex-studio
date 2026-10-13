@@ -4,10 +4,15 @@ workspace_blockers is isolated on an in-memory database. prepare_locked and
 prepare_worker_worktree cannot be pure oracles: they connect providers, mutate
 Git, and start futures. Rust's explicit unsupported modes and evidence-based
 provision recovery are intentional additions, covered by Rust decision tests.
+Reservation overlap (ancestor/descendant, including the planned destination) is
+intentionally stricter than Python's same-directory gate. Publication witnesses
+execute Python's prepare_worker_worktree and capture_checkpoint with Git effects
+stubbed at the boundary; Rust's actual Git effects are checked separately.
 """
 import sys
 from oracle_guard import install_guard
 GUARD = install_guard(block_processes=True)
+import contextlib
 import concurrent.futures
 import json
 import os
@@ -76,7 +81,68 @@ def seed(root, cwd):
             runtime.close()
 
 
+def publication(request):
+    from codex_workspace import WorkspaceMixin
+    import codex_worktree_creation
+
+    class Witness(WorkspaceMixin):
+        def __init__(self):
+            self.root = pathlib.Path(request["repo"])
+            self.lock = threading.RLock()
+            self.connection = sqlite3.connect(":memory:")
+            self.connection.execute("CREATE TABLE runtime_items(id TEXT, agent TEXT, record TEXT)")
+            self.connection.execute("CREATE TABLE runtime_checkpoints(id TEXT, record TEXT)")
+            self.current = dict(request["actor"])
+            self.checkpoint = None
+            for item in request["items"]:
+                self.connection.execute("INSERT INTO runtime_items VALUES(?,?,?)",
+                                        (item["id"], self.current["id"], json.dumps(item)))
+            if request["parent"]:
+                parent = request["parent"]
+                self.connection.execute("INSERT INTO runtime_checkpoints VALUES(?,?)", (parent["id"], json.dumps(parent)))
+
+        def db(self):
+            return contextlib.nullcontext(self.connection)
+
+        def agent(self, *_args):
+            return dict(self.current)
+
+        checked_actor_in_own_db = agent
+
+        def put(self, db, kind, record):
+            if kind == "agents":
+                self.current = dict(record)
+            else:
+                assert kind == "checkpoints"
+                self.checkpoint = dict(record)
+
+        def git(self, actor, args, *_args):
+            if args[0] == "commit-tree":
+                return request["commit"].encode()
+            if args[0] == "update-ref":
+                return b""
+            if args == ["rev-parse", "HEAD^{tree}"]:
+                return request["tree"].encode()
+            if args == ["rev-parse", "--git-path", "hooks/post-checkout"]:
+                return str(self.root / "absent-hook").encode()
+            raise AssertionError(args)
+
+    runtime = Witness()
+    try:
+        with patch.object(codex_runtime.subprocess, "check_output", return_value=b""), \
+             patch.object(codex_worktree_creation, "create_worker_worktree", return_value=False):
+            codex_runtime.Runtime.prepare_worker_worktree(runtime, dict(runtime.current), request["repo"])
+        return {"actor": runtime.current, "checkpoint": runtime.checkpoint}
+    finally:
+        runtime.connection.close()
+
+
 if __name__ == "__main__":
     request = json.load(sys.stdin)
-    result = seed(request["root"], request["cwd"]) if request["command"] == "seed" else blockers(request["cases"])
+    if request["command"] == "seed":
+        result = seed(request["root"], request["cwd"])
+    elif request["command"] == "publication":
+        result = publication(request)
+    else:
+        result = blockers(request["cases"])
     print(json.dumps(result))
