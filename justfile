@@ -86,4 +86,4 @@ test-rust-runtime-corpora:
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
-    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/submit-gates-mutations" --manifest workspaces/runtime/packages/runtime-services/tests/submit_gates/mutations.json --filter 'binary(submit_gates_corpus)' {{args}}
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/submit-gates-mutations" --manifest workspaces/runtime/packages/runtime-services/tests/submit_gates/mutations.json --filter 'binary(submit_gates_corpus) or test(submit_gates::tests) or test(model_catalog::tests::admission_)' {{args}}
