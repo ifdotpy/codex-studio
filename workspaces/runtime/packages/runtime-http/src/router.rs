@@ -10,6 +10,11 @@ use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
 
+#[cfg(unix)]
+use studio_runtime_services::terminal_driver::TerminalDriver;
+#[cfg(unix)]
+use studio_runtime_services::terminal_pty::PtyTerminalSession;
+
 use crate::error::error_response;
 use crate::middleware;
 use crate::routes::{self, compose};
@@ -31,6 +36,10 @@ pub struct HttpState {
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
+    #[cfg(unix)]
+    terminal_driver: Option<Arc<TerminalDriver<PtyTerminalSession>>>,
+    #[cfg(unix)]
+    terminal_startup_failed: bool,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -64,6 +73,21 @@ impl HttpState {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
         }
+        #[cfg(unix)]
+        let mut terminal_startup_failed = false;
+        #[cfg(unix)]
+        let terminal_driver = store.as_ref().map(|store| {
+            let session = PtyTerminalSession::new();
+            let driver = Arc::new(TerminalDriver::new(Arc::clone(store), session.clone()));
+            let weak = Arc::downgrade(&driver);
+            session.set_notification_callback(Arc::new(move |notification| {
+                if let Some(driver) = weak.upgrade() {
+                    let _notification_result = driver.apply_notification(notification);
+                }
+            }));
+            terminal_startup_failed = driver.reconcile_after_restart().is_err();
+            driver
+        });
         Self {
             account_driver: None,
             claude_login: None,
@@ -76,6 +100,10 @@ impl HttpState {
             public_origin,
             validators: Registry::default(),
             store,
+            #[cfg(unix)]
+            terminal_driver,
+            #[cfg(unix)]
+            terminal_startup_failed,
             account_policy,
             tool_catalog: None,
             model_catalog,
@@ -129,9 +157,34 @@ impl HttpState {
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
         Arc::clone(&self.sync_changes)
     }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_driver_handle(&self) -> Option<Arc<TerminalDriver<PtyTerminalSession>>> {
+        self.terminal_driver.clone()
+    }
+
+    /// Stop local terminal process groups and reap their children.
+    #[cfg(unix)]
+    pub fn close_terminal_sessions(
+        &self,
+    ) -> Result<(), studio_runtime_services::terminal_driver::TerminalError> {
+        if let Some(driver) = &self.terminal_driver {
+            driver.close_session()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    pub fn close_terminal_sessions(&self) -> Result<(), std::convert::Infallible> {
+        Ok(())
+    }
 }
 
 pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    if state.terminal_startup_failed {
+        return Err(std::io::Error::other("cannot reconcile persisted terminal sessions").into());
+    }
     let authority = operations().map_err(|error| {
         std::io::Error::other(format!("cannot load committed OpenAPI operations: {error}"))
     })?;

@@ -3,6 +3,8 @@
 mod client;
 mod ports;
 mod protocol;
+#[cfg(unix)]
+mod pty_host;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
@@ -23,6 +25,8 @@ mod transport;
 pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
+#[cfg(unix)]
+pub use pty_host::{LocalPtyHost, PtyHostError, PtySession};
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
 pub use transport::SupervisorTransport;
 
