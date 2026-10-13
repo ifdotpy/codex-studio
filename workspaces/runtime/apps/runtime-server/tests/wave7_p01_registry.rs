@@ -1052,6 +1052,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_HOST_CHILD", "1")
+            .env("STUDIO_W7_P01_COMPLETE_TURN", "1")
             .env("CODEX_AGENTS_SUPERVISOR_MODE", "1")
             .kill_on_drop(true)
             .output()
@@ -1155,31 +1156,31 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     let runtime = host_runtime::HostRuntime::start(
         &mut state,
         fixture.store.clone(),
-        accounts,
+        accounts.clone(),
         Some(executable.to_string_lossy().into_owned()),
     )
     .await
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let body = json!({"room":fixture.agents[0]["id"],"id":"65f07ce1-42b9-42a3-b42e-8710a0c54617","text":"host composition cutover"});
-    for _ in 0..2 {
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/api/messages")
-            .header("host", "127.0.0.1:49171")
-            .header("content-type", "application/json")
-            .header("x-canvas-token", "fixture-token")
-            .header(
-                studio_runtime_http::API_SCHEMA_HASH_HEADER,
-                studio_runtime_http::schema::api_schema_hash(),
-            )
-            .extension(axum::extract::ConnectInfo(
-                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
-            ))
-            .body(axum::body::Body::from(body.to_string()))
-            .unwrap();
-        assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
-    }
+    let initial_revision = state.sync_changes_handle().snapshot().revision;
+    let mut changes = state.sync_changes_handle().subscribe();
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
     let (mut reported, _) =
         tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
             .await
@@ -1199,6 +1200,111 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         std::fs::read_to_string(fixture._root.path().join("startup-cwd")).unwrap(),
         std::env::current_dir().unwrap().to_string_lossy().as_ref()
     );
+
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let terminal_agent = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let row = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let value: Value = serde_json::from_str(&row).unwrap();
+            if value["status"] == "completed" && value["inFlight"] != true {
+                break value;
+            }
+            changes
+                .changed()
+                .await
+                .expect("store publication remains open");
+        }
+    })
+    .await
+    .expect("scripted provider terminal notification reaches the agent record");
+    assert_eq!(terminal_agent["status"], "completed");
+    assert!(state.sync_changes_handle().snapshot().revision > initial_revision);
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/transcript?id={agent_id}"))
+        .header("host", "127.0.0.1:49171")
+        .header("origin", "http://127.0.0.1:49171")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let transcript_status = response.status();
+    let transcript_body = axum::body::to_bytes(response.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        transcript_status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&transcript_body)
+    );
+    let transcript: Value = serde_json::from_slice(&transcript_body).unwrap();
+    assert!(transcript.to_string().contains("host composition cutover"));
+    assert!(
+        transcript
+            .to_string()
+            .contains("fixture assistant response")
+    );
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/transcript/page?id={agent_id}&limit=50"))
+        .header("host", "127.0.0.1:49171")
+        .header("origin", "http://127.0.0.1:49171")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let page: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(page.to_string().contains("host composition cutover"));
+    assert!(page.to_string().contains("fixture assistant response"));
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
     runtime_shutdown::close(runtime, &state).await.unwrap();
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
     let launch = host_runtime::codex_launch(

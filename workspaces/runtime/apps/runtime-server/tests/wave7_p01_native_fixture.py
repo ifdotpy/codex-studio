@@ -40,3 +40,22 @@ for line in sys.stdin:
     else:
         result = {}
     print(json.dumps({"id": request["id"], "result": result}), flush=True)
+    if method == "turn/start" and os.environ.get("STUDIO_W7_P01_COMPLETE_TURN") == "1":
+        params = request["params"]
+        thread_id = params["threadId"]
+        turn_id = "fixture-turn"
+        item_id = "fixture-assistant-item"
+        for event in (
+            {"method": "turn/started", "params": {"threadId": thread_id,
+             "turn": {"id": turn_id, "status": "inProgress"}}},
+            {"method": "item/started", "params": {"threadId": thread_id,
+             "turnId": turn_id, "item": {"id": item_id, "type": "agentMessage", "text": ""}}},
+            {"method": "item/agentMessage/delta", "params": {"threadId": thread_id,
+             "turnId": turn_id, "itemId": item_id, "delta": "fixture assistant response"}},
+            {"method": "item/completed", "params": {"threadId": thread_id,
+             "turnId": turn_id, "item": {"id": item_id, "type": "agentMessage",
+             "text": "fixture assistant response"}}},
+            {"method": "turn/completed", "params": {"threadId": thread_id,
+             "turn": {"id": turn_id, "status": "completed"}}},
+        ):
+            print(json.dumps(event), flush=True)
