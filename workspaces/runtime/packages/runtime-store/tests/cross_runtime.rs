@@ -370,7 +370,9 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
             }
             let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
                 .expect("Python fixture contains the agent");
-            agent.set("rustAgentFlag", json!(true));
+            agent
+                .extra
+                .insert("rustAgentFlag".into(), json!(true));
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
                 .expect("Python fixture contains the task");
@@ -507,7 +509,7 @@ fn python_feature_initialized_state_round_trips_through_rust() {
         .transaction(|tx| {
             let mut agent =
                 AgentRepository::get(tx, &AgentId::from(agent_id))?.expect("agent exists");
-            agent.set("rustWrite", json!(true));
+            agent.extra.insert("rustWrite".into(), json!(true));
             AgentRepository::put(tx, &agent)?;
             let mut task =
                 TaskRepository::get(tx, &TaskId::from("feature-task"))?.expect("task exists");
