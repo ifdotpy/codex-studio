@@ -295,15 +295,7 @@ fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, Queue
         .map_err(|_| invalid_stored("runtime_event_meta", id))?;
     match record {
         None => Ok(json!({})),
-        Some(record) => {
-            let value: Value = serde_json::from_str(&record)
-                .map_err(|_| invalid_stored("runtime_event_meta", id))?;
-            if value.is_object() {
-                Ok(value)
-            } else {
-                Err(invalid_stored("runtime_event_meta", id))
-            }
-        }
+        Some(value) => Ok(value),
     }
 }
 

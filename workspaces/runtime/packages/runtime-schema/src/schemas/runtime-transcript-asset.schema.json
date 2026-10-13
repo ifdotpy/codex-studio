@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Full attachment row; unlike the HTTP projection this retains its path.",
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "hash": {
+      "title": "Hash",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "image": {
+      "title": "Image",
+      "type": "boolean"
+    },
+    "mime": {
+      "title": "Mime",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "size": {
+      "title": "Size",
+      "type": "integer",
+      "x-safe-integer": "unsigned"
+    }
+  },
+  "required": [
+    "id",
+    "agent",
+    "name",
+    "path",
+    "mime",
+    "image",
+    "size",
+    "hash",
+    "created"
+  ],
+  "title": "PersistedTranscriptAsset",
+  "type": "object"
+}

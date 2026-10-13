@@ -21,11 +21,17 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
     for registration in crate::repositories::schema_registrations() {
         let requirements = registration.requirements;
         for table in requirements.tables {
+            if is_bootstrap_table(requirements, table) {
+                continue;
+            }
             require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
         }
         for conditional in requirements.conditional_tables {
             if table_exists(&canvas, conditional.table_exists)? {
                 for table in conditional.tables {
+                    if is_bootstrap_table(requirements, table) {
+                        continue;
+                    }
                     require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
                 }
             }
@@ -391,6 +397,13 @@ fn object_mismatch(database: &str, object: &str, reason: &str) -> StoreError {
         object: object.to_owned(),
         reason: reason.to_owned(),
     }
+}
+
+fn is_bootstrap_table(requirements: &SchemaRequirements, table: &TableRequirement) -> bool {
+    requirements
+        .bootstrap_tables
+        .iter()
+        .any(|bootstrap| bootstrap.name == table.name)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

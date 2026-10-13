@@ -22,7 +22,6 @@ pub(crate) async fn queue_action(
     let signature =
         super::work_items::python_operation_signature(&json!({"agent": agent_id, "body": body}))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = super::sync_delta::write(
         store,
         move |transaction| {
@@ -31,9 +30,7 @@ pub(crate) async fn queue_action(
                 &agent_id,
                 &body,
                 &signature,
-                |connection, agent| {
-                    super::queue_read::queue_snapshot(connection, agent, &validators)
-                },
+                |connection, agent| super::queue_read::queue_snapshot(connection, agent),
             )
         },
         write_error,

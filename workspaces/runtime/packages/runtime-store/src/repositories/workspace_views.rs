@@ -1,9 +1,13 @@
-use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
 
 use crate::StoreResult;
 use crate::StoredRecord;
-use crate::records::get_json_record;
+use crate::records::{
+    AgentId, AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, JsonRecord,
+    MonitorRecord, PlanRecord, RequestRecord, RuleRecord, Table, TaskId, TaskRecord,
+    WorkItemRecord,
+};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
@@ -109,12 +113,13 @@ impl WorkspaceViewsRepository {
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params_from_iter(agent_ids.iter()), |row| {
-            Ok(StoredRecord {
-                id: row.get(0)?,
-                record: Some(row.get(1)?),
-            })
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        rows.map(|row| {
+            let (id, raw) = row?;
+            decode_workspace_record(connection, table, &id, &raw)
+        })
+        .collect()
     }
 
     pub fn agents(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
@@ -149,12 +154,13 @@ impl WorkspaceViewsRepository {
             })
             .unwrap_or_default();
         let rows = statement.query_map(params_from_iter(args.iter()), |row| {
-            Ok(StoredRecord {
-                id: row.get(0)?,
-                record: Some(row.get(1)?),
-            })
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        rows.map(|row| {
+            let (id, raw) = row?;
+            stored_record::<TaskRecord>(connection, id, &raw)
+        })
+        .collect()
     }
 
     pub fn snapshot_monitors(
@@ -184,42 +190,31 @@ impl WorkspaceViewsRepository {
             .map(SqlValue::Text)
             .collect::<Vec<_>>();
         let rows = statement.query_map(params_from_iter(args.iter()), |row| {
-            Ok(StoredRecord {
-                id: row.get(0)?,
-                record: Some(row.get(1)?),
-            })
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        rows.map(|row| {
+            let (id, raw) = row?;
+            stored_record::<MonitorRecord>(connection, id, &raw)
+        })
+        .collect()
     }
 
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        get_json_record(connection, "runtime_tasks", id)
+        Ok(Table::<TaskRecord>::new(connection)
+            .get(&TaskId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
-    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        get_json_record(connection, "runtime_agents", id)
+    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
+        Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
-    pub fn agent_ids(connection: &Connection) -> StoreResult<Vec<String>> {
-        Ok(connection
-            .prepare("SELECT id FROM runtime_agents")?
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?)
+    pub fn validate_task_records(connection: &Connection) -> StoreResult<()> {
+        Table::<TaskRecord>::new(connection).list()?;
+        Ok(())
     }
 
-    pub fn first_invalid_task_identity(connection: &Connection) -> StoreResult<Option<String>> {
-        Ok(connection
-            .query_row(
-                "SELECT id FROM runtime_tasks WHERE CASE WHEN json_valid(record)=0 THEN 1 \
-                 ELSE json_type(record,'$.id') IS NOT 'text' \
-                 OR json_extract(record,'$.id') IS NOT id \
-                 OR json_type(record,'$.agent') IS NOT 'text' END LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
+    /// The composite cursor remains specialized because it orders by two JSON timestamps.
     pub fn task_page(
         connection: &Connection,
         agent_ids: &[String],
@@ -276,7 +271,6 @@ impl WorkspaceViewsRepository {
         args.push(SqlValue::Integer(
             i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
         ));
-        // Bind each predicate's values in the same order as its placeholders.
         let mut statement = connection.prepare(&sql)?;
         statement
             .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))?
@@ -302,15 +296,52 @@ fn workspace_table(table: &str) -> bool {
 }
 
 fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<StoredRecord>> {
-    let mut statement =
-        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT id,record FROM {} ORDER BY rowid",
+        table.replace('"', "\"\"")
+    ))?;
     let rows = statement.query_map([], |row| {
-        Ok(StoredRecord {
-            id: row.get(0)?,
-            record: Some(row.get(1)?),
-        })
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    rows.map(|row| {
+        let (id, raw) = row?;
+        decode_workspace_record(connection, table, &id, &raw)
+    })
+    .collect()
+}
+
+fn decode_workspace_record(
+    connection: &Connection,
+    table: &str,
+    id: &str,
+    raw: &str,
+) -> StoreResult<StoredRecord> {
+    match table {
+        "runtime_agents" => stored_record::<AgentRecord>(connection, id.to_owned(), raw),
+        "runtime_annotations" => stored_record::<AnnotationRecord>(connection, id.to_owned(), raw),
+        "runtime_checkpoints" => stored_record::<CheckpointRecord>(connection, id.to_owned(), raw),
+        "runtime_complaints" => stored_record::<ComplaintRecord>(connection, id.to_owned(), raw),
+        "runtime_plans" => stored_record::<PlanRecord>(connection, id.to_owned(), raw),
+        "runtime_requests" => stored_record::<RequestRecord>(connection, id.to_owned(), raw),
+        "runtime_rules" => stored_record::<RuleRecord>(connection, id.to_owned(), raw),
+        "runtime_tasks" => stored_record::<TaskRecord>(connection, id.to_owned(), raw),
+        "runtime_work" => stored_record::<WorkItemRecord>(connection, id.to_owned(), raw),
+        _ => Err(crate::StoreError::RecordContract(
+            "workspace record table is not declared",
+        )),
+    }
+}
+
+fn stored_record<R: JsonRecord>(
+    connection: &Connection,
+    id: String,
+    raw: &str,
+) -> StoreResult<StoredRecord> {
+    let record = Table::<R>::new(connection).decode_stored(&id, raw)?;
+    Ok(StoredRecord {
+        id,
+        record: Some(serde_json::to_string(&record)?),
+    })
 }
 
 fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {

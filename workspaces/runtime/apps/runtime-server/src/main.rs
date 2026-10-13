@@ -14,7 +14,20 @@ const DEFAULT_PORT: u16 = 4620;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let port = parse_port(env::args().skip(1))?;
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("state-check") {
+        let state_dir = args
+            .get(1)
+            .ok_or("state-check requires a state directory")?;
+        if args.len() != 2 {
+            return Err("state-check accepts exactly one state directory".into());
+        }
+        let report =
+            studio_runtime_store::check_state_readonly(PathBuf::from(state_dir).as_path())?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let port = parse_port(args.into_iter())?;
     let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).await?;
     let address = listener.local_addr()?;
     let mut token = [0_u8; 32];

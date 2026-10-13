@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Optional event metadata row, keyed by runtime_events.id, not JSON id.",
+  "properties": {
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Assets",
+      "type": "array"
+    },
+    "timing": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timing"
+    }
+  },
+  "title": "RuntimeEventMetadataRecord",
+  "type": "object"
+}

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use studio_runtime_store::{AgentRecord, StoredAgent, StoredRule};
+use studio_runtime_store::{AgentRecord, RuleRecord};
 use thiserror::Error;
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -13,41 +13,29 @@ pub enum RulesError {
 }
 
 pub fn visible_rules(
-    rules: Vec<StoredRule>,
-    agents: Vec<StoredAgent>,
-) -> Result<Vec<StoredRule>, RulesError> {
+    rules: Vec<RuleRecord>,
+    agents: Vec<AgentRecord>,
+) -> Result<Vec<RuleRecord>, RulesError> {
     let mut deleted_agents = BTreeMap::new();
     for agent in agents {
-        let value = serde_json::from_str::<Value>(&agent.record)
-            .map_err(|_| invalid_object("agents", agent.id.clone()))?;
-        let record = serde_json::from_value::<AgentRecord>(value)
-            .map_err(|_| invalid_object("agents", agent.id.clone()))?;
-        if record.id.0 != agent.id {
-            return Err(invalid_object("agents", agent.id));
-        }
-        let deleted = match record.extra.get("deletedAt") {
-            None => false,
+        let id = agent.id().0.clone();
+        let deleted = match agent.extra.get("deletedAt") {
+            None | Some(Value::Null) => false,
             Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-            _ => return Err(invalid_object("agents", agent.id)),
+            _ => return Err(invalid_object("agents", id)),
         };
-        deleted_agents.insert(agent.id, deleted);
+        deleted_agents.insert(id, deleted);
     }
 
     let mut visible = Vec::with_capacity(rules.len());
     for rule in rules {
-        let value = serde_json::from_str::<Value>(&rule.record)
-            .map_err(|_| invalid_object("rules", rule.id.clone()))?;
-        let Some(object) = value.as_object() else {
-            return Err(invalid_object("rules", rule.id));
-        };
-        if object.get("id").and_then(Value::as_str) != Some(rule.id.as_str()) {
-            return Err(invalid_object("rules", rule.id));
-        }
-        let Some(agent_id) = object.get("agent").and_then(Value::as_str) else {
-            return Err(invalid_object("rules", rule.id));
+        let value = rule.value();
+        let id = rule.id().as_str().to_owned();
+        let Some(agent_id) = value.get("agent").and_then(Value::as_str) else {
+            return Err(invalid_object("rules", id));
         };
         let Some(deleted) = deleted_agents.get(agent_id) else {
-            return Err(invalid_object("rules", rule.id));
+            return Err(invalid_object("rules", id));
         };
         if !deleted {
             visible.push(rule);
@@ -64,9 +52,9 @@ fn invalid_object(object: &'static str, id: String) -> RulesError {
 mod tests {
     use super::{RulesError, visible_rules};
     use serde_json::json;
-    use studio_runtime_store::{StoredAgent, StoredRule};
+    use studio_runtime_store::{AgentRecord, RuleRecord};
 
-    fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> StoredAgent {
+    fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> AgentRecord {
         let mut record = json!({
             "id": id,
             "rootId": id,
@@ -76,17 +64,11 @@ mod tests {
         if let Some(value) = deleted_at {
             record["deletedAt"] = value;
         }
-        StoredAgent {
-            id: id.to_owned(),
-            record: record.to_string(),
-        }
+        AgentRecord::from_value(record).expect("agent record has an id")
     }
 
-    fn rule(id: &str, agent: &str) -> StoredRule {
-        StoredRule {
-            id: id.to_owned(),
-            record: json!({"id": id, "agent": agent}).to_string(),
-        }
+    fn rule(id: &str, agent: &str) -> RuleRecord {
+        RuleRecord::from_value(json!({"id": id, "agent": agent})).expect("rule record has an id")
     }
 
     #[test]
@@ -100,18 +82,9 @@ mod tests {
     }
 
     #[test]
-    fn refuses_rule_with_missing_or_mismatched_agent() {
+    fn refuses_rule_with_missing_agent() {
         assert_eq!(
             visible_rules(vec![rule("rule", "missing")], vec![]),
-            Err(RulesError::InvalidStoredObject {
-                object: "rules",
-                id: "rule".to_owned(),
-            })
-        );
-        let mut invalid = rule("rule", "agent");
-        invalid.record = json!({"id": "other", "agent": "agent"}).to_string();
-        assert_eq!(
-            visible_rules(vec![invalid], vec![agent("agent", None)]),
             Err(RulesError::InvalidStoredObject {
                 object: "rules",
                 id: "rule".to_owned(),

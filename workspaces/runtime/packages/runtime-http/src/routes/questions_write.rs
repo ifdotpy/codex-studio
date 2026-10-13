@@ -182,6 +182,13 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object {object}/{id}"),
         ),
+        QuestionsWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
+        ),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
         QuestionsWriteError::Store(_)
         | QuestionsWriteError::Json(_)

@@ -4,7 +4,9 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
+mod state_check;
 pub use schema::sha256_hex;
+pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
 pub use repositories::account_state;
 
@@ -18,9 +20,13 @@ use thiserror::Error;
 
 pub use path::resolve_state_dir;
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
-    MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
-    TaskRepository, WorkStatus,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
+    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, GraphAgentRecord,
+    JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent, QueueEventId,
+    QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
+    RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord,
+    TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
+    UsageResumeRecord, WorkItemRecord, WorkStatus,
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
@@ -29,10 +35,10 @@ pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::projects::ProjectsRepository;
-pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
+pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
-pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
+pub use repositories::rules::RulesRepository;
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
@@ -74,6 +80,12 @@ pub enum StoreError {
     CommitOutcomeUnknown(rusqlite::Error),
     #[error("stored JSON record is invalid: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid stored object {table}/{id}")]
+    InvalidStoredObject { table: &'static str, id: String },
+    #[error("persisted JSON schema validation failed: {0}")]
+    SchemaValidation(String),
+    #[error("invalid JSON-record table contract: {0}")]
+    RecordContract(&'static str),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
 }

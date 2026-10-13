@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::event_write::request_signature as receipt_signature;
 use serde_json::{Value, json};
-use studio_runtime_store::{RuntimeStore, StoreError, TerminalsRepository};
+use studio_runtime_store::{RuntimeStore, StoreError, TerminalRecord, TerminalsRepository};
 use thiserror::Error;
 
 pub const OUTPUT_LIMIT: usize = 1_048_576;
@@ -97,10 +97,9 @@ pub struct TerminalCreate<'a> {
 pub fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
     let connection = store.read()?;
     let mut items = Vec::new();
-    for (id, raw) in TerminalsRepository::list(&connection)? {
-        let record = parse_record(&id, &raw)?;
+    for record in TerminalsRepository::list(&connection)? {
         if record.get("status").and_then(Value::as_str) != Some("closed") {
-            items.push(record);
+            items.push(record.value().clone());
         }
     }
     items.sort_by(|left, right| {
@@ -123,7 +122,7 @@ pub fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value, Term
     }
     let connection = store.read()?;
     let row = TerminalsRepository::get(&connection, id)?.ok_or(TerminalError::UnknownTerminal)?;
-    let record = parse_record(id, &row.record)?;
+    let record = row.record;
     let start = row.offset;
     let end = start + row.output.chars().count() as i64;
     let cursor = offset.clamp(start, end);
@@ -148,12 +147,10 @@ pub fn history_output(
     }
     let current =
         TerminalsRepository::get(&store.read()?, id)?.ok_or(TerminalError::UnknownTerminal)?;
-    let record = parse_record(id, &current.record)?;
+    let record = current.record;
     let row = store.transaction(|transaction| {
         let row = TerminalsRepository::get(transaction, id)?
             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-        parse_record(id, &row.record)
-            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
         if !row.output.is_empty() && TerminalsRepository::archive_start(transaction, id)?.is_none()
         {
             TerminalsRepository::append_output(transaction, id, row.offset, &row.output)?;
@@ -195,9 +192,12 @@ pub fn history_output(
     Ok(result)
 }
 
-fn add_status(result: &mut Value, record: &Value) {
+fn add_status(result: &mut Value, record: &TerminalRecord) {
     if let Some(fields) = result.as_object_mut() {
-        fields.insert("status".into(), record["status"].clone());
+        fields.insert(
+            "status".into(),
+            record.get("status").cloned().unwrap_or(Value::Null),
+        );
         fields.insert(
             "exitCode".into(),
             record.get("exitCode").cloned().unwrap_or(Value::Null),
@@ -251,10 +251,16 @@ impl<S: TerminalSession> TerminalDriver<S> {
             "id": id, "agent": agent, "title": "Terminal", "cwd": cwd,
             "status": "running", "created": now, "updated": now, "exitCode": null
         });
-        let raw = record.to_string();
+        let typed = TerminalRecord::from_value(record.clone())
+            .map_err(|_| TerminalError::InvalidStoredObject(id.clone()))?;
         self.store.transaction(|transaction| {
-            TerminalsRepository::put(transaction, &id, &raw, "", 0)?;
-            TerminalsRepository::save_receipt(transaction, request_id, &signature, &raw)
+            TerminalsRepository::put(transaction, &id, &typed, "", 0)?;
+            TerminalsRepository::save_receipt(
+                transaction,
+                request_id,
+                &signature,
+                &record.to_string(),
+            )
         })?;
         let params = json!({
             "processHandle": id,
@@ -274,15 +280,15 @@ impl<S: TerminalSession> TerminalDriver<S> {
             Ok(_) => Ok(record),
             Err(SessionError::UnknownOutcome) => Ok(record),
             Err(error) => {
-                let mut failed = record;
-                failed["status"] = Value::String("exited".into());
-                failed["error"] = json!(error.to_string());
+                let mut failed = typed;
+                failed.set("status", Value::String("exited".into()));
+                failed.set("error", json!(error.to_string()));
                 self.store.transaction(|transaction| {
-                    TerminalsRepository::update_record(transaction, &id, &failed.to_string())?;
+                    TerminalsRepository::update_record(transaction, &id, &failed)?;
                     TerminalsRepository::update_receipt(
                         transaction,
                         request_id,
-                        &failed.to_string(),
+                        &failed.value().to_string(),
                     )
                 })?;
                 Err(TerminalError::Session(error))
@@ -297,19 +303,19 @@ impl<S: TerminalSession> TerminalDriver<S> {
             .ok_or(TerminalError::InvalidRequest)?;
         let row = TerminalsRepository::get(&self.store.read()?, id)?
             .ok_or(TerminalError::UnknownTerminal)?;
-        let mut record = parse_record(id, &row.record)?;
+        let mut record = row.record;
         match action {
             "rename" => {
                 let title = data
                     .get("title")
                     .and_then(Value::as_str)
                     .ok_or(TerminalError::InvalidRequest)?;
-                record["title"] = json!(terminal_title(title)?);
-                record["updated"] = json!(now_seconds());
+                record.set("title", json!(terminal_title(title)?));
+                record.set("updated", json!(now_seconds()));
                 self.store.transaction(|transaction| {
-                    TerminalsRepository::update_record(transaction, id, &record.to_string())
+                    TerminalsRepository::update_record(transaction, id, &record)
                 })?;
-                Ok(record)
+                Ok(record.value().clone())
             }
             "input" => self.send_input(id, data, record),
             "resize" => {
@@ -325,26 +331,25 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     .transaction(|transaction| {
                         let current = TerminalsRepository::get(transaction, id)?
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-                        let mut record = parse_record(id, &current.record)
-                            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                        record["updated"] = json!(now_seconds());
-                        TerminalsRepository::update_record(transaction, id, &record.to_string())?;
-                        Ok(record)
+                        let mut record = current.record;
+                        record.set("updated", json!(now_seconds()));
+                        TerminalsRepository::update_record(transaction, id, &record)?;
+                        Ok(record.value().clone())
                     })
                     .map_err(TerminalError::Store)
             }
             "close" => {
-                record["status"] = json!("closed");
-                record["updated"] = json!(now_seconds());
+                record.set("status", json!("closed"));
+                record.set("updated", json!(now_seconds()));
                 self.store.transaction(|transaction| {
-                    TerminalsRepository::update_record(transaction, id, &record.to_string())
+                    TerminalsRepository::update_record(transaction, id, &record)
                 })?;
                 self.session.send_request(
                     &format!("terminal-close:{id}"),
                     "process/kill",
                     json!({"processHandle": id}),
                 )?;
-                Ok(record)
+                Ok(record.value().clone())
             }
             _ => Err(TerminalError::InvalidRequest),
         }
@@ -374,8 +379,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     }
                     let row = TerminalsRepository::get(transaction, &id)?
                         .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-                    let mut record = parse_record(&id, &row.record)
-                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    let mut record = row.record.clone();
                     let pending =
                         TerminalsRepository::decoder_pending(transaction, &id)?.unwrap_or_default();
                     let (text, _) = decode_utf8(&pending, true);
@@ -386,21 +390,13 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         &text,
                         OUTPUT_LIMIT,
                     )?;
-                    if record["status"] != "closed" {
-                        record["status"] = json!("exited");
+                    if record.get("status").and_then(Value::as_str) != Some("closed") {
+                        record.set("status", json!("exited"));
                     }
-                    record["exitCode"] = code.map_or(Value::Null, |value| json!(value));
-                    record["updated"] = json!(now_seconds());
-                    if let Some(object) = record.as_object_mut() {
-                        object.remove("error");
-                    }
-                    TerminalsRepository::put(
-                        transaction,
-                        &id,
-                        &record.to_string(),
-                        &output,
-                        offset,
-                    )?;
+                    record.set("exitCode", code.map_or(Value::Null, |value| json!(value)));
+                    record.set("updated", json!(now_seconds()));
+                    record.remove("error");
+                    TerminalsRepository::put(transaction, &id, &record, &output, offset)?;
                     TerminalsRepository::save_decoder_pending(transaction, &id, &[])?;
                     TerminalsRepository::save_event_cursor(transaction, &id, sequence)?;
                     Ok(())
@@ -414,8 +410,6 @@ impl<S: TerminalSession> TerminalDriver<S> {
         self.store.transaction(|transaction| {
             let row = TerminalsRepository::get(transaction, id)?
                 .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-            parse_record(id, &row.record)
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
             let seq = i64::try_from(sequence).map_err(|_| {
                 StoreError::SchemaMismatch("terminal event sequence exceeds SQLite range".into())
             })?;
@@ -436,7 +430,12 @@ impl<S: TerminalSession> TerminalDriver<S> {
         Ok(())
     }
 
-    fn send_input(&self, id: &str, data: &Value, record: Value) -> Result<Value, TerminalError> {
+    fn send_input(
+        &self,
+        id: &str,
+        data: &Value,
+        record: TerminalRecord,
+    ) -> Result<Value, TerminalError> {
         let request_id = data
             .get("request_id")
             .and_then(Value::as_str)
@@ -502,18 +501,17 @@ impl<S: TerminalSession> TerminalDriver<S> {
     /// supervisor handle. Existing process handles are never spawned again.
     pub fn reconcile_after_restart(&self) -> Result<usize, TerminalError> {
         let rows = TerminalsRepository::list(&self.store.read()?)?;
-        for (id, raw) in &rows {
-            parse_record(id, raw)?;
-        }
         self.store.transaction(|transaction| {
-            for (id, raw) in rows {
-                let mut record = serde_json::from_str::<Value>(&raw)?;
-                if record["status"] == "running" {
-                    record["status"] = json!("exited");
-                    record["error"] =
-                        json!("The terminal connection closed. The exit code is unknown.");
-                    record["updated"] = json!(now_seconds());
-                    TerminalsRepository::update_record(transaction, &id, &record.to_string())?;
+            for mut record in rows {
+                if record.get("status").and_then(Value::as_str) == Some("running") {
+                    record.set("status", json!("exited"));
+                    record.set(
+                        "error",
+                        json!("The terminal connection closed. The exit code is unknown."),
+                    );
+                    record.set("updated", json!(now_seconds()));
+                    let id = record.id().as_str();
+                    TerminalsRepository::update_record(transaction, id, &record)?;
                 }
             }
             Ok(())
@@ -535,16 +533,16 @@ impl<S: TerminalSession> TerminalDriver<S> {
             if let Some((request_id, id)) = rest.rsplit_once(':') {
                 let row = TerminalsRepository::get(&self.store.read()?, id)?
                     .ok_or(TerminalError::UnknownTerminal)?;
-                let mut record = parse_record(id, &row.record)?;
+                let mut record = row.record;
                 if let Err(error) = outcome.result {
-                    record["status"] = json!("exited");
-                    record["error"] = json!(error.to_string());
+                    record.set("status", json!("exited"));
+                    record.set("error", json!(error.to_string()));
                     self.store.transaction(|transaction| {
-                        TerminalsRepository::update_record(transaction, id, &record.to_string())?;
+                        TerminalsRepository::update_record(transaction, id, &record)?;
                         TerminalsRepository::update_receipt(
                             transaction,
                             request_id,
-                            &record.to_string(),
+                            &record.value().to_string(),
                         )
                     })?;
                 }
@@ -564,34 +562,13 @@ impl<S: TerminalSession> TerminalDriver<S> {
         self.session.close().map_err(TerminalError::Session)
     }
 
-    fn require_running(&self, record: &Value) -> Result<(), TerminalError> {
+    fn require_running(&self, record: &TerminalRecord) -> Result<(), TerminalError> {
         if record.get("status").and_then(Value::as_str) == Some("running") {
             Ok(())
         } else {
             Err(TerminalError::NotRunning)
         }
     }
-}
-
-fn parse_record(id: &str, raw: &str) -> Result<Value, TerminalError> {
-    let value = serde_json::from_str::<Value>(raw)
-        .map_err(|_| TerminalError::InvalidStoredObject(id.into()))?;
-    let Some(object) = value.as_object() else {
-        return Err(TerminalError::InvalidStoredObject(id.into()));
-    };
-    if object.get("id").and_then(Value::as_str) != Some(id)
-        || !matches!(
-            object.get("status").and_then(Value::as_str),
-            Some("running" | "exited" | "closed")
-        )
-        || object.get("agent").and_then(Value::as_str).is_none()
-        || object.get("title").and_then(Value::as_str).is_none()
-        || object.get("cwd").and_then(Value::as_str).is_none()
-        || object.get("created").and_then(Value::as_f64).is_none()
-    {
-        return Err(TerminalError::InvalidStoredObject(id.into()));
-    }
-    Ok(value)
 }
 
 fn size(data: &Value, key: &str, default: u64) -> Result<u64, TerminalError> {
@@ -693,6 +670,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
 
@@ -702,7 +680,7 @@ mod tests {
         history_output, now_seconds, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
-    use studio_runtime_store::{RuntimeStore, TerminalsRepository};
+    use studio_runtime_store::{RuntimeStore, TerminalRecord, TerminalsRepository};
 
     #[derive(Default)]
     struct FakeSession {
@@ -817,6 +795,22 @@ mod tests {
                 }
             }
         }
+        let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let output = Command::new("python3")
+            .arg(server_source.join("codex_python.py"))
+            .arg("--exec")
+            .arg("-c")
+            .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; from codex_terminals import TerminalManager; root = pathlib.Path(sys.argv[1]); Canvas(root); TerminalManager(root)")
+            .arg(&root)
+            .arg(&server_source)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .expect("Canvas schema bootstrap starts");
+        assert!(
+            output.status.success(),
+            "Canvas schema bootstrap succeeds: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let store = Arc::new(RuntimeStore::open(Some(&root)).expect("test runtime store"));
         TestState {
             root,
@@ -910,9 +904,7 @@ mod tests {
         )
         .expect("terminal row")
         .expect("terminal exists");
-        let mut parsed: Value = serde_json::from_str(&stored.record).expect("record");
-        parsed["error"] = serde_json::json!("old error");
-        stored.record = parsed.to_string();
+        stored.record.set("error", serde_json::json!("old error"));
         state
             .store
             .as_ref()
@@ -942,12 +934,13 @@ mod tests {
         let id = "python-terminal";
         let result = serde_json::json!({"id":id,"agent":"agent","title":"Terminal","cwd":state.root,
             "status":"running","created":1.0,"updated":1.0,"exitCode":null});
+        let typed = TerminalRecord::from_value(result.clone()).expect("terminal record");
         state
             .store
             .as_ref()
             .expect("store")
             .transaction(|tx| {
-                TerminalsRepository::put(tx, id, &result.to_string(), "", 0)?;
+                TerminalsRepository::put(tx, id, &typed, "", 0)?;
                 TerminalsRepository::save_receipt(
                     tx,
                     "python-create",
@@ -1006,7 +999,8 @@ mod tests {
         let driver = test_driver(&state, FakeSession::default());
         let id = "legacy-terminal";
         let now = now_seconds();
-        let record = serde_json::json!({"id":id,"agent":"agent","title":"old","cwd":"/tmp","status":"exited","created":now,"updated":now,"exitCode":0}).to_string();
+        let record = TerminalRecord::from_value(serde_json::json!({"id":id,"agent":"agent","title":"old","cwd":"/tmp","status":"exited","created":now,"updated":now,"exitCode":0}))
+            .expect("terminal record");
         state
             .store
             .as_ref()
@@ -1029,8 +1023,14 @@ mod tests {
             .store
             .as_ref()
             .expect("store")
-            .transaction(|tx| TerminalsRepository::put(tx, bad, "{}", "retained", 0))
-            .expect("invalid row");
+            .transaction(|tx| {
+                tx.execute(
+                "INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,'{}','retained',0)",
+                [bad],
+            )?;
+                Ok(())
+            })
+            .expect("seed invalid row");
         assert!(history_output(state.store.as_ref().expect("store"), bad, 0, 32).is_err());
         let connection = state.store.as_ref().expect("store").read().expect("read");
         assert_eq!(
@@ -1120,12 +1120,12 @@ mod tests {
         let row = TerminalsRepository::get(&store.read().expect("read"), &id)
             .expect("row")
             .expect("terminal");
-        let mut record: Value = serde_json::from_str(&row.record).expect("record");
-        record["status"] = serde_json::json!("exited");
-        record["title"] = serde_json::json!("concurrent rename");
+        let mut record = row.record;
+        record.set("status", serde_json::json!("exited"));
+        record.set("title", serde_json::json!("concurrent rename"));
         store
             .transaction(|transaction| {
-                TerminalsRepository::update_record(transaction, &id, &record.to_string())
+                TerminalsRepository::update_record(transaction, &id, &record)
             })
             .expect("concurrent update");
         release.wait();

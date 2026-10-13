@@ -87,13 +87,7 @@ pub fn prepare_queue(events: Vec<StoredQueueEvent>) -> Result<PreparedQueue, Wor
         if !event.valid {
             return Err(invalid("runtime_events", &event.id));
         }
-        let metadata: Value = event
-            .metadata
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| invalid("runtime_event_meta", &event.id))?
-            .unwrap_or_else(|| json!({}));
+        let metadata = event.metadata.clone().unwrap_or_else(|| json!({}));
         let Some(metadata_object) = metadata.as_object() else {
             return Err(invalid("runtime_event_meta", &event.id));
         };
@@ -208,7 +202,7 @@ mod tests {
             status: "pending".into(),
             created: 1.0,
             error: None,
-            metadata: Some(r#"{"assets":["asset"]}"#.into()),
+            metadata: Some(json!({"assets":["asset"]})),
             valid: true,
         }])
         .expect("queue event is valid");

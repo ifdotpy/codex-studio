@@ -1507,6 +1507,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
@@ -1533,11 +1534,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-runtime-schema"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde_json",
+]
+
+[[package]]
 name = "studio-runtime-server"
 version = "0.1.0"
 dependencies = [
  "axum",
  "getrandom",
+ "serde_json",
  "studio-runtime-http",
  "studio-runtime-services",
  "studio-runtime-store",
@@ -1550,7 +1560,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom",
- "jsonschema",
  "mime_guess",
  "process-wrap",
  "rusqlite",
@@ -1559,6 +1568,7 @@ dependencies = [
  "sha2",
  "studio-runtime-process",
  "studio-runtime-providers",
+ "studio-runtime-schema",
  "studio-runtime-store",
  "thiserror",
  "uuid",
@@ -1569,11 +1579,11 @@ name = "studio-runtime-store"
 version = "0.1.0"
 dependencies = [
  "inventory",
- "jsonschema",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-schema",
  "thiserror",
 ]
 

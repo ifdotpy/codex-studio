@@ -330,6 +330,7 @@ impl Registry {
         self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
     }
 
+    #[cfg(test)]
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
         let value = serde_json::from_str(raw).ok()?;
         self.validate_stored(schema, &value).then_some(value)
