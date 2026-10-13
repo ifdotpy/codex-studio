@@ -252,7 +252,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
     ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
     ("GET", "/api/search/item"): {
-        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
         "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
