@@ -2,7 +2,7 @@
   {
     "id": "M1",
     "description": "drop-accepted-turn",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n",
@@ -22,7 +22,7 @@
   {
     "id": "M2",
     "description": "preserve-last-answer",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
@@ -42,7 +42,7 @@
   {
     "id": "M3",
     "description": "rejection-status",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = status;\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n",
@@ -75,7 +75,7 @@
   {
     "id": "M5",
     "description": "wrong-replay-result",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return result[\"bound\"]\n                .as_bool()\n                .ok_or_else(|| invalid_agent(agent_id));\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n",
@@ -121,7 +121,7 @@
   {
     "id": "M8",
     "description": "preserve-existing-answer",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
@@ -141,7 +141,7 @@
   {
     "id": "M9",
     "description": "invalid-timestamp",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "edits": [
       {
         "before": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,timestamp(),ids])?;\n    }\n    Ok(())\n}\n",
@@ -178,7 +178,7 @@
   {
     "id": "M11",
     "description": "retain active tools on turn start",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "witnesses": ["started_notice__active_tools"],
     "edits": [
       {
@@ -198,7 +198,7 @@
   {
     "id": "M12",
     "description": "stop keeps continuation enabled",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "witnesses": ["stop_accepted"],
     "edits": [
       {
@@ -218,7 +218,7 @@
   {
     "id": "M13",
     "description": "submission stores wrong request ticket",
-    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
     "witnesses": ["submit_python_claim"],
     "edits": [
       {
@@ -242,8 +242,8 @@
     "witnesses": ["completed"],
     "edits": [
       {
-        "before": "            return saved\n                .as_bool()",
-        "after": "            return Some(false)\n                .or_else(|| saved.as_bool())"
+        "before": "        return saved\n            .as_bool()",
+        "after": "        return Some(false)\n            .or_else(|| saved.as_bool())"
       }
     ],
     "lifecycleCombinations": [
@@ -363,6 +363,206 @@
         "before": "        table: table.into(),\n        id: id.to_owned(),",
         "after": "        table: table.into(),\n        id: \"wrong-id\".to_owned(),"
       }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W1",
+    "description": "omit durable Submitted ledger",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "\"submitted\",\n            json!({\"context\":context,\"request\":record(request)}),",
+        "after": "\"omitted-submitted\",\n            json!({\"context\":context,\"request\":record(request)}),"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W2",
+    "description": "acknowledge without notification effects",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "if let JournalPayload::Frame(frame) = &entry.payload {",
+        "after": "if let JournalPayload::Frame(frame) = &entry.payload && false {"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W3",
+    "description": "skip obsolete-event reconciliation at submission",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker.rs",
+    "edits": [
+      {
+        "before": "let may_submit = replay\n        || SchedulerRepository::reconcile_obsolete_before_submit(",
+        "after": "let may_submit = true || replay\n        || SchedulerRepository::reconcile_obsolete_before_submit("
+      }
+    ],
+    "witnesses": ["submit_retires_resolved_complaint"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W4",
+    "description": "drop terminal native error notice",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "if status == \"failed\" {",
+        "after": "if false && status == \"failed\" {"
+      }
+    ],
+    "witnesses": ["failed", "denials", "policy_interrupted"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W5",
+    "description": "wrong native error wording",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "Codex refused this turn under its cybersecurity policy.",
+        "after": "Incorrect policy notice."
+      }
+    ],
+    "witnesses": ["policy_interrupted"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W6",
+    "description": "omit terminal turnStatus mark",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/history.rs",
+    "edits": [
+      {
+        "before": "tx.execute(\"UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?1) WHERE agent=?2 AND json_extract(record,'$.turnId')=?3 AND created>=?4\"",
+        "after": "tx.execute(\"UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?1) WHERE 0 AND agent=?2 AND json_extract(record,'$.turnId')=?3 AND created>=?4\""
+      }
+    ],
+    "witnesses": ["failed"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W7",
+    "description": "context exception cannot hide wrong transcript title",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "edits": [
+      {
+        "before": "\"title\": \"User\",",
+        "after": "\"title\": \"Wrong\","
+      }
+    ],
+    "witnesses": ["submit_python_claim"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W8",
+    "description": "context exception cannot hide changed base text",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation.rs",
+    "edits": [
+      {
+        "before": "Ok(PreparedTurn { params, submission })",
+        "after": "let mut submission = submission; submission.text.push_str(\" changed base\"); Ok(PreparedTurn { params, submission })"
+      }
+    ],
+    "witnesses": ["submit_python_claim"],
+    "workerWitnesses": [],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W9",
+    "description": "lost wake after active turn settlement",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "effect = Some(Effect::Wake(identity.agent_id, identity.epoch));",
+        "after": "effect = Some(Effect::Wake(identity.agent_id, identity.epoch + 1));"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W10",
+    "description": "unknown deadline wrongly requeues input",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "} else if context.method()? == Method::TurnStart {\n            TurnStart::Unknown",
+        "after": "} else if context.method()? == Method::TurnStart {\n            TurnStart::NotSubmitted"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "deadline_unknown_is_not_resent_and_late_reply_refines_it"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W11",
+    "description": "restart ignores durable Submitted evidence",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "AND substr(r.id,-10)=':submitted'",
+        "after": "AND substr(r.id,-10)=':discarded'"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "restart_after_submitted_before_written_recovers_unknown_without_resend"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W12",
+    "description": "wrong unsupported callback result",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/callback.rs",
+    "edits": [
+      {
+        "before": "\"code\":-32601",
+        "after": "\"code\":0"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "unsupported_approval_is_answered_after_commit",
+      "unsupported_question_is_answered_after_commit",
+      "unsupported_dynamic_tool_is_answered_after_commit"
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "W13",
+    "description": "callback admitted without durable Submitted",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_worker/store.rs",
+    "edits": [
+      {
+        "before": "save(tx, operation, \"submitted\", json!(true))?;",
+        "after": "save(tx, operation, \"omitted\", json!(true))?;"
+      }
+    ],
+    "witnesses": [],
+    "workerWitnesses": [
+      "unsupported_approval_is_answered_after_commit",
+      "unsupported_question_is_answered_after_commit",
+      "unsupported_dynamic_tool_is_answered_after_commit"
     ],
     "lifecycleCombinations": []
   }

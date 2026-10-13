@@ -6,8 +6,7 @@
   for the existing supervisor v1 protocol. This crate does not start the
   production supervisor, make HTTP requests, or access SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
-  models for each v1 action; `ProviderProcessFactory` and its supervisor-backed
-  native-account adapter; `provider_seam::ProviderTaskFactory` and
+  models for each v1 action; `provider_seam::ProviderTaskFactory` and
   `provider_task::SupervisorProviderTaskFactory`; the Unix temporary-child adapter
   `provider_stdio::StdioProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports.
 - **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
@@ -89,20 +88,14 @@ the backend-side client and provider process adapter. See
 
 ## Native provider process adapter
 
-`SupervisorProviderProcessFactory` implements the provider byte-stream boundary
-over the supervisor client. `ProviderHandle::native_account` builds the shared
-`account:<account-key>` handle used by the Python native app-server path and
-retains the exact command, environment, and working directory passed to
-`open`. Stdout journal events are serialized as JSONL for the provider session;
-their journal entries are acknowledged only after the stream consumer reads the
-complete frame. Input is split into JSONL requests and sent with stable
-operation IDs. Stopping the adapter detaches the backend connection and leaves
-the child under supervisor ownership.
-
-On reattach, the factory reuses the same account handle and checks the child PID
-before retrying uncertain reads, acknowledgements, or writes. Writes resolve
-unknown outcomes with the original operation ID. Linux worker handles are not
-part of this adapter yet.
+`provider_task::SupervisorProviderTaskFactory` implements the bounded Tokio
+attachment interface in `provider_seam`. `ProviderHandle::for_account` builds
+the stable `account:<account-key>` identity. The adapter retains generation and
+cursor identity; it never acknowledges an entry merely because it delivered it.
+The account worker commits settlement before the session authorizes an ACK.
+The old byte-stream factory and its thread/mailbox implementation were removed.
+See [the Tokio attachment contract](src/provider_seam.rs) and
+[the account consumer](../runtime-services/src/account_worker.rs).
 
 The Python client reads JSON objects without closed-schema validation: unknown
 request fields are ignored by action handlers and unknown response/event fields

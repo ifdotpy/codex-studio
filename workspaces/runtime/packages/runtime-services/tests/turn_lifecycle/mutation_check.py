@@ -54,7 +54,7 @@ def main():
                        CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
-               "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)"]
+               "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) or test(account_worker)"]
     results = []
 
     def run(identity, tier):

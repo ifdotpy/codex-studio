@@ -8,11 +8,11 @@
 - **Public interface:** each service module's functions and port traits.
 - **Allowed dependencies:** `studio-runtime-store`, `studio-runtime-providers`,
   `studio-runtime-process`, `studio-operations`; Tokio and the existing
-  `futures-util` for the provider session task.
+  `futures-util` for the provider session and account tasks.
 - **Forbidden dependencies:** `studio-runtime-http`, Axum, the server
   application, the Python runtime.
 - **Invariants:** application decisions remain synchronous; the provider session
-  task owns asynchronous orchestration. No service holds a store transaction
+  and account tasks own asynchronous orchestration. No service holds a store transaction
   across a call into a provider or process port; an outcome that cannot be
   observed is reported as unknown and never retried here.
 - **Focused check:** `cargo nextest run -p studio-runtime-services`.
@@ -329,3 +329,76 @@ successful shutdown proves supervisor ACK completion; worker/store crash-window
 and durable replay reconciliation tests belong to the account-worker stage.
 The adapter's documented blocking-job cleanup limitation still applies. Dropping a handle only signals
 cancellation; explicit shutdown/completion is required for the join barrier.
+
+## Account worker
+
+[`start_account_worker`](src/account_worker.rs) owns one account on a Tokio task.
+The server must create and share one `StoreBridge` per `RuntimeStore`; its startup
+recovery runs before account admission, and its semaphore bounds `spawn_blocking`
+SQLite jobs. Account commands, session requests, effects, and deferred journal
+entries all have explicit capacity limits. Dropping the account handle signals
+sticky cancellation; `shutdown` joins and waits for in-flight database commits.
+It does not abandon a commit or start a replacement database owner.
+
+Work follows claim → typed preparation → session prepare → durable Submitted →
+submit. The submission transaction rechecks obsolete complaints/work notices,
+publishes their retirement, and records transcript input and links before any
+provider write. A new event for an active turn stays pending and is claimed only
+after that turn settles. Journal handling commits lifecycle and notification
+writes, replaces the stream buffer, then calls `settled(cursor)`. Terminal
+notices and transcript `turnStatus` marks share the lifecycle receipt transaction.
+A replay returns saved decisions without repeating transcript or search effects.
+
+Recovery restores only unresolved request records into `RecoveredRequest`.
+Submitted without a durable Written receipt stays Unknown, including when no
+write reached the provider. It is never resent. Late replies can refine that
+state; unknown numeric correlation remains an orphan for later reconciliation.
+The bounded shutdown handoff persists delivered/undelivered evidence and adapter
+recovery identity. Local settlement does not prove that the supervisor accepted
+its ACK; journal receipts make redelivery safe.
+
+The paused-time scripted seam tests in
+[`account_worker/tests.rs`](src/account_worker/tests.rs) exercise the actual
+session and store bridge. They cover normal completion, pending input during an
+active turn, interrupt before the start reply, queued cancellation, provider
+exit, generation change, duplicate/stale/out-of-order notifications, deadline
+expiry and late replies, full-queue shutdown, and restart between Submitted and
+Written. `just test-rust-runtime-corpora` compares Python-written pre-states and
+real lifecycle/dispatch transactions. The separately selected
+`just test-rust-runtime-corpora-mutations` tests the same wiring against seeded
+regressions, including transcript notices and the context exception's boundary.
+
+### Known gaps before server wiring
+
+The worker is **not eligible for wiring to a real provider** until start-time
+context preparation is implemented. [`preparation.rs`](src/account_worker/preparation.rs)
+defines a typed input (event intent plus stored agent and state root) and output
+(provider parameters plus prepared submission), currently passing event text
+through. Python `Runtime.start` in `codex_runtime.py:7046` reads event metadata,
+message clocks, and unanswered complaints before appending context.
+`EfficiencyMixin.model_turn_context` in `codex_efficiency.py:715` records the
+context manifest after reading known context/epoch, root agent mode, role skill,
+progress-file guidance, plan, complaints and finished-worktree reminders.
+The registered `context_preparation_unported` class permits only those missing
+preparation fields and appended text; base text, input identity, links, search
+metadata, notices, terminal state and dispatch writes compare exactly.
+
+Active-turn steer is a separate follow-up requiring a differential corpus against
+Python selection/submission policy. Its touch points are scheduler
+`selection::claim` (currently refuses in-flight claims), attempt reconciliation,
+`SessionControl::prepare/submit` with `Method::TurnSteer`, and lifecycle settlement.
+Stage 5 intentionally has no `claim_steer` API.
+
+Preparation currently refuses Claude turns, new threads, assets, pending settings,
+and unprepared workspaces instead of guessing their provider parameters. Native
+history reconciliation for held generations and numeric orphan replies remains
+separate. [`callback.rs`](src/account_worker/callback.rs) is the typed callback seam.
+Approvals, questions and dynamic tool calls currently receive a typed unsupported
+JSON-RPC error after their journal entry commits. The response has its own
+Submitted/Written receipts; its cursor is acknowledged only after Written, and
+unknown response writes are never resent. Dynamic tools and approvals must be
+served by their real services before a real provider can be wired; explicit
+rejection does not make this a complete provider runtime.
+The server factory/TurnRuntime caller is not part of this stage.
+The old provider process/session/turn-driver thread code and tests are removed;
+the model catalog uses the accepted async session and ephemeral stdio adapter.
