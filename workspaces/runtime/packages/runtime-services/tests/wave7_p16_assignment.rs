@@ -245,8 +245,14 @@ fn real_python_spawn_assignment_corpus_matches_complete_work_rows() {
                     case["name"]
                 );
                 if case["name"] == "same-owner-replay" {
-                    let replay = assign_in_transaction(&tx, id, owner.unwrap(), &actor, 99.0)
-                        .expect("same owner replay");
+                    let replay = assign_in_transaction(
+                        &tx,
+                        id,
+                        owner.expect("same-owner replay has an owner"),
+                        &actor,
+                        99.0,
+                    )
+                    .expect("same owner replay");
                     assert!(!replay.changed);
                     assert_eq!(
                         stored_work(&tx, id),
@@ -276,8 +282,11 @@ fn spawn_creator_failpoints_before_and_after_assignment_roll_back_child_and_work
             .transaction()
             .expect("creator transaction starts");
         let child = json!({"id":"created-child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true});
-        AgentRepository::put(&tx, &AgentRecord::from_value(child).unwrap())
-            .expect("creator inserts child");
+        AgentRepository::put(
+            &tx,
+            &AgentRecord::from_value(child).expect("creator child is a typed record"),
+        )
+        .expect("creator inserts child");
         let assigned = assign_in_transaction(&tx, "task", "created-child", &actor, 12.5);
         if fail_before_update {
             assert!(assigned.is_err(), "before-update failpoint fires");
@@ -290,7 +299,7 @@ fn spawn_creator_failpoints_before_and_after_assignment_roll_back_child_and_work
         }
         assert!(
             AgentRepository::get(&connection, &AgentId::from("created-child"))
-                .unwrap()
+                .expect("rolled-back child lookup")
                 .is_none(),
             "no orphan child"
         );

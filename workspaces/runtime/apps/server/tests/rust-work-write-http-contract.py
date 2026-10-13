@@ -911,7 +911,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         single = self.post({"action": "create", "title": "Blocked worker", "owner": self.worker_id, "status": "blocked", "id": "single-agent-delegation"})
         self.assertEqual(single.status, 400, single.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
-        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
             agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))

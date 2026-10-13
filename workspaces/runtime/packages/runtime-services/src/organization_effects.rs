@@ -116,8 +116,12 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
         if current_folder != desired {
             let revision = current
                 .checked_add(1)
-                .ok_or(EventWriteError::InvalidRequest("The chat folder revision is invalid"))?;
-            agent.extra.insert("projectFolderRevision".into(), json!(revision));
+                .ok_or(EventWriteError::InvalidRequest(
+                    "The chat folder revision is invalid",
+                ))?;
+            agent
+                .extra
+                .insert("projectFolderRevision".into(), json!(revision));
         }
         match desired {
             Some(folder) => {
@@ -176,7 +180,10 @@ fn apply_read_state(
             "Change read state separately from other chat settings",
         ));
     }
-    if body.get("id").is_some_and(|value| value.as_str() != Some(agent.id.0.as_str())) {
+    if body
+        .get("id")
+        .is_some_and(|value| value.as_str() != Some(agent.id.0.as_str()))
+    {
         return Err(EventWriteError::InvalidRequest("The chat identity changed"));
     }
     let fields = ["thread_id", "turn_id", "read", "expected_revision"];
@@ -234,12 +241,9 @@ fn apply_read_state(
         .unwrap_or_else(|| json!({}));
     let current = match previous.get("revision") {
         None => 0,
-        Some(value) => value
-            .as_i64()
-            .filter(|revision| *revision >= 0)
-            .ok_or(EventWriteError::InvalidRequest(
-                "The saved read state revision is invalid",
-            ))?,
+        Some(value) => value.as_i64().filter(|revision| *revision >= 0).ok_or(
+            EventWriteError::InvalidRequest("The saved read state revision is invalid"),
+        )?,
     };
     let same = previous.get("threadId").and_then(Value::as_str) == Some(thread)
         && previous.get("turnId").and_then(Value::as_str) == Some(turn)
