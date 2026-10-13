@@ -73,8 +73,7 @@ fn read_only_uri(path: &Path) -> Result<String, AnalyticsStoreError> {
         if byte.is_ascii_alphanumeric() || b"/:_-~.".contains(&byte) {
             uri.push(char::from(byte))
         } else {
-            use std::fmt::Write as _;
-            write!(uri, "%{byte:02X}").expect("write to string");
+            uri.push_str(&format!("%{byte:02X}"));
         }
     }
     uri.push_str("?mode=ro");
@@ -190,7 +189,9 @@ fn rollup(
     )?;
     timeline.reverse();
     let chart = chart_rows(db, &billable, options.export)?;
-    let usage_totals = usage_aggregate(db, &usage_filter, None)?;
+    let usage_totals = usage_grouped(db, &usage_filter, "''")?
+        .remove("")
+        .unwrap_or_default();
     let per_model = usage_grouped(
         db,
         &usage_filter,
@@ -231,149 +232,77 @@ fn rollup(
         .filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect();
     let total_turns = usage_filter.count(db, "analytics_turns")?;
-    let tracking_raw = db
-        .query_row(
-            "SELECT value FROM analytics_meta WHERE key='trackingSince'",
-            [],
-            |r| r.get::<_, String>(0),
+    let tracking: f64 = metadata(db, "trackingSince")?.unwrap_or(0.0);
+    let capture: CaptureErrors = metadata(db, "captureErrors")?.unwrap_or_default();
+    let selected = ScopeFilter::new().members("agent", selected_ids.iter().cloned());
+    let selected_json = json!(selected_ids).to_string();
+    let history_filter = ScopeFilter::new().and("(COALESCE(NULLIF(json_extract(record,'$.agent'),''),NULLIF(json_extract(record,'$.agentId'),'')) IS NULL OR json_extract(record,'$.agent') IN (SELECT value FROM json_each(?1)) OR json_extract(record,'$.agentId') IN (SELECT value FROM json_each(?1)))",[SqlValue::Text(selected_json)]);
+    let history = history_filter.optional_page(db, "analytics_history", "rowid")?;
+    let monitors = ScopeFilter::new()
+        .members(
+            "json_extract(record,'$.agent')",
+            selected_ids.iter().cloned(),
         )
-        .optional()?;
-    let tracking = match tracking_raw {
-        Some(raw) => raw
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite())
-            .ok_or_else(|| AnalyticsError::InvalidStoredRow {
-                table: "analytics_meta",
-                id: "trackingSince".into(),
-            })?,
-        None => 0.0,
-    };
-    let capture_raw = db
-        .query_row(
-            "SELECT value FROM analytics_meta WHERE key='captureErrors'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    let capture = match capture_raw {
-        Some(raw) => {
-            let value: Value =
-                serde_json::from_str(&raw).map_err(|_| AnalyticsError::InvalidStoredRow {
-                    table: "analytics_meta",
-                    id: "captureErrors".into(),
-                })?;
-            if !value.is_object() || value.get("count").and_then(Value::as_u64).is_none() {
-                return Err(AnalyticsError::InvalidStoredRow {
-                    table: "analytics_meta",
-                    id: "captureErrors".into(),
-                });
-            }
-            value
-        }
-        None => json!({"count":0,"last":null}),
-    };
-    let histories = optional_records(
-        db,
-        "analytics_history",
-        "SELECT record FROM analytics_history ORDER BY rowid",
-        "analytics_history",
-    )?;
-    let history: Vec<Value> = histories
+        .range("json_extract(record,'$.created')", options.from, options.to)
+        .and("json_extract(record,'$.created')>=0", [])
+        .optional_page(db, "canvas.runtime_monitors", "rowid")?;
+    let visible_monitors = monitors
         .iter()
-        .filter(|r| {
-            !truthy(r.get("agent")) && !truthy(r.get("agentId"))
-                || selected_ids.contains(&string(r, "agent"))
-                || selected_ids.contains(&string(r, "agentId"))
+        .map(|row| {
+            project(
+                row,
+                &[
+                    "id",
+                    "agent",
+                    "status",
+                    "created",
+                    "finished",
+                    "bytes",
+                    "exitCode",
+                    "error",
+                    "timeout_ms",
+                ],
+            )
         })
-        .cloned()
         .collect();
-    let monitors = optional_canvas_records(db, "runtime_monitors")?;
-    let requests_table = table_exists(db, "canvas.runtime_requests")?;
-    let mut visible_monitors = Vec::new();
-    for m in monitors.iter().filter(|r| {
-        selected_ids.contains(&string(r, "agent"))
-            && within_range(number_at(r, "created"), options.from, options.to)
-    }) {
-        let mut item = Map::new();
-        for k in [
-            "id",
-            "agent",
-            "status",
-            "created",
-            "finished",
-            "bytes",
-            "exitCode",
-            "error",
-            "timeout_ms",
-        ] {
-            if let Some(v) = m.get(k) {
-                item.insert(k.to_owned(), v.clone());
-            }
-        }
-        visible_monitors.push(Value::Object(item));
-    }
-    let selected_placeholders = std::iter::repeat_n("?", selected_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut event_params: Vec<SqlValue> =
-        selected_ids.iter().cloned().map(SqlValue::Text).collect();
-    let mut event_where = format!("agent IN ({selected_placeholders})");
+    let event_counts = selected
+        .clone()
+        .range("created", options.from, options.to)
+        .counts(db, "canvas.runtime_events", "status||':'||kind")?;
+    let approval_counts = ScopeFilter::new()
+        .members(
+            "json_extract(record,'$.agent')",
+            selected_ids.iter().cloned(),
+        )
+        .counts(
+            db,
+            "canvas.runtime_requests",
+            "json_extract(record,'$.status')",
+        )?;
+    let mut notification_filter = selected.and("hour IS NOT NULL", []);
     if let Some(from) = options.from {
-        event_where.push_str(" AND created>=?");
-        event_params.push(SqlValue::Real(from));
+        notification_filter = notification_filter.and("hour+3600>?", [SqlValue::Real(from)]);
     }
-    if let Some(to) = options.to {
-        event_where.push_str(" AND created<=?");
-        event_params.push(SqlValue::Real(to));
-    }
-    let event_counts: BTreeMap<String, usize> = if selected_ids.is_empty() {
-        BTreeMap::new()
-    } else {
-        let mut stmt = db.prepare(&format!("SELECT status||':'||kind,COUNT(*) FROM canvas.runtime_events WHERE {event_where} GROUP BY status,kind"))?;
-        stmt.query_map(params_from_iter(event_params), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
-        })?
-        .collect::<Result<_, _>>()?
-    };
-    let approval_counts: Map<String, Value> = if !requests_table || selected_ids.is_empty() {
-        Map::new()
-    } else {
-        let mut stmt = db.prepare(&format!("SELECT json_extract(record,'$.status'),COUNT(*) FROM canvas.runtime_requests WHERE json_extract(record,'$.agent') IN ({selected_placeholders}) GROUP BY json_extract(record,'$.status')"))?;
-        stmt.query_map(
-            params_from_iter(selected_ids.iter().cloned().map(SqlValue::Text)),
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        )?
-        .map(|row| row.map(|(status, count)| (status, json!(count))))
-        .collect::<Result<_, _>>()?
-    };
-    let mut notification_rows = Vec::new();
-    let mut notification_stmt =
-        db.prepare("SELECT id,agent,root,method,hour,count,bytes FROM analytics_notifications")?;
-    let notifications = notification_stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?,
-            r.get::<_, Option<String>>(2)?,
-            r.get::<_, Option<String>>(3)?,
-            r.get::<_, Option<i64>>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, i64>(6)?,
-        ))
-    })?;
-    for row in notifications {
-        let (id, agent, root, method, hour, count, bytes) = row?;
-        if agent.as_ref().is_some_and(|id| selected_ids.contains(id))
-            && hour.is_some_and(|hour| {
-                options
-                    .from
-                    .is_none_or(|start| (hour + 3600) as f64 > start)
-                    && options.to.is_none_or(|end| hour as f64 <= end)
+    notification_filter = notification_filter.range("hour", None, options.to);
+    let notification_rows = query(
+        db,
+        &format!(
+            "SELECT id,agent,root,method,hour,count,bytes FROM analytics_notifications {}",
+            notification_filter.sql
+        ),
+        params_from_iter(notification_filter.params),
+        |r| {
+            Ok(Notification {
+                id: r.get(0)?,
+                agent: r.get(1)?,
+                root: r.get(2)?,
+                method: r.get(3)?,
+                hour: r.get(4)?,
+                count: r.get(5)?,
+                bytes: r.get(6)?,
             })
-        {
-            notification_rows.push(json!({"id":id,"agent":agent,"root":root,"method":method,"hour":hour,"count":count,"bytes":bytes}));
-        }
-    }
+        },
+    )?;
     let tool_filter = usage_filter.clone().and("is_tool=1", []);
     let tools = item_grouped(
         db,
@@ -382,7 +311,21 @@ fn rollup(
         "COALESCE(json_extract(record,'$.type'),'')",
     )?
     .into_iter()
-    .map(|((name, kind), totals)| totals.tool(name, kind))
+    .map(|((name, kind), totals)| Tool {
+        name,
+        model_input_bytes: if kind == "modelToolCall" {
+            totals.input_bytes
+        } else {
+            None
+        },
+        model_output_bytes: if kind == "modelToolCall" {
+            totals.output_bytes
+        } else {
+            None
+        },
+        kind,
+        totals,
+    })
     .collect::<Vec<_>>();
     let agent_calls: BTreeMap<_, _> = item_grouped(db, &call_filter, "agent", TOOL_BOUNDARY)?
         .into_iter()
@@ -424,85 +367,108 @@ fn rollup(
             .filter(|r| !native_compactions.contains(&(string(r, "agentId"), string(r, "turnId"))))
             .cloned(),
     );
-    let item_counts: Vec<Value> = {
-        let mut stmt = db.prepare(&format!("SELECT COALESCE(json_extract(record,'$.type'),''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END,MIN(at),MIN(id) FROM analytics_items {usage_where} GROUP BY json_extract(record,'$.type') ORDER BY MIN(at),MIN(id)"))?;
-        stmt.query_map(params_from_iter(usage_filter.params.clone()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<f64>>(2)?, r.get::<_, Option<f64>>(3)?)))?
-            .map(|row| row.map(|(kind,count,bytes,chars)| json!({"type":kind,"count":count,"bytes":number_value(bytes),"chars":number_value(chars)})))
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let item_counts = query(
+        db,
+        &format!(
+            "SELECT COALESCE(json_extract(record,'$.type'),''),COUNT(*),CASE WHEN COUNT(json_extract(record,'$.input.bytes'))+COUNT(json_extract(record,'$.output.bytes'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.bytes')),0)+COALESCE(SUM(json_extract(record,'$.output.bytes')),0) END,CASE WHEN COUNT(json_extract(record,'$.input.chars'))+COUNT(json_extract(record,'$.output.chars'))=0 THEN NULL ELSE COALESCE(SUM(json_extract(record,'$.input.chars')),0)+COALESCE(SUM(json_extract(record,'$.output.chars')),0) END FROM analytics_items {usage_where} GROUP BY json_extract(record,'$.type') ORDER BY MIN(at),MIN(id)"
+        ),
+        params_from_iter(&usage_filter.params),
+        |r| {
+            Ok(ItemCount {
+                kind: r.get(0)?,
+                count: r.get(1)?,
+                bytes: r.get(2)?,
+                chars: r.get(3)?,
+            })
+        },
+    )?;
     let breakdown = item_breakdown(db, &usage_filter)?;
     overlay_agents(db, &mut agents)?;
     let rate_filter = account_filter(&agents, options);
     let total_limits = rate_filter.count(db, "analytics_limits")?;
     let rates = rate_filter.rates(db, if options.export { -1 } else { 100 }, 0)?;
-    let mut summary = json!({
-        "agents": observed_agents, "turns": turns_seen, "usageSamples": usage_totals.count,
-        "provisionalUsageSamples": provisional_total, "exactResponseSamples": usage_totals.exact,
-        "legacyUsageSamples": usage_totals.legacy, "tokens": usage_totals.tokens(),
-        "tokenObservations": usage_totals.observations(), "peakContextTokens":usage_totals.peak_context,
-        "peakContextPercent":usage_totals.peak_percent,"baselineMissingSamples":usage_totals.baseline_missing,
-        "modelToolCalls":model_tool.count,"protocolToolCalls":protocol_tool.count,"observedToolRows":calls_total,"toolCalls":model_tool.count,"failedToolCalls":model_tool.failed,
-        "modelFailedToolCalls":model_tool.failed,"protocolFailedToolCalls":protocol_tool.failed,"compactions":compactions.len(),
-        "cacheHitRateSamples":usage_totals.cache_pairs,"cacheHitRateTotalSamples":usage_totals.count
-    });
-    let mut output_agents = Vec::new();
-    for record in &agents {
-        let agent = string(record, "id");
-        let totals = per_agent.get(&agent).cloned().unwrap_or_default();
-        let model = agent_calls
-            .get(&(agent.clone(), "model".into()))
-            .cloned()
-            .unwrap_or_default();
-        let protocol = agent_calls
-            .get(&(agent.clone(), "protocol".into()))
-            .cloned()
-            .unwrap_or_default();
-        let mut row = record.as_object().cloned().unwrap_or_default();
-        row.insert("tokens".into(), totals.tokens());
-        row.insert("usageSamples".into(), json!(totals.count));
-        row.insert("toolCalls".into(), json!(model.count));
-        row.insert("modelToolCalls".into(), json!(model.count));
-        row.insert("protocolToolCalls".into(), json!(protocol.count));
-        row.insert("failedToolCalls".into(), json!(model.failed));
-        row.insert("protocolFailedToolCalls".into(), json!(protocol.failed));
-        row.insert(
-            "compactions".into(),
-            json!(
-                compactions
+    let hit_rate = if usage_totals.cache_hit_rate_samples == usage_totals.usage_samples
+        && usage_totals.cache_input > 0.0
+    {
+        usage_totals
+            .tokens
+            .cached_input_tokens
+            .map(|n| n / usage_totals.cache_input)
+    } else {
+        None
+    };
+    let summary = Summary {
+        agents: observed_agents,
+        turns: turns_seen,
+        provisional_usage_samples: provisional_total,
+        model_tool_calls: model_tool.count,
+        protocol_tool_calls: protocol_tool.count,
+        observed_tool_rows: calls_total,
+        tool_calls: model_tool.count,
+        failed_tool_calls: model_tool.failed,
+        model_failed_tool_calls: model_tool.failed,
+        protocol_failed_tool_calls: protocol_tool.failed,
+        compactions: compactions.len(),
+        cache_hit_rate: hit_rate,
+        cache_hit_rate_total_samples: usage_totals.usage_samples,
+        input_bytes: model_tool.input_bytes,
+        output_bytes: model_tool.output_bytes,
+        model_input_bytes: model_tool.input_bytes,
+        model_output_bytes: model_tool.output_bytes,
+        protocol_input_bytes: protocol_tool.input_bytes,
+        protocol_output_bytes: protocol_tool.output_bytes,
+        duration_ms: model_tool.duration_total,
+        model_duration_ms: model_tool.duration_total,
+        protocol_duration_ms: protocol_tool.duration_total,
+        usage: usage_totals.clone(),
+    };
+    let output_agents = agents
+        .iter()
+        .map(|record| {
+            let agent = string(record, "id");
+            let totals = per_agent.get(&agent).cloned().unwrap_or_default();
+            let model = agent_calls
+                .get(&(agent.clone(), "model".into()))
+                .cloned()
+                .unwrap_or_default();
+            let protocol = agent_calls
+                .get(&(agent.clone(), "protocol".into()))
+                .cloned()
+                .unwrap_or_default();
+            AgentTotals {
+                record: record.clone(),
+                tokens: totals.tokens,
+                usage_samples: totals.usage_samples,
+                tool_calls: model.count,
+                model_tool_calls: model.count,
+                protocol_tool_calls: protocol.count,
+                failed_tool_calls: model.failed,
+                protocol_failed_tool_calls: protocol.failed,
+                compactions: compactions
                     .iter()
                     .filter(|r| string(r, "agentId") == agent)
-                    .count()
-            ),
-        );
-        row.insert("duration".into(), model.duration());
-        row.insert("protocolDuration".into(), protocol.duration());
-        output_agents.push(Value::Object(row));
-    }
-    let model_rows:Vec<Value>=per_model.iter().map(|(key,t)|json!({"model":if key.is_empty(){Value::Null}else{json!(key)},"samples":t.count,"tokens":t.tokens()})).collect();
-    let account_rows: Vec<Value> = per_account
-        .iter()
-        .map(|(key, t)| json!({"accountKey":key,"samples":t.count,"tokens":t.tokens()}))
+                    .count(),
+                duration: model.duration,
+                protocol_duration: protocol.duration,
+            }
+        })
         .collect();
-    let hit_rate =
-        if usage_totals.cache_pairs == usage_totals.count && usage_totals.cache_input > 0.0 {
-            usage_totals
-                .tokens()
-                .get("cachedInputTokens")
-                .and_then(Value::as_f64)
-                .map(|n| n / usage_totals.cache_input)
-        } else {
-            None
-        };
-    summary["cacheHitRate"] = json!(hit_rate);
-    summary["inputBytes"] = number_value(model_tool.size("input", "bytes"));
-    summary["outputBytes"] = number_value(model_tool.size("output", "bytes"));
-    summary["modelInputBytes"] = summary["inputBytes"].clone();
-    summary["modelOutputBytes"] = summary["outputBytes"].clone();
-    summary["protocolInputBytes"] = number_value(protocol_tool.size("input", "bytes"));
-    summary["protocolOutputBytes"] = number_value(protocol_tool.size("output", "bytes"));
-    summary["durationMs"] = json!(model_tool.duration_total());
-    summary["modelDurationMs"] = summary["durationMs"].clone();
-    summary["protocolDurationMs"] = json!(protocol_tool.duration_total());
+    let model_rows = per_model
+        .into_iter()
+        .map(|(model, t)| ModelUsage {
+            model: if model.is_empty() { None } else { Some(model) },
+            samples: t.usage_samples,
+            tokens: t.tokens,
+        })
+        .collect();
+    let account_rows = per_account
+        .into_iter()
+        .map(|(account_key, t)| AccountUsage {
+            account_key,
+            samples: t.usage_samples,
+            tokens: t.tokens,
+        })
+        .collect();
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -561,7 +527,7 @@ fn rollup(
         turns,
         timeline,
         chart_buckets: chart,
-        timeline_total: usage_totals.count,
+        timeline_total: usage_totals.usage_samples,
         provisional_usage: provisional,
         calls,
         item_records: non_tool,
@@ -596,21 +562,89 @@ fn rollup(
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct Summary {
+    #[serde(flatten)]
+    usage: UsageTotals,
+    agents: i64,
+    turns: i64,
+    provisional_usage_samples: usize,
+    model_tool_calls: i64,
+    protocol_tool_calls: i64,
+    observed_tool_rows: i64,
+    tool_calls: i64,
+    failed_tool_calls: i64,
+    model_failed_tool_calls: i64,
+    protocol_failed_tool_calls: i64,
+    compactions: usize,
+    cache_hit_rate: Option<f64>,
+    cache_hit_rate_total_samples: usize,
+    input_bytes: Option<i64>,
+    output_bytes: Option<i64>,
+    model_input_bytes: Option<i64>,
+    model_output_bytes: Option<i64>,
+    protocol_input_bytes: Option<i64>,
+    protocol_output_bytes: Option<i64>,
+    duration_ms: Option<f64>,
+    model_duration_ms: Option<f64>,
+    protocol_duration_ms: Option<f64>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTotals {
+    #[serde(flatten)]
+    record: Value,
+    tokens: Tokens<Option<f64>>,
+    usage_samples: usize,
+    tool_calls: i64,
+    model_tool_calls: i64,
+    protocol_tool_calls: i64,
+    failed_tool_calls: i64,
+    protocol_failed_tool_calls: i64,
+    compactions: usize,
+    duration: Duration,
+    protocol_duration: Duration,
+}
+#[derive(serde::Serialize)]
+struct ModelUsage {
+    model: Option<String>,
+    samples: usize,
+    tokens: Tokens<Option<f64>>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountUsage {
+    account_key: String,
+    samples: usize,
+    tokens: Tokens<Option<f64>>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tool {
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(flatten)]
+    totals: ItemTotals,
+    model_input_bytes: Option<i64>,
+    model_output_bytes: Option<i64>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AnalyticsResponse<'a> {
     version: u8,
     generated_at: f64,
     filters: AnalyticsFiltersResponse<'a>,
     coverage: AnalyticsCoverageResponse,
-    summary: Value,
+    summary: Summary,
     agents: Vec<Value>,
-    agent_totals: Vec<Value>,
-    tools: Vec<Value>,
-    model_totals: Vec<Value>,
-    account_totals: Vec<Value>,
+    agent_totals: Vec<AgentTotals>,
+    tools: Vec<Tool>,
+    model_totals: Vec<ModelUsage>,
+    account_totals: Vec<AccountUsage>,
     operations: AnalyticsOperations,
-    notifications: Vec<Value>,
+    notifications: Vec<Notification>,
     history: Vec<Value>,
-    rate_limits: Vec<Value>,
+    rate_limits: Vec<RateLimit>,
     turns: Vec<Value>,
     timeline: Vec<Value>,
     chart_buckets: Vec<Value>,
@@ -619,11 +653,11 @@ struct AnalyticsResponse<'a> {
     calls: Vec<Value>,
     item_records: Vec<Value>,
     item_records_total: usize,
-    item_breakdown: Vec<Value>,
+    item_breakdown: Vec<ItemBreakdown>,
     compactions: Vec<Value>,
     compaction_snapshots: Vec<Value>,
     pagination: AnalyticsPagination,
-    items: Vec<Value>,
+    items: Vec<ItemCount>,
     detail_pagination: AnalyticsDetailPagination,
 }
 #[derive(serde::Serialize)]
@@ -639,7 +673,7 @@ struct AnalyticsFiltersResponse<'a> {
 #[serde(rename_all = "camelCase")]
 struct AnalyticsCoverageResponse {
     tracking_since: f64,
-    capture_errors: Value,
+    capture_errors: CaptureErrors,
     history_errors: Vec<Value>,
     provisional_usage_samples: usize,
     token_attribution: &'static str,
@@ -651,8 +685,8 @@ struct AnalyticsCoverageResponse {
 #[serde(rename_all = "camelCase")]
 struct AnalyticsOperations {
     monitors: Vec<Value>,
-    event_counts: BTreeMap<String, usize>,
-    approval_counts: Map<String, Value>,
+    event_counts: BTreeMap<String, i64>,
+    approval_counts: BTreeMap<String, i64>,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -669,52 +703,30 @@ struct AnalyticsDetailPagination {
     turns: AnalyticsPagination,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Tokens<T> {
+    input_tokens: T,
+    cached_input_tokens: T,
+    cache_write_input_tokens: T,
+    output_tokens: T,
+    reasoning_output_tokens: T,
+    total_tokens: T,
+}
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UsageTotals {
-    count: usize,
-    exact: usize,
-    legacy: usize,
-    baseline_missing: usize,
-    cache_pairs: usize,
+    usage_samples: usize,
+    exact_response_samples: usize,
+    legacy_usage_samples: usize,
+    baseline_missing_samples: usize,
+    cache_hit_rate_samples: usize,
+    #[serde(skip)]
     cache_input: f64,
-    peak_context: Option<f64>,
-    peak_percent: Option<f64>,
-    sums: BTreeMap<String, f64>,
-    observations: BTreeMap<String, usize>,
-}
-impl UsageTotals {
-    fn tokens(&self) -> Value {
-        let mut m = Map::new();
-        for field in TOKEN_FIELDS {
-            m.insert(
-                field.into(),
-                self.sums
-                    .get(field)
-                    .copied()
-                    .map_or(Value::Null, |n| json!(n)),
-            );
-        }
-        Value::Object(m)
-    }
-    fn observations(&self) -> Value {
-        let mut m = Map::new();
-        for field in TOKEN_FIELDS {
-            m.insert(
-                field.into(),
-                json!(self.observations.get(field).copied().unwrap_or(0)),
-            );
-        }
-        Value::Object(m)
-    }
-}
-
-fn usage_aggregate(
-    db: &Connection,
-    filter: &ScopeFilter,
-    group: Option<&str>,
-) -> Result<UsageTotals, AnalyticsError> {
-    usage_grouped(db, filter, group.unwrap_or("''"))
-        .map(|mut groups| groups.remove("").unwrap_or_default())
+    peak_context_tokens: Option<f64>,
+    peak_context_percent: Option<f64>,
+    tokens: Tokens<Option<f64>>,
+    token_observations: Tokens<i64>,
 }
 
 fn usage_grouped(
@@ -732,56 +744,95 @@ fn usage_grouped(
     );
     let mut statement = db.prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(filter.params.clone()), |row| {
-        let mut totals = UsageTotals::default();
-        totals.count = row.get::<_, i64>(1)?.max(0) as usize;
-        totals.exact = row.get::<_, i64>(2)?.max(0) as usize;
-        totals.legacy = totals.count.saturating_sub(totals.exact);
-        totals.baseline_missing = row.get::<_, i64>(3)?.max(0) as usize;
-        totals.peak_context = row.get(4)?;
-        totals.peak_percent = row.get(5)?;
-        totals.cache_pairs = row.get::<_, i64>(6)?.max(0) as usize;
-        totals.cache_input = row.get::<_, Option<f64>>(7)?.unwrap_or_default();
-        for (index, field) in TOKEN_FIELDS.iter().enumerate() {
-            let sum: Option<f64> = row.get(8 + index * 2)?;
-            let count: i64 = row.get(9 + index * 2)?;
-            if let Some(sum) = sum {
-                totals.sums.insert((*field).into(), sum);
-            }
-            totals
-                .observations
-                .insert((*field).into(), count.max(0) as usize);
-        }
+        let count = row.get::<_, i64>(1)?.max(0) as usize;
+        let exact = row.get::<_, i64>(2)?.max(0) as usize;
+        let totals = UsageTotals {
+            usage_samples: count,
+            exact_response_samples: exact,
+            legacy_usage_samples: count.saturating_sub(exact),
+            baseline_missing_samples: row.get::<_, i64>(3)?.max(0) as usize,
+            peak_context_tokens: row.get(4)?,
+            peak_context_percent: row.get(5)?,
+            cache_hit_rate_samples: row.get::<_, i64>(6)?.max(0) as usize,
+            cache_input: row.get::<_, Option<f64>>(7)?.unwrap_or_default(),
+            tokens: Tokens {
+                input_tokens: row.get(8)?,
+                cached_input_tokens: row.get(10)?,
+                cache_write_input_tokens: row.get(12)?,
+                output_tokens: row.get(14)?,
+                reasoning_output_tokens: row.get(16)?,
+                total_tokens: row.get(18)?,
+            },
+            token_observations: Tokens {
+                input_tokens: row.get(9)?,
+                cached_input_tokens: row.get(11)?,
+                cache_write_input_tokens: row.get(13)?,
+                output_tokens: row.get(15)?,
+                reasoning_output_tokens: row.get(17)?,
+                total_tokens: row.get(19)?,
+            },
+        };
         Ok((row.get::<_, String>(0)?, totals))
     })?;
     rows.collect::<Result<BTreeMap<_, _>, _>>()
         .map_err(AnalyticsError::from)
 }
 
-fn item_breakdown(db: &Connection, filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
-    let sql = format!(
-        "SELECT COALESCE(json_extract(record,'$.type'),''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
-        filter.sql
-    );
-    let mut statement = db.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(filter.params.clone()), |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, Option<String>>(2)?,
-            r.get::<_, Option<String>>(3)?,
-            r.get::<_, i64>(4)?,
-            r.get::<_, Option<f64>>(5)?,
-            r.get::<_, Option<f64>>(6)?,
-            r.get::<_, i64>(7)?,
-            r.get::<_, i64>(8)?,
-        ))
-    })?;
-    rows.map(|row| row.map(|(kind,boundary,category,role,count,input,output,input_n,output_n)| json!({
-        "type":kind,"payloadBoundary":boundary,"category":category,"role":role,"count":count,
-        "inputBytes":number_value(input),"outputBytes":number_value(output),"inputMeasurements":input_n,"outputMeasurements":output_n,
-    }))).collect::<Result<Vec<_>,_>>().map_err(AnalyticsError::from)
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemBreakdown {
+    #[serde(rename = "type")]
+    kind: String,
+    payload_boundary: String,
+    category: Option<String>,
+    role: Option<String>,
+    count: i64,
+    input_bytes: Option<i64>,
+    output_bytes: Option<i64>,
+    input_measurements: i64,
+    output_measurements: i64,
 }
-
+#[derive(serde::Serialize)]
+struct ItemCount {
+    #[serde(rename = "type")]
+    kind: String,
+    count: i64,
+    bytes: Option<i64>,
+    chars: Option<i64>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RateLimit {
+    account_key: String,
+    at: f64,
+    data: Value,
+}
+fn item_breakdown(
+    db: &Connection,
+    filter: &ScopeFilter,
+) -> Result<Vec<ItemBreakdown>, AnalyticsError> {
+    query(
+        db,
+        &format!(
+            "SELECT COALESCE(json_extract(record,'$.type'),''),COALESCE(json_extract(record,'$.payloadBoundary'),'protocol'),json_extract(record,'$.category'),json_extract(record,'$.role'),COUNT(*),SUM(json_extract(record,'$.input.bytes')),SUM(json_extract(record,'$.output.bytes')),COUNT(json_extract(record,'$.input')),COUNT(json_extract(record,'$.output')) FROM analytics_items {} GROUP BY 1,2,3,4 ORDER BY 1,2,3,4",
+            filter.sql
+        ),
+        params_from_iter(&filter.params),
+        |r| {
+            Ok(ItemBreakdown {
+                kind: r.get(0)?,
+                payload_boundary: r.get(1)?,
+                category: r.get(2)?,
+                role: r.get(3)?,
+                count: r.get(4)?,
+                input_bytes: r.get(5)?,
+                output_bytes: r.get(6)?,
+                input_measurements: r.get(7)?,
+                output_measurements: r.get(8)?,
+            })
+        },
+    )
+}
 const TOOL_BOUNDARY: &str =
     "CASE WHEN json_extract(record,'$.payloadBoundary')='model' THEN 'model' ELSE 'protocol' END";
 const BILLABLE_USAGE: &str = "(NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM analytics_usage auth WHERE auth.agent=analytics_usage.agent AND auth.thread IS analytics_usage.thread AND auth.turn IS analytics_usage.turn AND NULLIF(json_extract(auth.record,'$.responseId'),'') IS NOT NULL))";
@@ -795,8 +846,10 @@ struct Duration {
     p50: Option<f64>,
     p95: Option<f64>,
 }
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ItemTotals {
+    #[serde(rename = "calls")]
     count: i64,
     failed: i64,
     input_measurements: i64,
@@ -804,32 +857,11 @@ struct ItemTotals {
     input_bytes: Option<i64>,
     output_bytes: Option<i64>,
     image_count: Option<i64>,
+    #[serde(rename = "durationMs")]
     duration_total: Option<f64>,
     duration: Duration,
+    #[serde(rename = "payloadBoundary")]
     boundary: String,
-}
-impl ItemTotals {
-    fn size(&self, dir: &str, _field: &str) -> Option<f64> {
-        if dir == "input" {
-            self.input_bytes.map(|n| n as f64)
-        } else {
-            self.output_bytes.map(|n| n as f64)
-        }
-    }
-    fn duration_total(&self) -> Option<f64> {
-        self.duration_total
-    }
-    fn duration(&self) -> Value {
-        json!(self.duration)
-    }
-    fn tool(&self, name: String, kind: String) -> Value {
-        json!({"name":name,"type":kind,"payloadBoundary":self.boundary,"calls":self.count,"failed":self.failed,
-            "inputBytes":self.input_bytes,"outputBytes":self.output_bytes,
-            "modelInputBytes":if kind=="modelToolCall"{self.input_bytes}else{None},
-            "modelOutputBytes":if kind=="modelToolCall"{self.output_bytes}else{None},
-            "durationMs":self.duration_total,"imageCount":self.image_count,
-            "inputMeasurements":self.input_measurements,"outputMeasurements":self.output_measurements,"duration":self.duration})
-    }
 }
 fn item_grouped(
     db: &Connection,
@@ -942,14 +974,58 @@ fn chart_rows(
     });
     Ok(points)
 }
-fn number_value(value: Option<f64>) -> Value {
-    match value {
-        Some(number) if number.fract() == 0.0 && number >= 0.0 && number <= i64::MAX as f64 => {
-            json!(number as i64)
-        }
-        Some(number) => json!(number),
-        None => Value::Null,
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct CaptureErrors {
+    count: u64,
+    #[serde(default)]
+    last: Value,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+fn metadata<T: serde::de::DeserializeOwned>(
+    db: &Connection,
+    key: &str,
+) -> Result<Option<T>, AnalyticsError> {
+    let raw: Option<String> = db
+        .query_row("SELECT value FROM analytics_meta WHERE key=?", [key], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw).map_err(|_| AnalyticsError::InvalidStoredRow {
+            table: "analytics_meta",
+            id: key.into(),
+        })
+    })
+    .transpose()
+}
+fn query<T, P: rusqlite::Params>(
+    db: &Connection,
+    sql: &str,
+    params: P,
+    read: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, AnalyticsError> {
+    Ok(db
+        .prepare(sql)?
+        .query_map(params, read)?
+        .collect::<Result<_, _>>()?)
+}
+#[derive(serde::Serialize)]
+struct Notification {
+    id: String,
+    agent: Option<String>,
+    root: Option<String>,
+    method: Option<String>,
+    hour: Option<i64>,
+    count: i64,
+    bytes: i64,
+}
+fn project(row: &Value, fields: &[&str]) -> Value {
+    let mut row = row.clone();
+    if let Some(object) = row.as_object_mut() {
+        object.retain(|key, _| fields.contains(&key.as_str()));
     }
+    row
 }
 fn records<P: rusqlite::Params>(
     db: &Connection,
@@ -978,7 +1054,7 @@ fn records<P: rusqlite::Params>(
 }
 
 fn required_fields(table: &str) -> &[&str] {
-    match table {
+    match table.strip_prefix("canvas.").unwrap_or(table) {
         "analytics_agents" => &["id"],
         "analytics_usage" => &["agentId", "at"],
         "analytics_items" => &["agentId", "type"],
@@ -993,43 +1069,6 @@ fn valid_stored_shape(table: &str, value: &Value) -> bool {
     required_fields(table)
         .iter()
         .all(|field| value.get(field).is_some_and(|item| !item.is_null()))
-}
-fn optional_records(
-    db: &Connection,
-    table: &'static str,
-    sql: &str,
-    object: &'static str,
-) -> Result<Vec<Value>, AnalyticsError> {
-    let exists: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |r| r.get(0),
-    )?;
-    if exists {
-        records(db, sql, [], object)
-    } else {
-        Ok(Vec::new())
-    }
-}
-fn optional_canvas_records(
-    db: &Connection,
-    table: &'static str,
-) -> Result<Vec<Value>, AnalyticsError> {
-    let exists: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM canvas.sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |r| r.get(0),
-    )?;
-    if exists {
-        records(db, &format!("SELECT record FROM canvas.{table}"), [], table)
-    } else {
-        Ok(Vec::new())
-    }
-}
-fn within_range(value: Option<f64>, from: Option<f64>, to: Option<f64>) -> bool {
-    value.is_some_and(|n| n.is_finite())
-        && from.is_none_or(|f| value.is_some_and(|n| n >= f))
-        && to.is_none_or(|t| value.is_some_and(|n| n <= t))
 }
 #[derive(Clone)]
 struct ScopeFilter {
@@ -1088,6 +1127,39 @@ impl ScopeFilter {
         }
         Ok(())
     }
+    fn optional_page(
+        &self,
+        db: &Connection,
+        table: &'static str,
+        order: &str,
+    ) -> Result<Vec<Value>, AnalyticsError> {
+        if table_exists(db, table)? {
+            self.page(db, table, order, -1, 0)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    fn counts(
+        &self,
+        db: &Connection,
+        table: &str,
+        key: &str,
+    ) -> Result<BTreeMap<String, i64>, AnalyticsError> {
+        if !table_exists(db, table)? {
+            return Ok(BTreeMap::new());
+        }
+        Ok(query(
+            db,
+            &format!(
+                "SELECT {key},COUNT(*) FROM {table} {} GROUP BY {key}",
+                self.sql
+            ),
+            params_from_iter(&self.params),
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .into_iter()
+        .collect())
+    }
     fn count(&self, db: &Connection, table: &str) -> Result<i64, AnalyticsError> {
         Ok(db.query_row(
             &format!("SELECT COUNT(*) FROM {table} {}", self.sql),
@@ -1120,7 +1192,7 @@ impl ScopeFilter {
         db: &Connection,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<Value>, AnalyticsError> {
+    ) -> Result<Vec<RateLimit>, AnalyticsError> {
         let mut params = self.params.clone();
         params.extend([SqlValue::Integer(limit), SqlValue::Integer(offset)]);
         let mut stmt = db.prepare(&format!("SELECT account,at,record FROM analytics_limits {} ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",self.sql))?;
@@ -1135,7 +1207,11 @@ impl ScopeFilter {
             let (account, at, raw) = row?;
             let data: Value = serde_json::from_str(&raw)
                 .map_err(|_| AnalyticsError::InvalidStoredObject("analytics_limits"))?;
-            Ok(json!({"accountKey":account,"at":at,"data":data}))
+            Ok(RateLimit {
+                account_key: account,
+                at,
+                data,
+            })
         })
         .collect()
     }
@@ -1278,6 +1354,19 @@ fn context_percent(row: &Value) -> Option<f64> {
     Some(row.pointer("/last/totalTokens")?.as_f64()? / row.get("modelContextWindow")?.as_f64()?)
         .filter(|n| n.is_finite())
 }
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum DetailPage {
+    Turns {
+        turns: Vec<Value>,
+        pagination: AnalyticsPagination,
+    },
+    Limits {
+        #[serde(rename = "rateLimits")]
+        rate_limits: Vec<RateLimit>,
+        pagination: AnalyticsPagination,
+    },
+}
 fn detail(
     db: &Connection,
     options: &AnalyticsOptions,
@@ -1310,14 +1399,24 @@ fn detail(
         "analytics_limits"
     };
     let total = filter.count(db, table)?;
-    let page = if detail == "turns" {
-        filter.page(db, table, "at DESC,id DESC", limit, offset)?
-    } else {
-        filter.rates(db, limit, offset)?
+    let pagination = AnalyticsPagination {
+        limit,
+        offset,
+        total,
+        has_more: offset + limit < total,
     };
-    Ok(
-        json!({detail:page,"pagination":{"limit":limit,"offset":offset,"total":total,"hasMore":offset+(page.len() as i64)<total}}),
-    )
+    let page = if detail == "turns" {
+        DetailPage::Turns {
+            turns: filter.page(db, table, "at DESC,id DESC", limit, offset)?,
+            pagination,
+        }
+    } else {
+        DetailPage::Limits {
+            rate_limits: filter.rates(db, limit, offset)?,
+            pagination,
+        }
+    };
+    Ok(serde_json::to_value(page)?)
 }
 
 fn turn_errors(
@@ -1371,18 +1470,7 @@ fn turn_errors(
         params_from_iter(keys.into_iter().map(SqlValue::Text)),
         "analytics_turns",
     )?;
-    let projected: Vec<Value> = rows
-        .iter()
-        .map(|row| {
-            let mut value = Map::new();
-            for field in fields {
-                if let Some(v) = row.get(field) {
-                    value.insert(field.into(), v.clone());
-                }
-            }
-            Value::Object(value)
-        })
-        .collect();
+    let projected: Vec<_> = rows.iter().map(|row| project(row, &fields)).collect();
     Ok(json!({"turns":projected}))
 }
 

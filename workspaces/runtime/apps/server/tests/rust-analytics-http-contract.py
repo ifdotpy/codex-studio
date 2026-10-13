@@ -83,7 +83,7 @@ try:
     # Independent population: bounded pages, null measurements, odd/even duration
     # samples, both tool boundaries, compaction precedence and hour overlap.
     population = {{**agent, 'id':'analytics-population','rootId':'analytics-population',
-                  'accountKey':'population-account'}}
+                  'accountKey':'population-account','threadId':None}}
     with runtime.lock, runtime.db(analytics=True) as db:
         runtime.put(db, 'agents', population, sync_rooms=False)
         runtime.analytics_agent(db, population)
@@ -120,11 +120,33 @@ try:
                    'agentId':population['id'],'rootId':population['id'],'type':kind,'at':1200 + index,
                    'turnId':'analytics-turn' if index < 2 else 'snapshot-turn'}}
             runtime.analytics_store_item(db, row)
+        for key, count in [('fallback',1),('ambiguous',2)]:
+            row = {{**usage,'id':f'population-{{key}}-response','agentId':population['id'],
+                   'rootId':population['id'],'responseId':f'population-{{key}}-response','at':1300,'turnId':key}}
+            db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+                (row['id'],population['id'],population['id'],'analytics-thread',key,1300,json.dumps(row)))
+            turn = {{**error,'id':f"{{population['id']}}:analytics-thread:{{key}}",'agentId':population['id'],
+                    'rootId':population['id'],'turnId':key,'status':'completed'}}
+            db.execute('INSERT INTO analytics_turns(id,agent,root,at,record) VALUES (?,?,?,?,?)',
+                       (turn['id'],population['id'],population['id'],1300,json.dumps(turn)))
+            for index in range(count):
+                row = {{**message,'id':f'population-{{key}}-message-{{index}}','itemId':f'{{key}}-message-{{index}}',
+                       'agentId':population['id'],'rootId':population['id'],'turnId':key,'at':1300}}
+                runtime.analytics_store_item(db,row)
         for index in range(3):
             db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)',
                        ('population-account',1100 + index,json.dumps({{'fixture':index}})))
             db.execute('INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?)',
                        (f'population-notification-{{index}}',population['id'],population['id'],'fixture',index*3600,index+1,index*10))
+    with runtime.lock, runtime.db(analytics=True) as db:
+        runtime.analytics_history_init(db)
+        runtime._analytics_history_record(db,'population-history',population['id'],
+            {{'status':'error','agent':population['id'],'error':'fixture error'}})
+        monitor = {{'id':'population-monitor','agent':population['id'],'status':'completed',
+                    'created':1101,'finished':1102,'bytes':12,'exitCode':0,'error':None,'timeout_ms':None}}
+        runtime.put(db, 'monitors', monitor)
+        runtime._monitor_exit_event(db, population, monitor, wake=False)
+        runtime.put(db, 'requests', {{'id':'population-request','agent':population['id'],'status':'approved'}})
     cases = [{{}}, {{'tool':'model-tool'}}, {{'tool':'missing'}}, {{'from':1100,'to':1102}},
              {{'from':99,'to':99}}, {{'scope':'team'}}, {{'limit':1,'offset':1}},
              {{'view':'detail','detail':'rateLimits','limit':1,'offset':1}},
@@ -135,7 +157,7 @@ try:
         if options.get('view') != 'detail':
             value = {{key:value[key] for key in ('summary','tools','notifications','rateLimits',
                 'timeline','chartBuckets','timelineTotal','provisionalUsage','calls','itemRecords','itemRecordsTotal',
-                'compactions','compactionSnapshots','pagination','detailPagination')}}
+                'compactions','compactionSnapshots','operations','history','pagination','detailPagination')}}
         oracle.append({{'options':options,'value':value}})
     (Path(os.environ['CODEX_CANVAS_CWD']) / 'analytics-oracle.json').write_text(json.dumps(oracle))
     assert runtime.analytics('analytics-contract-agent')['summary']['usageSamples'] == 1
@@ -204,6 +226,28 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 value = response.json()
                 for key, expected in case["value"].items():
                     self.assertEqual(value[key], expected, key)
+
+    def test_single_response_attribution_and_ambiguous_message(self) -> None:
+        for item, attributed in (("fallback-message-0", True), ("ambiguous-message-0", False)):
+            response = self.backend.request("GET", "/api/analytics?agent=analytics-population&view=message-info&item=" + item,
+                                            headers=self._headers())
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json().get("tokens") is not None, attributed)
+            if attributed:
+                self.assertEqual(response.json()["tokens"]["totalTokens"], 120)
+
+    def test_refusals_preserve_analytics_rows(self) -> None:
+        import sqlite3
+        def snapshot():
+            with sqlite3.connect(f"file:{self.backend.state / 'analytics.sqlite3'}?mode=ro", uri=True) as db:
+                return {table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
+                        for table in ("analytics_usage", "analytics_items", "analytics_turns", "analytics_limits")}
+        before = snapshot()
+        for query in ("from_time=200&to_time=100", "view=message-info&scope=team&item=analytics-response"):
+            response = self.backend.request("GET", "/api/analytics?agent=analytics-contract-agent&" + query,
+                                            headers=self._headers())
+            self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(snapshot(), before)
 
     def _headers(self):
         return {"Origin": self.backend.origin or "",
