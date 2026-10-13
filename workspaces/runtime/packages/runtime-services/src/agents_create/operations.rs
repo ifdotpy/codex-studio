@@ -113,7 +113,9 @@ fn create(
     };
     drop(read);
     if let Some(existing) = existing {
-        return projected_response(context.store, &existing);
+        return context
+            .store
+            .transaction_with_error(|tx| Ok(sync_projection(tx, &existing)?));
     }
     let read = context.store.read()?;
     let previous = request
@@ -246,8 +248,7 @@ fn create(
     if !draft {
         record["creationIntent"] = request.intent;
     }
-    let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
-    let result = context.store.transaction_with_error(|tx| {
+    mutate(context, |tx| {
         {
             // Replay is rechecked while holding the writer lock, before admission.
             let existing = if draft {
@@ -263,16 +264,14 @@ fn create(
                 replay_agent(tx, &id, &record["creationIntent"], validate)?
             };
             if let Some(existing) = existing {
-                return Ok::<_, OperationError>(existing);
+                return Ok::<_, OperationError>(sync_projection(tx, &existing)?);
             }
             refresh_account(context, &account)?;
             Ok(super::create_agent(
                 tx, &id, prompt, record, created, validate,
             )?)
         }
-    })?;
-    let projected = projected_response(context.store, &result)?;
-    with_sync_delta(context.store, before, projected)
+    })
 }
 
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
@@ -292,17 +291,15 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
         ));
     }
     let max_agents = request.max_agents;
-    let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
-    let result = context.store.transaction_with_error(|tx| {
-        configure_limits(
+    mutate(context, |tx| {
+        Ok(configure_limits(
             tx,
             &request.id,
             max_agents,
             request.token_budget,
             |schema, value| (context.validate)(schema, value),
-        )
-    })?;
-    with_sync_delta(context.store, before, result)
+        )?)
+    })
 }
 pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Value, OperationError> {
     if request.settings {
@@ -310,18 +307,15 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             "agent-management/conversation-settings",
         ));
     }
-    let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
-    let result = context.store.transaction_with_error(|tx| {
-        update_exclusions(
+    mutate(context, |tx| {
+        Ok(update_exclusions(
             tx,
             &request.id,
             request.expected_account.as_deref(),
             request.excluded.as_deref(),
             |schema, value| (context.validate)(schema, value),
-        )
-    })?;
-    let projected = projected_response(context.store, &result)?;
-    with_sync_delta(context.store, before, projected)
+        )?)
+    })
 }
 pub fn rename_operation(
     context: &Context<'_>,
@@ -336,13 +330,16 @@ pub fn rename_operation(
         ));
     }
     let signature = rename_signature(id, name);
-    let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
-    let result = context.store.transaction_with_error(|tx| {
-        rename(tx, id, name, request_id, &signature, |schema, value| {
-            (context.validate)(schema, value)
-        })
-    })?;
-    with_sync_delta(context.store, before, result)
+    mutate(context, |tx| {
+        Ok(rename(
+            tx,
+            id,
+            name,
+            request_id,
+            &signature,
+            |schema, value| (context.validate)(schema, value),
+        )?)
+    })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
     let name = name
@@ -358,7 +355,6 @@ fn rename_signature(id: &str, name: Option<&str>) -> String {
         .collect()
 }
 
-const MAX_MUTATION_SYNC_ENTITIES: i64 = 500;
 fn account_key(
     context: &Context<'_>,
     requested: Option<&str>,
@@ -613,50 +609,15 @@ fn merge_records<const N: usize>(parts: [Value; N]) -> Value {
     Value::Object(merged)
 }
 
-fn with_sync_delta(
-    store: &RuntimeStore,
-    after: i64,
-    mut result: Value,
+fn mutate(
+    context: &Context<'_>,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<Value, OperationError>,
 ) -> Result<Value, OperationError> {
-    let connection = store.read().map_err(|_| OperationError::Internal)?;
-    let rows =
-        SyncDocumentsRepository::entities_after(&connection, after, MAX_MUTATION_SYNC_ENTITIES + 1)
-            .map_err(|_| OperationError::Internal)?;
-    if !rows.is_empty() {
-        result["_syncEntities"] = Value::Array(
-            rows.iter()
-                .take(MAX_MUTATION_SYNC_ENTITIES as usize)
-                .map(|row| {
-                    json!({
-                        "id": format!("entity:{}:{}", row.collection, row.id),
-                        "seq": row.sequence,
-                        "payload": row.payload,
-                        "_deleted": row.deleted,
-                    })
-                })
-                .collect(),
-        );
-        let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
-            .map_err(|_| OperationError::Internal)?;
-        if rows.len() <= MAX_MUTATION_SYNC_ENTITIES as usize && floor <= after {
-            result["_syncEntitiesAfter"] = json!(after);
-        }
-    }
-    Ok(result)
-}
-
-fn projected_response(store: &RuntimeStore, result: &Value) -> Result<Value, OperationError> {
-    let connection = store.read()?;
-    let raw: String = connection
-        .query_row(
-            "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
-            [result["id"].as_str().ok_or(OperationError::Internal)?],
-            |row| row.get(0),
-        )
-        .map_err(StoreError::from)?;
-    let envelope: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-    envelope
-        .get("value")
-        .cloned()
-        .ok_or(OperationError::Internal)
+    context.store.transaction_with_error(|tx| {
+        let before = SyncDocumentsRepository::entity_sequence(tx)?;
+        let result = operation(tx)?;
+        Ok(crate::sync_documents::with_entity_delta(
+            tx, before, result,
+        )?)
+    })
 }

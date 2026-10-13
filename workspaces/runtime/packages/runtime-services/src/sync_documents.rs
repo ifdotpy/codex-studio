@@ -95,3 +95,32 @@ pub fn push_drafts(
             error => DraftPushError::Store(error),
         })
 }
+
+/// Bound mutation deltas and advertise a watermark only when no rows were lost.
+pub fn with_entity_delta(
+    connection: &rusqlite::Connection,
+    after: i64,
+    mut result: Value,
+) -> Result<Value, StoreError> {
+    const LIMIT: usize = 500;
+    let rows = SyncDocumentsRepository::entities_after(connection, after, (LIMIT + 1) as i64)?;
+    if !rows.is_empty() {
+        result["_syncEntities"] = Value::Array(
+            rows.iter()
+                .take(LIMIT)
+                .map(|row| {
+                    serde_json::json!({
+                        "id": format!("entity:{}:{}", row.collection, row.id), "seq": row.sequence,
+                        "payload": row.payload, "_deleted": row.deleted
+                    })
+                })
+                .collect(),
+        );
+        if rows.len() <= LIMIT
+            && SyncDocumentsRepository::entity_tombstone_floor(connection)? <= after
+        {
+            result["_syncEntitiesAfter"] = serde_json::json!(after);
+        }
+    }
+    Ok(result)
+}

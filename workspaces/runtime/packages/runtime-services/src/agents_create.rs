@@ -101,15 +101,15 @@ pub fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))
 }
 
-pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<(), StoreError> {
+pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
     let id = record
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
     let projection = sync_projection(transaction, record)?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection, deleted)?;
-    Ok(())
+    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
+    Ok(projection)
 }
 
 fn same_intent(saved: &str, requested: &str) -> bool {
@@ -242,7 +242,7 @@ fn save_agent(
     transaction: &Transaction<'_>,
     record: &Value,
     validate: &impl Fn(&str, &Value) -> bool,
-) -> Result<(), MutationError> {
+) -> Result<Value, MutationError> {
     if !validate("AgentRecordResponse", record) {
         return Err(MutationError::InvalidStoredObject {
             object: "runtime_agents",
@@ -251,8 +251,7 @@ fn save_agent(
     }
     let agent: AgentRecord = serde_json::from_value(record.clone()).map_err(StoreError::from)?;
     AgentRepository::put(transaction, &agent)?;
-    publish_agent(transaction, record)?;
-    Ok(())
+    Ok(publish_agent(transaction, record)?)
 }
 
 fn ensure_project(
@@ -321,7 +320,7 @@ pub fn create_agent(
         replay_agent(transaction, id, &record["creationIntent"], &validate)?
     };
     if let Some(existing) = existing {
-        return Ok(existing);
+        return Ok(sync_projection(transaction, &existing)?);
     }
     if !validate("AgentRecordResponse", &record) {
         return Err(CreateError::InvalidStoredObject {
@@ -350,7 +349,7 @@ pub fn create_agent(
         ensure_project(transaction, &record, &validate)?;
     }
     AgentRepository::put(transaction, &agent)?;
-    publish_agent(transaction, &record)?;
+    let projection = publish_agent(transaction, &record)?;
     if !draft {
         let event_id = format!("{id}:initial");
         let inserted = crate::event_write::enqueue_event(
@@ -366,7 +365,7 @@ pub fn create_agent(
             return Err(CreateError::Conflict);
         }
     }
-    Ok(record)
+    Ok(projection)
 }
 
 pub fn update_exclusions(
@@ -403,7 +402,7 @@ pub fn update_exclusions(
         return Err(SettingsError::InFlight);
     }
     let Some(excluded) = excluded else {
-        return Ok(record);
+        return Ok(sync_projection(transaction, &record)?);
     };
     if record.get("isLead").and_then(Value::as_bool) != Some(true) {
         return Err(SettingsError::LeadRequired);
@@ -416,8 +415,7 @@ pub fn update_exclusions(
         return Err(SettingsError::CurrentAccountExcluded);
     }
     record["excludedAccountKeys"] = json!(excluded);
-    save_agent(transaction, &record, &validate)?;
-    Ok(record)
+    save_agent(transaction, &record, &validate)
 }
 
 /// Apply the persisted team storage and token limits without provider calls.
