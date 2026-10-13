@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::event_write::request_signature as receipt_signature;
 use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError, TerminalsRepository};
-use crate::event_write::request_signature as receipt_signature;
 use thiserror::Error;
 
 pub const OUTPUT_LIMIT: usize = 1_048_576;
