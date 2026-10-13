@@ -1066,19 +1066,9 @@ with canvas.connect() as db:
         )
         self.assertEqual(malformed_key.status, 400)
 
-        before_transcript = (
-            sync_state_snapshot(backend.state) if rust_backend_configured else None
-        )
         transcript = backend.request("GET", "/api/sync/pull?scope=transcript:agent-a")
-        if not rust_backend_configured:
-            self.assertEqual(transcript.status, 200, transcript.body[:1000])
-        else:
-            self.assertEqual(transcript.status, 501)
-            self.assertEqual(
-                transcript.json()["error"],
-                "Not implemented: requires transcript-service/pull",
-            )
-            self.assertEqual(sync_state_snapshot(backend.state), before_transcript)
+        self.assertEqual(transcript.status, 200, transcript.body[:1000])
+        self.assertIn("documents", transcript.json())
 
         draft = {
             "rows": [{"newDocumentState": {
