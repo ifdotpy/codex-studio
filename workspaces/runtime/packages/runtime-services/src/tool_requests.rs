@@ -1,5 +1,6 @@
 //! Durable tool receipt actions shared by HTTP and future provider callback callers.
-mod lifecycle;
+pub(crate) mod admission;
+pub(crate) mod lifecycle;
 use crate::event_write::truthy;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
