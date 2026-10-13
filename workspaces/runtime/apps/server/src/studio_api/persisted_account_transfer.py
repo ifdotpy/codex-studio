@@ -74,7 +74,7 @@ class PersistedAccountTransferRecord(OpenTransferRecord):
     updated: float | None = None
     targetProvider: Text | None = None
     finishHistory: StrictBool = False
-    members: Annotated[dict[Identity, TransferMemberRecord], Field(max_length=2048)]
+    members: Annotated[dict[Identity, TransferMemberRecord], Field(max_length=2050)]
     requests: Annotated[dict[Identity, TransferRequestIdentity], Field(max_length=4096)] = Field(default_factory=dict)
 
 
