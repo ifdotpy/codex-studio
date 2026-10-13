@@ -80,8 +80,10 @@ test-heavy:
 
 [doc("Run the full Rust lifecycle and notification matrices (manual heavy tier; no load generators).")]
 test-rust-runtime-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services --test submit_gates_corpus
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)'
 
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/submit-gates-mutations" --manifest workspaces/runtime/packages/runtime-services/tests/submit_gates/mutations.json --filter 'binary(submit_gates_corpus)' {{args}}
