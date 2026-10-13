@@ -329,9 +329,9 @@ def _layer_tar(folder: Path, output: IO[bytes]) -> None:
     """A tar of the folder that is the same in every pass over unchanged files: sorted names, no
     owners, whole-second times, no hard links. Files that are not regular files, folders or
     symbolic links (sockets, pipes) stay out; the guest accepts no other entry."""
-    # Reads and writes of 1 MiB: with the default 16 KiB the Mac disk gave about 100 MB/s.
-    with tarfile.open(fileobj=output, mode='w|', format=tarfile.PAX_FORMAT, bufsize=CHUNK,
-                      copybufsize=CHUNK) as archive:
+    # Reads and writes of 1 MiB: tarfile copies in 16 KiB blocks, and reads of that size gave
+    # about 50 MB/s from the Mac disk; the file buffer makes each disk read 1 MiB.
+    with tarfile.open(fileobj=output, mode='w|', format=tarfile.PAX_FORMAT, bufsize=CHUNK) as archive:
         def add(path: Path, name: str) -> None:
             meta = path.lstat()
             info = tarfile.TarInfo(name)
@@ -345,7 +345,7 @@ def _layer_tar(folder: Path, output: IO[bytes]) -> None:
                 archive.addfile(info)
             elif stat.S_ISREG(meta.st_mode):
                 info.size = meta.st_size
-                with path.open('rb') as stream:
+                with path.open('rb', buffering=CHUNK) as stream:
                     archive.addfile(info, stream)
         add(folder, '.')
         for directory, folders, files in os.walk(folder):
