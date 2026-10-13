@@ -274,7 +274,7 @@ fn resolved_complaint_and_decided_work_review_retire_before_claiming_the_remaini
 }
 
 #[test]
-fn deleted_agent_is_refused_at_claim_and_submission_recheck() {
+fn deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck() {
     let mut connection = database();
     connection
         .execute(
@@ -283,10 +283,8 @@ fn deleted_agent_is_refused_at_claim_and_submission_recheck() {
         )
         .expect("agent deletion writes");
     let transaction = connection.transaction().expect("claim begins");
-    assert!(
-        matches!(SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 1),
-            Err(crate::StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" && id == "agent")
-    );
+    assert!(SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 1)
+        .expect("deleted agents are ordinary skipped candidates").is_none());
     transaction
         .rollback()
         .expect("deleted agent claim rolls back");

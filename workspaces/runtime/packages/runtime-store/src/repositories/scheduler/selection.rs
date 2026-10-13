@@ -38,7 +38,7 @@ impl SchedulerRepository {
             .get("deletedAt")
             .is_some_and(|value| !value.is_null())
         {
-            return Err(invalid_agent(agent_id));
+            return Ok(None);
         }
         if let Some(saved) = crate::ExecutionHistoryRepository::attempt(transaction, attempt_id)? {
             if saved.get("claimResult").is_none() {
