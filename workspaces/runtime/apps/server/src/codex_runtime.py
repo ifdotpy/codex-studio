@@ -88,6 +88,7 @@ if TYPE_CHECKING:
 MAX_STAGED_RESOURCE_CHANGES = 256
 MAX_QUEUED_RESOURCE_CHANGES = 4096
 MAX_RECOVERY_TOKEN_OBSERVATIONS = 4096
+MAX_TOOL_TURN_BINDING_WAITERS = 4096
 WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "name", "status", "parentId", "rootId", "threadId", "deletedAt", "isLead", "role",
     "sharedRoomId", "model", "provider", "effort", "fastMode", "concurrency", "accountKey",
@@ -1552,6 +1553,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self._fast_delivery_enabled = False
         self._fast_dispatch_lock = threading.Lock()
         self._fast_dispatch_states = {}
+        self._tool_turn_binding_waiters: dict[tuple[str, str], set[threading.Event]] = {}
+        self._tool_turn_binding_waiter_count = 0
         self._wal_keeper = None
         self._shutdown_writers_drained = False
         self.server = None
@@ -8463,6 +8466,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     observed_at=token_rate_at,
                 )
             self.put(db, "agents", a)
+            if (method in {"turn/started", "item/started", "item/completed"}
+                    and a.get("turnId")):
+                self.wake_tool_turn_binding_waiters(account_key, tid)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.
             if a["rootId"] == a["id"]:
@@ -8898,6 +8904,56 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  {"state": "failed", "error": str(error)})
         return value
 
+    def wait_for_tool_turn_binding(self, account_key, connection_id, thread_id, turn_id,
+                                   timeout=1.0):
+        """Wait for notification handling to commit this submitted turn identity."""
+        if not isinstance(thread_id, str) or not thread_id or not isinstance(turn_id, str) or not turn_id:
+            return False
+        waiter_key = (account_key, thread_id)
+        waiter = threading.Event()
+        deadline = time.monotonic() + timeout
+        with self.lock, self.db() as db:
+            if not self.connection_current(account_key, connection_id):
+                return False
+            actor = self.tool_request_actor(db, thread_id, account_key)
+            if actor is None:
+                return False
+            bound = actor.get("turnId")
+            if bound is not None:
+                return bound == turn_id
+            attempt = actor.get("startAttempt") or {}
+            if (not actor.get("inFlight") or actor.get("turnEpoch", actor["epoch"]) != actor["epoch"]
+                    or not attempt.get("submitted") or attempt.get("epoch") != actor["epoch"]
+                    or attempt.get("threadId") != thread_id
+                    or attempt.get("accountKey", "default") != account_key
+                    or attempt.get("connectionId") != connection_id
+                    or attempt.get("turnId") not in (None, turn_id)
+                    or attempt.get("observedTurnId") not in (None, turn_id)
+                    or self._tool_turn_binding_waiter_count >= MAX_TOOL_TURN_BINDING_WAITERS):
+                return False
+            self._tool_turn_binding_waiters.setdefault(waiter_key, set()).add(waiter)
+            self._tool_turn_binding_waiter_count += 1
+        try:
+            waiter.wait(max(0, deadline - time.monotonic()))
+            with self.lock, self.db() as db:
+                if not self.connection_current(account_key, connection_id):
+                    return False
+                actor = self.tool_request_actor(db, thread_id, account_key)
+                return bool(actor and actor.get("turnId") == turn_id)
+        finally:
+            with self.lock:
+                waiters = self._tool_turn_binding_waiters.get(waiter_key)
+                if waiters is not None and waiter in waiters:
+                    waiters.remove(waiter)
+                    self._tool_turn_binding_waiter_count -= 1
+                    if not waiters:
+                        self._tool_turn_binding_waiters.pop(waiter_key, None)
+
+    def wake_tool_turn_binding_waiters(self, account_key, thread_id):
+        """Wake only callbacks waiting for this account's thread."""
+        for waiter in self._tool_turn_binding_waiters.get((account_key, thread_id), ()):
+            waiter.set()
+
     def dynamic(self, message, account_key="default", connection_id=None):
         p = message.get("params", {})
         result = None
@@ -8925,6 +8981,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             record = self.reserve_tool_request(message, account_key, connection_id)
             key = record["id"]
+            if (p.get("turnId") and record.get("stage") == "queued"
+                    and record.get("result") is None):
+                # AppServer can dispatch a turn-scoped tool request before the
+                # corresponding turn/started notification has been applied.
+                # Wait briefly for the actor to bind that exact provider turn;
+                # an unknown binding must never authorize the operation.
+                self.wait_for_tool_turn_binding(
+                    account_key, connection_id, p.get("threadId"), p.get("turnId"))
             with self.lock, self.db() as db:
                 # Another callback can claim this request after reservation returns.
                 # Only the current receipt can prove that execution has not started.
@@ -8937,7 +9001,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 stale_epoch = (record.get("epoch") != a["epoch"]
                                or (p.get("turnId") and a.get("turnEpoch", a["epoch"]) != a["epoch"]))
-                if result is None and record.get("stage") == "queued" and stale_epoch:
+                turn_mismatch = bool(p.get("turnId") and p.get("turnId") != a.get("turnId"))
+                if (result is None and record.get("stage") == "queued"
+                        and (stale_epoch or turn_mismatch)):
                     # Only a queued, unstarted receipt proves no mutation ran.
                     # Preserve any ambiguous receipt without claiming it again.
                     from codex_tool_requests import operation_receipt_evidence
@@ -8946,8 +9012,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.finish_tool_request(key, result, db=db)
                     elif (record.get("outcome") == "pending" and record.get("started") is None
                           and operation_receipt_evidence(db, key) is None):
+                        error = ("This tool call belongs to an earlier turn" if stale_epoch or a.get("turnId")
+                                 else "Could not verify the current native turn; the operation was not executed")
                         result = stamp_tool_result({"success": False, "contentItems": [
-                            {"type": "inputText", "text": "This tool call belongs to an earlier turn"}]}, time.time())
+                            {"type": "inputText", "text": error}]}, time.time())
                         self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 elif result is None:
                     claimed = self.begin_tool_request(key)
