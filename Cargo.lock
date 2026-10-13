@@ -1980,6 +1980,7 @@ dependencies = [
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
 ]

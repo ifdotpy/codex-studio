@@ -19,6 +19,8 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub account_session:
+        Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
@@ -68,6 +70,7 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            account_session: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,

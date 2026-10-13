@@ -97,9 +97,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address.port(),
         public_origin,
         Some(store.clone()),
-        Some(account_policy),
+        Some(account_policy.clone()),
     )
     .with_account_driver(account_driver.clone());
+    account_driver.recover_codex_logins()?;
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&state_dir));
+    let base_home = env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    state.account_session = Some(Arc::new(
+        studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
+            account_driver.clone(),
+            None,
+            tokio::runtime::Handle::current(),
+            PathBuf::from(&state_dir).join("accounts"),
+            base_home,
+            home,
+        )
+        .with_limits(account_policy),
+    ));
     #[cfg(unix)]
     claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;
     let sync_changes = state.sync_changes_handle();
