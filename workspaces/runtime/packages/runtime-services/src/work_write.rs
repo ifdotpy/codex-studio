@@ -341,13 +341,13 @@ fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
         .flatten()
         .filter_map(Value::as_str)
     {
-        if let Some(value) = WorkItemsRepository::work_record(tx, dependency)? {
-            if value["rootId"] == work["rootId"] {
-                statuses.insert(
-                    dependency.to_owned(),
-                    value["status"].as_str().unwrap_or_default().to_owned(),
-                );
-            }
+        if let Some(value) = WorkItemsRepository::work_record(tx, dependency)?
+            && value["rootId"] == work["rootId"]
+        {
+            statuses.insert(
+                dependency.to_owned(),
+                value["status"].as_str().unwrap_or_default().to_owned(),
+            );
         }
     }
     Ok(crate::work_policy::work_item_view(work, &statuses))

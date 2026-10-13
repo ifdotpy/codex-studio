@@ -370,9 +370,7 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
             }
             let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
                 .expect("Python fixture contains the agent");
-            agent
-                .extra
-                .insert("rustAgentFlag".into(), json!(true));
+            agent.extra.insert("rustAgentFlag".into(), json!(true));
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
                 .expect("Python fixture contains the task");

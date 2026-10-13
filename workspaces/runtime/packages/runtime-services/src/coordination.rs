@@ -561,7 +561,7 @@ mod tests {
              CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("coordination schema creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"id":id,"rootId":root,"deletedAt":null}).to_string();
+            let record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -783,7 +783,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"id":"lead","rootId":"lead","threadId":"managed-thread"}).to_string()],
+                [json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
             )
             .expect("managed thread fixture updates");
         connection
@@ -881,7 +881,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES('user',?1)",
-                [json!({"id":"user","rootId":"lead"}).to_string()],
+                [json!({"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
