@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, Transaction,
+    QueueEventId, RulesRepository, StoreError, Transaction,
 };
 use thiserror::Error;
 
@@ -348,7 +348,7 @@ fn refuse_if_event_rule_applies(
     Ok(())
 }
 
-fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
+pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
         return Err(EventWriteError::RemoteEventsUnavailable);
     }
@@ -422,7 +422,13 @@ pub fn checked_agent(
     connection: &Transaction<'_>,
     id: &str,
 ) -> Result<AgentRecord, EventWriteError> {
-    let agent = AgentRepository::get(connection, &AgentId::from(id))?
+    let agent = AgentRepository::get(connection, &AgentId::from(id))
+        .map_err(|error| match error {
+            StoreError::InvalidStoredRecord { object, id } => {
+                EventWriteError::InvalidStoredObject { object, id }
+            }
+            other => EventWriteError::Store(other),
+        })?
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
     if truthy(agent.extra.get("deletedAt")) {
         return Err(EventWriteError::InvalidRequest("This agent was deleted"));
