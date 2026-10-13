@@ -72,41 +72,6 @@ pub struct EventWriteReceipt {
 pub struct EventWriteRepository;
 
 impl EventWriteRepository {
-    /// Finish the active capacity retry when a manual input replaces it.
-    pub fn finish_capacity_retry(
-        transaction: &Transaction<'_>,
-        agent_id: &str,
-        retry_id: &str,
-    ) -> StoreResult<Option<bool>> {
-        let exists: bool = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_capacity_retries')",
-            [],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Ok(None);
-        }
-        let raw = transaction
-            .query_row(
-                "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
-                params![retry_id, agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let Some(raw) = raw else {
-            return Ok(Some(false));
-        };
-        let mut record: Value = serde_json::from_str(&raw)?;
-        record["status"] = Value::String("finished".to_owned());
-        record["dueAt"] = Value::Null;
-        record["reason"] = Value::String("A new instruction replaces this retry.".to_owned());
-        transaction.execute(
-            "UPDATE runtime_capacity_retries SET record=?1 WHERE id=?2 AND agent=?3",
-            params![record.to_string(), retry_id, agent_id],
-        )?;
-        Ok(Some(true))
-    }
-
     pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
         Ok(connection
             .query_row(
@@ -216,7 +181,7 @@ impl EventWriteRepository {
         agent_id: &str,
         status: &str,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, Some(status), None, None, None)
+        Self::set_agent_sync_fields(transaction, agent_id, Some(status), None, None)
     }
 
     /// Keep renderer-visible lifecycle fields in step with a scheduler transition.
@@ -233,29 +198,6 @@ impl EventWriteRepository {
             Some(status),
             Some((in_flight, turn_id)),
             None,
-            None,
-        )
-    }
-
-    /// Project the public fields changed when a manual message wakes an agent.
-    pub fn set_agent_sync_manual_input(
-        transaction: &Transaction<'_>,
-        agent: &crate::AgentRecord,
-    ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(
-            transaction,
-            &agent.id.0,
-            Some(agent.status.as_str()),
-            Some((
-                agent
-                    .extra
-                    .get("inFlight")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                agent.extra.get("turnId").and_then(Value::as_str),
-            )),
-            None,
-            Some(agent),
         )
     }
 
@@ -265,7 +207,89 @@ impl EventWriteRepository {
         status: Option<&str>,
         lifecycle: Option<(bool, Option<&str>)>,
         name: Option<&str>,
-        manual_input: Option<&crate::AgentRecord>,
+    ) -> StoreResult<()> {
+        Self::update_agent_sync(transaction, agent_id, |value| {
+            let status_changed = status
+                .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
+            let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
+                value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
+                    || value.get("turnId").and_then(Value::as_str) != turn_id
+            });
+            let name_changed = name.is_some_and(|name| {
+                value.get("name").and_then(Value::as_str) != Some(name)
+                    || value.get("manualName").and_then(Value::as_bool) != Some(true)
+            });
+            if !status_changed && !lifecycle_changed && !name_changed {
+                return false;
+            }
+            if let Some(status) = status {
+                value.insert("status".to_owned(), Value::String(status.to_owned()));
+            }
+            if let Some((in_flight, turn_id)) = lifecycle {
+                value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+                value.insert(
+                    "turnId".to_owned(),
+                    turn_id.map_or(Value::Null, |turn_id| Value::String(turn_id.to_owned())),
+                );
+            }
+            if let Some(name) = name {
+                value.insert("name".to_owned(), Value::String(name.to_owned()));
+                value.insert("manualName".to_owned(), Value::Bool(true));
+            }
+            if status == Some("queued")
+                && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+            {
+                overview.insert("result".into(), Value::String(String::new()));
+                overview.insert("resultTruncated".into(), Value::Bool(false));
+                overview.insert("resultTurnId".into(), Value::Null);
+            }
+            true
+        })
+    }
+
+    /// Publish runtime-owned agent fields through the same sequenced projection writer.
+    pub fn set_agent_sync_values(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        fields: &[(&str, Value)],
+    ) -> StoreResult<()> {
+        Self::update_agent_sync(transaction, agent_id, |value| {
+            let mut changed = false;
+            for (field, next) in fields {
+                if value.get(*field) != Some(next) {
+                    value.insert((*field).to_owned(), next.clone());
+                    changed = true;
+                }
+            }
+            changed
+        })
+    }
+
+    /// Project the fields changed when a manual message wakes an agent.
+    pub fn set_agent_sync_manual_input(
+        transaction: &Transaction<'_>,
+        agent: &crate::AgentRecord,
+    ) -> StoreResult<()> {
+        Self::update_agent_sync(transaction, &agent.id.0, |value| {
+            let mut changed = false;
+            for field in ["autoWake", "error", "capacityRetry", "startAttempt"] {
+                match agent.extra.get(field) {
+                    Some(next) if value.get(field) != Some(next) => {
+                        value.insert(field.to_owned(), next.clone());
+                        changed = true;
+                    }
+                    None if value.remove(field).is_some() => changed = true,
+                    _ => {}
+                }
+            }
+            changed
+        })
+    }
+
+    fn update_agent_sync(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        update: impl FnOnce(&mut serde_json::Map<String, Value>) -> bool,
     ) -> StoreResult<()> {
         let old = transaction
             .query_row(
@@ -296,57 +320,8 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        let status_changed = status
-            .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
-        let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
-            value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
-                || value.get("turnId").and_then(Value::as_str) != turn_id
-        });
-        let name_changed = name.is_some_and(|name| {
-            value.get("name").and_then(Value::as_str) != Some(name)
-                || value.get("manualName").and_then(Value::as_bool) != Some(true)
-        });
-        let manual_input_changed = manual_input.is_some_and(|agent| {
-            ["autoWake", "error", "capacityRetry", "startAttempt"]
-                .iter()
-                .any(|field| agent.extra.get(*field) != value.get(*field))
-        });
-        if !status_changed && !lifecycle_changed && !name_changed && !manual_input_changed {
+        if !update(value) {
             return Ok(());
-        }
-        if let Some(status) = status {
-            value.insert("status".to_owned(), Value::String(status.to_owned()));
-        }
-        if let Some((in_flight, turn_id)) = lifecycle {
-            value.insert("inFlight".to_owned(), Value::Bool(in_flight));
-            if let Some(turn_id) = turn_id {
-                value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-            } else {
-                value.insert("turnId".to_owned(), Value::Null);
-            }
-        }
-        if let Some(name) = name {
-            value.insert("name".to_owned(), Value::String(name.to_owned()));
-            value.insert("manualName".to_owned(), Value::Bool(true));
-        }
-        if let Some(agent) = manual_input {
-            for field in ["autoWake", "error", "capacityRetry", "startAttempt"] {
-                match agent.extra.get(field) {
-                    Some(field_value) => {
-                        value.insert(field.to_owned(), field_value.clone());
-                    }
-                    None => {
-                        value.remove(field);
-                    }
-                }
-            }
-        }
-        if status == Some("queued")
-            && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
-        {
-            overview.insert("result".into(), Value::String(String::new()));
-            overview.insert("resultTruncated".into(), Value::Bool(false));
-            overview.insert("resultTurnId".into(), Value::Null);
         }
         let payload = serde_json::to_string(&payload)?;
         let hash = hash_payload(&payload);
@@ -365,7 +340,7 @@ impl EventWriteRepository {
         agent_id: &str,
         name: &str,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, None, None, Some(name), None)
+        Self::set_agent_sync_fields(transaction, agent_id, None, None, Some(name))
     }
 }
 
@@ -501,11 +476,5 @@ mod tests {
                 ["enqueuedAt"],
             42
         );
-    }
-}
-inventory::submit! {
-    crate::repositories::SchemaRegistration {
-        repository: "event_write",
-        requirements: &REQUIREMENTS,
     }
 }

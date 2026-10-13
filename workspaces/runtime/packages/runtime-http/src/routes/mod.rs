@@ -1,5 +1,6 @@
 mod agents_create;
 mod catalog;
+mod checkpoints;
 pub(crate) mod compose;
 mod desktop;
 pub(crate) mod extractors;

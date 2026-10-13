@@ -186,11 +186,25 @@ fn validate_record(
     schema: &str,
     object: &'static str,
 ) -> Result<(String, Map<String, Value>), ApiError> {
-    let value = validators
-        .validated_stored(schema, &record.record)
-        .and_then(|value| value.as_object().cloned())
-        .ok_or_else(|| invalid_stored_object(object, &record.id))?;
+    let value = validate_stored_value(validators, &record.id, &record.record, schema, object)?;
     Ok((record.id, value))
+}
+
+pub(super) fn validate_stored_value(
+    validators: &Registry,
+    id: &str,
+    raw: &str,
+    schema: &str,
+    object: &'static str,
+) -> Result<Map<String, Value>, ApiError> {
+    let value = validators
+        .validated_stored(schema, raw)
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| invalid_stored_object(object, id))?;
+    if value.get("id").and_then(Value::as_str) != Some(id) {
+        return Err(invalid_stored_object(object, id));
+    }
+    Ok(value)
 }
 
 fn questions_error(error: QuestionsReadsError) -> ApiError {

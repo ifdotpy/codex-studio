@@ -7,10 +7,14 @@ mod schema;
 pub use schema::sha256_hex;
 
 pub use repositories::account_state;
+pub use repositories::checkpoints::{
+    CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use rusqlite::{Connection, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};

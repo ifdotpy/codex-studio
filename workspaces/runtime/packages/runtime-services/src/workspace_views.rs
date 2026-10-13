@@ -1,13 +1,7 @@
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use process_wrap::std::CommandWrap;
-#[cfg(unix)]
-use process_wrap::std::ProcessGroup;
+use crate::bounded_child::{self, PipeOutput};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -102,12 +96,6 @@ pub enum GitError {
     OutputTooLarge,
 }
 
-#[derive(Debug)]
-struct PipeOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
 /// Owns the Git command sequence and workspace changes response projection.
 pub fn git_changes(cwd: &str) -> Result<Value, GitError> {
     match run_git(cwd, &["rev-parse", "--show-toplevel"], 1024) {
@@ -189,86 +177,22 @@ fn run_git_program_timeout(
     stdout_limit: usize,
     timeout: Duration,
 ) -> Result<PipeOutput, GitError> {
-    let mut command = Command::new(program);
-    command
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut command = CommandWrap::from(command);
-    #[cfg(unix)]
-    command.wrap(ProcessGroup::leader());
-    let deadline = Instant::now() + timeout;
-    let mut child = command.spawn().map_err(|_| GitError::Other)?;
-    let stdout = child.stdout().take().ok_or(GitError::Other)?;
-    let stderr = child.stderr().take().ok_or(GitError::Other)?;
-    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
-    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
-    let stdout_reader =
-        thread::spawn(move || drop(stdout_sender.send(read_bounded(stdout, stdout_limit))));
-    let stderr_reader = thread::spawn(move || drop(stderr_sender.send(read_bounded(stderr, 4800))));
-    let status = loop {
-        match child.try_wait() {
-            Err(_) => {
-                drop(child.kill());
-                drop(stdout_reader.join());
-                drop(stderr_reader.join());
-                return Err(GitError::Other);
-            }
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                drop(child.kill());
-                drop(stdout_reader.join());
-                drop(stderr_reader.join());
-                return Err(GitError::TimedOut);
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
-        }
-    };
-    let stdout = stdout_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-    let stderr = stderr_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-    if matches!(stdout, Err(mpsc::RecvTimeoutError::Timeout))
-        || matches!(stderr, Err(mpsc::RecvTimeoutError::Timeout))
-    {
-        drop(child.kill());
-        drop(stdout_reader.join());
-        drop(stderr_reader.join());
-        return Err(GitError::TimedOut);
-    }
-    let stdout = stdout.ok().and_then(Result::ok).ok_or(GitError::Other)?;
-    let stderr = stderr.ok().and_then(Result::ok).ok_or(GitError::Other)?;
-    drop(stdout_reader.join());
-    drop(stderr_reader.join());
-    if status.success() {
-        return Ok(stdout);
-    }
-    let message = String::from_utf8_lossy(&stderr.bytes)
-        .trim()
-        .chars()
-        .take(1200)
-        .collect::<String>();
-    Err(GitError::Failed(if message.is_empty() {
-        "Git operation failed".to_owned()
-    } else {
-        message
-    }))
-}
-
-fn read_bounded(mut pipe: impl Read, limit: usize) -> std::io::Result<PipeOutput> {
-    let mut bytes = Vec::with_capacity(limit.min(16_384));
-    let mut chunk = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let count = pipe.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        let retained = count.min(limit.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&chunk[..retained]);
-        truncated |= retained < count;
-    }
-    Ok(PipeOutput { bytes, truncated })
+    bounded_child::run(bounded_child::Request {
+        program: program.as_ref(),
+        cwd: std::ffi::OsStr::new(cwd),
+        args,
+        environment: &[],
+        input: None,
+        stdout_limit,
+        stderr_limit: 4800,
+        timeout,
+    })
+    .map(|output| output.stdout)
+    .map_err(|error| match error {
+        bounded_child::ChildError::Failed(message) => GitError::Failed(message),
+        bounded_child::ChildError::TimedOut => GitError::TimedOut,
+        bounded_child::ChildError::Other => GitError::Other,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -641,11 +565,10 @@ fn complaint_needs_response(complaint: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CursorKind, GitError, parse_task_cursor, read_bounded, run_git_program,
-        run_git_program_timeout, task_feed_response,
+        CursorKind, GitError, parse_task_cursor, run_git_program, run_git_program_timeout,
+        task_feed_response,
     };
     use serde_json::json;
-    use std::io::Cursor;
     use std::time::Duration;
 
     #[test]
@@ -725,14 +648,6 @@ mod tests {
         assert_eq!(response["hasMore"], true);
     }
 
-    #[test]
-    fn bounded_pipe_reader_drains_and_retains_only_its_prefix() {
-        let input = vec![b'x'; 32_000];
-        let output = read_bounded(Cursor::new(input), 1024).expect("pipe bytes read");
-        assert_eq!(output.bytes, vec![b'x'; 1024]);
-        assert!(output.truncated);
-    }
-
     #[cfg(unix)]
     #[test]
     fn git_command_inherits_environment_preserves_arguments_and_bounds_errors() {
@@ -769,7 +684,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn git_timeout_kills_a_descendant_that_keeps_a_pipe_open() {
+    fn git_exit_terminates_a_descendant_that_keeps_a_pipe_open() {
         use std::os::unix::fs::PermissionsExt;
 
         let root =
@@ -794,7 +709,7 @@ mod tests {
             1024,
             Duration::from_secs(2),
         );
-        assert!(matches!(result, Err(GitError::TimedOut)));
+        assert!(result.is_ok());
         std::fs::remove_dir_all(root).expect("timeout fixture removed");
     }
 }

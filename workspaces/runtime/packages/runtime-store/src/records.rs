@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -178,19 +178,24 @@ pub(crate) fn get_json_record<T: serde::de::DeserializeOwned>(
         .query_row(
             &format!("SELECT record FROM {table} WHERE id = ?1"),
             [id],
-            |row| {
-                let json: String = row.get(0)?;
-                serde_json::from_str(&json).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            },
+            |row| decode_json_record(row, 0),
         )
         .optional()?;
     Ok(record)
+}
+
+pub(crate) fn decode_json_record<T: serde::de::DeserializeOwned>(
+    row: &Row<'_>,
+    column: usize,
+) -> rusqlite::Result<T> {
+    let json: String = row.get(column)?;
+    serde_json::from_str(&json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
 }
 
 pub(crate) fn get_raw_record(

@@ -9,8 +9,10 @@
 
 pub mod account_driver;
 pub mod account_policy;
-pub mod change_notifications;
 pub mod agents_create;
+pub mod bounded_child;
+pub mod change_notifications;
+pub mod checkpoints;
 pub mod coordination;
 pub mod event_write;
 pub mod federation;
