@@ -1,0 +1,116 @@
+[
+  {
+    "id": "M1",
+    "description": "drop-accepted-turn",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n",
+        "after": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        // AUDIT MUTATION: omit accepted turnId write.\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n"
+      }
+    ]
+  },
+  {
+    "id": "M2",
+    "description": "preserve-last-answer",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
+        "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        // AUDIT MUTATION: preserve previous answer on turn-start notice.\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ]
+  },
+  {
+    "id": "M3",
+    "description": "rejection-status",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = status;\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n",
+        "after": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = if !unknown && !preparation { AgentStatus::Running } else { status };\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n"
+      }
+    ]
+  },
+  {
+    "id": "M4",
+    "description": "skip-closed-stream",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "edits": [
+      {
+        "before": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n",
+        "after": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if false && self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n"
+      }
+    ]
+  },
+  {
+    "id": "M5",
+    "description": "wrong-replay-result",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return result[\"bound\"]\n                .as_bool()\n                .ok_or_else(|| invalid_agent(agent_id));\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n",
+        "after": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return Ok(false); // AUDIT MUTATION: discard saved successful replay result.\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n"
+      }
+    ]
+  },
+  {
+    "id": "M6",
+    "description": "remove-savepoint",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    transaction\n        .execute_batch(&format!(\"SAVEPOINT {SAVEPOINT}\"))\n        .map_err(StoreError::from)?;\n    match operation() {\n        Ok(value) => match transaction.execute_batch(&format!(\"RELEASE SAVEPOINT {SAVEPOINT}\")) {\n            Ok(()) => Ok(value),\n            Err(error) => {\n                drop(transaction.execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                )));\n                Err(StoreError::from(error).into())\n            }\n        },\n        Err(error) => {\n            if transaction\n                .execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                ))\n                .is_err()\n            {\n                return Err(error);\n            }\n            Err(error)\n        }\n    }\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n",
+        "after": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    operation() // AUDIT MUTATION: no internal savepoint.\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n"
+      }
+    ]
+  },
+  {
+    "id": "M7",
+    "description": "leak-sentinel",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    InvalidNotification,\n    #[error(\"open notification stream capacity reached\")]\n    StreamCapacity,\n    #[error(\"invalid stored object {table}:{id}\")]\n    InvalidStoredObject { table: &'static str, id: String },\n    #[error(\"delivery identity was reused with different content\")]\n    ConflictingDelivery,\n",
+        "after": "    InvalidNotification,\n    #[error(\"open notification stream capacity reached\")]\n    StreamCapacity,\n    #[error(\"invalid stored object {table}:{id} SECRET_STORED_SENTINEL\")]\n    InvalidStoredObject { table: &'static str, id: String },\n    #[error(\"delivery identity was reused with different content\")]\n    ConflictingDelivery,\n"
+      }
+    ]
+  },
+  {
+    "id": "M8",
+    "description": "preserve-existing-answer",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
+        "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.entry(\"lastAnswer\".to_owned()).or_insert(json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ]
+  },
+  {
+    "id": "M9",
+    "description": "invalid-timestamp",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "edits": [
+      {
+        "before": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,timestamp(),ids])?;\n    }\n    Ok(())\n}\n",
+        "after": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,\"not-a-time\",ids])?;\n    }\n    Ok(())\n}\n"
+      }
+    ]
+  },
+  {
+    "id": "M10",
+    "description": "no-account-thread-check",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "edits": [
+      {
+        "before": "    {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    if notification_thread.is_some_and(|actual| actual != thread) {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    let account = match agent.get(\"accountKey\") {\n",
+        "after": "    {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    if false && notification_thread.is_some_and(|actual| actual != thread) {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    let account = match agent.get(\"accountKey\") {\n"
+      },
+      {
+        "before": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n",
+        "after": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if false && provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n"
+      }
+    ]
+  }
+]

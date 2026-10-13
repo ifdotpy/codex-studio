@@ -60,6 +60,16 @@ See the [notification corpus guide](../workspaces/runtime/packages/runtime-servi
 for the protocol, normalization and timing evidence. These corpora use disposable
 state, stub provider transport and background workers, and create no load generators.
 
+`just test-rust-runtime-corpora-mutations` is a separate manual heavy run. It copies
+the checkout's sources below the external `CARGO_TARGET_DIR`, applies each entry
+in `tests/turn_lifecycle/mutations.json` only to that scratch copy, and runs both
+default fast corpora. It uses two build jobs and no load generators. Each mutation
+must cause a test failure; build and infrastructure failures are invalid evidence.
+The untouched baseline must pass. Logs, CPU/wall timings, and `results.json` stay
+in that target directory. `--full --allow-survivors` records a diagnostic baseline
+for both tiers; the default fails for any surviving mutation. Set the isolated
+environment and prepared read-only interpreter as for the corpus runs.
+
 The heavy server suites and the reason for each classification are owned by
 `HEAVY_SUITES` in the [server runner](../workspaces/runtime/apps/server/tests/server/run.py):
 
