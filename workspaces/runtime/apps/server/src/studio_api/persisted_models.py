@@ -169,6 +169,10 @@ class PersistedRoomRecord(_OpenPersistedRecord):
     radio: dict[StrictStr, JsonValue] | None = None
 
 
+class PersistedProjectLocationOutbox(_OpenPersistedRecord):
+    """Only the durable outbox identity is consumed by the location dependency gate."""
+
+
 class PersistedProjectRecord(_OpenPersistedRecord):
     path: StrictStr | None = None
     name: StrictStr | None = None
@@ -491,6 +495,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-operation-result.schema.json": PersistedOperationResult,
     "persisted-plan-record.schema.json": PersistedPlanRecord,
     "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "persisted-project-location-outbox.schema.json": PersistedProjectLocationOutbox,
     "persisted-project-record.schema.json": PersistedProjectRecord,
     "persisted-request-record.schema.json": PersistedRequestRecord,
     "persisted-room-record.schema.json": PersistedRoomRecord,
