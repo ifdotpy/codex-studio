@@ -250,11 +250,10 @@ impl EventWriteRepository {
             }
             if let Some((in_flight, turn_id)) = lifecycle {
                 value.insert("inFlight".to_owned(), Value::Bool(in_flight));
-                if let Some(turn_id) = turn_id {
-                    value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-                } else {
-                    value.insert("turnId".to_owned(), Value::Null);
-                }
+                value.insert(
+                    "turnId".to_owned(),
+                    turn_id.map_or(Value::Null, |id| Value::String(id.to_owned())),
+                );
             }
             let has_runtime_agents = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')",

@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
 use studio_runtime_services::scheduler::{
-    TurnStart, claim_intent, mark_submitted_for_provider, recover_on_startup, settle_start_outcome,
-    settle_started_provider,
+    SchedulerError, TurnStart, claim_intent, mark_submitted_for_provider, recover_on_startup,
+    settle_start_outcome, settle_started_provider,
 };
 use studio_runtime_store::{AgentId, AgentRepository, AgentStatus, RuntimeStore};
 
@@ -44,6 +44,56 @@ fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Value) {
     let epoch = fixture["epoch"].as_i64().expect("epoch");
     (state, store, agent, epoch, fixture)
 }
+const CREATE_POLICY_REFUSAL_STATE: &str = r#"
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[2])
+from codex_runtime import Runtime
+from codex_wakeups import pending_batch
+class QuietRuntime(Runtime):
+    def schedule(self):
+        return
+root = pathlib.Path(sys.argv[1])
+runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
+agents = {}
+for name in ('team', 'radio'):
+    agent = runtime.create({'name':name, 'cwd':str(root), 'prompt':'temporary'}, defer=True)
+    agent.update(autoWake=True, status='queued', provider='codex')
+    agents[name] = agent
+with runtime.lock, runtime.db() as db:
+    for name, agent in agents.items():
+        runtime.put(db, 'agents', agent)
+        if name == 'team':
+            specs = [('team:message', 'agent_message', '{"importance":"note"}', 1.0)]
+        else:
+            specs = [(f'radio:user:{i}', 'user', f'input-{i}', float(i)) for i in range(32)]
+            specs.append(('radio:turn', 'radio_turn', '{}', 99.0))
+        for event_id, kind, text, created in specs:
+            db.execute('INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)',
+                       (event_id, agent['id'], kind, text, 'pending', created, agent['epoch'], None, None))
+        pending_batch(runtime, db, agent)
+    def snapshot(db, agent, name):
+        events = [list(row) for row in db.execute(
+            'SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=? ORDER BY created,rowid',
+            (agent['id'],))]
+        ids = [row[0] for row in events]
+        metadata = [list(row) for row in db.execute(
+            'SELECT id,record FROM runtime_event_meta WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids)] if ids else []
+        sync = [list(row) for row in db.execute(
+            'SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE id=? OR id IN (' + ','.join('?' for _ in ids) + ') ORDER BY collection,id',
+            [agent['id'], *ids])]
+        completed = [row[0] for row in db.execute('SELECT id FROM runtime_completed_turns ORDER BY id')]
+        sync_documents = [row[0] for row in db.execute('SELECT seq FROM sync_documents ORDER BY seq')]
+        sync_versions = [row[0] for row in db.execute('SELECT seq FROM sync_versions ORDER BY seq')]
+        raw_agent = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent['id'],)).fetchone()[0]
+        return {'agent':raw_agent, 'events':events, 'metadata':metadata, 'sync':sync,
+                'completed':completed, 'syncDocuments':sync_documents, 'syncVersions':sync_versions}
+    result = {}
+    for name, agent in agents.items():
+        result[name] = {'agentId':agent['id'], 'epoch':agent['epoch'], 'snapshot':snapshot(db, agent, name)}
+    print(json.dumps(result))
+runtime.close()
+"#;
+
 #[test]
 fn pending_selection_matches_python_and_claims_rust_event_write_events() {
     let (_state, store, agent, epoch, fixture) = fixture();
@@ -110,6 +160,88 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
     let projected:(String,bool,String)=reader.query_row("SELECT json_extract(payload,'$.value.status'),json_extract(payload,'$.value.inFlight'),json_extract(payload,'$.value.turnId') FROM sync_entities WHERE collection='agent' AND id=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).expect("projection");
     assert_eq!(projected, ("running".into(), true, "turn-1".into()));
 }
+#[test]
+fn named_team_and_radio_refusals_match_python_preparation_and_preserve_whole_state() {
+    let state = TemporaryState::new();
+    let fixture = run_python(&state.0, CREATE_POLICY_REFUSAL_STATE, &[]);
+    let expected: Value =
+        serde_json::from_str(&fixture).expect("Python policy fixture returns state");
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written policy state");
+    for name in ["team", "radio"] {
+        let case = &expected[name];
+        let agent = case["agentId"]
+            .as_str()
+            .expect("Python agent ID is present");
+        let epoch = case["epoch"].as_i64().expect("Python epoch is present");
+        let before = rust_policy_snapshot(&store, agent);
+        assert_eq!(
+            before, case["snapshot"],
+            "Python and Rust pre-admission state differ for {name}"
+        );
+        let result = claim_intent(&store, agent, epoch, &format!("attempt-{name}"), 100.0);
+        assert!(
+            matches!(result, Err(SchedulerError::PolicyRefused(_))),
+            "{name} must fail closed: {result:?}"
+        );
+        let after = rust_policy_snapshot(&store, agent);
+        assert_eq!(
+            after, before,
+            "named refusal changed persisted state for {name}"
+        );
+    }
+}
+
+fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
+    let reader = store.read().expect("policy snapshot reads");
+    let raw_agent: String = reader
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent],
+            |row| row.get(0),
+        )
+        .expect("agent snapshot reads");
+    let events = reader.prepare("SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=?1 ORDER BY created,rowid")
+        .expect("event snapshot prepares").query_map([agent], |row| Ok((
+            row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?,
+            row.get::<_,f64>(4)?, row.get::<_,i64>(5)?, row.get::<_,Option<String>>(6)?, row.get::<_,Option<String>>(7)?,
+        ))).expect("event snapshot queries").collect::<Result<Vec<_>,_>>().expect("event snapshot reads");
+    let ids = events
+        .iter()
+        .map(|event| event.0.clone())
+        .collect::<Vec<_>>();
+    let ids_json = serde_json::to_string(&ids).expect("event IDs serialize");
+    let metadata = reader.prepare("SELECT id,record FROM runtime_event_meta WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")
+        .expect("metadata snapshot prepares").query_map([&ids_json], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
+        .expect("metadata snapshot queries").collect::<Result<Vec<_>,_>>().expect("metadata snapshot reads");
+    let sync = reader.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE id=?1 OR id IN (SELECT value FROM json_each(?2)) ORDER BY collection,id")
+        .expect("sync snapshot prepares").query_map((agent,&ids_json), |row| Ok((
+            row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,
+        ))).expect("sync snapshot queries").collect::<Result<Vec<_>,_>>().expect("sync snapshot reads");
+    let completed = reader
+        .prepare("SELECT id FROM runtime_completed_turns ORDER BY id")
+        .expect("completed-turn snapshot prepares")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("completed-turn snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("completed-turn snapshot reads");
+    let sync_documents = reader
+        .prepare("SELECT seq FROM sync_documents ORDER BY seq")
+        .expect("sync-document snapshot prepares")
+        .query_map([], |row| row.get::<_, i64>(0))
+        .expect("sync-document snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("sync-document snapshot reads");
+    let sync_versions = reader
+        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
+        .expect("sync-version snapshot prepares")
+        .query_map([], |row| row.get::<_, i64>(0))
+        .expect("sync-version snapshot queries")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("sync-version snapshot reads");
+    json!({"agent":raw_agent,"events":events,"metadata":metadata,"sync":sync,
+        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
+}
+
 #[test]
 fn submitted_marker_survives_settlement_write_failure() {
     let (_state, store, agent, epoch, _) = fixture();

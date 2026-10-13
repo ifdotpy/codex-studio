@@ -42,6 +42,8 @@ pub enum TurnStart {
 pub enum SchedulerError {
     #[error("scheduler attempt timestamp is not finite")]
     InvalidAttemptTimestamp,
+    #[error("{0}")]
+    PolicyRefused(String),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -306,6 +308,9 @@ pub fn claim_intent(
     let Some(claimed) = claimed else {
         return Ok(None);
     };
+    if let Some(reason) = claimed.refusal_reason {
+        return Err(SchedulerError::PolicyRefused(reason));
+    }
     let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.to_owned(),

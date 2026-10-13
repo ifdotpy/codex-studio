@@ -1,0 +1,83 @@
+{
+  "kindCases": [
+    { "name": "kind-user", "kind": "user", "text": "input" },
+    { "name": "kind-plan_update", "kind": "plan_update", "text": "input" },
+    {
+      "name": "kind-agent_message",
+      "kind": "agent_message",
+      "text": "{\"importance\":\"note\"}"
+    },
+    { "name": "kind-chat_review", "kind": "chat_review", "text": "input" },
+    {
+      "name": "kind-complaint_response",
+      "kind": "complaint_response",
+      "text": "input"
+    },
+    { "name": "kind-followup", "kind": "followup", "text": "input" },
+    { "name": "kind-radio", "kind": "radio", "text": "input" },
+    { "name": "kind-radio_turn", "kind": "radio_turn", "text": "input" },
+    {
+      "name": "kind-complaint-open",
+      "kind": "complaint",
+      "text": "{\"complaints\":[{\"complaint_id\":\"open-complaint\"}]}"
+    },
+    {
+      "name": "kind-work-review",
+      "kind": "work_review",
+      "text": "{\"task\":\"task\",\"result\":{\"id\":\"result\"}}"
+    },
+    {
+      "name": "kind-radio-answer",
+      "kind": "user",
+      "text": "answer",
+      "meta": { "radioAnswerTurnId": "turn" }
+    }
+  ],
+  "complaints": [
+    {
+      "name": "complaint-resolved",
+      "complaintId": "settled-complaint",
+      "status": "resolved"
+    }
+  ],
+  "complaintRecords": [
+    {
+      "id": "open-complaint",
+      "agentCase": "kind-complaint-open",
+      "status": "open",
+      "recipient": "lead",
+      "responses": []
+    },
+    {
+      "id": "settled-complaint",
+      "agentCase": "complaint-resolved",
+      "status": "resolved",
+      "recipient": "lead",
+      "responses": []
+    }
+  ],
+  "eventLimit": 33,
+  "assetCounts": [8, 1, 0],
+  "composerEvents": [
+    { "kind": "plan_update", "text": "notice" },
+    {
+      "kind": "user",
+      "text": "first composer input",
+      "meta": { "delivery": "after_turn" }
+    },
+    {
+      "kind": "user",
+      "text": "second composer input",
+      "meta": { "sendNow": true }
+    }
+  ],
+  "claudeCommandEvents": [
+    { "kind": "plan_update", "text": "notice" },
+    { "kind": "user", "text": " /review" },
+    { "kind": "user", "text": "later input" }
+  ],
+  "progressVersions": [1, 2],
+  "duplicateProgressVersion": 1,
+  "progressDelaySeconds": 1000,
+  "urgentProgressCount": 32
+}
