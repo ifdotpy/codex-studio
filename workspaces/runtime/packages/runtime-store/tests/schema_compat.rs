@@ -1,3 +1,5 @@
+#[path = "../../runtime-services/tests/support/prepared_python.rs"]
+mod prepared_python_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -426,24 +428,8 @@ store._ensure_versions()
 }
 
 fn python_executable() -> PathBuf {
-    if let Some(python) = std::env::var_os("PYTHON") {
-        return PathBuf::from(python);
-    }
-    let resolver =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src/codex_python.py");
-    let output = Command::new("python3")
-        .arg(resolver)
-        .output()
-        .expect("isolated Python resolver starts");
-    assert!(
-        output.status.success(),
-        "prepare the isolated Python environment before this test: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    PathBuf::from(
-        String::from_utf8(output.stdout)
-            .expect("Python path is UTF-8")
-            .trim(),
+    prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     )
 }
 

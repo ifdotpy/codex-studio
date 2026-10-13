@@ -2,7 +2,7 @@
 use crate::event_write::python_json_compact;
 pub use repo::{AnalyticsError, AnalyticsOptions, SessionCostError};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,6 +149,24 @@ fn has_claude_history(record: &Value) -> bool {
                 a.iter()
                     .any(|h| h.get("provider").and_then(Value::as_str) == Some("claude"))
             })
+}
+pub(crate) fn current_account_is_claude(
+    record: &Value,
+    account_providers: &BTreeMap<String, String>,
+) -> bool {
+    let embedded = record
+        .get("provider")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    embedded.is_none()
+        && account_providers
+            .get(
+                record
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default"),
+            )
+            .is_some_and(|provider| provider == "claude")
 }
 fn pricing_signature(root: &Path) -> Option<String> {
     let path = root.join("model-pricing/models-dev-v1.json");
@@ -320,6 +338,8 @@ struct CostSource {
     usage: repo::UsageState,
     pricing_signature: Option<String>,
     agents_signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_providers_signature: Option<String>,
     claude_signature: String,
     cost_projection: Option<CostProjection>,
 }
@@ -359,9 +379,22 @@ fn signature(value: impl serde::Serialize) -> Result<String, serde_json::Error> 
         python_json_compact(&serde_json::to_value(value)?).as_bytes(),
     ))
 }
+fn account_providers_signature(
+    providers: &BTreeMap<String, String>,
+) -> Result<String, serde_json::Error> {
+    signature(providers)
+}
 pub fn persisted_session_cost(
     store: &RuntimeStore,
     agent_id: &str,
+) -> Result<Option<Value>, SessionCostError> {
+    persisted_session_cost_with_accounts(store, agent_id, &BTreeMap::new())
+}
+
+pub fn persisted_session_cost_with_accounts(
+    store: &RuntimeStore,
+    agent_id: &str,
+    account_providers: &BTreeMap<String, String>,
 ) -> Result<Option<Value>, SessionCostError> {
     if !store.root().join("analytics.sqlite3").is_file() {
         return Err(SessionCostError::RefreshRequired);
@@ -370,7 +403,10 @@ pub fn persisted_session_cost(
     let tx = db.transaction()?;
     let root = repo::cost_root(&tx, agent_id)?;
     let members = repo::cost_agents(&tx, agent_id, &root)?;
-    if members.iter().any(|(_, r)| has_claude_history(r)) {
+    if members
+        .iter()
+        .any(|(_, r)| has_claude_history(r) || current_account_is_claude(r, account_providers))
+    {
         return Ok(None);
     }
     let cost_projection = repo::cost_projection(&tx, &root)?
@@ -396,6 +432,11 @@ pub fn persisted_session_cost(
                 })
                 .collect::<Vec<_>>(),
         )?,
+        account_providers_signature: if account_providers.is_empty() {
+            None
+        } else {
+            Some(account_providers_signature(account_providers)?)
+        },
         claude_signature: signature(ClaudeSignature {
             configs: [],
             files: [],
@@ -437,4 +478,38 @@ fn file_identity(root: &Path) -> Option<(u64, u64)> {
 #[cfg(not(unix))]
 fn file_identity(_: &Path) -> Option<(u64, u64)> {
     None
+}
+
+#[cfg(test)]
+mod costs_account_tests {
+    use super::{account_providers_signature, current_account_is_claude};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn current_account_provider_fills_missing_embedded_provider() {
+        let providers = BTreeMap::from([("claude-account".to_owned(), "claude".to_owned())]);
+        assert!(current_account_is_claude(
+            &json!({"accountKey":"claude-account"}),
+            &providers
+        ));
+        assert!(!current_account_is_claude(
+            &json!({"accountKey":"claude-account","provider":"openai"}),
+            &providers
+        ));
+    }
+
+    #[test]
+    fn account_provider_cache_signature_tracks_provider_changes() {
+        let first = BTreeMap::from([("account".to_owned(), "openai".to_owned())]);
+        let second = BTreeMap::from([("account".to_owned(), "claude".to_owned())]);
+        assert_ne!(
+            account_providers_signature(&first).expect("serializable account map"),
+            account_providers_signature(&second).expect("serializable account map")
+        );
+        assert_ne!(
+            account_providers_signature(&first).expect("serializable account map"),
+            account_providers_signature(&BTreeMap::new()).expect("serializable account map")
+        );
+    }
 }

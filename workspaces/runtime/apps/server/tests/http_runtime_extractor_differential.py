@@ -620,10 +620,11 @@ def classify(
 
 
 def main() -> int:
+    from codex_python import resolve_python
     with tempfile.TemporaryDirectory(prefix="studio-http-request-corpus-") as temporary_dir:
         corpus_dir = Path(temporary_dir)
         generator = subprocess.run(
-            [sys.executable, str(CORPUS_GENERATOR), str(corpus_dir)],
+            [str(resolve_python(PYTHON_SRC)), str(CORPUS_GENERATOR), str(corpus_dir)],
             cwd=ROOT, check=False, capture_output=True, text=True,
         )
         if generator.returncode:

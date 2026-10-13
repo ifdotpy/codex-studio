@@ -8,11 +8,15 @@ use serde_json::{Value, json};
 
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";
+const ACCOUNT_TRANSFER_URI: &str =
+    "https://codex-studio.invalid/persisted-account-transfer-record.schema.json";
 const USAGE_LIMITS_URI: &str = "https://codex-studio.invalid/workspace-usage-limits.schema.json";
 const TRANSCRIPT_ASSET_URI: &str =
     "https://codex-studio.invalid/runtime-transcript-asset.schema.json";
 const TRANSCRIPT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-transcript-record.schema.json";
+const TRANSFER_AGENT_URI: &str =
+    "https://codex-studio.invalid/persisted-transfer-agent-record.schema.json";
 const EVENT_METADATA_URI: &str = "https://codex-studio.invalid/runtime-event-metadata.schema.json";
 const AGENT_RECORD_URI: &str = "https://codex-studio.invalid/persisted-agent-record.schema.json";
 const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-record.schema.json";
@@ -30,6 +34,8 @@ const CHECKPOINT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-checkpoint-record.schema.json";
 const MONITOR_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-monitor-record.schema.json";
+const MONITOR_RESULT_URI: &str =
+    "https://codex-studio.invalid/persisted-monitor-result.schema.json";
 const TERMINAL_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-terminal-record.schema.json";
 const USAGE_RESUME_RECORD_URI: &str =
@@ -104,6 +110,7 @@ const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.s
 const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
 const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
 const MONITOR_RECORD: &[u8] = include_bytes!("schemas/persisted-monitor-record.schema.json");
+const MONITOR_RESULT: &[u8] = include_bytes!("schemas/persisted-monitor-result.schema.json");
 const TERMINAL_RECORD: &[u8] = include_bytes!("schemas/persisted-terminal-record.schema.json");
 const USAGE_RESUME_RECORD: &[u8] =
     include_bytes!("schemas/persisted-usage-resume-record.schema.json");
@@ -127,6 +134,33 @@ const WORKSPACE_CHECKPOINT_HISTORY_URI: &str =
     "https://codex-studio.invalid/workspace-checkpoint-history-record.schema.json";
 const WORKSPACE_CHECKPOINT_HISTORY: &[u8] =
     include_bytes!("schemas/workspace-checkpoint-history-record.schema.json");
+const RELOCATION_URI: &str = "https://codex-studio.invalid/persisted-relocation.schema.json";
+const RELOCATION: &[u8] = include_bytes!("schemas/persisted-relocation.schema.json");
+const FEDERATION_SETTINGS_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-settings.schema.json";
+const FEDERATION_SETTINGS: &[u8] =
+    include_bytes!("schemas/persisted-federation-settings.schema.json");
+const FEDERATION_PEER_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-peer.schema.json";
+const FEDERATION_PEER: &[u8] = include_bytes!("schemas/persisted-federation-peer.schema.json");
+const FEDERATION_ROOM_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-room.schema.json";
+const FEDERATION_ROOM: &[u8] = include_bytes!("schemas/persisted-federation-room.schema.json");
+const FEDERATION_OUTBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-outbox.schema.json";
+const FEDERATION_OUTBOX: &[u8] = include_bytes!("schemas/persisted-federation-outbox.schema.json");
+const FEDERATION_INBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-inbox.schema.json";
+const FEDERATION_INBOX: &[u8] = include_bytes!("schemas/persisted-federation-inbox.schema.json");
+
+const FEDERATION_CHAT_PAYLOAD_URI: &str =
+    "https://codex-studio.invalid/federation-chat-payload.schema.json";
+const FEDERATION_CHAT_PAYLOAD: &[u8] =
+    include_bytes!("schemas/federation-chat-payload.schema.json");
+const FEDERATION_ROOM_PAYLOAD_URI: &str =
+    "https://codex-studio.invalid/federation-room-payload.schema.json";
+const FEDERATION_ROOM_PAYLOAD: &[u8] =
+    include_bytes!("schemas/federation-room-payload.schema.json");
 
 const CLAUDE_ATTEMPT_URI: &str =
     "https://codex-studio.invalid/persisted-claude-attempt.schema.json";
@@ -157,6 +191,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     ),
     (ACCESS_RECORD_URI, ACCESS_RECORD),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (
+        ACCOUNT_TRANSFER_URI,
+        include_bytes!("schemas/persisted-account-transfer-record.schema.json"),
+    ),
     (AGENT_RECORD_URI, AGENT_RECORD),
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
     (CHAT_MESSAGE_URI, CHAT_MESSAGE),
@@ -176,10 +214,18 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (EVENT_METADATA_URI, EVENT_METADATA),
     (EXECUTION_RECORD_URI, EXECUTION_RECORD),
+    (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
+    (FEDERATION_INBOX_URI, FEDERATION_INBOX),
+    (FEDERATION_OUTBOX_URI, FEDERATION_OUTBOX),
+    (FEDERATION_PEER_URI, FEDERATION_PEER),
+    (FEDERATION_ROOM_PAYLOAD_URI, FEDERATION_ROOM_PAYLOAD),
     (FEDERATION_ROOM_RECORD_URI, FEDERATION_ROOM_RECORD),
+    (FEDERATION_ROOM_URI, FEDERATION_ROOM),
+    (FEDERATION_SETTINGS_URI, FEDERATION_SETTINGS),
     (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (MESSAGE_EVENT_URI, MESSAGE_EVENT),
     (MONITOR_RECORD_URI, MONITOR_RECORD),
+    (MONITOR_RESULT_URI, MONITOR_RESULT),
     (OPERATION_RESULT_URI, OPERATION_RESULT),
     (PLAN_RECORD_URI, PLAN_RECORD),
     (PROFILE_RECORD_URI, PROFILE_RECORD),
@@ -188,6 +234,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (RECOVERY_AGENT_URI, RECOVERY_AGENT),
     (RECOVERY_RECEIPT_URI, RECOVERY_RECEIPT),
     (RECOVERY_TASK_URI, RECOVERY_TASK),
+    (RELOCATION_URI, RELOCATION),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (ROOM_RECORD_URI, ROOM_RECORD),
     (RULE_RECORD_URI, RULE_RECORD),
@@ -199,6 +246,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (TOOL_RESULT_URI, TOOL_RESULT),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
     (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
+    (
+        TRANSFER_AGENT_URI,
+        include_bytes!("schemas/persisted-transfer-agent-record.schema.json"),
+    ),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
     (WORKSPACE_CHECKPOINT_AGENT_URI, WORKSPACE_CHECKPOINT_AGENT),
@@ -257,6 +308,13 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" => "PersistedAccessRecord",
         "runtime_access_discovered" => "PersistedAccessRecord",
+        "runtime_account_transfers" => "PersistedAccountTransferRecord",
+        "runtime_agent_moves" => "relocation/MoveRecord",
+        "runtime_federation_settings" => "PersistedFederationSettings",
+        "runtime_federation_peers" => "PersistedFederationPeer",
+        "runtime_federation_rooms" => "PersistedFederationRoomRecord",
+        "runtime_federation_outbox" => "PersistedFederationOutbox",
+        "runtime_federation_inbox" => "PersistedFederationInbox",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
@@ -270,7 +328,6 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
         "runtime_execution_effects" => "PersistedExecutionRecord",
         "runtime_execution_runs" => "PersistedExecutionRecord",
-        "runtime_federation_rooms" => "PersistedFederationRoomRecord",
         "runtime_items" => "PersistedTranscriptRecord",
         "runtime_monitors" => "PersistedMonitorRecord",
         "runtime_operation_receipts" => "PersistedOperationResult",
@@ -331,20 +388,30 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "CheckpointSummary",
         "CheckpointsResponse",
         "ComplaintRecordResponse",
+        "FederationParticipant",
         "JsonObjectResponse",
+        "MonitorEntityDto",
+        "MonitorInput",
+        "MessageRequest",
         "MonitorRecordResponse",
         "PlanView",
         "ProfileRecord",
-        "QueueItem",
+        "PullRequest",
+        "PullResult",
+        "RenameServer",
         "QuestionEntry",
         "QuestionHistory",
+        "QueueItem",
         "RequestRecordResponse",
         "RuleRecordResponse",
+        "SignedEnvelope",
+        "StatusRequest",
         "TaskDetailResponse",
         "TerminalRecord",
         "TranscriptAsset",
         "UsageResumeRecordResponse",
         "WorkItem",
+        "studio_api__federation__models__MessageReceipt",
     ] {
         let reference = format!("{OPENAPI_URI}#/components/schemas/{name}");
         let validator = compile(&registry, json!({"$ref": reference}), name)?;
@@ -359,7 +426,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             "BudgetHistory",
             "https://codex-studio.invalid/budget-history.schema.json",
         ),
+        ("FederationChatPayload", FEDERATION_CHAT_PAYLOAD_URI),
+        ("FederationRoomPayload", FEDERATION_ROOM_PAYLOAD_URI),
         ("PersistedAccessRecord", ACCESS_RECORD_URI),
+        ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
         (
@@ -381,10 +451,16 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
         ("PersistedExecutionRecord", EXECUTION_RECORD_URI),
+        ("PersistedFederationInbox", FEDERATION_INBOX_URI),
+        ("PersistedFederationOutbox", FEDERATION_OUTBOX_URI),
+        ("PersistedFederationPeer", FEDERATION_PEER_URI),
+        ("PersistedFederationRoom", FEDERATION_ROOM_URI),
         ("PersistedFederationRoomRecord", FEDERATION_ROOM_RECORD_URI),
+        ("PersistedFederationSettings", FEDERATION_SETTINGS_URI),
         ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
         ("PersistedMessageEvent", MESSAGE_EVENT_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
+        ("PersistedMonitorResult", MONITOR_RESULT_URI),
         ("PersistedOperationResult", OPERATION_RESULT_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),
         ("PersistedProfileRecord", PROFILE_RECORD_URI),
@@ -404,6 +480,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedToolResult", TOOL_RESULT_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
+        ("PersistedTransferAgentRecord", TRANSFER_AGENT_URI),
         ("PersistedUsageResumeRecord", USAGE_RESUME_RECORD_URI),
         ("PersistedWorkItemRecord", WORK_ITEM_RECORD_URI),
         ("PersistedWorkspaceOperationRecord", WORKSPACE_OPERATION_URI),
@@ -444,6 +521,14 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         USAGE_LIMITS_URI,
         "workspace-usage-limits",
         &usage_limits,
+        &mut validators,
+    )?;
+    let relocation: Value = serde_json::from_slice(RELOCATION).map_err(|e| e.to_string())?;
+    compile_definitions(
+        &registry,
+        RELOCATION_URI,
+        "relocation",
+        &relocation,
         &mut validators,
     )?;
     Ok(CompiledSchemas { validators })

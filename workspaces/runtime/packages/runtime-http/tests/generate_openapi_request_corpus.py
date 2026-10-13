@@ -1,5 +1,7 @@
 import argparse
-import json,copy,collections,re
+import json,copy,collections
+from functools import cache
+from pydantic_core import SchemaValidator, core_schema
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
@@ -39,6 +41,10 @@ def scan(x):
  elif isinstance(x,list):
   for v in x:scan(v)
 scan(DOC);print('patterns',patterns,'formats',formats)
+@cache
+def pattern_validator(pattern):
+ # Match the request models' Unicode-aware regex engine, including property classes.
+ return SchemaValidator(core_schema.str_schema(pattern=pattern))
 def sample(s,depth=0):
  s=resolve(s)
  if depth>7:return None
@@ -56,7 +62,7 @@ def sample(s,depth=0):
   n=max(1,s.get('minLength',0));v='x'*n
   if s.get('pattern'):
    for candidate in ['x','abc','test','00000000-0000-0000-0000-000000000000','a'*64,'a'*32,'1','agent-1','http://example.com','AWS_KEY','ABC','us-east-1']:
-    if re.search(s['pattern'],candidate):return candidate
+    if pattern_validator(s['pattern']).isinstance_python(candidate):return candidate
   return v
  if t=='integer':return int(max(1,s.get('minimum',1),s.get('exclusiveMinimum',0)+1))
  if t=='number':return max(1.,s.get('minimum',1),s.get('exclusiveMinimum',0)+1)

@@ -7,6 +7,7 @@ use axum::routing::any;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
+use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
 
@@ -23,6 +24,7 @@ pub struct HttpState {
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) voice_provider:
         Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
+    pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
@@ -37,6 +39,7 @@ pub struct HttpState {
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
     pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
+    pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
@@ -68,6 +71,7 @@ impl HttpState {
             account_driver: None,
             claude_login: None,
             voice_provider: None,
+            credentials: Arc::default(),
             token,
             workspace_id,
             native_path,
@@ -81,6 +85,7 @@ impl HttpState {
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
             sync_changes,
+            token_rates: Arc::new(TokenRateHub::new()),
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
@@ -128,6 +133,11 @@ impl HttpState {
 
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
         Arc::clone(&self.sync_changes)
+    }
+
+    /// Shared publisher used by the provider account worker to publish token rates.
+    pub fn token_rate_handle(&self) -> Arc<TokenRateHub> {
+        Arc::clone(&self.token_rates)
     }
 }
 

@@ -1,0 +1,877 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "Location": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "gitOrigin": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gitorigin"
+        },
+        "path": {
+          "maxLength": 4096,
+          "title": "Path",
+          "type": "string"
+        },
+        "projectId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Projectid",
+          "type": "string"
+        },
+        "requestedPath": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requestedpath"
+        },
+        "serverId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Serverid",
+          "type": "string"
+        }
+      },
+      "required": ["serverId", "path", "projectId"],
+      "title": "Location",
+      "type": "object"
+    },
+    "LocationEnvelope": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "action": {
+          "enum": ["add_location", "remove_location"],
+          "title": "Action",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/LocationPayload"
+        },
+        "requestId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        }
+      },
+      "required": ["requestId", "action", "payload"],
+      "title": "LocationEnvelope",
+      "type": "object"
+    },
+    "LocationOutbox": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/LocationEnvelope"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RelocationReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "server": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Server",
+          "type": "string"
+        },
+        "state": {
+          "enum": ["queued", "complete"],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": ["id", "server", "body", "state", "result"],
+      "title": "LocationOutbox",
+      "type": "object"
+    },
+    "LocationPayload": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Location"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "maxLength": 4096,
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Path"
+        },
+        "project": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Project",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/LocationRequest"
+        },
+        "signature": {
+          "maxLength": 262144,
+          "title": "Signature",
+          "type": "string"
+        }
+      },
+      "required": ["project", "name", "path", "request", "signature"],
+      "title": "LocationPayload",
+      "type": "object"
+    },
+    "LocationRequest": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "action": {
+          "enum": ["add_location", "remove_location"],
+          "title": "Action",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Path"
+        },
+        "project": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Project",
+          "type": "string"
+        },
+        "server": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Server",
+          "type": "string"
+        }
+      },
+      "required": ["action", "project", "server", "path"],
+      "title": "LocationRequest",
+      "type": "object"
+    },
+    "MoveDescriptor": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "acceptedResult": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Acceptedresult",
+          "type": "object"
+        },
+        "agent": {
+          "$ref": "#/$defs/NativeAgent"
+        }
+      },
+      "required": ["agent", "acceptedResult"],
+      "title": "MoveDescriptor",
+      "type": "object"
+    },
+    "MoveRecord": {
+      "discriminator": {
+        "mapping": {
+          "source": "#/$defs/SourceMove",
+          "target": "#/$defs/TargetMove"
+        },
+        "propertyName": "side"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SourceMove"
+        },
+        {
+          "$ref": "#/$defs/TargetMove"
+        }
+      ],
+      "title": "MoveRecord"
+    },
+    "NativeAgent": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "executionMove": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Executionmove"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "inFlight": {
+          "title": "Inflight",
+          "type": "boolean"
+        },
+        "movedFrom": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Movedfrom"
+        },
+        "rootId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Rootid",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnid"
+        }
+      },
+      "required": ["id", "epoch", "rootId", "status"],
+      "title": "NativeAgent",
+      "type": "object"
+    },
+    "ProjectAlias": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "name": {
+          "maxLength": 4096,
+          "title": "Name",
+          "type": "string"
+        },
+        "projectId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Projectid",
+          "type": "string"
+        },
+        "serverId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Serverid",
+          "type": "string"
+        }
+      },
+      "required": ["serverId", "projectId", "name"],
+      "title": "ProjectAlias",
+      "type": "object"
+    },
+    "RelocationProject": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "homeServerId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Homeserverid"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "locations": {
+          "items": {
+            "$ref": "#/$defs/Location"
+          },
+          "maxItems": 10000,
+          "title": "Locations",
+          "type": "array"
+        },
+        "locationsRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Locationsrevision",
+          "type": "integer"
+        },
+        "name": {
+          "maxLength": 4096,
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4096,
+          "title": "Path",
+          "type": "string"
+        },
+        "projectAliases": {
+          "items": {
+            "$ref": "#/$defs/ProjectAlias"
+          },
+          "maxItems": 10000,
+          "title": "Projectaliases",
+          "type": "array"
+        }
+      },
+      "required": ["id", "path", "name"],
+      "title": "RelocationProject",
+      "type": "object"
+    },
+    "RelocationReceipt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "outcome": {
+          "enum": ["applied", "not_applied", "unknown"],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "requestId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Requestid",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": ["requestId", "outcome"],
+      "title": "RelocationReceipt",
+      "type": "object"
+    },
+    "SourceMove": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "agent": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "created": {
+          "maximum": 253402300799,
+          "minimum": 0,
+          "title": "Created",
+          "type": "number"
+        },
+        "deadline": {
+          "maximum": 253402300799,
+          "minimum": 0,
+          "title": "Deadline",
+          "type": "number"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "maxLength": 4096,
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "firstTurnCache": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Firstturncache"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "waiting",
+            "exported",
+            "importing",
+            "prepared",
+            "redirected",
+            "complete",
+            "unknown",
+            "failed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "recoveryExpiredAt": {
+          "anyOf": [
+            {
+              "maximum": 253402300799,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recoveryexpiredat"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "server": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Server",
+          "type": "string"
+        },
+        "side": {
+          "const": "source",
+          "title": "Side",
+          "type": "string"
+        },
+        "uncertainPhase": {
+          "anyOf": [
+            {
+              "enum": [
+                "waiting",
+                "exported",
+                "importing",
+                "prepared",
+                "redirected",
+                "complete",
+                "unknown",
+                "failed",
+                "receiving",
+                "native_submitted",
+                "ready",
+                "active"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Uncertainphase"
+        }
+      },
+      "required": [
+        "id",
+        "side",
+        "phase",
+        "agent",
+        "epoch",
+        "server",
+        "result",
+        "fingerprint",
+        "created"
+      ],
+      "title": "SourceMove",
+      "type": "object"
+    },
+    "TargetMove": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "created": {
+          "maximum": 253402300799,
+          "minimum": 0,
+          "title": "Created",
+          "type": "number"
+        },
+        "deadline": {
+          "maximum": 253402300799,
+          "minimum": 0,
+          "title": "Deadline",
+          "type": "number"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/MoveDescriptor"
+        },
+        "firstTurnCache": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Firstturncache"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "move": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Move",
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "receiving",
+            "native_submitted",
+            "ready",
+            "active",
+            "unknown",
+            "failed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "principal": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Principal",
+          "type": "string"
+        },
+        "side": {
+          "const": "target",
+          "title": "Side",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "side",
+        "phase",
+        "move",
+        "principal",
+        "descriptor",
+        "created"
+      ],
+      "title": "TargetMove",
+      "type": "object"
+    },
+    "TargetStatus": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "firstTurnCache": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Firstturncache"
+        },
+        "phase": {
+          "enum": [
+            "not_started",
+            "receiving",
+            "native_submitted",
+            "ready",
+            "active",
+            "unknown",
+            "failed"
+          ],
+          "title": "Phase",
+          "type": "string"
+        }
+      },
+      "required": ["phase"],
+      "title": "TargetStatus",
+      "type": "object"
+    },
+    "ToolRequest": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "accountKey": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountkey"
+        },
+        "agent": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "connectionId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Connectionid"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": ["unknown", "applied", "not_applied"],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Result"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "tool": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": ["id", "agent", "tool", "epoch", "stage", "outcome"],
+      "title": "ToolRequest",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NativeAgent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "move": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MoveRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outbox": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LocationOutbox"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "project": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RelocationProject"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RelocationReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolRequest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "title": "RelocationFormats",
+  "type": "object"
+}

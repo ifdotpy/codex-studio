@@ -1,0 +1,16 @@
+[
+  {
+    "id": "identity-before-reservation",
+    "description": "Create and recover credentials before refusing a conflicting request",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_credentials.rs",
+    "edits": [
+      {
+        "before": "        // Check both journal identities before writing either.",
+        "after": "        self.load(store, &mut saved)?;\n        // Check both journal identities before writing either."
+      }
+    ],
+    "witnesses": [
+      "first_use_conflict_preserves_the_credential_directory_and_journal"
+    ]
+  }
+]

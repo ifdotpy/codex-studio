@@ -40852,6 +40852,7 @@
           "label": {
             "maxLength": 80,
             "minLength": 1,
+            "pattern": "^[^\\s\\p{C}](?:[^\\s\\p{C}]| +[^\\s\\p{C}])*$",
             "title": "Label",
             "type": "string"
           },
@@ -46964,6 +46965,7 @@
           "label": {
             "maxLength": 80,
             "minLength": 1,
+            "pattern": "^[^\\s\\p{C}](?:[^\\s\\p{C}]| +[^\\s\\p{C}])*$",
             "title": "Label",
             "type": "string"
           },

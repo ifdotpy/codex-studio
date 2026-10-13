@@ -45,6 +45,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     connection.pragma_update(None, "query_only", "ON")?;
 
     let mut tables = vec![
+        check_table::<crate::AccountTransferRecord>(&connection)?,
         check_table::<AgentRecord>(&connection)?,
         check_table::<crate::repositories::claude_records::ClaudeAttemptRecord>(&connection)?,
         check_table::<crate::budget::BudgetRecord>(&connection)?,
@@ -66,8 +67,16 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
         check_table::<EventMetadataRecord>(&connection)?,
         check_table::<GraphAgentRecord>(&connection)?,
         check_table::<ProfileRecord>(&connection)?,
+        check_table::<crate::MoveRecord>(&connection)?,
+        check_table::<crate::ProjectLocationRecord>(&connection)?,
     ];
     tables.extend(check_system_tables(&connection)?);
+    tables.push(crate::repositories::project_locations::check_outbox(
+        &connection,
+    )?);
+    tables.extend(crate::repositories::federation_messaging::check_state(
+        &connection,
+    )?);
     Ok(StateCheckReport { tables })
 }
 
@@ -178,11 +187,8 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         ("runtime_events", "status"),
         ("runtime_execution_effects", "record"),
         ("runtime_execution_runs", "record"),
-        ("runtime_federation_rooms", "record"),
         ("runtime_operation_receipts", "result"),
-        ("runtime_projects", "record"),
         ("runtime_rooms", "record"),
-        ("runtime_server_outbox", "id"),
         ("runtime_tool_request_aliases", "request"),
         ("runtime_tool_requests", "record"),
         ("runtime_tool_results", "result"),

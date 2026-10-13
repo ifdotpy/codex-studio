@@ -266,7 +266,10 @@ fn save_agent(
     Ok(publish_agent(transaction, record)?)
 }
 
-fn ensure_project(transaction: &Transaction<'_>, agent: &Value) -> Result<(), MutationError> {
+pub(crate) fn ensure_project(
+    transaction: &Transaction<'_>,
+    agent: &Value,
+) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
         .and_then(Value::as_str)
@@ -573,15 +576,12 @@ fn rename(
     Ok(result)
 }
 
-/// Share the mode-boundary oracle's interpreter resolution with other unit-test oracles.
 #[cfg(test)]
-pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
-    test_support::prepared_python::prepared_python(source)
-}
-
+#[allow(clippy::duplicate_mod)]
+#[path = "../tests/support/prepared_python.rs"]
+mod prepared_python_test_support;
 #[cfg(test)]
-#[path = "../tests/support/agents_create.rs"]
-mod test_support;
+pub(crate) use prepared_python_test_support::prepared_python;
 
 #[cfg(test)]
 mod tests {
@@ -589,6 +589,9 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
 
+    fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
+        super::prepared_python_test_support::prepared_python(source)
+    }
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
@@ -620,7 +623,7 @@ mod tests {
             super::mode_fields(record);
         }
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = super::prepared_python(&source);
+        let python = prepared_python(&source);
         let mut child = Command::new(python).args(["-c", "import json,sys; from codex_agent_modes import mode_fields; print(json.dumps([mode_fields(row) for row in json.load(sys.stdin)]))"])
             .env("PYTHONPATH", source).env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Python oracle starts");
