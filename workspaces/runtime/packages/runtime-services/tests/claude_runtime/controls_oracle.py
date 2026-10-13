@@ -43,7 +43,22 @@ for value in [None,[],{},dict(thinking=1),dict(thinking=None),dict(permissionMod
     try:result=controls._settings(value);error=False
     except ValueError:result=None;error=True
     settings.append(dict(input=value,expected=result,error=error))
-print(json.dumps(dict(cases=cases,settings=settings)))
+reads=[]
+for kind, thread in (("state",None),("state","thread"),("commands","thread"),("stop_task","thread")):
+    agent=dict(id="agent",rootId="agent",epoch=2,cwd="/fixture",provider="claude",accountKey="account",threadId=thread,status="paused")
+    body=dict(id="agent",action=kind,task_id="task")
+    connection=sqlite3.connect(":memory:")
+    native=dict(tasks=[],turns=[dict(id=k,status="completed") for k in ("one","two","three")])
+    class ReadRuntime:
+        lock=threading.RLock();accounts=SimpleNamespace(get=lambda _:dict(provider="claude"))
+        def db(self):return connection
+        def checked_actor(self,db,key):return copy.deepcopy(agent)
+        def _workspace_operations(self,db,key):return []
+        def connect(self,key):return self.connect_agent(agent)
+        def connect_agent(self,a):return SimpleNamespace(call=lambda method,params,**kw:copy.deepcopy(native if method=="claude/state" else dict(commands=["/fixture"]) if method=="claude/commands" else dict(stopped=True)))
+    reads.append(dict(agent=agent,body=body,expected=controls.action(ReadRuntime(),body)))
+    connection.close()
+print(json.dumps(dict(cases=cases,settings=settings,reads=reads)))
 if '--store-template' in sys.argv:
     root=Path(sys.argv[sys.argv.index('--store-template')+1])
     cwd=Path(sys.argv[sys.argv.index('--cwd')+1])

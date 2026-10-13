@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_services::claude_login::{LoginError, service::LoginService};
-fn routes() -> RouteGroup {
+pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/accounts/claude/add",
