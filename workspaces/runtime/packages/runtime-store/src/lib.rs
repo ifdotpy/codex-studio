@@ -47,12 +47,12 @@ use thiserror::Error;
 pub use path::resolve_state_dir;
 pub use records::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, AnnotationRecord, ChatMessage,
-    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, GraphAgentRecord,
-    JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent, QueueEventId,
-    QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
-    RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord,
-    TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
-    UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
+    ChatMessageId, CheckpointRecord, ComplaintRecord, EventMetadataRecord, ExecutionRunRecord,
+    GraphAgentRecord, JsonRecord, MessageRepository, MonitorRecord, PlanRecord, QueueEvent,
+    QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
+    RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
+    TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
+    TranscriptItemRecord, UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
 };
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};

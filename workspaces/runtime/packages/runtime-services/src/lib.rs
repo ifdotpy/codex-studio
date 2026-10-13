@@ -77,6 +77,7 @@ pub mod progress_panel;
 pub mod progress_watch;
 pub mod project_locations;
 pub mod projects;
+pub mod provider_binaries;
 pub mod provider_callbacks;
 pub(crate) mod provider_exchange;
 pub mod provider_session_task;

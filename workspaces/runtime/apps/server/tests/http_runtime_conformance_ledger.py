@@ -107,16 +107,13 @@ def validate_missing_service_exclusions(
 # override query/header values and top-level body fields. A value prefixed with
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
-    ("GET", "/api/costs"): {
-        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
-    },
     ("POST", "/api/agents/account"): {
         "primary": {"body": {"id": "$agent", "account_key": "default"}, "replace_body": True,
                     "expected": "2xx", "assert_no_write": True},
     },
     ("POST", "/api/agents/account-transfer"): {
         "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
-                             "request_id": "88888888-8888-4888-8888-888888888889"}, "replace_body": True,
+                             "request_id": "60606060-6060-4060-8060-606060606060"}, "replace_body": True,
                     "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
                     "assert_no_write": True},
     },
@@ -360,6 +357,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/work"): {
         "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/costs"): {
+        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/desktop"): {
         "primary": {"query": {"account_key": "default"}},

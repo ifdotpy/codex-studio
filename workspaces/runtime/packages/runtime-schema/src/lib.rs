@@ -47,6 +47,8 @@ const GRAPH_AGENT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-graph-agent-record.schema.json";
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
+const EXECUTION_RUN_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-execution-run-record.schema.json";
 
 const TOOL_REQUEST_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-tool-request-record.schema.json";
@@ -136,6 +138,8 @@ const RULE_RECORD: &[u8] = include_bytes!("schemas/persisted-rule-record.schema.
 const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
+const EXECUTION_RUN_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-execution-run-record.schema.json");
 
 const WORKSPACE_OPERATION_URI: &str =
     "https://codex-studio.invalid/persisted-workspace-operation-record.schema.json";
@@ -235,6 +239,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (CONTINUATION_URI, CONTINUATION),
     (EVENT_METADATA_URI, EVENT_METADATA),
     (EXECUTION_RECORD_URI, EXECUTION_RECORD),
+    (EXECUTION_RUN_RECORD_URI, EXECUTION_RUN_RECORD),
     (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
     (FEDERATION_INBOX_URI, FEDERATION_INBOX),
     (FEDERATION_OUTBOX_URI, FEDERATION_OUTBOX),
@@ -374,7 +379,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_events" => "PersistedMessageEvent",
         "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
         "runtime_execution_effects" => "PersistedExecutionRecord",
-        "runtime_execution_runs" => "PersistedExecutionRecord",
+        "runtime_execution_runs" => "PersistedExecutionRunRecord",
         "runtime_federation_inbox" => "PersistedFederationInbox",
         "runtime_federation_outbox" => "PersistedFederationOutbox",
         "runtime_federation_peers" => "PersistedFederationPeer",
@@ -540,6 +545,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
         ("PersistedExecutionRecord", EXECUTION_RECORD_URI),
+        ("PersistedExecutionRunRecord", EXECUTION_RUN_RECORD_URI),
         ("PersistedFederationInbox", FEDERATION_INBOX_URI),
         ("PersistedFederationOutbox", FEDERATION_OUTBOX_URI),
         ("PersistedFederationPeer", FEDERATION_PEER_URI),
@@ -697,6 +703,7 @@ mod tests {
             ("runtime_assets", "PersistedTranscriptAsset"),
             ("runtime_items", "PersistedTranscriptRecord"),
             ("runtime_event_meta", "RuntimeEventMetadataRecord"),
+            ("runtime_execution_runs", "PersistedExecutionRunRecord"),
         ] {
             assert_eq!(table_schema(table), Some(schema), "{table}");
         }
@@ -854,6 +861,42 @@ mod tests {
             )
             .expect("usage limits schema exists")
         );
+    }
+
+    #[test]
+    fn execution_run_schema_requires_status_and_types_latest_attempt_id() {
+        initialize().expect("persisted schemas compile");
+        let valid = json!({
+            "id":"run-1","agent":"agent-1","accountKey":"default",
+            "epoch":2,"status":"running","created":1.0,"latestAttemptId":null
+        });
+        assert!(validate("PersistedExecutionRunRecord", &valid).expect("schema validates"));
+        let mut missing_status = valid.clone();
+        missing_status
+            .as_object_mut()
+            .expect("record is an object")
+            .remove("status");
+        assert!(
+            !validate("PersistedExecutionRunRecord", &missing_status).expect("schema validates")
+        );
+        let mut invalid_attempt = valid;
+        invalid_attempt["latestAttemptId"] = json!(7);
+        assert!(
+            !validate("PersistedExecutionRunRecord", &invalid_attempt).expect("schema validates")
+        );
+        for epoch in [json!(-1), json!(9_007_199_254_740_992_i64)] {
+            let mut invalid_epoch = json!({
+                "id":"run-1","agent":"agent-1","accountKey":"default",
+                "epoch":epoch,"status":"running","created":1.0
+            });
+            assert!(
+                !validate("PersistedExecutionRunRecord", &invalid_epoch).expect("schema validates")
+            );
+            invalid_epoch["epoch"] = json!(0);
+            assert!(
+                validate("PersistedExecutionRunRecord", &invalid_epoch).expect("schema validates")
+            );
+        }
     }
 
     #[test]
