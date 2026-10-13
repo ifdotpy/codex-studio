@@ -14,6 +14,7 @@ class StreamBuffer:
         self.runtime = runtime
         self.lock = threading.RLock()
         self.entries = {}
+        self._scope_keys = {}
         self._flushable_keys = set()
         self.closed = {}
         self.timer = None
@@ -41,6 +42,8 @@ class StreamBuffer:
                 return True
             entry = self.entries.setdefault(key, {
                 'base': None, 'batches': [], '_sequenced_batch_count': 0})
+            scope = (key[0], key[2], key[3], key[4])
+            self._scope_keys.setdefault(scope, {})[key] = None
             batches = entry['batches']
             if command and batches and int(batches[-1][3] // 3600) == int(now // 3600):
                 previous = batches[-1]
@@ -63,6 +66,23 @@ class StreamBuffer:
             self._flushable_keys.add(key)
         else:
             self._flushable_keys.discard(key)
+
+    def _scope_entries_locked(self, account, thread_id, item_id, turn_id):
+        if all(value is not None for value in (account, thread_id, item_id, turn_id)):
+            scope = (account, thread_id, turn_id, item_id)
+            keys = self._scope_keys.get(scope, {})
+            return ((key, self.entries[key]) for key in keys if key in self.entries)
+        return self.entries.items()
+
+    def _remove_entry_locked(self, key):
+        self.entries.pop(key, None)
+        self._flushable_keys.discard(key)
+        scope = (key[0], key[2], key[3], key[4])
+        keys = self._scope_keys.get(scope)
+        if keys is not None:
+            keys.pop(key, None)
+            if not keys:
+                self._scope_keys.pop(scope, None)
 
     def _schedule_locked(self):
         if self.timer is not None or not self._flushable_keys:
@@ -92,7 +112,8 @@ class StreamBuffer:
                      supervisor_handle=None, supervisor_sequence=None, analytics_captures=None):
         """Caller holds Runtime.lock. Commit before consuming buffered batches."""
         with self.lock:
-            selected = [(key, entry, list(entry['batches'])) for key, entry in self.entries.items()
+            candidates = self._scope_entries_locked(account, thread_id, item_id, turn_id)
+            selected = [(key, entry, list(entry['batches'])) for key, entry in candidates
                         if (account is None or key[0] == account)
                         and (thread_id is None or key[2] == thread_id)
                         and (item_id is None or key[4] == item_id)
@@ -243,7 +264,7 @@ class StreamBuffer:
                         del entry['batches'][:length]
                         self._update_flushable_locked(key, entry)
                         if target is None and not entry['batches']:
-                            self.entries.pop(key, None)
+                            self._remove_entry_locked(key)
                         elif target is not None:
                             entry['base'] = target
         if close:
@@ -251,8 +272,7 @@ class StreamBuffer:
                 for key, entry, _ in selected:
                     if (close_commands or key[5] == 'item/agentMessage/delta') \
                             and self.entries.get(key) is entry and not entry['batches']:
-                        self._flushable_keys.discard(key)
-                        self.entries.pop(key, None)
+                        self._remove_entry_locked(key)
         with self.lock:
             self._schedule_locked()
 
