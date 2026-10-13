@@ -88,6 +88,28 @@ class HostExec:
             after = page["next"]
 
     async def handle(self, request_id: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
+        # The steps record the leased operation, and the run request before it is sent.
+        steps: dict[str, Any] = {}
+        try:
+            return await self.handle_steps(request_id, params, emit, steps)
+        except HostExecError as exc:
+            op = steps.get("leased")
+            if op is None or steps.get("run"):
+                # A run request can have started the Mac command: its lease stays.
+                raise
+            # No run request exists yet, so no Mac command started. Release the Mac slot.
+            common = {"operationId": op["operationId"], "agentId": op["agentId"]}
+            await self.call("release", {**common, "preRunError": exc.object()}, "sync-failed-release")
+            try:
+                await self.broker("host.slot.forget", {**common, "slotId": op["slotId"], "generation": op["generation"]},
+                                  "sync-failed-forget")
+            except HostExecError as cleanup_error:
+                raise HostExecError(exc.code, str(exc) + "; Mac slot released; old staging cleanup failed: "
+                                    + str(cleanup_error)) from exc
+            raise
+
+    async def handle_steps(self, request_id: str, params: dict[str, Any], emit: Any,
+                           steps: dict[str, Any]) -> dict[str, Any]:
         identity = params.get("operationId", request_id)
         require(isinstance(identity, str) and 0 < len(identity) <= 128, "Invalid host operation ID")
         context = await self.service.host_context(params.get("agentId"))
@@ -113,6 +135,7 @@ class HostExec:
         require(cwd.is_absolute() and cwd.is_relative_to(line) and ".." not in cwd.parts,
                 "The host command cwd is outside its line")
         op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line)}, "acquire")
+        steps["leased"] = op
         slot = {**common, "slotId": op["slotId"], "generation": op["generation"]}
         # Paths that the project settings keep on the Mac (docs/host-exec.md).
         mac_only = list(op.get("macOnly", []))
@@ -181,6 +204,7 @@ class HostExec:
                 await self.call("sync.commit", {**common, "path": path}, "commit:" + key(path))
         await flush()
         relative_cwd = cwd.relative_to(line).as_posix()
+        steps["run"] = True
         await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
             "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
             "caches": caches}, "run", LONG_CALL)

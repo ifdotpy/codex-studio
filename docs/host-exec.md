@@ -48,6 +48,12 @@ A different payload with the same ID fails. A pending receipt after a restart
 reports an unknown outcome. It does not repeat the command or a source write.
 A lost host owner leaves the slot leased for inspection.
 
+A failure before the run request (slot preparation, manifest, or transfer)
+releases the Mac slot. The saved status records `sync_failed` and `preRunError`.
+The Mac slot gets a new generation, so failed guest staging is never used again.
+A failure to forget the old guest slot appears in the error. A lost response to
+the run request keeps the lease for inspection.
+
 ## Slots and source changes
 
 By default, each project has four Mac slots and a 20 GiB disk budget. A project

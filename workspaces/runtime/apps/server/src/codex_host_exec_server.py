@@ -525,9 +525,16 @@ class HostService:
             return self.load(identity)
         if method == "release":
             require(op["state"] in {"leased", "exited"}, "A running or unknown command retains its lease")
+            failure = params.get("preRunError")
+            if failure is not None:
+                require(op["state"] == "leased" and isinstance(failure, dict),
+                        "Only a failed transfer can release an unstarted command")
+                op.update(reason="sync_failed", preRunError=failure)
             op.update(state="released", collected=bool(params.get("collected")), finishedAt=time.time())
             self.save(identity, op)
-            atomic(slot / "slot.json", {"generation": op["generation"], "usedAt": time.time()})
+            # Failed guest staging can stay active after a lost broker response. Never reuse it.
+            generation = os.urandom(16).hex() if failure is not None else op["generation"]
+            atomic(slot / "slot.json", {"generation": generation, "usedAt": time.time()})
             (slot / "lease.json").unlink()
             if op["collected"]:
                 shutil.rmtree(self.opdir(identity) / "changes", ignore_errors=True)

@@ -219,6 +219,80 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.line / "ran").exists())
         self.assertFalse((Path(result["slotPath"]) / "ran").exists())
 
+    async def test_failed_sync_releases_even_when_forget_fails(self):
+        self.host.slots = 1
+        layr, io = self.slots.layr, self.slots.io
+        async def failed_layr(context, args, ok=(0,)):
+            if args[0] == "export":
+                raise HostExecError("layr_failed", "Permission denied")
+            return await layr(context, args, ok)
+        async def failed_io(context, params):
+            if params["action"] == "delete":
+                raise HostExecError("operation_failed", "Permission denied")
+            return await io(context, params)
+        with patch.object(self.slots, "layr", side_effect=failed_layr), \
+                patch.object(self.slots, "io", side_effect=failed_io):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("sync-failed", 'open("must-not-run", "w").write("bad")')
+        self.assertEqual(caught.exception.code, "layr_failed")
+        self.assertIn("Mac slot released", str(caught.exception))
+        old = self.host.load("sync-failed")
+        self.assertEqual(old["state"], "released")
+        self.assertEqual(old["reason"], "sync_failed")
+        self.assertEqual(old["preRunError"]["code"], "layr_failed")
+        self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
+        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        self.assertTrue((staging / "lease.json").exists())
+        self.assertFalse((self.line / "must-not-run").exists())
+        self.assertFalse(self.host.commands)
+        # The only Mac slot is free again, with a new generation: the old staging is never reused.
+        new = await self.execute("after-failure", 'print("next command")')
+        self.assertEqual(new["slotPath"], old["slotPath"])
+        self.assertNotEqual(new["generation"], old["generation"])
+        self.assertEqual(new["exitCode"], 0)
+
+    async def test_failed_transfer_releases_both_leases(self):
+        call = self.guest.call
+        async def failed(method, params, phase, *options):
+            # The held manifest is a Mac transfer step before the run request.
+            if method == "manifest":
+                raise HostExecError("sync_conflict", "Checksum differs")
+            return await call(method, params, phase, *options)
+        with patch.object(self.guest, "call", side_effect=failed):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("transfer-failed", 'open("must-not-run", "w").write("bad")')
+        self.assertEqual(caught.exception.code, "sync_conflict")
+        old = self.host.load("transfer-failed")
+        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        self.assertEqual(old["state"], "released")
+        self.assertFalse((staging / "lease.json").exists())
+        self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
+        self.assertFalse((self.line / "must-not-run").exists())
+
+    async def test_lost_run_response_keeps_lease(self):
+        call = self.guest.call
+        async def lost(method, params, phase, *options):
+            result = await call(method, params, phase, *options)
+            if method == "run":
+                raise HostExecError("outcome_unknown", "Run response lost")
+            return result
+        with patch.object(self.guest, "call", side_effect=lost):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("run-lost", 'import time;time.sleep(0.2)')
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        old = self.host.load("run-lost")
+        self.assertEqual(old["state"], "running")
+        self.assertTrue((Path(old["slotPath"]).parent / "lease.json").exists())
+
+    async def test_a_transfer_error_release_needs_an_error_object(self):
+        op = await self.guest.call("acquire", {"operationId": "pre-run", "agentId": "agent", "projectId": "project",
+                                               "linePath": str(self.line)}, "acquire")
+        with self.assertRaises(HostExecError) as caught:
+            await self.guest.call("release", {"operationId": "pre-run", "agentId": "agent", "preRunError": "text"},
+                                  "release-text")
+        self.assertEqual(caught.exception.code, "invalid_params")
+        self.assertTrue((self.host.slot(op) / "lease.json").exists())
+
     async def test_timeout_collects_completed_edits(self):
         result = await self.execute("timeout", 'import time,pathlib;pathlib.Path("edit").write_text("before timeout");time.sleep(20)', timeout=0.1)
         self.assertEqual(result["reason"], "timeout")
