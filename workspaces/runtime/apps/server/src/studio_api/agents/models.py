@@ -208,12 +208,12 @@ class CreateLeadRequest(ContractModel):
         pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
     )
     previous: str | None = Field(default=None, max_length=200)
-    reuse_empty: bool | None = None
+    reuse_empty: bool = Field(default=None)
     cwd: str | None = None
     project_folder: str | None = None
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
     model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
-    yolo_mode: bool | None = None
+    yolo_mode: bool = Field(default=None)
     effort: str | None = Field(default=None, max_length=100)
     fast_mode: bool | None = None
     daybreak_enabled: bool | None = None
@@ -257,19 +257,19 @@ class CreateAgentRequest(ContractModel):
     effort: str | None = Field(default=None, max_length=100, pattern=r"\S")
     fast_mode: bool | None = None
     daybreak_enabled: bool | None = None
-    yolo_mode: bool | None = None
+    yolo_mode: bool = Field(default=None)
     account_key: str | None = Field(default=None, max_length=200)
     worker_defaults: WorkerDefaults | None = None
     profile_id: str | None = Field(default=None, max_length=200)
-    concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
-    maxAgents: SafeInt | None = Field(default=None, ge=1, le=1024)
+    concurrency: SafeInt = Field(default=None, ge=0, le=512)
+    maxAgents: SafeInt = Field(default=None, ge=1, le=1024)
     tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 class ConversationRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
     cwd: str | None = None
-    yolo_mode: bool | None = None
-    expected_account_key: str | None = Field(default=None, min_length=1, max_length=200)
+    yolo_mode: bool = Field(default=None)
+    expected_account_key: str = Field(default=None, min_length=1, max_length=200)
     model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
     effort: str | None = Field(default=None, max_length=100, pattern=r"\S")
     fast_mode: bool | None = None
@@ -279,9 +279,9 @@ class ConversationRequest(ContractModel):
     worker_defaults: WorkerDefaults | None = None
     review_defaults: ReviewDefaults | None = None
     agent_mode: AgentMode | None = None
-    subagent_concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
+    subagent_concurrency: SafeInt = Field(default=None, ge=0, le=512)
     expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
-    excluded_account_keys: list[Annotated[str, Field(min_length=1, pattern=r"\S")]] | None = Field(
+    excluded_account_keys: list[Annotated[str, Field(min_length=1, pattern=r"\S")]] = Field(
         default=None,
         max_length=512,
         json_schema_extra={"uniqueItems": True},
@@ -299,10 +299,10 @@ class ConversationRequest(ContractModel):
 
 class ConfigureRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
-    concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
+    concurrency: SafeInt = Field(default=None, ge=0, le=512)
     expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
     request_id: str | None = Field(default=None, min_length=1, max_length=200)
-    maxAgents: SafeInt | None = Field(default=None, ge=1, le=1024)
+    maxAgents: SafeInt = Field(default=None, ge=1, le=1024)
     tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 

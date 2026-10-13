@@ -37,14 +37,14 @@ pub struct Creation {
     pub prompt: String,
     pub role: Option<String>,
     pub workspace: Option<String>,
-    pub yolo: Option<Option<bool>>,
-    pub concurrency: Option<Option<i64>>,
-    pub max_agents: Option<Option<i64>>,
+    pub yolo: Option<bool>,
+    pub concurrency: Option<i64>,
+    pub max_agents: Option<i64>,
     pub token_budget: Option<i64>,
     pub profile: Option<String>,
     pub parent: Option<String>,
     pub previous: Option<String>,
-    pub reuse_empty: Option<Option<bool>>,
+    pub reuse_empty: Option<bool>,
     pub catalog: bool,
     pub worker_catalog: bool,
     pub project_binding: bool,
@@ -53,8 +53,8 @@ pub struct Creation {
 
 pub struct Configuration {
     pub id: String,
-    pub concurrency: Option<Option<i64>>,
-    pub max_agents: Option<Option<i64>>,
+    pub concurrency: Option<i64>,
+    pub max_agents: Option<i64>,
     pub token_budget: Option<Option<i64>>,
     pub mode_receipt: bool,
 }
@@ -115,6 +115,37 @@ fn create(
     if let Some(existing) = existing {
         return projected_response(context.store, &existing);
     }
+    let read = context.store.read()?;
+    let previous = request
+        .previous
+        .as_deref()
+        .map(|id| load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent))
+        .transpose()?;
+    let profile = request
+        .profile
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map(|id| {
+            load_record(&read, "runtime_profiles", "ProfileRecord", id, &validate)?
+                .ok_or(OperationError::Invalid("Unknown worker profile"))
+        })
+        .transpose()?;
+    if let Some(profile) = &profile {
+        if request.role.is_none() {
+            request.role = profile
+                .get("role")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        request.catalog |= ["model", "effort"].iter().any(|field| {
+            !request
+                .intent
+                .as_object()
+                .is_some_and(|body| body.contains_key(*field))
+                && profile.get(*field).is_some_and(|value| !value.is_null())
+        });
+    }
+    drop(read);
     if request.parent.is_some() {
         return Err(OperationError::Unavailable(
             "worker-driver/workspace-preparation",
@@ -131,7 +162,7 @@ fn create(
     if request.project_binding {
         return Err(OperationError::Unavailable("project-driver/chat-binding"));
     }
-    if request.previous.is_some() {
+    if request.previous.is_some() && request.reuse_empty.unwrap_or(true) {
         return Err(OperationError::Unavailable(
             "agent-management/empty-chat-reuse",
         ));
@@ -146,11 +177,33 @@ fn create(
             "Select an existing project directory",
         ));
     }
-    let cwd = requested_cwd.map_or_else(|| project_directory_default(), Ok)?;
+    let cwd = requested_cwd.map_or_else(
+        || {
+            if let Some(prior) = &previous {
+                project_directory(
+                    prior
+                        .get("hostProjectPath")
+                        .filter(|value| !value.is_null())
+                        .or_else(|| prior.get("cwd"))
+                        .and_then(Value::as_str)
+                        .ok_or(OperationError::Internal)?,
+                )
+            } else {
+                project_directory_default()
+            }
+        },
+        Ok,
+    )?;
     let account = account_key(context, request.account.as_deref(), &cwd)?;
-    let yolo = non_null(request.yolo, true)?;
-    let concurrency = non_null(request.concurrency, DEFAULT_CONCURRENCY)?;
-    let requested_max_agents = non_null(request.max_agents, DEFAULT_MAX_AGENTS)?;
+    let yolo = request.yolo.unwrap_or_else(|| {
+        previous
+            .as_ref()
+            .and_then(|record| record.get("yoloMode"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    });
+    let concurrency = request.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
+    let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_AGENTS);
     let role = request.role.as_deref().unwrap_or("orchestrator");
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
@@ -187,6 +240,9 @@ fn create(
     }
     mode_fields(&mut record);
     record["profileId"] = json!(request.profile);
+    if let Some(profile) = profile {
+        record["profileInstructions"] = profile["instructions"].clone();
+    }
     if !draft {
         record["creationIntent"] = request.intent;
     }
@@ -219,12 +275,6 @@ fn create(
     with_sync_delta(context.store, before, projected)
 }
 
-fn non_null<T>(value: Option<Option<T>>, default: T) -> Result<T, OperationError> {
-    value
-        .unwrap_or(Some(default))
-        .ok_or(OperationError::Invalid("A value is required"))
-}
-
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
     if request.concurrency.is_some() {
         if request.max_agents.is_some() || request.token_budget.is_some() {
@@ -232,7 +282,6 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
                 "Configure only team storage and token limits",
             ));
         }
-        non_null(request.concurrency, 32)?;
         return Err(OperationError::Unavailable(
             "agent-management/agent-mode-settings",
         ));
@@ -242,10 +291,7 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
             "Configure only team storage and token limits",
         ));
     }
-    let max_agents = request
-        .max_agents
-        .map(|value| value.ok_or(OperationError::Invalid("A value is required")))
-        .transpose()?;
+    let max_agents = request.max_agents;
     let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
     let result = context.store.transaction_with_error(|tx| {
         configure_limits(

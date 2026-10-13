@@ -21042,18 +21042,11 @@
         "additionalProperties": false,
         "properties": {
           "concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Concurrency"
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Concurrency",
+            "type": "integer"
           },
           "expected_mode_revision": {
             "anyOf": [
@@ -21076,18 +21069,11 @@
             "type": "string"
           },
           "maxAgents": {
-            "anyOf": [
-              {
-                "maximum": 1024,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Maxagents"
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Maxagents",
+            "type": "integer"
           },
           "request_id": {
             "anyOf": [
@@ -22335,37 +22321,23 @@
             "title": "Effort"
           },
           "excluded_account_keys": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "\\S",
-                  "type": "string"
-                },
-                "maxItems": 512,
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
+            "items": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 512,
             "title": "Excluded Account Keys",
+            "type": "array",
             "uniqueItems": true
           },
           "expected_account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Expected Account Key"
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Expected Account Key",
+            "type": "string"
           },
           "expected_mode_revision": {
             "anyOf": [
@@ -22452,18 +22424,11 @@
             "default": null
           },
           "subagent_concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Subagent Concurrency"
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Subagent Concurrency",
+            "type": "integer"
           },
           "worker_defaults": {
             "anyOf": [
@@ -22477,16 +22442,9 @@
             "default": null
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Yolo Mode"
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -22672,18 +22630,11 @@
             "title": "Account Key"
           },
           "concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Concurrency"
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Concurrency",
+            "type": "integer"
           },
           "cwd": {
             "anyOf": [
@@ -22751,18 +22702,11 @@
             "title": "Id"
           },
           "maxAgents": {
-            "anyOf": [
-              {
-                "maximum": 1024,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Maxagents"
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Maxagents",
+            "type": "integer"
           },
           "model": {
             "anyOf": [
@@ -22883,16 +22827,9 @@
             "title": "Workspacemode"
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Yolo Mode"
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -23182,16 +23119,9 @@
             "title": "Project Server Id"
           },
           "reuse_empty": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Reuse Empty"
+            "title": "Reuse Empty",
+            "type": "boolean"
           },
           "review_defaults": {
             "anyOf": [
@@ -23233,16 +23163,9 @@
             "title": "Workspacemode"
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
             "default": null,
-            "title": "Yolo Mode"
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "title": "CreateLeadRequest",

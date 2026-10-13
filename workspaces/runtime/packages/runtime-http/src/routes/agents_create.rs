@@ -7,13 +7,16 @@ use serde_json::Value;
 use studio_runtime_services::agents_create::{self, Context, Creation, OperationError};
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 5] = [
+    const LEAD_DEPENDENCIES: [Dependency; 6] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("agent-management/empty-chat-reuse"),
         Dependency::new("project-driver/chat-binding"),
         Dependency::new("provider-session/model-list"),
         Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("workspace-state/lead-workspace"),
     ];
+    const RENAME_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("provider-session/title-generation")];
     const AGENT_DEPENDENCIES: [Dependency; 6] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("provider-session/model-list"),
@@ -54,7 +57,11 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&LEAD_DEPENDENCIES),
             create_lead,
         ),
-        post("/api/rename", OperationStatus::Implemented, rename),
+        post(
+            "/api/rename",
+            OperationStatus::partial(&RENAME_DEPENDENCIES),
+            rename,
+        ),
     ])
 }
 
@@ -160,21 +167,21 @@ async fn conversation(
 ) -> Result<Json<Value>, ApiError> {
     let request = agents_create::Conversation {
         settings: body.cwd.flatten().is_some()
-            || body.yolo_mode.flatten().is_some()
-            || body.model.flatten().is_some()
-            || body.effort.flatten().is_some()
-            || body.fast_mode.flatten().is_some()
-            || body.daybreak_enabled.flatten().is_some()
+            || body.yolo_mode.is_some()
+            || body.model.is_some()
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
             || body.next_turn.flatten().is_some()
             || body.request_id.flatten().is_some()
-            || body.worker_defaults.flatten().is_some()
-            || body.review_defaults.flatten().is_some()
+            || body.worker_defaults.is_some()
+            || body.review_defaults.is_some()
             || body.agent_mode.is_some()
             || body.subagent_concurrency.is_some()
             || body.expected_mode_revision.is_some(),
         id: body.id,
-        expected_account: body.expected_account_key.flatten(),
-        excluded: body.excluded_account_keys.flatten().map(|mut keys| {
+        expected_account: body.expected_account_key,
+        excluded: body.excluded_account_keys.map(|mut keys| {
             keys.sort();
             keys
         }),

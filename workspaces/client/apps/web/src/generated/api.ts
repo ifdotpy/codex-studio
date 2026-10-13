@@ -10290,7 +10290,7 @@ export interface components {
        * Concurrency
        * @default null
        */
-      concurrency?: number | null;
+      concurrency?: number;
       /**
        * Expected Mode Revision
        * @default null
@@ -10302,7 +10302,7 @@ export interface components {
        * Maxagents
        * @default null
        */
-      maxAgents?: number | null;
+      maxAgents?: number;
       /**
        * Request Id
        * @default null
@@ -10969,12 +10969,12 @@ export interface components {
        * Excluded Account Keys
        * @default null
        */
-      excluded_account_keys?: string[] | null;
+      excluded_account_keys?: string[];
       /**
        * Expected Account Key
        * @default null
        */
-      expected_account_key?: string | null;
+      expected_account_key?: string;
       /**
        * Expected Mode Revision
        * @default null
@@ -11008,14 +11008,14 @@ export interface components {
        * Subagent Concurrency
        * @default null
        */
-      subagent_concurrency?: number | null;
+      subagent_concurrency?: number;
       /** @default null */
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Yolo Mode
        * @default null
        */
-      yolo_mode?: boolean | null;
+      yolo_mode?: boolean;
     };
     /**
      * ConvertedFromLeadDto
@@ -11094,7 +11094,7 @@ export interface components {
        * Concurrency
        * @default null
        */
-      concurrency?: number | null;
+      concurrency?: number;
       /**
        * Cwd
        * @default null
@@ -11124,7 +11124,7 @@ export interface components {
        * Maxagents
        * @default null
        */
-      maxAgents?: number | null;
+      maxAgents?: number;
       /**
        * Model
        * @default null
@@ -11165,7 +11165,7 @@ export interface components {
        * Yolo Mode
        * @default null
        */
-      yolo_mode?: boolean | null;
+      yolo_mode?: boolean;
     };
     /** CreateInvite */
     CreateInvite: {
@@ -11279,7 +11279,7 @@ export interface components {
        * Reuse Empty
        * @default null
        */
-      reuse_empty?: boolean | null;
+      reuse_empty?: boolean;
       /** @default null */
       review_defaults?: components["schemas"]["ReviewDefaults"] | null;
       /** @default null */
@@ -11293,7 +11293,7 @@ export interface components {
        * Yolo Mode
        * @default null
        */
-      yolo_mode?: boolean | null;
+      yolo_mode?: boolean;
     };
     /** CreateRoomRequest */
     CreateRoomRequest: {

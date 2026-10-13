@@ -393,11 +393,12 @@ pub fn update_exclusions(
     }) {
         return Err(SettingsError::Stale);
     }
-    if crate::event_write::truthy(record.get("inFlight"))
-        || matches!(
-            record.get("status").and_then(Value::as_str),
-            Some("running" | "starting" | "approval")
-        )
+    if excluded.is_none()
+        && (crate::event_write::truthy(record.get("inFlight"))
+            || matches!(
+                record.get("status").and_then(Value::as_str),
+                Some("running" | "starting" | "approval")
+            ))
     {
         return Err(SettingsError::InFlight);
     }
@@ -509,6 +510,8 @@ pub fn rename(
     signature: &str,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, RenameError> {
+    let mut record =
+        load_agent_value(transaction, id, &validate)?.ok_or(RenameError::UnknownAgent)?;
     if let Some(request_id) = request_id
         && let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)?
     {
@@ -524,8 +527,6 @@ pub fn rename(
         return Ok(result);
     }
 
-    let mut record =
-        load_agent_value(transaction, id, &validate)?.ok_or(RenameError::UnknownAgent)?;
     if crate::event_write::truthy(record.get("deletedAt")) {
         return Err(RenameError::Deleted);
     }
