@@ -7,6 +7,8 @@
     "api:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_types --check",
     "state-schemas:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_state_schemas --write",
     "state-schemas:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_state_schemas --check",
+    "shared-values:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_shared_values --write",
+    "shared-values:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_shared_values --check",
     "typecheck:runtime": "python3 workspaces/runtime/apps/server/src/codex_python.py --mypy",
     "test:client": "pnpm run typecheck:client-helper && pnpm --filter codex-agents-web test",
     "typecheck:client-helper": "pnpm --filter codex-agents-web exec tsc --project tests/tsconfig.json",

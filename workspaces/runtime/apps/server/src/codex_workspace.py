@@ -33,6 +33,7 @@ from codex_accounts import AccountStore
 from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
+from codex_shared_values import MAX_USER_ATTACHMENT_BYTES, user_attachment_limit_label
 
 if TYPE_CHECKING:
     from codex_runtime import Runtime
@@ -582,8 +583,8 @@ class WorkspaceMixin:
             )
         except (ValueError, TypeError):
             raise ValueError("Invalid file data")
-        if not content or len(content) > 20 * 1024 * 1024:
-            raise ValueError("Files must contain 1 byte to 20 MiB")
+        if not content or len(content) > MAX_USER_ATTACHMENT_BYTES:
+            raise ValueError(f"Files must contain 1 byte to {user_attachment_limit_label()}")
         key = str(uuid.UUID(data["id"])) if data.get("id") else str(uuid.uuid4())
         digest = hashlib.sha256(content).hexdigest()
         with self.lock, self.db() as db:

@@ -4,8 +4,12 @@ import { syncGet, syncPost, refreshSession } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
 import type { Attachment } from "../components/ComposerAttachments";
+import {
+  MAX_USER_ATTACHMENT_BYTES,
+  USER_ATTACHMENT_LIMIT_LABEL,
+} from "../generated/sharedValues";
 
-export const attachmentLimit = 20 * 1024 * 1024;
+export const attachmentLimit = MAX_USER_ATTACHMENT_BYTES;
 export type PendingUpload = {
   id: string;
   workspace: string;
@@ -92,7 +96,9 @@ export async function queueUploads(
   if (!files.length) throw new Error("Select at least one file.");
   for (const file of files)
     if (!file.size || file.size > attachmentLimit)
-      throw new Error("Files must contain 1 byte to 20 MiB.");
+      throw new Error(
+        `Files must contain 1 byte to ${USER_ATTACHMENT_LIMIT_LABEL}.`,
+      );
   if (!expectedWorkspace)
     throw new Error(
       "Wait for this workspace to finish loading before attaching files.",

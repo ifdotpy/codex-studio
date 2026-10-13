@@ -1,4 +1,6 @@
-//! Compiled validators for the schemas persisted by the Rust runtime.
+//! Compiled persisted-state validators and generated shared runtime values.
+
+pub mod shared_values;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
