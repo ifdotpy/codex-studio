@@ -110,12 +110,6 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DELETE FROM runtime_access_local_alias")
             database.execute("INSERT INTO runtime_access_clients VALUES('client-a',?)", ('{"id":"client-a","clientId":"client-a","serverId":"server-a","label":"Server A","kind":"server","origin":"https://server-a.example","publicKey":"client-key","tailscaleUser":"owner@example","status":"paired","created":1.0,"lastAccess":2.0,"revoked":null,"alias":"SRV"}',))
             database.execute("INSERT INTO runtime_access_discovered VALUES('discovered-a',?)", ('{"id":"discovered-a","clientId":"discovered-a","serverId":"discovered-a","label":"Discovered server","kind":"server","origin":"https://discovered.example","publicKey":"discovered-key","tailscaleUser":"owner@example","status":"discovered","created":2.0,"lastAccess":null,"revoked":null,"lastSeen":3.0,"autoPair":false}',))
-        import json
-        if self.rust_backend:
-            identity_path = self.backend.state / "multi-server" / "identity.json"
-            identity_path.parent.mkdir(mode=0o700, exist_ok=True)
-            identity_path.write_text(json.dumps({"serverId":"local-server","label":"Local server","publicKey":"local-key","privateKey":"private-sentinel"}), encoding="utf-8")
-            identity_path.chmod(0o600)
 
     def test_federation_snapshot_reads_python_written_local_configuration(self) -> None:
         response = self.backend.request(
@@ -241,10 +235,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response=self.backend.request("GET","/api/multi-server",headers=self.headers())
         self.assertEqual(response.status,200,response.body[:1000])
         body=response.json()
-        if self.rust_backend:
-            self.assertEqual(body["identity"]["serverId"],"local-server")
-        else:
-            self.assertTrue(body["identity"]["serverId"])
+        self.assertTrue(body["identity"]["serverId"])
         self.assertEqual(body["clients"][0]["id"],"client-a")
         self.assertIn("discovered-a",[peer["id"] for peer in body["servers"]])
         self.assertEqual(body["settings"]["autoPair"],True)
@@ -272,7 +263,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         conflict=self.backend.request("POST","/api/multi-server",body={"action":"alias","requestId":"alias-a","serverId":"local","alias":"ZZ"},headers=self.headers())
         self.assertEqual(conflict.status,409,conflict.body[:1000])
 
-    def test_multi_server_name_requires_identity_writer_without_writes(self) -> None:
+    def test_multi_server_remote_name_requires_signed_auth_without_writes(self) -> None:
         if not self.rust_backend:
             self.skipTest("Python runtime owns the existing identity writer")
         identity_path = self.backend.state / "multi-server" / "identity.json"
@@ -281,7 +272,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         for path, body in (
             (
                 "/api/multi-server",
-                {"action": "name", "requestId": "name-a", "serverId": "local", "label": "Renamed locally"},
+                {"action": "name", "requestId": "name-a", "serverId": "remote-server", "label": "Renamed remotely"},
             ),
             (
                 "/api/multi-server/v1/name",
@@ -290,7 +281,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         ):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("remote-transport/identity-write", response.json()["error"])
+            self.assertIn("remote-transport/signed-server-requests", response.json()["error"])
             self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
@@ -305,7 +296,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers(),
         )
         self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertIn("federation-credentials/private-key", response.json()["error"])
+        self.assertIn("multi-server-runtime/pairing", response.json()["error"])
         self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), before)
 
     def test_multi_server_pair_refusal_does_not_write_or_contact_another_server(self) -> None:
