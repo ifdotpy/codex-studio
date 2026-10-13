@@ -33,13 +33,12 @@ where
         request: axum::extract::Request,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let (parts, _) = request.into_parts();
+        let (mut parts, _) = request.into_parts();
         let value = parts
             .extensions
-            .get::<ValidatedRequest>()
+            .remove::<ValidatedRequest>()
             .ok_or_else(ApiError::internal)?
             .body
-            .clone()
             .ok_or_else(ApiError::internal)?;
         match serde_path_to_error::deserialize(value) {
             Ok(value) => Ok(Self(value)),

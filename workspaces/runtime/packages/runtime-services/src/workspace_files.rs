@@ -158,7 +158,29 @@ fn expand_home(path: &str) -> String {
 }
 
 pub fn mime_type(path: &Path) -> String {
-    let extension = path
+    let mut mime_path = path.to_string_lossy().into_owned();
+    for (suffix, mapped) in [
+        (".svgz", ".svg.gz"),
+        (".tgz", ".tar.gz"),
+        (".taz", ".tar.gz"),
+        (".tz", ".tar.gz"),
+        (".tbz2", ".tar.bz2"),
+        (".txz", ".tar.xz"),
+    ] {
+        if mime_path.to_ascii_lowercase().ends_with(suffix) {
+            mime_path.truncate(mime_path.len() - suffix.len());
+            mime_path.push_str(mapped);
+            break;
+        }
+    }
+    for suffix in [".gz", ".Z", ".bz2", ".xz", ".br"] {
+        if mime_path.ends_with(suffix) {
+            mime_path.truncate(mime_path.len() - suffix.len());
+            break;
+        }
+    }
+    let mime_path = Path::new(&mime_path);
+    let extension = mime_path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
@@ -169,7 +191,7 @@ pub fn mime_type(path: &Path) -> String {
     {
         return (*mime).to_owned();
     };
-    mime_guess::from_path(path)
+    mime_guess::from_path(mime_path)
         .first_or_octet_stream()
         .essence_str()
         .to_owned()
@@ -178,12 +200,14 @@ pub fn mime_type(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
 
     use serde_json::json;
 
     use super::{
         MAX_PREVIEW_BYTES, WorkspaceContext, WorkspaceFilesError, file_content, file_info,
+        mime_type,
     };
 
     #[test]
@@ -263,5 +287,12 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("temporary directory creates");
         path
+    }
+
+    #[test]
+    fn compressed_suffix_mime_matches_python_guess_type() {
+        assert_eq!(mime_type(Path::new("archive.tar.gz")), "application/x-tar");
+        assert_eq!(mime_type(Path::new("archive.tgz")), "application/x-tar");
+        assert_eq!(mime_type(Path::new("archive.tar.bz2")), "application/x-tar");
     }
 }

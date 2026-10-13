@@ -36,25 +36,14 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn upload_asset(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(mut body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let agent = body
-        .get("agent")
-        .and_then(Value::as_str)
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    let id = body.get("id").and_then(Value::as_str).map(str::to_owned);
-    let encoded = body
-        .get("base64")
-        .or_else(|| body.get("data"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?
-        .to_owned();
+    let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
+    let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
+    let id = take_string(&mut body, "id");
+    let encoded = take_string(&mut body, "base64")
+        .or_else(|| take_string(&mut body, "data"))
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let asset = tokio::task::spawn_blocking(move || {
         payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
@@ -311,14 +300,20 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
         PayloadStoreError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        PayloadStoreError::InvalidStoredAsset => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Invalid stored object assets",
-        ),
+        error @ PayloadStoreError::InvalidStoredAsset { .. } => {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
         PayloadStoreError::Io(_)
         | PayloadStoreError::Store(_)
         | PayloadStoreError::Json(_)
         | PayloadStoreError::Clock
         | PayloadStoreError::Entropy => ApiError::internal(),
+    }
+}
+
+fn take_string(body: &mut Value, key: &str) -> Option<String> {
+    match body.as_object_mut()?.remove(key)? {
+        Value::String(value) => Some(value),
+        _ => None,
     }
 }
