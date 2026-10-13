@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -34,11 +35,19 @@ impl DisposableState {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("rp-{}-{unique}", std::process::id()));
-        assert_outside_runtime_state(&path);
-        assert_socket_path_fits(&path.join(SOCKET));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("rp-{}-{unique}-{serial}", std::process::id()));
+            assert_outside_runtime_state(&path);
+            assert_socket_path_fits(&path.join(SOCKET));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create disposable directory: {error}"),
+            }
+        }
     }
 
     pub(crate) fn socket(&self) -> PathBuf {
