@@ -88,6 +88,12 @@ class _OpenPersistedRecord(ContractModel):
     id: StrictStr
 
 
+class PersistedSupervisor(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    generation: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+
+
 class PersistedToolRequestRecord(_OpenPersistedRecord):
     agent: StrictStr
     stage: Literal["queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed"]
@@ -107,6 +113,8 @@ class PersistedToolRequestRecord(_OpenPersistedRecord):
     callId: StrictStr | None = None
     request_id: StrictStr | None = None
     operationResult: dict[StrictStr, JsonValue] | None = None
+    supervisor: PersistedSupervisor | None = None
+    timing: dict[StrictStr, JsonValue] = Field(default_factory=dict)
 
 
 class PersistedToolAlias(ContractModel):
