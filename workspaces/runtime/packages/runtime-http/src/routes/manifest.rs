@@ -30,7 +30,6 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "sync-policy/runtime-capabilities",
     "transcript-service/pull",
     "transcript/event-driver",
-    "transcript/payload-store",
     "transcript/search-index",
     "transcript/workspace-state",
     "work-policy/views",

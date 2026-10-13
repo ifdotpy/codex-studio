@@ -13,6 +13,7 @@ pub mod agents_create;
 pub mod coordination;
 pub mod event_write;
 pub mod panels;
+pub mod payload_store;
 pub mod progress_panel;
 pub mod provider_session;
 pub mod questions_reads;
