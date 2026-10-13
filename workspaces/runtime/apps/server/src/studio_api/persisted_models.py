@@ -53,6 +53,29 @@ class PersistedTranscriptAsset(ContractModel):
     created: float
 
 
+class PersistedNotificationStatus(ContractModel):
+    """Open native activity state consumed by notification transitions."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    at: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    dismissed: StrictBool | None = None
+    phase: StrictStr | None = None
+    responseStarted: StrictBool | None = None
+    showBufferingUi: StrictBool | None = None
+    turnId: StrictStr | None = None
+
+
+class PersistedActiveTool(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr | None = None
+    name: StrictStr | None = None
+    type: StrictStr | None = None
+
+
 class PersistedAgentRecord(ContractModel):
     """Persisted agent identity plus the extensible state written by the runtime."""
 
@@ -68,6 +91,15 @@ class PersistedAgentRecord(ContractModel):
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
 
+    # Notification-owned fields; absent values remain absent in stored JSON.
+    activeTools: list[PersistedActiveTool] | None = None
+    activity: PersistedNotificationStatus | None = None
+    compactions: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    events: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    nativeResponseTurn: StrictStr | None = None
+    nativeSafetyBuffering: PersistedNotificationStatus | None = None
+    nativeStatus: PersistedNotificationStatus | None = None
+
 
 class _OpenPersistedRecord(ContractModel):
     """A storage projection that validates only fields used by Rust readers."""
@@ -81,6 +113,18 @@ class _OpenPersistedRecord(ContractModel):
 class PersistedTaskRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     status: StrictStr | None = None
+
+    # Provider task fields consumed by notification transitions.
+    completedAtMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    created: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    durationMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    itemId: StrictStr | None = None
+    kind: StrictStr | None = None
+    outputTruncated: StrictBool | None = None
+    startedAtMs: (Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0)]) | None = None
+    tail: StrictStr | None = None
+    turnId: StrictStr | None = None
+    type: StrictStr | None = None
 
 
 class PersistedPlanRecord(ContractModel):
