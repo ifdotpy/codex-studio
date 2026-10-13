@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
-const OPENAPI_DOCUMENT: &[u8] = include_bytes!("../openapi.json");
 const DOCUMENTATION_KEYS: [&str; 4] = ["description", "summary", "examples", "externalDocs"];
 const NAME_KEYED_MAPS: [&str; 18] = [
     "properties",
@@ -31,7 +30,6 @@ const METHODS: [&str; 8] = [
     "get", "put", "post", "delete", "options", "head", "patch", "trace",
 ];
 
-static DOCUMENT: OnceLock<Value> = OnceLock::new();
 static SCHEMA_HASH: OnceLock<String> = OnceLock::new();
 static OPERATIONS: OnceLock<Result<BTreeSet<(String, String)>, serde_json::Error>> =
     OnceLock::new();
@@ -74,12 +72,9 @@ pub(crate) fn operation_has_etag(method: &str, template: &str) -> bool {
 }
 
 fn document() -> &'static Value {
-    DOCUMENT.get_or_init(|| {
-        serde_json::from_slice(OPENAPI_DOCUMENT).expect("committed OpenAPI document is valid JSON")
-    })
+    studio_runtime_services::sync_policy::openapi_document()
 }
 
-#[cfg(test)]
 pub(crate) fn openapi_document() -> &'static Value {
     document()
 }

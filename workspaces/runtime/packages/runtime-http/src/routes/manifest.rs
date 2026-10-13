@@ -35,6 +35,41 @@ inventory::submit! {
     }
 }
 
+/// Names use `<slice>/<capability>` and are removed when the slice that provides them merges.
+const KNOWN_DEPENDENCIES: &[&str] = &[
+    "coordination-policy/inbox",
+    "cross-server/remote-events",
+    "event-driver/annotations",
+    "event-driver/plan-updates",
+    "event-driver/queue-mutations",
+    "event-driver/work-items",
+    "monitor-driver/active-checks",
+    "provider-session/account-rate-limits",
+    "provider-session/model-list",
+    "provider-session/app-server",
+    "resource-policy/read-progress-panel",
+    "resource-policy/windows-file-identity",
+    "resource-policy/write-progress-layout",
+    "rule-driver/event-rules",
+    "transcript-service/pull",
+    "transcript/event-driver",
+    "transcript/payload-store",
+    "transcript/search-index",
+    "transcript/workspace-state",
+    "work-policy/views",
+    "workspace-state/git-changes",
+    "workspace-state/image-execution",
+    "workspace-state/organization-effects",
+    "workspace-state/snapshot",
+    "coordination-policy/chat-history",
+    "coordination-policy/room-visibility",
+    "event-driver/message-receipts",
+    "event-driver/message-send",
+    "federation-driver/rooms",
+    "agent-discovery/launcher-status",
+];
+
+
 impl Dependency {
     #[allow(
         dead_code,

@@ -27,8 +27,5 @@ uuid = { workspace = true, features = ["v5"] }
 process-wrap = { workspace = true }
 rustix = { workspace = true }
 
-[dev-dependencies]
-rusqlite = { workspace = true }
-
 [lints]
 workspace = true
