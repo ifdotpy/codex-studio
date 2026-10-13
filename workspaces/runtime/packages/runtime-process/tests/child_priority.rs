@@ -5,7 +5,9 @@ use std::process::{Command, Stdio};
 
 use process_wrap::std::{CommandWrap, ProcessGroup};
 use rustix::process::getpriority_process;
-use studio_runtime_process::child_priority::{CHILD_PRIORITY_ENV, ChildPriority};
+use studio_runtime_process::child_priority::{
+    CHILD_PRIORITY_ENV, ChildPriority, priority_diagnostics,
+};
 
 // A pipe handshake makes reporting deterministic without delaying the parent.
 // The nested shell is started after priority application and proves inheritance.
@@ -51,11 +53,11 @@ fn normalized(report: &str) -> String {
 }
 
 #[test]
-fn background_child_and_grandchild_report_lower_cpu_and_idle_io() {
+fn background_child_and_grandchild_report_mild_cpu_and_best_effort_io() {
     let before = inherited_report();
     assert_eq!(
         normalized(&report(ChildPriority::Background, true)),
-        "19\nidle\n19\nidle"
+        "5\nbest-effort: prio 7\n5\nbest-effort: prio 7"
     );
     assert_eq!(inherited_report(), before, "backend scheduling unchanged");
 }
@@ -72,7 +74,7 @@ fn normal_leaves_both_inherited_priorities_unchanged() {
 fn io_boundary_rejects_implicit_current_group_and_negative_ids() {
     for invalid in [0, -1] {
         assert_eq!(
-            studio_runtime_priority_sys::set_group_io_idle(invalid)
+            studio_runtime_priority_sys::set_group_io_best_effort(invalid)
                 .expect_err("positive IDs only")
                 .kind(),
             std::io::ErrorKind::InvalidInput
@@ -94,25 +96,32 @@ fn missing_isolated_group_never_changes_parent_or_prevents_spawn() {
 fn environment_child_probe() {
     if std::env::var("STUDIO_PRIORITY_PROBE").as_deref() == Ok("failures") {
         report(ChildPriority::Background, false);
+        let first = priority_diagnostics();
+        assert_eq!(first.failure_count, 1);
+        assert_eq!(
+            first.first_failure.expect("first diagnostic").mechanism,
+            "child process group"
+        );
         report(ChildPriority::Background, false);
+        let second = priority_diagnostics();
+        assert_eq!(second.failure_count, 2);
+        assert_eq!(second.first_failure, first.first_failure);
     } else if std::env::var_os("STUDIO_PRIORITY_PROBE").is_some() {
         println!("configured={:?}", ChildPriority::from_environment());
     }
 }
 
 #[test]
-fn two_priority_failures_emit_one_diagnostic_and_both_children_complete() {
+fn two_priority_failures_are_counted_without_emitting_io() {
     let output = Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", "environment_child_probe", "--nocapture"])
         .env("STUDIO_PRIORITY_PROBE", "failures")
         .output()
         .expect("failure probe completes");
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr)
-            .matches("child priority not applied")
-            .count(),
-        1
+    assert!(
+        output.stderr.is_empty(),
+        "spawn hook performs no diagnostic I/O"
     );
 }
 
@@ -147,7 +156,7 @@ fn group_priority_includes_a_grandchild_forked_before_application() {
         .read_to_string(&mut output)
         .expect("grandchild report");
     assert!(child.wait().expect("child reaped").success());
-    assert_eq!(normalized(&output), "19\nidle");
+    assert_eq!(normalized(&output), "5\nbest-effort: prio 7");
 }
 
 #[test]

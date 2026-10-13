@@ -1,11 +1,13 @@
-//! Minimal parent-side priority calls missing from safe OS crates.
+//! Minimal parent-side Linux I/O priority call missing from safe OS crates.
 
-/// Set Linux idle I/O priority for an owned, positive process group ID.
+/// Set Linux best-effort I/O priority at its lowest level for an owned, positive process group ID.
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub fn set_group_io_idle(pgid: i32) -> std::io::Result<()> {
+pub fn set_group_io_best_effort(pgid: i32) -> std::io::Result<()> {
     const IOPRIO_WHO_PGRP: libc::c_int = 2;
-    const IOPRIO_CLASS_IDLE: libc::c_int = 3 << 13;
+    const IOPRIO_CLASS_BEST_EFFORT: libc::c_int = 2;
+    const IOPRIO_BEST_EFFORT_LOWEST_LEVEL: libc::c_int = 7;
+    const IOPRIO_CLASS_SHIFT: libc::c_int = 13;
     if pgid <= 0 {
         return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
@@ -16,30 +18,7 @@ pub fn set_group_io_idle(pgid: i32) -> std::io::Result<()> {
             libc::SYS_ioprio_set,
             IOPRIO_WHO_PGRP,
             pgid,
-            IOPRIO_CLASS_IDLE,
-        )
-    };
-    if result == -1 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-/// Set Darwin background policy for an owned, positive process ID.
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-pub fn set_process_background(pid: i32) -> std::io::Result<()> {
-    if pid <= 0 {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    // SAFETY: setpriority takes only scalar integers, with a checked positive pid,
-    // so it cannot target the caller implicitly. The ABI does not access memory.
-    let result = unsafe {
-        libc::setpriority(
-            libc::PRIO_DARWIN_PROCESS,
-            pid as libc::id_t,
-            libc::PRIO_DARWIN_BG,
+            (IOPRIO_CLASS_BEST_EFFORT << IOPRIO_CLASS_SHIFT) | IOPRIO_BEST_EFFORT_LOWEST_LEVEL,
         )
     };
     if result == -1 {

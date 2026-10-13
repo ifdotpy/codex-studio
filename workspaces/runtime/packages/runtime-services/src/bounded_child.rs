@@ -278,7 +278,7 @@ mod tests {
         let text = String::from_utf8(output.stdout.bytes).expect("probe output");
         let lines = text.lines().map(str::trim).collect::<Vec<_>>();
         match ChildPriority::from_environment() {
-            ChildPriority::Background => assert_eq!(lines, ["19", "idle"]),
+            ChildPriority::Background => assert_eq!(lines, ["5", "best-effort: prio 7"]),
             ChildPriority::Normal => assert_eq!(
                 lines[0],
                 rustix::process::getpriority_process(None)

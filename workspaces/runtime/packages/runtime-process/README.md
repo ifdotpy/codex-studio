@@ -9,7 +9,8 @@
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
   models for each v1 action; `PtyHost` and `ProgressWatch` ports;
   [`stream_child`](src/stream_child.rs) for bounded local commands and sign-in;
-  `child_priority::ChildPriority` for command wrappers.
+  `child_priority::ChildPriority` for command wrappers and
+  `child_priority::priority_diagnostics()` for nonblocking failure snapshots.
 - **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
   bindings, and unsafe code. Platform scheduling calls stay in the priority adapter.
 - **Invariants:** The supervisor remains the owner of resumable provider children.
