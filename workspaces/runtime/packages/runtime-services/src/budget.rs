@@ -17,6 +17,8 @@ pub enum BudgetError {
     Invalid(String),
     #[error("budget-policy/token-overflow")]
     Overflow,
+    #[error("budget/admission/staleHistory; pre-read histories and retry admission")]
+    StaleHistory,
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
 }

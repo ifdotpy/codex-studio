@@ -272,12 +272,10 @@ fn recheck_history_bindings(
             .map_err(StoreError::from)?;
     }
     for history in histories.values() {
-        let binding = history
-            .runtime_binding()
-            .ok_or_else(|| BudgetError::Invalid("budget/admission/staleHistory".into()))?;
+        let binding = history.runtime_binding().ok_or(BudgetError::StaleHistory)?;
         let id = binding.agent["id"]
             .as_str()
-            .ok_or_else(|| BudgetError::Invalid("budget/admission/staleHistory".into()))?;
+            .ok_or(BudgetError::StaleHistory)?;
         let current_agent_raw: Option<String> = tx
             .query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
@@ -305,7 +303,7 @@ fn recheck_history_bindings(
             .transpose()
             .map_err(StoreError::from)?;
         if current_agent.as_ref() != Some(&binding.agent) || current_budget != binding.budget {
-            return Err(BudgetError::Invalid("budget/admission/staleHistory".into()));
+            return Err(BudgetError::StaleHistory);
         }
         let table_exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM p09_analytics.sqlite_master WHERE type='table' AND name='analytics_history')",
@@ -326,7 +324,7 @@ fn recheck_history_bindings(
                 None
             };
         if current_checkpoint != binding.checkpoint_record {
-            return Err(BudgetError::Invalid("budget/admission/staleHistory".into()));
+            return Err(BudgetError::StaleHistory);
         }
         let _file_proof = &binding.file;
     }
@@ -517,8 +515,9 @@ mod tests {
             .expect("move checkpoint");
         let tx = db.transaction().expect("transaction");
         let result = admission_with_analytics_path(&path, &tx, &agent, &agent, &histories, 100.);
-        assert!(
-            matches!(result, Err(crate::budget::BudgetError::Invalid(ref message)) if message == "budget/admission/staleHistory")
-        );
+        assert!(matches!(
+            result,
+            Err(crate::budget::BudgetError::StaleHistory)
+        ));
     }
 }
