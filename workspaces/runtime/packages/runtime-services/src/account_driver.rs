@@ -14,7 +14,6 @@ use crate::event_write::python_strip;
 use base64::Engine as _;
 #[cfg(unix)]
 use process_wrap::std::ChildWrapper;
-#[cfg(unix)]
 use process_wrap::std::CommandWrap;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
@@ -29,6 +28,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use studio_runtime_process::child_priority::ChildPriority;
 use thiserror::Error;
 
 const AUTH_FILE_LIMIT: u64 = 1024 * 1024;
@@ -381,25 +381,14 @@ fn run_claude_status_with_timeout(
     options: Option<&Value>,
     timeout: Duration,
 ) -> Result<(Vec<u8>, bool), &'static str> {
-    #[cfg(unix)]
-    let mut child = CommandWrap::with_new(binary, |command| {
+    let mut command = CommandWrap::with_new(binary, |command| {
         configure_claude_status_command(command, options);
-    })
-    .wrap(ProcessGroup::leader())
-    .spawn()
-    .map_err(|_| "spawn")?;
-    #[cfg(windows)]
-    let mut child = {
-        let mut command = Command::new(binary);
-        configure_claude_status_command(&mut command, options);
-        command.spawn().map_err(|_| "spawn")?
-    };
+    });
     #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    ChildPriority::from_environment().apply_before_spawn(&mut command);
+    let mut child = command.spawn().map_err(|_| "spawn")?;
     let Some(stdout) = child.stdout().take() else {
-        return Err("spawn");
-    };
-    #[cfg(windows)]
-    let Some(stdout) = child.stdout.take() else {
         return Err("spawn");
     };
     let exceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
