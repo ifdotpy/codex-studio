@@ -53,10 +53,12 @@ class StreamBuffer:
         return True
 
     def _schedule_locked(self):
+        if self.timer is not None:
+            return
         flushable = any(entry['batches'] and not any(
             len(batch) > 8 and batch[8] is not None for batch in entry['batches'])
             for entry in self.entries.values())
-        if self.timer is not None or not flushable:
+        if not flushable:
             return
         timer = threading.Timer(FLUSH_SECONDS, self._tick)
         timer.daemon = True
@@ -151,8 +153,10 @@ class StreamBuffer:
             hour = int(first_at // 3600) * 3600
             synthetic_size = len(encoded(params).encode('utf-8'))
             from copy import deepcopy
-            def capture(db, agent=deepcopy(agent), method=method, params=deepcopy(params), first_at=first_at,
-                        batches=deepcopy(batches), hour=hour, synthetic_size=synthetic_size,
+            # `batches` is already a local snapshot; enqueue replaces or appends
+            # under the buffer lock and never mutates its stored parameter dicts.
+            def capture(db, agent=deepcopy(agent), method=method, params=params, first_at=first_at,
+                        batches=tuple(batches), hour=hour, synthetic_size=synthetic_size,
                         count=count, thread=thread, item_id_value=item_id_value,
                         stream_bytes=stream_bytes, stream_chars=stream_chars,
                         stream_lines=stream_lines, delta=delta):

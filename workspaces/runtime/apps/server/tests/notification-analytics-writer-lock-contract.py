@@ -375,6 +375,50 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         self.assertEqual(value['name'], 'Original name')
         self.assertEqual(count, 1)
 
+    def test_deferred_stream_capture_keeps_its_batch_snapshot(self):
+        stream = self.stream()
+        captures = []
+        with self.runtime.lock, self.runtime.db() as db:
+            stream.flush_locked(db, force=True, analytics_captures=captures)
+        self.assertEqual(len(captures), 1)
+
+        # A later enqueue replaces the live entry state but must not alter the
+        # callback already detached from that committed flush.
+        with patch.object(stream, '_schedule_locked'):
+            stream.enqueue({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                'itemId': 'exact-stream-item', 'delta': 'Later response'}}, 'default', None)
+        observed = {}
+        def event(_db, _agent, _method, params, **_kwargs):
+            observed['delta'] = params['delta']
+        with patch.object(self.runtime, 'analytics_event', event), self.runtime.analytics_db() as db:
+            captures[0](db)
+        self.assertEqual(observed['delta'], 'One committed response')
+
+    def test_existing_stream_timer_skips_entry_scan(self):
+        class NoScan(dict):
+            def values(self):
+                raise AssertionError('active timer should skip the entry scan')
+
+        stream = self.stream()
+        scheduled = []
+        class Timer:
+            daemon = False
+            def start(self):
+                scheduled.append(self)
+            def cancel(self):
+                pass
+
+        with patch('codex_streaming.threading.Timer', side_effect=lambda *_args: Timer()) as create:
+            stream._schedule_locked()
+            self.assertEqual(create.call_count, 1)
+            self.assertEqual(scheduled, [stream.timer])
+        timer = stream.timer
+        stream.entries = NoScan()
+        stream._schedule_locked()
+        self.assertIs(stream.timer, timer)
+        self.assertEqual(len(scheduled), 1)
+
     def test_failed_stream_commit_keeps_the_batch_and_queues_no_analytics(self):
         stream = self.stream()
         with self.assertRaisesRegex(sqlite3.OperationalError, 'fixture commit failure'):
