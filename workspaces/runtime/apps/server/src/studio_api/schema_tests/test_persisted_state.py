@@ -11,8 +11,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from uuid import uuid4
 
-from runtime_test_environment import make_runtime
 from pydantic import ValidationError
+from runtime_test_environment import make_runtime
 
 from codex_accounts import AccountStore
 from codex_runtime import Runtime

@@ -111,7 +111,6 @@ class RustCatalogHttpContract(unittest.TestCase):
             )
         finally:
             runtime.close()
-
         cls.backend.start()
 
     @classmethod
@@ -187,7 +186,6 @@ class RustCatalogHttpContract(unittest.TestCase):
             )
             runtime = make_runtime(Runtime, backend)
             runtime.close()
-
             registry_path.write_text("{", encoding="utf-8")
 
             with self.assertRaisesRegex(RuntimeError, "Backend did not emit its ready line") as raised:
@@ -210,7 +208,6 @@ class RustCatalogHttpContract(unittest.TestCase):
             runtime.close()
             backend.start()
             result = backend.request("GET", "/api/accounts")
-
             assert_status(result, 200)
             account = result.json()["accounts"][0]
             self.assertEqual(account["id"], "default")

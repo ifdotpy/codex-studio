@@ -63,6 +63,8 @@ class PersistedAgentRecord(ContractModel):
     rootId: StrictStr
     epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
     status: StrictStr
+    cwd: StrictStr | None = None
+    name: StrictStr | None = None
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
 
