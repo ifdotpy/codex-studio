@@ -127,11 +127,17 @@ fn validate(schema: &str, object: &'static str, value: &Value) -> Result<(), Tra
     }
     Ok(())
 }
-fn parse(raw: &str, object: &'static str) -> Result<Value, TransferError> {
+pub(crate) fn read_record(
+    raw: &str,
+    schema: &str,
+    object: &'static str,
+) -> Result<Value, TransferError> {
     if raw.len() > MAX_RECORD_BYTES {
         return Err(invalid(object, "/resourceLimit"));
     }
-    serde_json::from_str(raw).map_err(|_| invalid(object, "/"))
+    let value: Value = serde_json::from_str(raw).map_err(|_| invalid(object, "/"))?;
+    validate(schema, object, &value)?;
+    Ok(value)
 }
 
 impl Snapshot {
@@ -139,12 +145,7 @@ impl Snapshot {
         raw: &str,
         agents: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, TransferError> {
-        let operation = parse(raw, "account transfer")?;
-        validate(
-            "PersistedAccountTransferRecord",
-            "account transfer",
-            &operation,
-        )?;
+        let operation = read_record(raw, "PersistedAccountTransferRecord", "account transfer")?;
         let order: MemberOrder =
             serde_json::from_str(raw).map_err(|_| invalid("account transfer", "/members"))?;
         let mut records = BTreeMap::new();
@@ -154,8 +155,9 @@ impl Snapshot {
             if records.len() >= 2049 || bytes > 64 * 1024 * 1024 {
                 return Err(invalid("transfer snapshot", "/resourceLimit"));
             }
-            let value = parse(&raw, "transfer agent")?;
-            validate("PersistedTransferAgentRecord", "transfer agent", &value)?;
+            // `runtime_agents` uses the table schema. Keep the open record as JSON;
+            // the reducer reads only the fields it needs.
+            let value = read_record(&raw, "PersistedAgentRecord", "transfer agent")?;
             if value["id"].as_str() != Some(id.as_str()) || records.insert(id, value).is_some() {
                 return Err(invalid("transfer agent", "/id"));
             }
@@ -580,7 +582,7 @@ impl Snapshot {
 }
 
 pub fn before_start(agent: &Value) -> Result<(), TransferError> {
-    validate("PersistedTransferAgentRecord", "transfer agent", agent)?;
+    validate("PersistedAgentRecord", "transfer agent", agent)?;
     if agent.get("accountTransfer").is_some_and(|v| {
         !v.is_null() && !matches!(v["status"].as_str(), Some("completed" | "cancelled"))
     }) || truthy(agent.get("accountTransferId"))
@@ -599,7 +601,7 @@ fn flag(value: &Value, key: &str) -> bool {
 fn truthy(value: Option<&Value>) -> bool {
     crate::event_write::truthy(value)
 }
-fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferError> {
+pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferError> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| invalid("transfer agent", "/"))?;

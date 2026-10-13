@@ -1,5 +1,5 @@
 //! Empty-chat account selection with injected registry facts; no credential access.
-use crate::account_transfer::{MAX_RECORD_BYTES, TransferError};
+use crate::account_transfer::{TransferError, read_record, remove};
 use serde_json::{Value, json};
 use studio_runtime_store::{AccountTransferRepository, AgentRepository, RuntimeStore, StoreError};
 
@@ -8,19 +8,7 @@ pub struct SelectionSnapshot {
 }
 impl SelectionSnapshot {
     pub fn read(raw: &str) -> Result<Self, TransferError> {
-        let invalid = || TransferError::Stored {
-            object: "account selection agent",
-            pointer: "/".into(),
-        };
-        if raw.len() > MAX_RECORD_BYTES {
-            return Err(invalid());
-        }
-        let agent: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
-        if !studio_runtime_schema::validate("PersistedTransferAgentRecord", &agent)
-            .map_err(|_| invalid())?
-        {
-            return Err(invalid());
-        }
+        let agent = read_record(raw, "PersistedAgentRecord", "account selection agent")?;
         Ok(Self { agent })
     }
     /// The adapter supplies the directory and empty-chat check from its transaction.
@@ -75,7 +63,7 @@ impl SelectionSnapshot {
                 .unwrap_or(0)
                 .checked_add(1)
                 .ok_or(TransferError::Refused("Invalid project revision"))?;
-            remove(&mut agent, "projectFolder")?;
+            remove(&mut agent, &["projectFolder"])?;
             agent["projectFolderRevision"] = json!(revision);
         }
         let provider = account
@@ -101,8 +89,10 @@ impl SelectionSnapshot {
             agent["nativeEffort"] = json!("medium");
             agent["fastMode"] = json!(false);
             agent["workerDefaults"] = json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1});
-            remove(&mut agent, "pendingSettings")?;
-            remove(&mut agent, "pendingSettingsAccountKey")?;
+            remove(
+                &mut agent,
+                &["pendingSettings", "pendingSettingsAccountKey"],
+            )?;
         }
         if source != target {
             // A continuation cancellation needs the usage-resume service's atomic write.
@@ -119,8 +109,10 @@ impl SelectionSnapshot {
             }
             agent["daybreakEnabled"] = json!(false);
             agent["cyberAccessProgram"] = json!("standard");
-            remove(&mut agent, "pendingSettings")?;
-            remove(&mut agent, "pendingSettingsAccountKey")?;
+            remove(
+                &mut agent,
+                &["pendingSettings", "pendingSettingsAccountKey"],
+            )?;
             if truthy(agent.get("workerDefaults")) {
                 agent["workerDefaults"]["daybreakEnabled"] = json!(false);
                 agent["workerDefaults"]["cyberAccessProgram"] = json!("standard");
@@ -132,14 +124,6 @@ impl SelectionSnapshot {
         Ok(agent)
     }
 }
-fn remove(value: &mut Value, key: &str) -> Result<(), TransferError> {
-    value
-        .as_object_mut()
-        .ok_or(TransferError::Refused("Invalid selection agent"))?
-        .remove(key);
-    Ok(())
-}
-
 pub fn select(
     store: &RuntimeStore,
     accounts: &dyn Fn() -> Result<crate::account_policy::AccountsSnapshot, TransferError>,

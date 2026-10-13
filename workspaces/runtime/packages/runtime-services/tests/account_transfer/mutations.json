@@ -75,5 +75,38 @@
         "after": "if provider != \"claude\" {"
       }
     ]
+  },
+  {
+    "id": "retry-resets-only-blocked-phase",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "retry_only_resets_blocked_members",
+    "edits": [
+      {
+        "before": "if self.phase(id)? != Phase::Blocked {",
+        "after": "if self.phase(id)? == Phase::Blocked {"
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-unresolved-interrupt",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "cancel_refuses_unresolved_interrupt",
+    "edits": [
+      {
+        "before": "truthy(m.get(\"interruptSubmittedAt\")) && m[\"interruptOutcome\"] != \"acknowledged\"",
+        "after": "truthy(m.get(\"interruptSubmittedAt\")) && m[\"interruptOutcome\"] == \"acknowledged\""
+      }
+    ]
+  },
+  {
+    "id": "cancel-allows-active-interrupt",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_transfer.rs",
+    "witness": "cancel_refuses_acknowledged_interrupt_while_turn_is_active",
+    "edits": [
+      {
+        "before": "op[\"members\"][id][\"interruptOutcome\"] == \"acknowledged\"\n                        && flag(&agents[id], \"inFlight\")",
+        "after": "op[\"members\"][id][\"interruptOutcome\"] == \"acknowledged\"\n                        && false"
+      }
+    ]
   }
 ]
