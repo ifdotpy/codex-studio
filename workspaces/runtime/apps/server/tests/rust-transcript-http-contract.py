@@ -319,15 +319,8 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         search_path = "/api/search?" + urlencode({"q": "Recovered output."})
         rust_search = self.backend.request("GET", search_path, headers=self.headers)
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(rust_search.status, 501, rust_search.body[:1000])
-            self.assertEqual(
-                rust_search.json()["error"],
-                "Not implemented: requires transcript/room-search",
-            )
-        else:
-            self.assertEqual(rust_search.status, self.python_workspace_search.status)
-            self.assertEqual(rust_search.json(), self.python_workspace_search.json())
+        self.assertEqual(rust_search.status, self.python_workspace_search.status)
+        self.assertEqual(rust_search.json(), self.python_workspace_search.json())
 
         item_path = "/api/search/item?" + urlencode({"id": self.item_id})
         rust_search_item = self.backend.request("GET", item_path, headers=self.headers)
@@ -404,11 +397,9 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "GET", f"/api/sync/pull?scope=transcript:{self.agent}&after=0",
             headers=self.headers,
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json()["error"], "Not implemented: requires transcript/event-driver"
-        )
-        self.assertEqual(_snapshot(database_path), before)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertIn("documents", response.json())
+        self.assertIn("seq", response.json()["checkpoint"])
         with closing(sqlite3.connect(database_path)) as database:
             database.execute(
                 "UPDATE runtime_agents SET record=? WHERE id=?", (original, self.agent)
@@ -692,8 +683,8 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     ),
                     headers=self.headers,
                 )
-                self.assertEqual(response.status, 501, response.body[:1000])
-                self.assertEqual(response.json()["error"], f"Not implemented: requires {dependency}")
+                self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertNotIn("error", response.json())
 
 
 if __name__ == "__main__":

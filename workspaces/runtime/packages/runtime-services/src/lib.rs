@@ -108,6 +108,7 @@ pub mod thread_prepare;
 pub mod token_rate;
 pub mod tool_requests;
 pub mod transcript;
+pub mod transcript_runtime;
 pub mod turn_prepare;
 pub mod usage;
 pub mod usage_resume;

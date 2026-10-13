@@ -107,6 +107,18 @@ pub struct TranscriptItem {
 pub struct TranscriptRepository;
 
 impl TranscriptRepository {
+    /// Project an already checked transcript snapshot using the existing durable sync cursor.
+    pub fn pull_payload(
+        transaction: &Transaction<'_>,
+        scope: &str,
+        after: i64,
+        payload: &Value,
+        deleted: bool,
+        revision: Option<i64>,
+    ) -> TranscriptStoreResult<Value> {
+        transcript_pull_write(transaction, scope, after, payload, deleted, revision)
+    }
+
     pub fn pull(
         transaction: &Transaction<'_>,
         scope: &str,
