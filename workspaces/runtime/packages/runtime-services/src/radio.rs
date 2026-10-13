@@ -1,9 +1,12 @@
-//! Checked radio-turn authorization decisions for the account worker.
+//! Checked radio-turn admission decisions for the account worker.
 //!
 //! The caller loads a consistent view of radio rooms, their participant agents,
 //! and the projects that own peer-team membership. This module has no store,
 //! clock, filesystem, or provider dependency. A permitted first-thread binding
 //! is returned as an intent for the caller to commit with its reservation.
+//! Queue construction, pass/stop commands, floor holding, answer routing, and
+//! completion/reconciliation remain in their stateful runtime owners; they need
+//! event, question, transcript, and completed-turn records outside this input.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -225,7 +228,7 @@ struct ActiveTurn {
 #[derive(Clone, Debug)]
 struct PeerTeam {
     id: String,
-    members: Vec<String>,
+    members: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -413,8 +416,8 @@ impl RadioAuthorizationSnapshot {
                                     .get(member)
                                     .is_some_and(|agent| agent.is_lead_for(&path))
                             })
-                            .collect::<Vec<_>>();
-                        if members.iter().collect::<BTreeSet<_>>().len() >= 2 {
+                            .collect::<BTreeSet<_>>();
+                        if members.len() >= 2 {
                             teams.push(PeerTeam { id, members });
                         }
                     }
@@ -490,7 +493,7 @@ impl RadioAuthorizationSnapshot {
                 .flat_map(|project| &project.teams)
                 .find(|team| team.id == room.team_id);
             if !team.is_some_and(|team| {
-                team.members.len() == 2 && team.members.iter().collect::<BTreeSet<_>>() == members
+                team.members.len() == 2 && team.members.iter().eq(members.iter().copied())
             }) {
                 return Some(RadioDenial::MembershipChanged);
             }

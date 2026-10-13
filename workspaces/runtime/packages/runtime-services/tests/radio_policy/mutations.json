@@ -1,19 +1,87 @@
 [
   {
-    "id": "RADIO-M1",
-    "description": "allow participants whose radio is stopped",
+    "id": "RADIO-M01",
+    "rule": "receipt missing refuses",
     "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
     "edits": [
       {
-        "before": "            if !agent.auto_wake || agent.native_failure_held {\n",
-        "after": "            if false && (!agent.auto_wake || agent.native_failure_held) {\n"
+        "before": "            return RadioTurnDecision::Deny(RadioDenial::NoActiveRoomReceipt);",
+        "after": "            return RadioTurnDecision::Allow { binding: None };"
       }
     ],
-    "witnesses": ["stopped-recipient", "stopped-peer"]
+    "witnesses": ["missing-receipt"]
   },
   {
-    "id": "RADIO-M2",
-    "description": "ignore a radio room blocked or stopping status",
+    "id": "RADIO-M02",
+    "rule": "duplicate active receipts refuse ambiguous authorization",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            return RadioTurnDecision::Deny(RadioDenial::AmbiguousRoomReceipt);",
+        "after": "            return RadioTurnDecision::Allow { binding: None };"
+      }
+    ],
+    "witnesses": ["duplicate-active-receipt"]
+  },
+  {
+    "id": "RADIO-M03",
+    "rule": "direct room has two distinct participants",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            if room.members.len() != 2\n                || room.members.iter().collect::<BTreeSet<_>>().len() != 2\n",
+        "after": "            if false\n                || false\n"
+      }
+    ],
+    "witnesses": ["direct-room-duplicate-members"]
+  },
+  {
+    "id": "RADIO-M04",
+    "rule": "peer-team members are projected to distinct eligible leads",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "    members: BTreeSet<String>,\n}\n\n#[derive(Clone, Debug)]\nstruct Project",
+        "after": "    members: Vec<String>,\n}\n\n#[derive(Clone, Debug)]\nstruct Project"
+      },
+      {
+        "before": "                        let members = members\n                            .into_iter()\n                            .filter(|member| {\n                                agents\n                                    .get(member)\n                                    .is_some_and(|agent| agent.is_lead_for(&path))\n                            })\n                            .collect::<BTreeSet<_>>();",
+        "after": "                        let members = members\n                            .into_iter()\n                            .filter(|member| {\n                                agents\n                                    .get(member)\n                                    .is_some_and(|agent| agent.is_lead_for(&path))\n                            })\n                            .collect::<Vec<_>>();"
+      },
+      {
+        "before": "                team.members.len() == 2 && team.members.iter().eq(members.iter().copied())",
+        "after": "                team.members.len() == 2\n                    && team.members.iter().map(String::as_str).eq(members.iter().map(|member| member.as_str()))"
+      }
+    ],
+    "witnesses": ["peer-team-duplicate-members"]
+  },
+  {
+    "id": "RADIO-M05",
+    "rule": "participant transfer or native thread block refuses",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            if agent\n                .account_transfer\n                .as_ref()\n                .is_some_and(|value| !value.is_empty())\n                || agent.native_thread_blocked\n",
+        "after": "            if false\n"
+      }
+    ],
+    "witnesses": ["transferring-recipient", "native-thread-blocked-peer"]
+  },
+  {
+    "id": "RADIO-M06",
+    "rule": "participants must be awake and free of native failure holds",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            if !agent.auto_wake || agent.native_failure_held {",
+        "after": "            if false {"
+      }
+    ],
+    "witnesses": ["stopped-recipient", "held-peer"]
+  },
+  {
+    "id": "RADIO-M07",
+    "rule": "blocked and stopping rooms refuse admission",
     "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
     "edits": [
       {
@@ -24,15 +92,75 @@
     "witnesses": ["blocked-room", "stopping-room"]
   },
   {
-    "id": "RADIO-M3",
-    "description": "bind a first thread without matching its reservation epoch",
+    "id": "RADIO-M08",
+    "rule": "active receipt must name the requesting recipient",
     "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
     "edits": [
       {
-        "before": "        || attempt.epoch != Some(active.epoch)\n",
-        "after": "        || false /* audit mutation: reservation epoch mismatch */\n"
+        "before": "            || active.agent_id != self.recipient_id\n",
+        "after": "            || false\n"
       }
     ],
-    "witnesses": ["binding-wrong-epoch"]
+    "witnesses": ["active-agent-mismatch"]
+  },
+  {
+    "id": "RADIO-M09",
+    "rule": "active epoch and existing thread must match agent identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            || agent.epoch != Some(active.epoch)\n            || bound_thread != agent.thread_id\n",
+        "after": "            || false\n            || false\n"
+      }
+    ],
+    "witnesses": ["active-epoch-mismatch", "active-thread-mismatch"]
+  },
+  {
+    "id": "RADIO-M10",
+    "rule": "first-thread binding matches exact reserved event and epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "    if attempt.events.as_slice() != [event_id]\n        || attempt.epoch != Some(active.epoch)\n",
+        "after": "    if false\n        || false\n"
+      }
+    ],
+    "witnesses": ["binding-wrong-event", "binding-wrong-epoch"]
+  },
+  {
+    "id": "RADIO-M11",
+    "rule": "a denied decision has no binding write intent",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            return RadioTurnDecision::Deny(RadioDenial::TurnNoLongerAuthorized);",
+        "after": "            return RadioTurnDecision::Allow { binding };"
+      }
+    ],
+    "witnesses": ["denied-blocked-binding-has-no-rust-write-intent"]
+  },
+  {
+    "id": "RADIO-M12",
+    "rule": "attempt thread and compaction identity are preserved",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            .is_some_and(|attempt_thread| attempt_thread != thread_id)\n",
+        "after": "            .is_some_and(|attempt_thread| false)\n"
+      }
+    ],
+    "witnesses": ["binding-wrong-thread"]
+  },
+  {
+    "id": "RADIO-M13",
+    "rule": "missing compactions defaults to zero while explicit null remains null",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "        compactions: agent.compactions.unwrap_or(Some(0)),",
+        "after": "        compactions: agent.compactions.unwrap_or(None),"
+      }
+    ],
+    "witnesses": ["missing-compactions-defaults-to-zero-on-binding"]
   }
 ]
