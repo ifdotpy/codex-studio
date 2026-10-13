@@ -266,6 +266,9 @@ impl EventWriteRepository {
                     "lastCompletedTurnStatus",
                     "lastCompletedTurnError",
                     "startOutcomeHold",
+                    "lastAnswer",
+                    "disconnectRecovery",
+                    "restartRecovery",
                 ] {
                     if let Some(field) = agent.extra.get(key) {
                         value.insert(key.to_owned(), field.clone());
@@ -350,6 +353,21 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"starting\",\"inFlight\":false,\"turnId\":null}}',0);",
             )
             .expect("projection fixture creates");
+        connection
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
+            .expect("runtime agent fixture creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES('a',?1)",
+                [
+                    json!({"id":"a","rootId":"a","name":"Agent","status":"running","epoch":2,
+                "inFlight":true,"turnId":"turn-1","lastAnswer":"",
+                "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
+                "restartRecovery":{"stage":"held"}})
+                    .to_string(),
+                ],
+            )
+            .expect("runtime lifecycle receipt persists");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_lifecycle(
             &transaction,
@@ -373,6 +391,18 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+        assert_eq!(
+            (
+                &value["lastAnswer"],
+                &value["disconnectRecovery"],
+                &value["restartRecovery"]
+            ),
+            (
+                &json!(""),
+                &json!({"epoch":2,"turnId":"turn-1"}),
+                &json!({"stage":"held"})
+            )
+        );
     }
 
     #[test]
