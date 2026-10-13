@@ -1,5 +1,5 @@
 {
-  "source": "Supervisor response projections were captured from the running disposable Python supervisor; processScenario records open, health snapshot, empty next snapshot, write, stdout/stderr stream, and exit. The delayed child blocks on stdin until the recorded write frame releases it. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
+  "source": "Supervisor response projections were captured from the running disposable Python supervisor; processScenario records open, health snapshot, empty next snapshot, write, stdout/stderr stream, exit, and final status. The delayed child blocks on stdin until the recorded write frame releases it. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
   "transport": {
     "linux": "unix-domain-socket",
     "windows": "named-pipe",
@@ -129,6 +129,17 @@
           }
         }
       ]
+    },
+    {
+      "request": { "action": "status", "handle": "fixture-child" },
+      "expected": {
+        "result": {
+          "sequence": 3,
+          "acknowledged": 0,
+          "backpressure": false,
+          "returnCode": 0
+        }
+      }
     }
   ]
 }

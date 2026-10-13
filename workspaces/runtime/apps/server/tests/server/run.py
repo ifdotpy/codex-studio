@@ -12,6 +12,10 @@ import json
 import math
 import os
 from pathlib import Path
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows
+    pwd = None
 import re
 import select
 import shutil
@@ -910,6 +914,17 @@ def is_http_boundary_suite(relative):
     return name == "http-boundary-contract.py" or name.endswith("-http-contract.py")
 
 
+def _is_protected_home_path(value):
+    """Recognize provider-owned home paths without probing their contents."""
+    candidate = os.path.normcase(os.path.abspath(os.path.expanduser(os.fsdecode(value))))
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir) if pwd is not None else Path.home()
+    roots = (
+        os.path.normcase(os.path.abspath(home / ".codex")),
+        os.path.normcase(os.path.abspath(home / ".claude")),
+    )
+    return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
+
+
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment = os.environ.copy()
     isolated_home = temp_root / "home"
@@ -941,7 +956,20 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
         environment[f"GIT_CONFIG_VALUE_{index}"] = value
     # Ordinary suites cannot discover inherited provider programs or selectors.
     # Pin the crypto helper before dropping the caller's tool-cache PATH.
-    node = environment.get("CODEX_NODE") or shutil.which("node")
+    # The caller may run inside Codex with its bundled Node first on PATH.
+    # That installation lives under the protected provider home, where even
+    # executable metadata checks are forbidden in suite processes. Search only
+    # caller PATH entries outside those roots, and reject an explicit pin there.
+    node = environment.get("CODEX_NODE")
+    if node and _is_protected_home_path(node):
+        node = None
+    caller_path = environment.get("PATH", os.defpath)
+    safe_path = os.pathsep.join(
+        entry for entry in caller_path.split(os.pathsep)
+        if entry and not _is_protected_home_path(entry)
+    )
+    if not node:
+        node = shutil.which("node", path=safe_path)
     path_entries = [str(Path(sys.executable).parent), os.defpath]
     if node:
         environment["CODEX_NODE"] = node

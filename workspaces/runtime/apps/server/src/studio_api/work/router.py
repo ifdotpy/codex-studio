@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from contextlib import AbstractContextManager
@@ -114,7 +113,7 @@ class WorkRuntime(Protocol):
     def chat_organization(self, agent: str, body: Body) -> object: ...
     def db(self) -> AbstractContextManager[sqlite3.Connection]: ...
     def federation(self) -> FederationPort: ...
-    def send(self, agent: str, text: str, request_id: str, *, delivery: Literal["queue", "steer", "after_tool", "after_turn"], assets: list[JsonValue]) -> dict[str, JsonValue]: ...
+    def send(self, agent: str, text: str, request_id: str, *, delivery: Literal["queue", "steer", "after_tool", "after_turn"], assets: list[JsonValue], mirror_user_message: bool = False) -> dict[str, JsonValue]: ...
     def hide_room(self, room_id: str) -> object: ...
     def complaint_response_from_user(self, body: Body, request_id: str) -> object: ...
     def complaint(self, lead: str | None, body: Body, request_id: str, *, user: bool) -> object: ...
@@ -125,9 +124,6 @@ class WorkRuntime(Protocol):
 
 
 class CanvasPort(Protocol):
-    lock: AbstractContextManager[object]
-
-    def connect(self) -> AbstractContextManager[sqlite3.Connection]: ...
     def messages(self, room: str) -> object: ...
     def post(self, room: str, text: str, request_id: str) -> object: ...
     def create_chat(self, name: str, members: list[str], request_id: str) -> object: ...
@@ -342,11 +338,8 @@ def create_router(context: ApiContext) -> APIRouter:
             managed = db.execute("SELECT 1 FROM runtime_agents WHERE id=?", (room,)).fetchone()
         if managed:
             result = runtime.send(room, body.text, message_id,
-                                  delivery=body.delivery, assets=body.assets)
-            with canvas.lock, canvas.connect() as db:
-                db.execute("INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)",
-                           (result["id"], room, "user", body.text.strip(),
-                            time.time(), json.dumps({room: result["status"]})))
+                                  delivery=body.delivery, assets=body.assets,
+                                  mirror_user_message=True)
             return context.send(request, result)
         return context.send(request, canvas.post(room, body.text, message_id))
 
