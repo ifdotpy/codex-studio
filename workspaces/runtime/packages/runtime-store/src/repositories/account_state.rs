@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::StoreResult;
+use crate::records::{RecordOrder, RecordPredicate, Table, UsageResumeRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
@@ -200,20 +201,21 @@ pub fn authentication_recovery_account_keys(
     connection: &Connection,
     now: f64,
 ) -> StoreResult<Vec<String>> {
-    let mut statement = connection.prepare(
-        "SELECT record FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_extract(record,'$.cause')='auth' AND json_extract(record,'$.failedAt')<=?1",
-    )?;
-    let rows = statement.query_map([now - AUTH_WAIT_NOTICE_SECONDS], |row| {
-        row.get::<_, String>(0)
-    })?;
-    let mut account_keys = Vec::new();
-    for row in rows {
-        let record = serde_json::from_str::<Value>(&row?)?;
-        if let Some(key) = record.get("accountKey").and_then(Value::as_str) {
-            account_keys.push(key.to_owned());
-        }
-    }
-    Ok(account_keys)
+    Ok(Table::<UsageResumeRecord>::new(connection)
+        .list_matching(
+            Some(RecordPredicate::UsageResumeAuthRecoveryBefore(
+                now - AUTH_WAIT_NOTICE_SECONDS,
+            )),
+            RecordOrder::RowId,
+        )?
+        .into_iter()
+        .filter_map(|record| {
+            record
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect())
 }
 
 #[cfg(test)]
