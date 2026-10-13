@@ -50,7 +50,7 @@ pub enum RequestOutcome {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    Write(Vec<u8>),
+    Write(Frame),
     Resolve {
         ticket: RequestTicket,
         outcome: RequestOutcome,
@@ -470,13 +470,13 @@ impl SessionState {
             .pending
             .get(&ticket.id)
             .ok_or(SessionError::MissingRequest)?;
-        let bytes = encode_line(&Frame::Request(RequestFrame {
+        let frame = Frame::Request(RequestFrame {
             id: ticket.id.clone(),
             method: ticket.method,
             params: Some(pending.params.clone()),
             fields: Map::new(),
-        }))?;
-        Ok(vec![Action::Write(bytes)])
+        });
+        Ok(vec![Action::Write(frame)])
     }
 
     pub fn receive(&mut self, frame: Frame) -> Result<Vec<Action>, SessionError> {
@@ -536,13 +536,13 @@ impl SessionState {
                         actions.extend(self.mark_unknown(Lifecycle::Lost));
                     } else {
                         self.lifecycle = Lifecycle::Ready;
-                        actions.push(Action::Write(encode_line(&Frame::Notification(
+                        actions.push(Action::Write(Frame::Notification(
                             crate::NotificationFrame {
                                 method: Method::Initialized,
                                 params: None,
                                 fields: Map::new(),
                             },
-                        ))?));
+                        )));
                     }
                 }
                 if pending.serialized

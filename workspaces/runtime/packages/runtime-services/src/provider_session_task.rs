@@ -14,8 +14,8 @@ use studio_runtime_process::{
     },
 };
 use studio_runtime_providers::{
-    Action, DecodedJournalPayload, Frame, Method, RequestFrame, RequestId, RequestOutcome,
-    RequestTicket, ResponseBody, SessionError, SessionState, decode_journal_entry,
+    Action, Frame, Method, RequestFrame, RequestId, RequestOutcome,
+    RequestTicket, ResponseBody, SessionError, SessionState,
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
@@ -968,11 +968,8 @@ fn valid_id(id: &RequestId) -> bool {
 }
 
 fn decode_write(action: Action) -> Result<Frame, SessionTaskError> {
-    let Action::Write(bytes) = action else {
-        return Err(SessionTaskError::Invalid);
-    };
-    match decode_journal_entry(0, 0, bytes).payload {
-        DecodedJournalPayload::Frame(frame) => Ok(frame),
+    match action {
+        Action::Write(frame) => Ok(frame),
         _ => Err(SessionTaskError::Invalid),
     }
 }

@@ -36,7 +36,9 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
     actions
         .iter()
         .filter_map(|action| match action {
-            Action::Write(bytes) => serde_json::from_slice(bytes).ok(),
+            Action::Write(frame) => {
+                serde_json::from_slice(&encode_line(frame).expect("valid write")).ok()
+            }
             _ => None,
         })
         .collect()
@@ -149,8 +151,7 @@ fn readiness_waits_for_the_initialized_write_receipt() {
         .expect("initialize response");
     assert!(actions.iter().any(|action| matches!(
         action,
-        Action::Write(bytes) if serde_json::from_slice::<Value>(bytes.strip_suffix(b"\n").unwrap_or(bytes))
-            .is_ok_and(|value| value.get("method").and_then(Value::as_str) == Some("initialized"))
+        Action::Write(Frame::Notification(notification)) if notification.method == Method::Initialized
     )));
     assert_eq!(session.lifecycle(), Lifecycle::Ready);
     assert_eq!(
@@ -641,7 +642,7 @@ fn numeric_request_exactly_at_frame_limit_uses_its_actual_id_for_validation() {
         .expect("valid maximum-size request");
     assert_eq!(ticket.id, RequestId::Number(2));
     let written = match &actions[0] {
-        Action::Write(bytes) => bytes,
+        Action::Write(frame) => encode_line(frame).expect("valid frame"),
         other => panic!("expected request write, got {other:?}"),
     };
     assert_eq!(written.len(), exact.len());

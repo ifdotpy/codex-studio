@@ -696,10 +696,14 @@ impl ProviderSession {
         let mut events = Vec::new();
         for action in actions {
             match action {
-                Action::Write(bytes) => {
-                    let ticket = request_id(&bytes).and_then(|id| self.tickets.get(&id).cloned());
-                    events.extend(self.enqueue(WriteCommand { bytes, ticket }, cursor));
-                }
+                Action::Write(frame) => match encode_line(&frame) {
+                    Ok(bytes) => {
+                        let ticket =
+                            request_id(&frame).and_then(|id| self.tickets.get(&id).cloned());
+                        events.extend(self.enqueue(WriteCommand { bytes, ticket }, cursor));
+                    }
+                    Err(_) => events.extend(self.fail_transport(None)),
+                },
                 Action::Resolve { ticket, outcome } => {
                     self.deadlines.remove(&ticket.id);
                     if let Some(cursor) = cursor {
@@ -1089,19 +1093,20 @@ impl Drop for ProviderSession {
 
 fn action_ticket(action: &Action, generation: u64) -> Option<RequestTicket> {
     match action {
-        Action::Write(bytes) => Some(RequestTicket {
+        Action::Write(frame) => Some(RequestTicket {
             generation,
-            id: request_id(bytes)?,
+            id: request_id(frame)?,
             method: Method::Initialize,
         }),
         _ => None,
     }
 }
 
-fn request_id(bytes: &[u8]) -> Option<RequestId> {
-    let value: Value = serde_json::from_slice(bytes.strip_suffix(b"\n").unwrap_or(bytes)).ok()?;
-    value.get("method")?;
-    serde_json::from_value(value.get("id")?.clone()).ok()
+fn request_id(frame: &Frame) -> Option<RequestId> {
+    match frame {
+        Frame::Request(request) => Some(request.id.clone()),
+        _ => None,
+    }
 }
 
 fn request_id_namespace(generation: u64) -> String {
