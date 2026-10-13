@@ -84,6 +84,10 @@ class PersistedTransferAgentRecord(OpenTransferRecord):
     epoch: Epoch
     status: Text
     accountKey: Identity = 'default'
+    provider: Literal['codex', 'claude'] = 'codex'
+    projectFolderRevision: Epoch = 0
+    workerDefaults: dict[str, JsonValue] | None = None
+    usageResume: dict[str, JsonValue] | None = None
     threadId: Identity | None = None
     cwd: Text | None = None
     isLead: StrictBool = False

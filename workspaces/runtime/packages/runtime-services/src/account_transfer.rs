@@ -10,7 +10,6 @@ use thiserror::Error;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
-pub const SELECTION_REQUIRED: &str = "account-transfer/empty-lead-selection";
 
 #[derive(Debug, Error)]
 pub enum TransferError {

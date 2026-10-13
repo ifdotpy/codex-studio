@@ -53,5 +53,27 @@
         "after": "                != scope && false\n"
       }
     ]
+  },
+  {
+    "id": "selection-needs-empty-lead",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_selection.rs",
+    "witness": "selection_matches_real_python_method",
+    "edits": [
+      {
+        "before": "if !empty || truthy(agent.get(\"inFlight\")) {",
+        "after": "if false || truthy(agent.get(\"inFlight\")) {"
+      }
+    ]
+  },
+  {
+    "id": "selection-provider-default",
+    "file": "workspaces/runtime/packages/runtime-services/src/account_selection.rs",
+    "witness": "selection_matches_real_python_method",
+    "edits": [
+      {
+        "before": "if provider == \"claude\" {",
+        "after": "if provider != \"claude\" {"
+      }
+    ]
   }
 ]
