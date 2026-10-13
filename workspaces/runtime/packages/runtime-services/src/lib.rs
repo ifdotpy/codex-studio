@@ -51,6 +51,7 @@ pub mod monitor_runtime;
 pub mod multi_server;
 pub mod panels;
 pub mod payload_store;
+pub mod portable_history;
 pub mod pricing;
 pub mod progress_panel;
 pub mod progress_watch;

@@ -9,6 +9,7 @@ mod context_repair;
 mod desktop;
 pub(crate) mod extractors;
 mod federation;
+mod imports;
 mod insights;
 pub(crate) mod manifest;
 mod messages;
