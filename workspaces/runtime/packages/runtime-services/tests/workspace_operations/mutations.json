@@ -1,0 +1,82 @@
+[
+  {
+    "id": "W01-completion-receipt",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "        self.committed\n",
+        "after": "        true\n"
+      }
+    ]
+  },
+  {
+    "id": "W02-completion-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "            && identity.epoch == request.identity.epoch",
+        "after": "            && true"
+      }
+    ]
+  },
+  {
+    "id": "W03-completion-attempt",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "                == request.attempt_id.as_ref()",
+        "after": "                == identity.start_attempt.as_ref().and_then(|v| v.get(\"id\"))"
+      }
+    ]
+  },
+  {
+    "id": "W04-provider-ticket",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "    if expected != receipt {",
+        "after": "    if false && expected != receipt {"
+      }
+    ]
+  },
+  {
+    "id": "W05-unknown-redispatch",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "            _ => RetryDecision::InspectWorkspace,",
+        "after": "            _ => RetryDecision::Dispatch,"
+      }
+    ]
+  },
+  {
+    "id": "W06-lineage-fallback",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "*created <= self.selected.created",
+        "after": "*created < self.selected.created"
+      }
+    ]
+  },
+  {
+    "id": "W07-history-precedence",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "current.items.as_ref().or(current.history_delta.as_ref())",
+        "after": "current.history_delta.as_ref().or(current.items.as_ref())"
+      }
+    ]
+  },
+  {
+    "id": "W08-reservation-owner",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_operations.rs",
+    "edits": [
+      {
+        "before": "            if agent.get(\"workspaceReservationId\") == Some(&json!(self.operation.id)) {",
+        "after": "            if true {"
+      }
+    ]
+  }
+]

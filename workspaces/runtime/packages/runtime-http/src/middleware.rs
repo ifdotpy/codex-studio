@@ -33,6 +33,7 @@ pub(crate) async fn boundary(
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
     let headers = request.headers();
     let mut parsed_body = None;
+    let mut raw_body = None;
 
     let peer_loopback = request
         .extensions()
@@ -138,6 +139,10 @@ pub(crate) async fn boundary(
             .validators
             .has_body_schema(method.as_str(), &path)
             .unwrap_or(false);
+        let has_opaque_json_schema = state
+            .validators
+            .has_opaque_body(method.as_str(), &path)
+            .unwrap_or(false);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -194,6 +199,9 @@ pub(crate) async fn boundary(
                 }
                 Ok(value) => {
                     parsed_body = Some(value);
+                    if has_opaque_json_schema {
+                        raw_body = Some(bytes.clone());
+                    }
                 }
             }
         }
@@ -218,6 +226,7 @@ pub(crate) async fn boundary(
             let (header_values, invalid_headers) = validated_header_values(request.headers());
             let raw = RawRequest {
                 body: parsed_body,
+                raw_body,
                 query,
                 headers: header_values,
                 invalid_headers,

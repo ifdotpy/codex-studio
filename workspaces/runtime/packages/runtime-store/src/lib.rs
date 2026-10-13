@@ -14,9 +14,10 @@ pub use repositories::analytics::{
     SessionCostError,
 };
 pub use repositories::checkpoints::{
-    CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+    CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
+pub use repositories::system_reads;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -35,7 +36,7 @@ pub use records::{
     QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
     RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TerminalRecord,
     TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
-    UsageResumeRecord, WorkItemRecord, WorkStatus,
+    UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
@@ -60,6 +61,7 @@ pub use repositories::usage::{UsageRepositoryError, cancel_capacity_retry, disab
 pub use repositories::voice::{VoiceDelivery, VoiceRecord, VoiceRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
+pub use repositories::workspace_operations;
 pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 

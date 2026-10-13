@@ -18,6 +18,7 @@ pub(crate) mod remote_transport;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
+pub mod system_reads;
 pub(crate) mod tasks;
 pub(crate) mod terminals;
 pub(crate) mod transcript;
@@ -25,6 +26,7 @@ pub(crate) mod usage;
 pub(crate) mod voice;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
+pub mod workspace_operations;
 pub mod workspace_ready;
 pub(crate) mod workspace_views;
 

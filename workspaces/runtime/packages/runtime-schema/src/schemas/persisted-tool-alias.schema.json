@@ -1,0 +1,25 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "alias": {
+      "title": "Alias",
+      "type": "string"
+    },
+    "request": {
+      "title": "Request",
+      "type": "string"
+    }
+  },
+  "required": ["agent", "alias", "request"],
+  "title": "PersistedToolAlias",
+  "type": "object"
+}

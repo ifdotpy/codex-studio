@@ -370,6 +370,56 @@ impl SyncDocumentsRepository {
         deleted: bool,
     ) -> StoreResult<bool> {
         let hash = hash_payload(payload);
+        Self::write_entity_hash(
+            transaction,
+            collection,
+            id,
+            &hash,
+            deleted,
+            Some(payload),
+            None,
+        )
+    }
+
+    /// Store an entity hash without retaining its payload.
+    pub fn put_entity_hash(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        hash: &str,
+        deleted: bool,
+    ) -> StoreResult<bool> {
+        Self::write_entity_hash(transaction, collection, id, hash, deleted, None, None)
+    }
+
+    pub(crate) fn put_entity_hash_at_sequence(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        hash: &str,
+        deleted: bool,
+        sequence: i64,
+    ) -> StoreResult<bool> {
+        Self::write_entity_hash(
+            transaction,
+            collection,
+            id,
+            hash,
+            deleted,
+            None,
+            Some(sequence),
+        )
+    }
+
+    fn write_entity_hash(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        hash: &str,
+        deleted: bool,
+        payload: Option<&str>,
+        sequence: Option<i64>,
+    ) -> StoreResult<bool> {
         let current = transaction
             .query_row(
                 "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
@@ -379,7 +429,7 @@ impl SyncDocumentsRepository {
             .optional()?;
         if current
             .as_ref()
-            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
+            .is_some_and(|(old_hash, old_deleted)| old_hash == hash && *old_deleted == deleted)
         {
             return Ok(false);
         }
@@ -391,7 +441,10 @@ impl SyncDocumentsRepository {
             params![
                 collection,
                 id,
-                next_sequence(transaction)?,
+                match sequence {
+                    Some(sequence) => sequence,
+                    None => next_sequence(transaction)?,
+                },
                 hash,
                 payload,
                 i64::from(deleted)
@@ -467,5 +520,54 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "sync_documents",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncDocumentsRepository;
+    use rusqlite::Connection;
+
+    #[test]
+    fn hash_only_entity_uses_shared_sequence_and_replay_is_a_noop() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
+                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
+            )
+            .expect("sync fixture creates");
+        let transaction = connection.transaction().expect("transaction begins");
+        assert!(
+            SyncDocumentsRepository::put_entity_hash(
+                &transaction,
+                "transcript:agent",
+                "item:one",
+                "digest",
+                false,
+            )
+            .expect("hash-only entity stores")
+        );
+        assert!(
+            !SyncDocumentsRepository::put_entity_hash(
+                &transaction,
+                "transcript:agent",
+                "item:one",
+                "digest",
+                false,
+            )
+            .expect("identical hash replays")
+        );
+        let row: (i64, Option<String>) = transaction
+            .query_row(
+                "SELECT seq,payload FROM sync_entities WHERE collection='transcript:agent' AND id='item:one'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("hash-only row reads");
+        assert_eq!(row, (10, None));
+        transaction.commit().expect("transaction commits");
     }
 }
