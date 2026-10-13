@@ -245,7 +245,20 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.other_agent_id = seed_agent(cls.backend)
         cls.denial_agent_id = seed_agent(cls.backend)
         cls.denial_peer_agent_id = seed_agent(cls.backend)
-        cls.busy_agent_id = seed_agent(cls.backend, {"status": "running", "inFlight": True})
+        # An in-flight native review excludes this recipient from dispatch while
+        # the contract compares every stored field, including dispatcher-owned
+        # agent status and attempt projections.
+        cls.busy_agent_id = seed_agent(cls.backend, {
+            "status": "running",
+            "inFlight": True,
+            "startAttempt": {
+                "id": "messages-contract-held-review",
+                "epoch": 0,
+                "events": [],
+                "action": "review",
+                "submitted": True,
+            },
+        })
         cls.stopped_agent_id = seed_agent(cls.backend, {"autoWake": False, "status": "idle"})
         cls.paused_agent_id = seed_agent(cls.backend, {"autoWake": True, "status": "paused"})
         cls.resume_busy_agent_id = seed_agent(cls.backend, {"status": "running", "inFlight": True})
