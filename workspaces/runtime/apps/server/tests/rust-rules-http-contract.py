@@ -63,6 +63,10 @@ try:
     deleted["deletedAt"] = 1.0
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", deleted, sync_rooms=False)
+        # These are persisted read fixtures, not live timers that can wake an
+        # agent between the read/refusal snapshots (or invalidate its ETag).
+        for rule in (visible, hidden):
+            rule["status"] = "paused"
         runtime.put(db, "rules", visible, sync_rooms=False)
         runtime.put(db, "rules", ticked, sync_rooms=False)
         runtime.put(db, "rules", hidden, sync_rooms=False)
@@ -103,6 +107,21 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend.stop()
         seed_python_rules(cls.backend)
         cls.backend.start()
+        def pause_ticked_rule():
+            with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database, database:
+                record = json.loads(database.execute(
+                    "SELECT record FROM runtime_rules WHERE id='ticked'"
+                ).fetchone()[0])
+                # Python clears lowSince on restart. Preserve coverage of a real
+                # tick, then hold the read fixture before any contract snapshot.
+                if record.get("lowSince") is None:
+                    return False
+                record["status"] = "paused"
+                database.execute(
+                    "UPDATE runtime_rules SET record=? WHERE id='ticked'", (json.dumps(record),),
+                )
+                return True
+        cls.backend.wait_until(pause_ticked_rule, "low-worker read fixture ticked and paused")
         cls.backend.ready_samples.append(cls.backend.ready_seconds or 0)
 
     def _headers(self):
