@@ -70,10 +70,11 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON", sys.executable)
         suffix = uuid.uuid4().hex
         agent_a, agent_b = f"sync-diff-{suffix}-a", f"sync-diff-{suffix}-b"
+        worker_id = f"sync-diff-{suffix}-worker"
         room_id = f"sync-diff-{suffix}-room"
         complaint_id = f"sync-diff-{suffix}-complaint"
-        project_id = f"sync-diff-{suffix}-project"
-        project_path = str((backend.cwd / project_id).resolve())
+        project_path = str((backend.cwd / f"sync-diff-{suffix}-project").resolve())
+        project_id = project_path
         request_id = f"sync-diff-{suffix}-request"
         rule_id = f"sync-diff-{suffix}-rule"
         work_id = f"sync-diff-{suffix}-work"
@@ -82,17 +83,26 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         event_id = f"sync-diff-{suffix}-event"
         chat_id = f"sync-diff-{suffix}-chat"
         edge_id = f"sync-diff-{suffix}-edge"
+        spawn_edge_id = f"sync-diff-{suffix}-spawn-edge"
         message_id = f"sync-diff-{suffix}-message"
         fixtures = {
             "records": {
                 "runtime_agents": [
                     [agent_a, {"id": agent_a, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_a, "cwd": project_path, "status": "idle"}],
+                     "rootId": agent_a, "name": "First lead", "cwd": project_path, "status": "idle"}],
                     [agent_b, {"id": agent_b, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_b, "cwd": project_path, "status": "idle"}],
+                     "rootId": agent_b, "name": "Second lead", "cwd": project_path + "/.", "status": "idle"}],
+                    [worker_id, {"id": worker_id, "kind": "agent", "isLead": False,
+                     "parentId": agent_a, "rootId": agent_a, "name": "Worker", "cwd": project_path,
+                     "status": "completed", "prompt": "Python view task", "lastAnswer": "done",
+                     "lastCompletedTurn": "turn-view", "threadId": "thread-view",
+                     "nativeThreadBlock": {"threadId": "thread-view", "error": {"message": "blocked"}}}],
                 ],
-                "runtime_rooms": [[room_id, {"id": room_id, "kind": "private", "members": []}]],
-                "runtime_complaints": [[complaint_id, {"id": complaint_id}]],
+                "runtime_rooms": [[room_id, {"id": room_id, "kind": "private",
+                    "members": [agent_a, worker_id], "projectPath": project_path, "updated": 10}]],
+                "runtime_complaints": [[complaint_id, {"id": complaint_id, "leadId": agent_a,
+                    "author": agent_a, "recipient": "user", "status": "open", "text": "A view title",
+                    "responses": [], "version": 1, "created": 10, "updated": 10, "readAt": None}]],
                 "runtime_projects": [[project_id, {
                     "id": project_id,
                     "path": project_path,
@@ -102,7 +112,8 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 }]],
                 "runtime_requests": [[request_id, {"id": request_id, "status": "pending"}]],
                 "runtime_rules": [[rule_id, {"id": rule_id}]],
-                "runtime_work": [[work_id, {"id": work_id}]],
+                "runtime_work": [[work_id, {"id": work_id, "owner": worker_id,
+                    "results": [{"agent": worker_id, "resultFile": "results/view.md", "created": 10}]}]],
                 "runtime_tasks": [[task_id, {
                     "id": task_id, "agent": agent_a, "status": "running", "created": 10,
                 }]],
@@ -113,14 +124,15 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "events": [[event_id, agent_a, "sync-test", "delivered", 10,
                         None, "", 0, None]],
             "groups": [[chat_id, "Sync test chat", "[]"]],
-            "edges": [[edge_id, agent_a, chat_id, "chat"]],
+            "edges": [[edge_id, agent_a, chat_id, "chat"],
+                      [spawn_edge_id, agent_a, worker_id, "spawn"]],
             "messages": [[message_id, chat_id, agent_a, "chat tail", 10, "{}"]],
         }
         fixture_keys = {
             **{table: [row[0] for row in rows] for table, rows in fixtures["records"].items()},
             "runtime_events": [event_id],
             "groups": [chat_id],
-            "graph_edges": [edge_id],
+            "graph_edges": [edge_id, spawn_edge_id],
             "messages": [message_id],
         }
         fixture_json = json.dumps(fixtures, separators=(",", ":"))
@@ -132,9 +144,17 @@ import sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_canvas import Canvas
+from codex_runtime import Runtime
 from codex_sync_entities import seed
 from codex_peer_teams import sync_entities
 canvas = Canvas(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+runtime_owner = object.__new__(Runtime)
+runtime_owner.closed = False
+runtime_owner._project_server_id = None
+runtime_owner.workspace_entity_view = lambda db, base=None: {{
+    **(base or {{}}), "stateDir": str(canvas.root), "connected": False,
+    "projectOrganizationVersion": 1, "peerTeamsVersion": 1, "tasksHistoryLimit": 100,
+}}
 fixtures = json.loads({fixture_json!r})
 def table_exists(db, name):
     return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
@@ -167,12 +187,12 @@ with canvas.connect() as db:
         db.executemany("INSERT OR REPLACE INTO graph_edges(id,source,target,kind) VALUES (?,?,?,?)", fixtures["edges"])
     if table_exists(db, "messages"):
         db.executemany("INSERT OR REPLACE INTO messages(id,room,author,text,at,deliveries) VALUES (?,?,?,?,?,?)", fixtures["messages"])
-    seed(db, runtime_owner=None, canvas_owner=canvas)
-    sync_entities(None, db)
+    seed(db, runtime_owner=runtime_owner, canvas_owner=canvas)
+    sync_entities(runtime_owner, db)
     first_with_sequences = rows(db, True)
     first = rows(db, False)
-    seed(db, runtime_owner=None, canvas_owner=canvas)
-    sync_entities(None, db)
+    seed(db, runtime_owner=runtime_owner, canvas_owner=canvas)
+    sync_entities(runtime_owner, db)
     second_with_sequences = rows(db, True)
     second = rows(db, False)
     if first_with_sequences != second_with_sequences:
@@ -328,6 +348,221 @@ with canvas.connect() as db:
         expected = DraftPayload.model_json_schema(mode="validation")
         bound_integer_schemas(expected)
         self.assertEqual(json.loads(schema_path.read_text(encoding="utf-8")), expected)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_draft_float_replay_and_invalid_master_refusal(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        headers = {
+            **self._common_headers(),
+            "X-Canvas-Workspace": backend.identity["workspaceId"],
+        }
+        draft_id = "float-device:float-session"
+        first = {
+            "device": "float-device", "session": "float-session",
+            "text": "first", "extension": {"small": 1e-07},
+        }
+        write = lambda payload, **extra: backend.request(
+            "POST", "/api/sync/drafts",
+            body={"rows": [{"newDocumentState": {
+                "id": draft_id, "payload": json.dumps(payload),
+                **extra,
+            }}]},
+            headers=headers,
+        )
+        created = write(first)
+        self.assertEqual(created.status, 200, created.body[:1000])
+        before_replay = sync_state_snapshot(backend.state)
+        replay = write(first)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json(), [])
+        self.assertEqual(sync_state_snapshot(backend.state), before_replay)
+
+        updated = {**first, "text": "updated"}
+        optimistic = backend.request(
+            "POST", "/api/sync/drafts",
+            body={"rows": [{
+                "newDocumentState": {"id": draft_id, "payload": json.dumps(updated)},
+                "assumedMasterState": {"id": draft_id, "payload": json.dumps(first)},
+            }]},
+            headers=headers,
+        )
+        self.assertEqual(optimistic.status, 200, optimistic.body[:1000])
+        self.assertEqual(optimistic.json(), [])
+
+        invalid_number = backend.request(
+            "POST", "/api/sync/drafts",
+            body={"rows": [{"newDocumentState": {
+                "id": "large-device:large-session",
+                "payload": '{"device":"large-device","session":"large-session",'
+                           '"extra":{"n":18446744073709551617}}',
+            }}]},
+            headers=headers,
+        )
+        self.assertEqual(invalid_number.status, 400, invalid_number.body[:1000])
+        self.assertEqual(invalid_number.json()["error"], "Invalid request")
+        self.assertTrue(invalid_number.json().get("location"))
+
+        invalid_null_id = backend.request(
+            "POST", "/api/sync/drafts",
+            body={"rows": [{"newDocumentState": {
+                "id": "null-device:null-session",
+                "payload": json.dumps({"device": "null-device", "session": "null-session", "id": None}),
+            }}]},
+            headers=headers,
+        )
+        self.assertEqual(invalid_null_id.status, 400, invalid_null_id.body[:1000])
+
+        invalid_master_id = "invalid-master-device:invalid-master-session"
+        database_path = backend.state / "canvas.sqlite3"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "INSERT INTO sync_documents(scope,id,payload,deleted) VALUES('drafts',?,?,0)",
+                (invalid_master_id, "not-json"),
+            )
+        try:
+            before_refusal = sync_state_snapshot(backend.state)
+            refusal = backend.request(
+                "POST", "/api/sync/drafts",
+                body={"rows": [
+                    {"newDocumentState": {
+                        "id": "batch-device:valid-session",
+                        "payload": json.dumps({
+                            "device": "batch-device", "session": "valid-session", "text": "batch",
+                        }),
+                    }},
+                    {"newDocumentState": {
+                        "id": invalid_master_id,
+                        "payload": json.dumps({
+                            "device": "invalid-master-device",
+                            "session": "invalid-master-session",
+                            "text": "replacement",
+                        }),
+                    }},
+                ]},
+                headers=headers,
+            )
+            self.assertEqual(refusal.status, 500, refusal.body[:1000])
+            self.assertIn(f"drafts/{invalid_master_id}", refusal.json()["error"])
+            self.assertEqual(sync_state_snapshot(backend.state), before_refusal)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "DELETE FROM sync_documents WHERE scope='drafts' AND id=?", (invalid_master_id,),
+                )
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_entity_refusals_roll_back_projection_maintenance(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
+        with sqlite3.connect(database_path) as database:
+            original_preference = database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+            ).fetchone()[0]
+            database.execute(
+                "INSERT INTO runtime_rules(id,record) VALUES('sync-pull-rollback-rule',?)",
+                (json.dumps({"id": "sync-pull-rollback-rule"}),),
+            )
+            database.execute(
+                "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                ('{"collection":"uiPreferences","id":"user",'
+                 '"value":{"fields":{},"unexpectedSecret":true}}',),
+            )
+        before = sync_state_snapshot(backend.state)
+        try:
+            response = backend.request(
+                "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+                headers=headers,
+            )
+            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertEqual(
+                response.json()["error"],
+                "Invalid stored sync object uiPreferences/user",
+            )
+            self.assertEqual(sync_state_snapshot(backend.state), before)
+            with sqlite3.connect(database_path) as database:
+                self.assertIsNone(database.execute(
+                    "SELECT 1 FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
+                ).fetchone())
+                database.execute(
+                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                    (original_preference,),
+                )
+                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute(
+                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                    (original_preference,),
+                )
+                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
+                database.execute(
+                    "DELETE FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
+                )
+
+        broken_id = "sync-pull-broken-record"
+        with sqlite3.connect(database_path) as database:
+            database.execute("INSERT INTO runtime_rules(id,record) VALUES(?, '[]')", (broken_id,))
+        before_broken = sync_state_snapshot(backend.state)
+        try:
+            broken = backend.request(
+                "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+                headers=headers,
+            )
+            self.assertEqual(broken.status, 500, broken.body[:1000])
+            self.assertIn(f"runtime_rules/{broken_id}", broken.json()["error"])
+            self.assertEqual(sync_state_snapshot(backend.state), before_broken)
+        finally:
+            with sqlite3.connect(database_path) as database:
+                database.execute("DELETE FROM runtime_rules WHERE id=?", (broken_id,))
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_monitor_window_is_selected_before_owner_filter(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        deleted_owner = "sync-window-deleted-owner"
+        live_owner = "sync-window-live-owner"
+        old_monitor = "sync-window-old-live-monitor"
+        rows = [
+            (deleted_owner, json.dumps({"id": deleted_owner, "deletedAt": 1})),
+            (live_owner, json.dumps({"id": live_owner, "status": "idle"})),
+        ]
+        rows.extend(
+            (f"sync-window-terminal-{index}", json.dumps({
+                "id": f"sync-window-terminal-{index}", "agent": deleted_owner,
+                "status": "completed", "created": 10_000 - index,
+            }))
+            for index in range(100)
+        )
+        rows.append((old_monitor, json.dumps({
+            "id": old_monitor, "agent": live_owner, "status": "completed", "created": 1,
+        })))
+        with sqlite3.connect(database_path) as database:
+            database.executemany(
+                "INSERT OR REPLACE INTO runtime_agents(id,record) VALUES(?,?)", rows[:2],
+            )
+            database.executemany(
+                "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES(?,?)", rows[2:],
+            )
+        response = backend.request(
+            "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
+            headers=self._common_headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        with sqlite3.connect(database_path) as database:
+            self.assertIsNone(database.execute(
+                "SELECT 1 FROM sync_entities WHERE collection='monitor' AND id=?", (old_monitor,),
+            ).fetchone())
+            database.executemany("DELETE FROM runtime_agents WHERE id=?", [(deleted_owner,), (live_owner,)])
+            database.executemany("DELETE FROM runtime_monitors WHERE id=?", [(row[0],) for row in rows[2:]])
+            database.executemany("DELETE FROM sync_entities WHERE collection='monitor' AND id=?", [(row[0],) for row in rows[2:]])
+            database.executemany("DELETE FROM sync_entities WHERE collection='agent' AND id=?", [(deleted_owner,), (live_owner,)])
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_nested_draft_payload_rejects_entire_batch_without_writes(self) -> None:

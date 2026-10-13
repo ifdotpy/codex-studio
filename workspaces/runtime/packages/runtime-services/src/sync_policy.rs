@@ -1,9 +1,15 @@
 //! Pure sync document, cursor and preference decisions.
 
+use crate::sync_views::value_truthy;
+pub use crate::sync_views::{
+    AgentViewContext, ComplaintViewContext, RoomViewContext, agent_entity_view,
+    complaint_entity_view, openapi_document, project_entity_view, project_persisted_record,
+    room_entity_view,
+};
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::path::{Component, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
     CoordinationRepository, RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository,
@@ -25,6 +31,26 @@ pub fn maintain_entity_projections(
     transaction: &Transaction<'_>,
     state_dir: &str,
 ) -> StoreResult<()> {
+    for table in [
+        "runtime_agents",
+        "runtime_rooms",
+        "runtime_complaints",
+        "runtime_projects",
+        "runtime_requests",
+        "runtime_rules",
+        "runtime_work",
+        "runtime_tasks",
+        "runtime_monitors",
+        "runtime_federation_rooms",
+    ] {
+        let _ = stored_records(transaction, table)?;
+    }
+    let agents = stored_records(transaction, "runtime_agents")?
+        .into_iter()
+        .map(|(_, raw)| serde_json::from_str::<Value>(&raw).map_err(StoreError::from))
+        .collect::<StoreResult<Vec<_>>>()?;
+    maintain_peer_team_entities(transaction)?;
+    let mut current_rooms = BTreeSet::new();
     for (table, collection) in [
         ("runtime_agents", "agent"),
         ("runtime_rooms", "room"),
@@ -35,23 +61,58 @@ pub fn maintain_entity_projections(
         ("runtime_work", "work"),
     ] {
         for (id, raw) in stored_records(transaction, table)? {
-            let Ok(record) = serde_json::from_str::<Value>(&raw) else {
-                continue;
-            };
-            let Some(object) = record.as_object() else {
-                continue;
-            };
-            if collection == "agent" && object.get("deletedAt").is_some_and(|v| !v.is_null()) {
+            let record = serde_json::from_str::<Value>(&raw)?;
+            if collection == "agent" && record.get("deletedAt").is_some_and(value_truthy) {
                 retire_if_live(transaction, collection, &id)?;
                 continue;
             }
             if collection == "request"
-                && object.get("status").and_then(Value::as_str) != Some("pending")
+                && record.get("status").and_then(Value::as_str) != Some("pending")
             {
                 retire_if_live(transaction, collection, &id)?;
                 continue;
             }
-            if let Some(projected) = project_persisted_record(collection, &record) {
+            let projected = match collection {
+                "agent" => agent_entity_view(
+                    &record,
+                    &crate::sync_entity_context::agent_view_context(transaction, &record)?,
+                ),
+                "room" => {
+                    let context = crate::sync_entity_context::room_view_context(
+                        transaction,
+                        &record,
+                        &agents,
+                    )?;
+                    room_entity_view(&record, &context)
+                }
+                "complaint" => complaint_entity_view(
+                    &record,
+                    &ComplaintViewContext {
+                        agents: agents.clone(),
+                    },
+                ),
+                "project" => {
+                    let prior = transaction.query_row(
+                        "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
+                        [&id],
+                        |row| row.get::<_, Option<String>>(0),
+                    ).optional()?.flatten();
+                    let prior =
+                        prior.and_then(|payload| serde_json::from_str::<Value>(&payload).ok());
+                    let value = prior.as_ref().and_then(|payload| payload.get("value"));
+                    project_entity_view(
+                        &record,
+                        value.and_then(|value| value.get("layrReadiness")),
+                        value.and_then(|value| value.get("layrSync")),
+                        value.and_then(|value| value.get("vault")),
+                    )
+                }
+                _ => project_persisted_record(collection, &record),
+            };
+            if let Some(projected) = projected {
+                if collection == "room" {
+                    current_rooms.insert(id.clone());
+                }
                 SyncDocumentsRepository::put_entity(
                     transaction,
                     collection,
@@ -62,11 +123,13 @@ pub fn maintain_entity_projections(
             }
         }
     }
+    if table_exists(transaction, "runtime_rooms")? {
+        retire_unkept(transaction, "room", &current_rooms, None)?;
+    }
 
     maintain_task_window(transaction)?;
     maintain_monitor_window(transaction)?;
     maintain_event_window(transaction)?;
-    maintain_peer_team_entities(transaction)?;
     maintain_canvas_chat_entities(transaction)?;
 
     // Python creates a workspace projection on first seed even though its
@@ -101,260 +164,7 @@ pub fn maintain_entity_projections(
     Ok(())
 }
 
-/// Filter and bound a persisted record using the committed renderer DTO
-/// property list. This is deliberately a pure records-in, projection-out step.
-pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Value> {
-    let id = record.get("id")?.as_str()?;
-    if id.is_empty() {
-        return None;
-    }
-    let schema_name = match collection {
-        "agent" => "AgentEntityDto",
-        "room" => "RoomEntityDto",
-        "task" => "TaskEntityDto",
-        "monitor" => "MonitorEntityDto",
-        "complaint" => "ComplaintEntityDto",
-        "request" => "RequestEntityDto",
-        "rule" => "RuleEntityDto",
-        "project" => "ProjectEntityDto",
-        "peerTeam" => "PeerTeamEntityDto",
-        "event" => "EventEntityDto",
-        "work" => "WorkEntityDto",
-        "workspace" => "WorkspaceEntityDto",
-        "chat" => "ChatEntityDto",
-        "edge" => "EdgeEntityDto",
-        _ => return None,
-    };
-    let fields = dto_fields(schema_name)?;
-    let source = record.as_object()?;
-    let mut projected = Map::new();
-    for (name, value) in source {
-        if fields.contains(name.as_str())
-            && !(collection == "agent"
-                && AGENT_REPROJECT_FIELDS.contains(&name.as_str())
-                && value.is_object())
-        {
-            projected.insert(name.clone(), bound_sync_value(value, name));
-        }
-    }
-    if collection == "agent" {
-        for (field, allowed) in AGENT_FIELD_ALLOWLISTS {
-            if let Some(object) = source.get(*field).and_then(Value::as_object) {
-                let nested = object
-                    .iter()
-                    .filter(|(name, _)| allowed.contains(&name.as_str()))
-                    .map(|(name, value)| (name.clone(), bound_sync_value(value, "error")))
-                    .collect::<Map<_, _>>();
-                projected.insert((*field).to_owned(), Value::Object(nested));
-            }
-        }
-        if let Some(release) = source.get("nativeRelease").and_then(Value::as_object) {
-            projected.insert(
-                "nativeRelease".to_owned(),
-                Value::Object(
-                    release
-                        .iter()
-                        .filter(|(name, _)| matches!(name.as_str(), "phase" | "resetPending"))
-                        .map(|(name, value)| (name.clone(), value.clone()))
-                        .collect(),
-                ),
-            );
-        }
-        if let Some(overview) = source.get("overview").and_then(Value::as_object) {
-            projected.insert(
-                "overview".to_owned(),
-                Value::Object(
-                    overview
-                        .iter()
-                        .filter(|(name, _)| {
-                            matches!(
-                                name.as_str(),
-                                "task"
-                                    | "taskTruncated"
-                                    | "result"
-                                    | "resultTruncated"
-                                    | "resultTurnId"
-                                    | "resultFile"
-                            )
-                        })
-                        .map(|(name, value)| (name.clone(), bound_sync_value(value, name)))
-                        .collect(),
-                ),
-            );
-        }
-    }
-    Some(Value::Object(projected))
-}
-
-const AGENT_REPROJECT_FIELDS: &[&str] = &[
-    "activity",
-    "nativeStatus",
-    "nativeSafetyBuffering",
-    "nativeSafetyRetry",
-    "nativeTurnError",
-    "nativeThreadBlock",
-    "connectionCheck",
-    "readState",
-    "startAttempt",
-    "capacityRetry",
-    "usageResume",
-    "contextRepairWait",
-    "nativeRelease",
-    "overview",
-];
-const AGENT_FIELD_ALLOWLISTS: &[(&str, &[&str])] = &[
-    ("activity", &["phase", "at", "tools"]),
-    (
-        "nativeStatus",
-        &["phase", "error", "message", "turnId", "at"],
-    ),
-    (
-        "nativeSafetyBuffering",
-        &[
-            "turnId",
-            "threadId",
-            "accountKey",
-            "connectionId",
-            "at",
-            "dismissed",
-            "responseStarted",
-            "showBufferingUi",
-            "fasterModel",
-        ],
-    ),
-    (
-        "nativeSafetyRetry",
-        &[
-            "id",
-            "stage",
-            "model",
-            "turnId",
-            "created",
-            "updated",
-            "epoch",
-            "accountKey",
-            "error",
-            "newThreadId",
-            "acceptedTurnId",
-            "requestId",
-            "rpcMethod",
-        ],
-    ),
-    ("nativeTurnError", &["turnId", "error"]),
-    (
-        "connectionCheck",
-        &[
-            "epoch",
-            "accountKey",
-            "threadId",
-            "turnId",
-            "at",
-            "previousError",
-            "nativeState",
-            "restartTurnStatus",
-            "readError",
-        ],
-    ),
-    ("readState", &["threadId", "turnId", "read", "revision"]),
-    (
-        "startAttempt",
-        &["prepareError", "responseError", "retiredEvents"],
-    ),
-    (
-        "capacityRetry",
-        &[
-            "id",
-            "threadId",
-            "epoch",
-            "accountKey",
-            "status",
-            "acceptedTurnId",
-            "updatedAt",
-            "dueAt",
-            "claimedAt",
-            "reason",
-        ],
-    ),
-    (
-        "usageResume",
-        &[
-            "id",
-            "status",
-            "cause",
-            "reason",
-            "updatedAt",
-            "plannedAt",
-            "dueAt",
-        ],
-    ),
-    ("contextRepairWait", &["scope", "error"]),
-];
-
-fn dto_fields(name: &str) -> Option<&'static BTreeSet<String>> {
-    static SCHEMAS: OnceLock<Value> = OnceLock::new();
-    static FIELDS: OnceLock<BTreeMap<String, BTreeSet<String>>> = OnceLock::new();
-    let schemas = SCHEMAS.get_or_init(|| {
-        serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
-            .expect("the checked-in OpenAPI document is valid JSON")
-    });
-    let fields = FIELDS.get_or_init(|| {
-        [
-            "AgentEntityDto",
-            "RoomEntityDto",
-            "TaskEntityDto",
-            "MonitorEntityDto",
-            "ComplaintEntityDto",
-            "RequestEntityDto",
-            "RuleEntityDto",
-            "ProjectEntityDto",
-            "EventEntityDto",
-            "WorkEntityDto",
-            "WorkspaceEntityDto",
-            "ChatEntityDto",
-            "EdgeEntityDto",
-            "PeerTeamEntityDto",
-        ]
-        .into_iter()
-        .filter_map(|name| {
-            let properties = schemas
-                .pointer(&format!("/components/schemas/{name}/properties"))?
-                .as_object()?;
-            Some((name.to_owned(), properties.keys().cloned().collect()))
-        })
-        .collect()
-    });
-    fields.get(name)
-}
-
-fn bound_sync_value(value: &Value, field: &str) -> Value {
-    match value {
-        Value::String(text) => {
-            let limit = match field {
-                "error" | "tail" | "description" | "command" | "query" => 2000,
-                "overview" => 9000,
-                "text" | "lastAnswer" => 4000,
-                _ => 12000,
-            };
-            Value::String(text.chars().take(limit).collect())
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .take(if field == "sidebarOrder" { 10_000 } else { 200 })
-                .map(|item| bound_sync_value(item, ""))
-                .collect(),
-        ),
-        Value::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(name, value)| (name.clone(), bound_sync_value(value, name)))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-fn table_exists(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
+pub(crate) fn table_exists(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
     Ok(transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [name],
@@ -362,17 +172,63 @@ fn table_exists(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> 
     )?)
 }
 
-fn stored_records(
+pub(crate) fn stored_records(
     transaction: &Transaction<'_>,
     table: &str,
 ) -> StoreResult<Vec<(String, String)>> {
     if !table_exists(transaction, table)? {
         return Ok(Vec::new());
     }
-    let mut statement = transaction.prepare(&format!("SELECT id,record FROM {table}"))?;
-    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+    let mut statement =
+        transaction.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    for (id, raw) in &rows {
+        let valid = serde_json::from_str::<Value>(raw).is_ok_and(|record| {
+            record.is_object() && record.get("id").and_then(Value::as_str) == Some(id)
+        });
+        if !valid {
+            return Err(StoreError::InvalidSyncObject {
+                scope: table.to_owned(),
+                id: id.clone(),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn normalized_project_path(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        return None;
+    }
+    let expanded = if value == "~" {
+        PathBuf::from(std::env::var_os("HOME")?)
+    } else if let Some(rest) = value.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        PathBuf::from(value)
+    };
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir().ok()?.join(expanded)
+    };
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Some(canonical.to_string_lossy().into_owned());
+    }
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    Some(normalized.to_string_lossy().into_owned())
 }
 
 fn retire_if_live(transaction: &Transaction<'_>, collection: &str, id: &str) -> StoreResult<()> {
@@ -446,23 +302,10 @@ fn maintain_monitor_window(transaction: &Transaction<'_>) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_monitors")? {
         return Ok(());
     }
-    let agents = stored_records(transaction, "runtime_agents")?
-        .into_iter()
-        .filter_map(|(id, raw)| {
-            let record = serde_json::from_str::<Value>(&raw).ok()?;
-            (record.get("deletedAt").is_none_or(Value::is_null)).then_some(id)
-        })
-        .collect::<BTreeSet<_>>();
     let records = stored_records(transaction, "runtime_monitors")?
         .into_iter()
-        .filter_map(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
-        .filter(|record| {
-            record
-                .get("agent")
-                .and_then(Value::as_str)
-                .is_some_and(|id| agents.contains(id))
-        })
-        .collect::<Vec<_>>();
+        .map(|(_, raw)| serde_json::from_str::<Value>(&raw))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut kept = BTreeMap::<String, Value>::new();
     for status in ["running", "starting", "approval"] {
         for record in records
@@ -490,8 +333,24 @@ fn maintain_monitor_window(transaction: &Transaction<'_>) -> StoreResult<()> {
             kept.insert(id.to_owned(), record);
         }
     }
+    let agents = stored_records(transaction, "runtime_agents")?
+        .into_iter()
+        .map(|(id, raw)| {
+            let record: Value = serde_json::from_str(&raw)?;
+            Ok((id, record.get("deletedAt").is_none_or(Value::is_null)))
+        })
+        .collect::<Result<BTreeMap<_, _>, serde_json::Error>>()?;
     let mut kept_ids = BTreeSet::new();
     for (id, record) in kept {
+        let active_owner = record
+            .get("agent")
+            .and_then(Value::as_str)
+            .and_then(|agent| agents.get(agent))
+            .copied()
+            .unwrap_or(false);
+        if !active_owner {
+            continue;
+        }
         if let Some(projected) = project_persisted_record("monitor", &record) {
             kept_ids.insert(id.clone());
             SyncDocumentsRepository::put_entity(transaction, "monitor", &id, projected, false)?;
@@ -572,6 +431,7 @@ fn maintain_peer_team_entities(transaction: &Transaction<'_>) -> StoreResult<()>
             .get("path")
             .and_then(Value::as_str)
             .filter(|path| !path.trim().is_empty())
+            .and_then(normalized_project_path)
         else {
             continue;
         };
@@ -593,7 +453,12 @@ fn maintain_peer_team_entities(transaction: &Transaction<'_>) -> StoreResult<()>
             let mut selected = Vec::new();
             for member in members.iter().filter_map(Value::as_str) {
                 if agents.get(member).is_some_and(|agent| {
-                    agent.get("cwd").and_then(Value::as_str) == Some(project_path)
+                    agent
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .and_then(normalized_project_path)
+                        .as_deref()
+                        == Some(project_path.as_str())
                 }) && !selected.iter().any(|prior| prior == member)
                 {
                     selected.push(member.to_owned());
@@ -668,24 +533,29 @@ fn maintain_canvas_chat_entities(transaction: &Transaction<'_>) -> StoreResult<(
     if !table_exists(transaction, "graph_edges")? {
         return Ok(());
     }
-    let mut statement = transaction
-        .prepare("SELECT id,source,target FROM graph_edges WHERE kind='chat' ORDER BY id")?;
+    let mut statement =
+        transaction.prepare("SELECT id,source,target,kind FROM graph_edges ORDER BY id")?;
     let edges = statement
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    let mut kept_edges = BTreeSet::new();
-    for (id, source, target) in edges {
-        CoordinationRepository::edge_projection(transaction, &id, &source, &target, false)?;
-        kept_edges.insert(id);
+    for (id, source, target, kind) in edges {
+        SyncDocumentsRepository::put_entity(
+            transaction,
+            "edge",
+            &id,
+            json!({"id":id,"source":source,"target":target,"kind":kind}),
+            false,
+        )?;
     }
-    retire_unkept(transaction, "edge", &kept_edges, None)
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -734,19 +604,53 @@ pub fn validate_draft(id: &str, payload: &Value) -> Result<(), SyncPolicyError> 
     validate_draft_identity(id, object, device, session)
 }
 
-pub fn validate_stored_draft(id: &str, payload: &Value) -> Result<(), SyncPolicyError> {
-    let object = payload.as_object().ok_or(SyncPolicyError::InvalidDraft)?;
-    let device = object
-        .get("device")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or(SyncPolicyError::DraftIdentity)?;
-    let session = object
-        .get("session")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or(SyncPolicyError::DraftIdentity)?;
-    validate_draft_identity(id, object, device, session)
+/// Whether a JSON integer is outside serde_json's exact signed/unsigned range.
+pub fn contains_unrepresentable_integer(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if byte == b'-' || byte.is_ascii_digit() {
+            let start = index;
+            index += 1;
+            while index < bytes.len()
+                && !matches!(
+                    bytes[index],
+                    b',' | b']' | b'}' | b' ' | b'\n' | b'\r' | b'\t'
+                )
+            {
+                index += 1;
+            }
+            let token = &raw[start..index];
+            if !token.contains(['.', 'e', 'E'])
+                && token.parse::<i64>().is_err()
+                && token.parse::<u64>().is_err()
+            {
+                return true;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    false
 }
 
 fn validate_draft_identity(
@@ -764,9 +668,7 @@ fn validate_draft_identity(
     let identity_matches =
         id == format!("{device}:{session}") || (!writer.is_empty() && !writer.contains(':'));
     if !identity_matches
-        || object
-            .get("id")
-            .is_some_and(|value| !value.is_null() && value.as_str() != Some(id))
+        || (object.contains_key("id") && object.get("id").and_then(Value::as_str) != Some(id))
     {
         return Err(SyncPolicyError::DraftIdentity);
     }
@@ -1075,13 +977,9 @@ mod tests {
     fn draft_identity_matches_row_key_and_allows_extension_members() {
         let payload = json!({"device":"phone","session":"chat","id":"phone:tab:chat","text":"draft","extra":true});
         assert!(validate_draft("phone:tab:chat", &payload).is_ok());
-        assert!(validate_stored_draft("phone:tab:chat", &payload).is_ok());
-        assert!(validate_stored_draft("phone:chat", &json!({})).is_err());
-        assert!(validate_stored_draft("phone:chat", &Value::Null).is_err());
-        assert!(
-            validate_stored_draft("phone:chat", &json!({"device":"other","session":"chat"}))
-                .is_err()
-        );
+        assert!(validate_draft("phone:chat", &json!({})).is_err());
+        assert!(validate_draft("phone:chat", &Value::Null).is_err());
+        assert!(validate_draft("phone:chat", &json!({"device":"other","session":"chat"})).is_err());
     }
 
     #[test]

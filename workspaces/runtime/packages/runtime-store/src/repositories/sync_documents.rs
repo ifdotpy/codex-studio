@@ -138,47 +138,16 @@ impl SyncDocumentsRepository {
         }
 
         let limit = limit.clamp(1, 500);
-        let rows = if after == 0 && fresh {
-            if let Some(priority_id) = priority_id {
-                let mut statement = transaction.prepare(
-                    "SELECT collection,id,seq,payload,deleted FROM sync_entities \
-                     WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
-                       AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
-                     ORDER BY CASE WHEN collection='agent' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
-                )?;
-                statement
-                    .query_map(
-                        params![
-                            after,
-                            tombstone_floor,
-                            i64::from(fresh),
-                            initial_high,
-                            priority_id,
-                            limit
-                        ],
-                        entity_row,
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?
-            } else {
-                read_entity_page(
-                    transaction,
-                    after,
-                    tombstone_floor,
-                    fresh,
-                    initial_high,
-                    limit,
-                )?
-            }
-        } else {
-            read_entity_page(
-                transaction,
-                after,
-                tombstone_floor,
-                fresh,
-                initial_high,
-                limit,
-            )?
-        };
+        let priority_id = (after == 0 && fresh).then_some(priority_id).flatten();
+        let rows = read_entity_page(
+            transaction,
+            after,
+            tombstone_floor,
+            fresh,
+            initial_high,
+            priority_id,
+            limit,
+        )?;
         let checkpoint = if rows.len() as i64 == limit {
             rows.last().map_or(after, |row| row.sequence)
         } else {
@@ -385,13 +354,14 @@ fn read_entity_page(
     tombstone_floor: i64,
     fresh: bool,
     initial_high: i64,
+    priority_id: Option<&str>,
     limit: i64,
 ) -> StoreResult<Vec<EntityRow>> {
     let mut statement = transaction.prepare(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities \
          WHERE collection NOT LIKE 'transcript:%' AND seq>?1 \
            AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
-         ORDER BY seq LIMIT ?5",
+         ORDER BY CASE WHEN ?5 IS NOT NULL AND collection='agent' AND id=?5 THEN 0 ELSE 1 END,seq LIMIT ?6",
     )?;
     statement
         .query_map(
@@ -400,6 +370,7 @@ fn read_entity_page(
                 tombstone_floor,
                 i64::from(fresh),
                 initial_high,
+                priority_id,
                 limit
             ],
             entity_row,
