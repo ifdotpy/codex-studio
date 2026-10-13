@@ -12,6 +12,11 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { HttpOutcomeTracker } from "./http_outcomes.mjs";
 import { fetchRuntimeIdentity } from "./identity.mjs";
+import {
+  MAX_SYNTHETIC_CALLBACK_IDENTITIES,
+  assertSyntheticCallbackBudget,
+  parseIdentityOptions,
+} from "./options.mjs";
 
 const harness = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(harness, "../../../../../../../../");
@@ -19,9 +24,11 @@ const harnessFiles = [
   "README.md",
   "http_outcomes.mjs",
   "identity.mjs",
+  "options.mjs",
   "run.mjs",
   "server.py",
   "test_http_outcomes.mjs",
+  "test_options.mjs",
   "test_runtime_load.py",
 ];
 const harnessSourceSha256 = createHash("sha256")
@@ -34,10 +41,7 @@ const harnessSourceSha256 = createHash("sha256")
 const args = process.argv.slice(2);
 const check = args.includes("--check");
 const diagnoseOriginPool = args.includes("--diagnose-origin-pool");
-const teamsAt = args.indexOf("--teams");
-const teams = teamsAt >= 0 ? Number(args[teamsAt + 1]) : 8;
-const workersAt = args.indexOf("--workers-per-team");
-const workersPerTeam = workersAt >= 0 ? Number(args[workersAt + 1]) : 32;
+const { teams, workersPerTeam, workerCount } = parseIdentityOptions(args);
 const steadySecondsAt = args.indexOf("--steady-seconds");
 const steadySeconds = check
   ? 0
@@ -65,7 +69,9 @@ const outputPath =
     ? resolve(args[outputAt + 1])
     : join(
         evidenceRoot,
-        check ? "runtime-load-check.json" : "runtime-load-256.json",
+        check
+          ? "runtime-load-check.json"
+          : `runtime-load-${workerCount}-workers.json`,
       );
 const sourceAt = args.indexOf("--source-root");
 const sourceRoot = sourceAt >= 0 ? resolve(args[sourceAt + 1]) : repo;
@@ -149,19 +155,17 @@ assert(
   "--producer-pool-size must be 1..16; 1 preserves serial mode",
 );
 assert(
-  Number.isInteger(teams) && teams >= 1 && teams <= 8,
-  "--teams must be 1..8",
-);
-assert(
-  Number.isInteger(workersPerTeam) &&
-    workersPerTeam >= 2 &&
-    workersPerTeam <= 64,
-  "--workers-per-team must be 2..64",
-);
-assert(
   Number.isFinite(steadySeconds) && steadySeconds >= 0 && steadySeconds <= 60,
   "--steady-seconds must be 0..60",
 );
+const estimatedCallbackIdentities = diagnoseOriginPool
+  ? 0
+  : assertSyntheticCallbackBudget({
+      workerCount: check ? 2 : workerCount,
+      rounds,
+      offeredRate,
+      steadySeconds,
+    });
 if (outputPath && outputPath.startsWith(repo + "/"))
   throw new Error("--output must be outside the checkout");
 const packageRequire = createRequire(
@@ -301,7 +305,7 @@ try {
   );
   const stateData = await fetchRuntimeIdentity(ready.origin);
   const expectedLeads = check ? 1 : teams;
-  const expectedWorkers = check ? 2 : teams * workersPerTeam;
+  const expectedWorkers = check ? 2 : workerCount;
   assert.equal(
     stateData.threads.length,
     expectedLeads + expectedWorkers,
@@ -1220,6 +1224,8 @@ try {
     resourceLimits: {
       deadlineMs,
       queueCapacityPerAppServerTransport: result.queue.capacityPerTransport,
+      estimatedSyntheticCallbackIdentities: estimatedCallbackIdentities,
+      maximumSyntheticCallbackIdentities: MAX_SYNTHETIC_CALLBACK_IDENTITIES,
       hardTimeoutMs: deadlineMs,
       stateProfile: "unique temporary directories",
       nativeSessions: 0,

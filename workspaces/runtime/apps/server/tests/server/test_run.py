@@ -303,9 +303,11 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn(f"{RUNNER.TESTS_REL}/swarm-retry-contract.mjs", paths)
         self.assertIn(f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py", paths)
         self.assertIn(f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_options.mjs", paths)
         self.assertIn(f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs", paths)
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
+        self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_options.mjs"], "safe")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/notification-scheduler-contract.py"], "expensive")
         automated = RUNNER.only_category(RUNNER.inventory(), "automated")
@@ -458,6 +460,9 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(RUNNER.select_entries(relative), [(relative, "expensive")])
         self.assertEqual(RUNNER.only_category(RUNNER.select_entries("test_http_outcomes"), "expensive"),
                          [(relative, "expensive")])
+
+        options = f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_options.mjs"
+        self.assertEqual(RUNNER.select_entries(options), [(options, "safe")])
 
     def test_discovers_colocated_fastapi_component_tests_recursively(self):
         component_root = RUNNER.STUDIO_API_COMPONENT_ROOT
