@@ -102,15 +102,91 @@ Mac-only browser paths are not injected into guest provider configuration.
 Existing native sessions keep their frozen tools, role text, and original Source headers.
 The frozen runtime references are not documentation that can be revised.
 
+## Guest crash watchdog
+
+The guest kernel can panic, for example `Kernel panic - not syncing: corrupted stack end
+detected inside scheduler` in a kernel thread that waits on virtio. The helper and its
+Virtualization process stay alive, so the VM looked `running` while every guest request failed.
+
+### Detection
+
+`Client.status()` (`codex_linux_vm.py status`, `/api/desktop` `linuxVm`, the Linux VM settings)
+reports `state: failed` when the helper says `running` and one of these is true:
+
+- `console.log` has a `Kernel panic - not syncing:` line. The helper clears `console.log` at
+  each boot, so the line is from the current boot.
+- The guest answered `health` in this boot (same helper PID) and then gave no answer for
+  180 seconds, over at least 3 probes. The backend probes every 30 seconds and
+  `ensure_running` records the first answer, in `guest-health.json`. A booting or
+  provisioning guest is not a failure. A gap of more than 90 seconds between two probes
+  (Mac sleep, backend stop) starts a new span.
+
+The failed status has `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
+`helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
+also when the console of its last boot has a panic.
+
+### Recovery
+
+`codex_linux_vm_watchdog.py` runs in the macOS backend whose state directory holds the VM
+state (`<state>/linux-vm`). For a failed VM, including a helper that reports `failed`, it:
+
+1. Copies `console.log` to `console-crash-<UTC time>.log` (the newest 5 stay) and adds a
+   record to `watchdog.json`: time, reason, console tail (4 KiB), stage, outcome, and chats.
+2. Stops the VM, then starts it with `ensure_running`. This normal path also ensures the Mac
+   host_exec service, the guest clock, the guest configuration and the share mounts.
+3. Ends the provider connections of the dead boot (see "VM chats" below).
+
+Limits:
+
+- One restart in 10 minutes, and at most 4 in 24 hours. A held restart shows
+  `watchdog.held` (rule and time) in the status. The VM stays failed until the limits permit a
+  restart or an operator restarts it.
+- No restart while `upgrade-linux-vm-layr.py` holds `maintenance.lock` (for the whole upgrade),
+  or while create, start or stop holds `client.lock`. An upgrade does not start during a restart.
+- The watchdog acts only on a live helper and never starts a stopped VM.
+  `Client.stop()` saves `intent.json`, also for a stopped VM. A stop between the watchdog's
+  stop and its start cancels that start (outcome `cancelled`).
+- One exception: a backend stop can interrupt a restart between its stop and its start. The
+  next backend finishes that restart if it is less than 30 minutes old.
+- A failed start is recorded. The next attempt waits for the limits.
+
+`status()` shows the last restart and the number in the last 24 hours as `watchdog`.
+
+### VM chats
+
+A restart ends every guest provider. The watchdog uses the normal transport loss path for
+each chat that had a provider connection in the dead boot (`runtime.disconnected`):
+
+- A running turn becomes `interrupted` with an unknown outcome. Connection recovery checks it.
+- An input in dispatch becomes `uncertain`. Studio does not send a user message or a command
+  again.
+- The chat is offline. Its next message starts a new provider in the new boot.
+
+Each of these chats also gets one notice that tells the reason and the restart time.
+
+### Why not `panic=` and `guestDidStop`
+
+With the kernel option `panic=N`, the kernel resets after a panic. Virtualization then ends the
+VM, calls `guestDidStop`, and the helper exits with code 0. The VM then looks like a VM that a
+person stopped, so the backend still needs a loop that starts it and that knows a crash from a
+stop. That option also covers panics only, not a guest that hangs without a panic. It needs a
+new signed helper and a VM restart on each Mac. The host-side check covers both cases. It
+keeps the limits, the console copy, the records, the locks and the chat notices in one backend
+path, and a backend update delivers it. A panic shows at the next check (at most 30 seconds);
+a hang shows after 3 to 4 minutes.
+
 ## Checks
 
 Run checks one at a time:
 
 ```sh
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/vm-agents-contract.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_watchdog.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
 ```
 
 The first suite uses a local native provider fixture. It sends no model request.
-The second suite requires a provisioned isolated VM and explicit authority for live model requests.
+The second suite checks the watchdog with a fake helper. It starts no VM.
+The third suite requires a provisioned isolated VM and explicit authority for live model requests.
 Do not restart a VM or remove a journal that has an active or unknown provider result.
+The watchdog restarts only a guest that is dead or gives no answer: Studio cannot reach its providers.

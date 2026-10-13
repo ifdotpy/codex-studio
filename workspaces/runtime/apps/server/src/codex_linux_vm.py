@@ -199,7 +199,31 @@ def _kernel_image(compressed: bytes) -> bytes:
 def _provision_info(console: Path) -> dict[str, Any]:
     if not console.exists():
         return {}
-    log = console.read_text(errors='replace')
+    return _provision_from_log(console.read_text(errors='replace'))
+
+
+# The guest prints kernel messages on hvc0 with a time stamp, and the helper clears
+# console.log at each boot, so a match is a panic of the current boot.
+_PANIC = re.compile(r'(?m)(?:^|\[\s*\d+\.\d+\]\s*)Kernel panic - not syncing:[ \t]*([^\r\n]*)')
+# A guest that answered health in this boot and then gave no answer for this many
+# seconds, over at least UNANSWERED_PROBES probes, is dead (codex_linux_vm_watchdog).
+UNANSWERED_SECONDS = 180
+UNANSWERED_PROBES = 3
+# A longer gap between two probes (Mac sleep, backend stop) starts a new failing span.
+PROBE_GAP_SECONDS = 90
+_HEALTH_FILE = 'guest-health.json'
+_INTENT_FILE = 'intent.json'
+
+
+def _kernel_panic(log: str) -> str | None:
+    match = _PANIC.search(log)
+    if match is None:
+        return None
+    detail = re.sub(r'[^ -~]', '', match[1]).strip()[:200]
+    return 'Kernel panic - not syncing' + (': ' + detail if detail else '')
+
+
+def _provision_from_log(log: str) -> dict[str, Any]:
     failed = log.rfind('STUDIO_PROVISION_ERROR:')
     ready = log.rfind('STUDIO_PROVISION_READY')
     stages = re.findall(r'STUDIO_PROVISION_STAGE: ([a-z-]+)', log)
@@ -598,12 +622,90 @@ class Client:
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise LinuxVMError('Another VM operation exceeds the client lock timeout.')
+                        raise LinuxVMError('Another VM operation exceeds the client lock timeout.', code='lock_busy')
                     time.sleep(0.05)
             try:
                 yield
             finally:
                 fcntl.flock(lease, fcntl.LOCK_UN)
+
+    @contextmanager
+    def maintenance(self) -> Iterator[None]:
+        """Held for a whole VM upgrade or automatic restart. Neither starts while the other runs."""
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (self.state_dir / 'maintenance.lock').open('a') as lease:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise LinuxVMError('A VM upgrade or automatic restart holds the maintenance lock.',
+                                   code='maintenance_busy') from None
+            try:
+                yield
+            finally:
+                fcntl.flock(lease, fcntl.LOCK_UN)
+
+    def _read_json(self, name: str) -> dict[str, Any]:
+        try:
+            value = json.loads((self.state_dir / name).read_text())
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def intent(self) -> dict[str, Any]:
+        """The last start or stop: {'state', 'by', 'at'} and 'restart' while an automatic
+        restart is between its stop and its start."""
+        return self._read_json(_INTENT_FILE)
+
+    def _write_intent(self, state: str, by: str, restart: str | None = None) -> None:
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        value: dict[str, Any] = {'state': state, 'by': by, 'at': time.time()}
+        if restart is not None:
+            value['restart'] = restart
+        _atomic_json(self.state_dir / _INTENT_FILE, value)
+
+    def finish_restart(self, restart: str) -> None:
+        """Clear a pending automatic restart, unless a stop or start replaced it."""
+        with self._lock():
+            if self.intent().get('restart') == restart:
+                self._write_intent('running', 'watchdog')
+
+    def record_health(self, pid: Any, error: str | None, *, now: float | None = None) -> dict[str, Any]:
+        """Save one health probe of the helper with this PID (one boot)."""
+        if type(pid) is not int or not self.state_dir.is_dir():
+            return {}
+        now = time.time() if now is None else now
+        saved = self._read_json(_HEALTH_FILE)
+        if saved.get('helperPid') != pid:
+            saved = {'helperPid': pid, 'healthyAt': None}
+        previous = saved.get('lastProbeAt')
+        if error is None:
+            saved.update(healthyAt=now, failingSince=None, failures=0, error=None)
+        else:
+            if (saved.get('failingSince') is None or not isinstance(previous, (int, float))
+                    or now - previous > PROBE_GAP_SECONDS):
+                saved.update(failingSince=now, failures=0)
+            saved.update(failures=int(saved.get('failures') or 0) + 1, error=error[:300])
+        saved['lastProbeAt'] = now
+        _atomic_json(self.state_dir / _HEALTH_FILE, saved)
+        return saved
+
+    def _guest_failure(self, host: dict[str, Any], log: str) -> dict[str, Any] | None:
+        """A dead guest behind a helper that still reports running."""
+        if host.get('state') != 'running':
+            return None
+        panic = _kernel_panic(log)
+        if panic is not None:
+            return {'kind': 'kernel_panic', 'reason': panic}
+        health = self._read_json(_HEALTH_FILE)
+        since, last = health.get('failingSince'), health.get('lastProbeAt')
+        if (host.get('pid') is not None and health.get('helperPid') == host.get('pid')
+                and health.get('healthyAt') is not None
+                and isinstance(since, (int, float)) and isinstance(last, (int, float))
+                and int(health.get('failures') or 0) >= UNANSWERED_PROBES
+                and last - since >= UNANSWERED_SECONDS):
+            return {'kind': 'unanswered', 'since': since,
+                    'reason': f'The guest has not answered health for {int(last - since)} seconds.'}
+        return None
 
     def _channel(self, timeout: float, *, guest: bool = False) -> socket.socket:
         channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -667,8 +769,37 @@ class Client:
         if self.state_dir.exists():
             result['allocatedDiskBytes'] = sum(path.stat().st_blocks * 512 for path in self.state_dir.glob('*.raw'))
             result['freeHostBytes'] = shutil.disk_usage(self.state_dir).free
-        result['provision'] = _provision_info(self.state_dir / 'console.log')
+        try:
+            log: str | None = (self.state_dir / 'console.log').read_text(errors='replace')
+        except FileNotFoundError:
+            log = None
+        result['provision'] = {} if log is None else _provision_from_log(log)
+        failure = self._guest_failure(result, log or '')
+        if failure is not None:
+            # The helper and its Virtualization process stay alive after a guest panic.
+            result.update(state='failed', helperState='running', error=failure['reason'], guestFailure=failure)
+        from codex_linux_vm_watchdog import summary
+        watchdog = summary(self.state_dir)
+        if watchdog is not None:
+            result['watchdog'] = watchdog
         return result
+
+    def stop_failed(self, pid: Any, before_stop: Callable[[dict[str, Any]], None], *,
+                    timeout: float = 40) -> bool:
+        """Stop a failed VM for an automatic restart; False when it is no longer failed
+        with this helper. A held client lock (create, start, stop) raises 'lock_busy'."""
+        with self._lock(0):
+            state = self.status()
+            if state['state'] != 'failed' or state.get('pid') != pid:
+                return False
+            before_stop(state)
+            self._host('host.stop')
+            deadline = time.monotonic() + timeout
+            while self.status()['state'] != 'stopped':
+                if time.monotonic() >= deadline:
+                    raise LinuxVMError('The Linux VM did not stop within its timeout.', uncertain=True)
+                time.sleep(0.1)
+        return True
 
     def create(self, settings: Settings | None = None, *, timeout: float = 1500) -> dict[str, Any]:
         if not 0 < timeout <= 3600:
@@ -792,7 +923,10 @@ class Client:
         _atomic_json(path, {'port': port})
         return port
 
-    def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 3600) -> dict[str, Any]:
+    def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 3600,
+                       watchdog_restart: str | None = None) -> dict[str, Any]:
+        """Start the VM and wait for a healthy guest. With watchdog_restart, the start belongs
+        to that automatic restart: a stop or start since then cancels it."""
         if not 0 < timeout <= 3600:
             raise LinuxVMError('VM start timeout must be between 0 and 3600 seconds.')
         deadline = time.monotonic() + timeout
@@ -840,9 +974,13 @@ class Client:
                     self._refresh_provision_seed(deadline)
                     state = self.status()
             if state['state'] == 'stopped':
+                if watchdog_restart is not None and self.intent().get('restart') != watchdog_restart:
+                    raise LinuxVMError('A person or a command stopped the VM during its automatic restart. '
+                                       'It stays stopped.', code='stopped_on_purpose')
                 _require_space(self.state_dir, create=False)
                 if not self.helper.is_file() or not os.access(self.helper, os.X_OK):
                     raise LinuxVMError('The signed Linux VM helper is unavailable. Build desktop/native/linux-vm first.')
+                self._write_intent('running', 'start' if watchdog_restart is None else 'watchdog', watchdog_restart)
                 log_path = self.state_dir / 'helper.log'
                 if log_path.exists() and log_path.stat().st_size > 1024 * 1024:
                     log_path.write_bytes(log_path.read_bytes()[-512 * 1024:])
@@ -881,6 +1019,8 @@ class Client:
                         host_exec.configure_guest(self)
                     from codex_linux_vm_share import remount_registered
                     remount_registered(self)
+                    # The guest answered in this boot: from now on, no answer is a failure.
+                    self.record_health(state.get('pid'), None)
                     return {**state, 'health': health}
             info = _provision_info(self.state_dir / 'console.log')
             if info.get('state') == 'failed':
@@ -900,6 +1040,8 @@ class Client:
 
     def stop(self, *, timeout: float = 40) -> dict[str, Any]:
         with self._lock():
+            # A stop on purpose, also of a stopped VM: it cancels a pending automatic restart.
+            self._write_intent('stopped', 'stop')
             if self.status()['state'] == 'stopped':
                 return {'state': 'stopped'}
             self._host('host.stop')

@@ -21,6 +21,14 @@ def upgrade(state: Path, helper: Path, payload: Path, operation: str,
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', operation):
         raise ValueError('Use a bounded operation ID.')
     client = Client(state, helper=helper)
+    # The backend watchdog does not restart the VM while an upgrade holds this lock,
+    # and an upgrade does not start during an automatic restart.
+    with client.maintenance():
+        return _upgrade(client, helper, payload, operation, allowed_orphans)
+
+
+def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
+             allowed_orphans: set[str] | None) -> dict[str, Any]:
     allowed_orphans = allowed_orphans or set()
     for handle in allowed_orphans:
         if str(uuid.UUID(handle)) != handle:
