@@ -142,10 +142,21 @@ pub struct PostMessageResult {
     pub event_inserted: bool,
 }
 
-/// Preserve federation and group routing before accepting a managed-agent event.
-pub fn post_message_with_delivery(
+impl PostMessageResult {
+    /// Call only after the accepting transaction commits. Replays carry no new
+    /// work and must not signal the consumer again.
+    pub fn notify_committed(&self, wake: impl FnOnce()) {
+        if self.event_inserted {
+            wake();
+        }
+    }
+}
+
+/// The caller owns the transaction and publishes only after commit.
+pub fn post_message_with_admission(
     transaction: &Transaction<'_>,
     input: PostManagedMessage<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
     match post_message(
         transaction,
@@ -160,7 +171,7 @@ pub fn post_message_with_delivery(
             event_inserted: false,
         }),
         Err(CoordinationError::RequiresDependency("event-driver/message-send")) => {
-            post_managed_message(transaction, input)
+            post_managed_message(transaction, input, admission)
         }
         Err(error) => Err(error),
     }
@@ -169,6 +180,7 @@ pub fn post_message_with_delivery(
 fn post_managed_message(
     transaction: &Transaction<'_>,
     input: PostManagedMessage<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
     let text = crate::event_write::python_strip(input.text);
     if input.text.chars().count() > 32_000 || (text.is_empty() && input.assets.is_empty()) {
@@ -189,23 +201,6 @@ fn post_managed_message(
         "text": text,
         "assets": input.assets,
     }));
-    let receipt_id = input.id.to_owned();
-    if let Some(result) = crate::event_write::read_receipt(
-        transaction,
-        Some(&receipt_id),
-        &signature,
-        "runtime_events",
-        input.id,
-        |value| valid_message_receipt(value, input.id),
-    )
-    .map_err(event_write_error)?
-    {
-        return Ok(PostMessageResult {
-            receipt: result,
-            event_inserted: false,
-        });
-    }
-
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
         let metadata = QueueWriteRepository::metadata(transaction, input.id)?
             .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
@@ -224,16 +219,31 @@ fn post_managed_message(
             ));
         }
         return Ok(PostMessageResult {
-            receipt: json!({"id": input.id, "status": event.status, "error": event.error}),
+            receipt: studio_runtime_store::system_reads::validate(
+                "runtime_events",
+                input.id,
+                json!({"id": input.id, "status": event.status, "error": event.error}),
+            )?,
             event_inserted: false,
         });
     }
 
-    if !input.assets.is_empty() {
-        return Err(CoordinationError::RequiresDependency(
-            "payload-store/uploads",
-        ));
+    // An orphan receipt cannot prove that this event is still durable.
+    let receipt_id = input.id.to_owned();
+    if crate::event_write::read_receipt(
+        transaction,
+        Some(&receipt_id),
+        &signature,
+        "runtime_events",
+        input.id,
+        |value| valid_message_receipt(value, input.id),
+    )
+    .map_err(event_write_error)?
+    .is_some()
+    {
+        return Err(invalid_stored("runtime_events", input.id));
     }
+    crate::message_admission::attachments(input.assets)?;
 
     let root = if agent.root_id == agent.id {
         agent.clone()
@@ -246,16 +256,8 @@ fn post_managed_message(
         crate::event_write::assert_delegation(&root).map_err(event_write_error)?;
     }
     assert_native_thread_open(&agent)?;
-    refuse_if_workspace_blocked(transaction, &agent)?;
-    if root
-        .extra
-        .get("tokenBudget")
-        .is_some_and(|budget| !budget.is_null())
-    {
-        return Err(CoordinationError::RequiresDependency(
-            "budget-policy/message-admission",
-        ));
-    }
+    let blockers = admission.workspace(transaction, &agent)?;
+    admission.budget(transaction, &agent, &root)?;
 
     // A manual send wakes a stopped agent in the same transaction as the event.
     agent.extra.insert("autoWake".to_owned(), Value::Bool(true));
@@ -272,7 +274,7 @@ fn post_managed_message(
     QueueWriteRepository::put_metadata(
         transaction,
         input.id,
-        &json!({"assets": [], "acceptedAt": created, "delivery": input.delivery}),
+        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery}),
     )?;
     let inserted = crate::event_write::enqueue_event(
         transaction,
@@ -283,7 +285,10 @@ fn post_managed_message(
         created,
     )
     .map_err(event_write_error)?;
-    let result = json!({"id": input.id, "status": "queued"});
+    let mut result = json!({"id": input.id, "status": "queued"});
+    if !blockers.is_empty() {
+        result["waitingFor"] = json!(blockers);
+    }
     crate::event_write::save_receipt(transaction, Some(input.id), &signature, &result)
         .map_err(event_write_error)?;
 
@@ -416,63 +421,6 @@ fn assert_native_thread_open(
     Ok(())
 }
 
-fn refuse_if_workspace_blocked(
-    transaction: &Transaction<'_>,
-    agent: &studio_runtime_store::AgentRecord,
-) -> Result<(), CoordinationError> {
-    let cwd = agent.extra.get("cwd").and_then(Value::as_str);
-    let Some(cwd) = cwd else {
-        return Err(invalid_stored("runtime_agents", &agent.id.0));
-    };
-    let cwd = std::path::Path::new(cwd)
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(cwd));
-    let mut statement = transaction
-        .prepare(
-            "SELECT id FROM runtime_agents WHERE id != ?1 \
-         AND json_extract(record,'$.workspaceOperation') IS NOT NULL",
-        )
-        .map_err(StoreError::from)?;
-    let rows = statement
-        .query_map([&agent.id.0], |row| row.get::<_, String>(0))
-        .map_err(StoreError::from)?;
-    for row in rows {
-        let id = row.map_err(StoreError::from)?;
-        let other_agent =
-            crate::event_write::checked_agent(transaction, &id).map_err(event_write_error)?;
-        let Some(operation) = other_agent
-            .extra
-            .get("workspaceOperation")
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        let other_cwd = other_agent.extra.get("cwd").and_then(Value::as_str);
-        if other_cwd.is_some_and(|other_cwd| {
-            std::path::Path::new(other_cwd)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(other_cwd))
-                == cwd
-        }) && !matches!(operation, "checkpoint" | "capture")
-        {
-            return Err(CoordinationError::RequiresDependency(
-                "workspace-policy/message-admission",
-            ));
-        }
-    }
-    if agent
-        .extra
-        .get("workspaceOperation")
-        .and_then(Value::as_str)
-        .is_some_and(|operation| !matches!(operation, "checkpoint" | "capture"))
-    {
-        return Err(CoordinationError::RequiresDependency(
-            "workspace-policy/message-admission",
-        ));
-    }
-    Ok(())
-}
-
 fn capacity_reset(
     transaction: &Transaction<'_>,
     agent: &mut studio_runtime_store::AgentRecord,
@@ -489,7 +437,14 @@ fn capacity_reset(
             &agent.id.0,
             &id,
         )? {
-            Some(true) => {}
+            Some(true) => {
+                // Python capacity_save refreshes this clock when manual input
+                // replaces the retry, even if no provider turn was submitted.
+                transaction.execute(
+                    "UPDATE runtime_capacity_retries SET record=json_set(record,'$.updatedAt',?1) WHERE id=?2 AND agent=?3",
+                    rusqlite::params![crate::event_write::unix_time().map_err(event_write_error)?, id, agent.id.0],
+                )?;
+            }
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
             None => {
                 return Err(CoordinationError::RequiresDependency(
@@ -589,7 +544,7 @@ pub fn post_message(
         room: input.room.to_owned(),
         author: "user".to_owned(),
         text: text.to_owned(),
-        at: unix_time()?,
+        at: crate::event_write::unix_time().map_err(event_write_error)?,
         deliveries: serde_json::to_string(&Value::Object(deliveries.into_iter().collect()))
             .map_err(|_| CoordinationError::InvalidRequest("Invalid message delivery state"))?,
     };
@@ -927,7 +882,7 @@ fn invalid_stored(object: &'static str, id: &str) -> CoordinationError {
     }
 }
 
-fn event_write_error(error: crate::event_write::EventWriteError) -> CoordinationError {
+pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> CoordinationError {
     use crate::event_write::EventWriteError;
     match error {
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
@@ -953,13 +908,6 @@ fn event_write_error(error: crate::event_write::EventWriteError) -> Coordination
             CoordinationError::InvalidRequest("system clock is before the Unix epoch")
         }
     }
-}
-
-fn unix_time() -> Result<f64, CoordinationError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_secs_f64())
-        .map_err(|_| CoordinationError::InvalidRequest("system clock is before the Unix epoch"))
 }
 
 #[cfg(test)]

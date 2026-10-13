@@ -53,6 +53,7 @@ pub mod federation_delivery;
 pub mod federation_effects;
 pub mod federation_messaging;
 pub mod historical_input_receipts;
+pub mod message_admission;
 pub mod model_catalog;
 pub mod monitor_driver;
 pub mod monitor_output;

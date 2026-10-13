@@ -19,6 +19,9 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
+    pub message_admission:
+        Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
@@ -70,6 +73,7 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            message_admission: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,
