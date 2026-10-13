@@ -195,6 +195,54 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(status['error'], 'Kernel panic - not syncing: corrupted stack end detected inside scheduler')
         self.assertEqual(status['guestFailure']['kind'], 'kernel_panic')
 
+    def assert_dead(self, line: str, kind: str, reason: str) -> None:
+        (self.directory / 'console.log').write_text(
+            'STUDIO_PROVISION_READY\n[  412.100000] BTRFS info (device vdb): first mount of filesystem\n' + line)
+        status = self.client.status()
+        self.assertEqual((status['state'], status['guestFailure']['kind']), ('failed', kind))
+        self.assertEqual(status['error'], reason)
+        self.assertEqual(self.watchdog.check(), 'restarted')
+        self.assertEqual(self.records()[0]['reason'], reason)
+
+    def test_a_kernel_oops_is_a_proven_death(self) -> None:
+        # 2026-10-13, igor-mbp: guest memory zeroed under host memory pressure.
+        self.assert_dead(
+            '[ 9001.120000] Internal error: Oops - Undefined instruction: 0000000002000000 [#1] SMP\n'
+            '[ 9001.120100] pc : autofs_show_options+0x0/0x240 [autofs4]\n'
+            '[ 9001.120200] Code: ???????? ???????? 00000000 00000000 (00000000)\n',
+            'kernel_error', 'Internal error: Oops - Undefined instruction: 0000000002000000 [#1] SMP')
+
+    def test_unable_to_handle_kernel_is_a_proven_death(self) -> None:
+        self.assert_dead(
+            '[  77.000001] Unable to handle kernel paging request at virtual address dead000000000108\n',
+            'kernel_error', 'Unable to handle kernel paging request at virtual address dead000000000108')
+
+    def test_a_kernel_bug_is_a_proven_death(self) -> None:
+        self.assert_dead('[  88.500000] BUG: Bad page state in process btrfs  pfn:12345\n',
+                         'kernel_error', 'BUG: Bad page state in process btrfs  pfn:12345')
+
+    def test_a_kernel_general_protection_fault_is_a_proven_death(self) -> None:
+        self.assert_dead('[  99.000000] general protection fault: 0000 [#1] SMP\n',
+                         'kernel_error', 'general protection fault: 0000 [#1] SMP')
+
+    def test_ordinary_kernel_and_service_lines_are_not_a_death(self) -> None:
+        (self.directory / 'console.log').write_text('\n'.join([
+            'STUDIO_PROVISION_READY',
+            '[  412.100000] BTRFS info (device vdb): first mount of filesystem 1234',
+            '[  412.200000] BTRFS info (device vdb): using crc32c (crc32c-generic) checksum algorithm',
+            '[  500.000000] audit: type=1400 audit(1760000000.000:42): apparmor="STATUS"',
+            # A stall that can pass under host load, not a kernel error.
+            '[  600.000000] watchdog: BUG: soft lockup - CPU#2 stuck for 23s! [kworker/2:1H:97]',
+            '[  601.000000] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:',
+            # A user process fault, not the kernel.
+            '[  700.000000] traps: python3[4242] general protection fault ip:7f00 sp:7ffd error:0 in libc.so.6',
+            'systemd[1]: Starting codex-studio-guest.service...',
+            'grep "Internal error: Oops" /var/log/kern.log',
+            '']))
+        self.assertEqual(self.client.status()['state'], 'running')
+        self.assertEqual(self.watchdog.check(), 'running')
+        self.assertEqual(self.helper.stops, 0)
+
     def test_panic_words_in_other_output_and_an_old_console_are_not_a_failure(self) -> None:
         (self.directory / 'console.log').write_text(
             'STUDIO_PROVISION_READY\nsearch: grep "Kernel panic - not syncing: x" /var/log/syslog\n')

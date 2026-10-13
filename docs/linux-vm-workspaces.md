@@ -113,8 +113,15 @@ Virtualization process stay alive, so the VM looked `running` while every guest 
 `Client.status()` (`codex_linux_vm.py status`, `/api/desktop` `linuxVm`, the Linux VM settings)
 reports two states when the helper says `running`:
 
-- `failed`: `console.log` has a `Kernel panic - not syncing:` line. The helper clears
-  `console.log` at each boot, so the line is from the current boot. This is a proven death.
+- `failed`: a kernel line in `console.log` starts with `Kernel panic - not syncing:`,
+  `Internal error: Oops`, `Unable to handle kernel`, `BUG: ` or `general protection fault`.
+  The helper clears `console.log` at each boot, so the line is from the current boot. After
+  a panic, an oops or a kernel BUG the kernel is no longer trustworthy, so this is a proven
+  death. On 2026-10-13 an oops in autofs4 (guest memory zeroed under host memory pressure)
+  was followed by oopses in each reader of the mount table, and `btrfs send` hung in D state
+  for hours, which the host cannot see. The text must start the kernel line:
+  `watchdog: BUG: soft lockup` (a stall that can pass under host load) and
+  `traps: <process> general protection fault` (a user process) are not a death.
 - `unresponsive`: the guest answered in this boot (same helper PID) and then gave no answer
   for 180 seconds, over at least 3 probes. The backend probes every 30 seconds and
   `ensure_running` records the first answer, in `guest-health.json`. A booting or provisioning
@@ -192,11 +199,12 @@ Each of these chats also gets one notice that tells the reason and the restart t
 With the kernel option `panic=N`, the kernel resets after a panic. Virtualization then ends the
 VM, calls `guestDidStop`, and the helper exits with code 0. The VM then looks like a VM that a
 person stopped, so the backend still needs a loop that starts it and that knows a crash from a
-stop. It needs a new signed helper and a VM restart on each Mac. The host-side check reads the
-same panic line from the console. It keeps the limits, the console copy, the records, the
-locks and the chat notices in one backend path, and a backend update delivers it. It also
-shows a guest that gives no answer, without a restart. A panic is restarted at the next check
-(at most 30 seconds); an unresponsive guest shows after 3 to 4 minutes.
+stop. It needs a new signed helper and a VM restart on each Mac, and an oops that does not
+panic never resets the kernel. The host-side check reads the panic line and the oops lines
+from the console. It keeps the limits, the console copy, the records, the locks and the chat
+notices in one backend path, and a backend update delivers it. It also shows a guest that gives
+no answer, without a restart. A dead kernel is restarted at the next check (at most
+30 seconds); an unresponsive guest shows after 3 to 4 minutes.
 
 ## Checks
 
