@@ -17,6 +17,10 @@ const LEGACY_ADDRESS_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search_rows",
     columns: &["id", "search_rowid"],
 }];
+const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_item_fulltext",
+    columns: &["id", "body"],
+}];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
@@ -50,7 +54,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: BOOTSTRAP_TABLES,
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

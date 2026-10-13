@@ -35,8 +35,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let (rules, agents) =
-            RulesRepository::list(&connection).map_err(|_| ApiError::internal())?;
+        let (rules, agents) = RulesRepository::list(&connection).map_err(store_api_error)?;
         rules::visible_rules(rules, agents).map_err(rules_error)
     })
     .await
@@ -184,7 +183,7 @@ async fn update(
                         "fingerprint": fingerprint,
                         "minimumWorkers": if kind == "low_workers" { body.get("minimumWorkers").cloned().unwrap_or(json!(8)) } else { Value::Null },
                         "durationMinutes": if kind == "low_workers" { body.get("durationMinutes").cloned().unwrap_or(json!(30)) } else { Value::Null },
-                        "lowSince": Value::Null, "alerted": Value::Null,
+                        "lowSince": Value::Null, "alerted": Value::Bool(false),
                     });
                     let value = strip_null_low_worker_fields(value, kind);
                     if let Some(old) = old_record.filter(|old| kind == "low_workers" && low_worker_rule_unchanged(old, &value)) {
@@ -242,13 +241,22 @@ fn active_check_error() -> ApiError {
         .unwrap_or_else(|_| ApiError::internal())
 }
 
-fn store_api_error(_error: impl std::fmt::Debug) -> ApiError {
-    ApiError::internal()
+fn store_api_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = table.strip_prefix("runtime_").unwrap_or(table);
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
+        _ => ApiError::internal(),
+    }
 }
 
 impl From<StoreError> for ApiError {
-    fn from(_: StoreError) -> Self {
-        Self::internal()
+    fn from(error: StoreError) -> Self {
+        store_api_error(error)
     }
 }
 

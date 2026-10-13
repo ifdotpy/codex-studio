@@ -232,7 +232,7 @@ impl JsonRecord for AgentRecord {
     type Id = AgentId;
 
     const TABLE: &'static str = "runtime_agents";
-    const SCHEMA: &'static str = "AgentRecordResponse";
+    const SCHEMA: &'static str = "PersistedAgentRecord";
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
 
@@ -1075,24 +1075,24 @@ mod tests {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
         let invalid = agent(json!({
-            "id":"invalid-status","rootId":"invalid-status","epoch":0,
-            "status":"future-agent-state"
+            "id":"invalid-epoch","rootId":"invalid-epoch","epoch":9007199254740992_i64,
+            "status":"idle"
         }));
         assert!(matches!(
             table.put(&invalid).expect_err("invalid record is not written"),
             StoreError::InvalidStoredObject { table: "runtime_agents", id }
-                if id == "invalid-status"
+                if id == "invalid-epoch"
         ));
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-status','{\"id\":\"invalid-status\",\"rootId\":\"invalid-status\",\"epoch\":0,\"status\":\"future-agent-state\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-epoch','{\"id\":\"invalid-epoch\",\"rootId\":\"invalid-epoch\",\"epoch\":9007199254740992,\"status\":\"idle\"}')",
                 [],
             )
             .expect("invalid record fixture inserts");
         assert!(matches!(
             table.list().expect_err("schema-invalid record is not returned"),
             StoreError::InvalidStoredObject { table: "runtime_agents", id }
-                if id == "invalid-status"
+                if id == "invalid-epoch"
         ));
     }
 

@@ -8,12 +8,14 @@ use crate::records::{AgentId, AgentRecord, MonitorRecord, RuleRecord, Table};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{SchemaRequirements, TableRequirement};
 
+const RULE_TABLE: TableRequirement = TableRequirement {
+    name: "runtime_rules",
+    columns: &["id", "record"],
+};
+
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
-        TableRequirement {
-            name: "runtime_rules",
-            columns: &["id", "record"],
-        },
+        RULE_TABLE,
         TableRequirement {
             name: "runtime_agents",
             columns: &["id", "record"],
@@ -27,7 +29,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[RULE_TABLE],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

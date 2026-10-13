@@ -8,7 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.history.models import TranscriptRecord
 from studio_api.accounts.models import UsageLimitsResponse
-from studio_api.models import ContractModel, JsonValue, SafeInt
+from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 
 
 def _unicode_scalar(value: str) -> str:
@@ -52,6 +52,20 @@ class PersistedTranscriptAsset(ContractModel):
     size: SafeInt
     hash: StrictStr
     created: float
+
+
+class PersistedAgentRecord(ContractModel):
+    """Persisted agent identity plus the extensible state written by the runtime."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    rootId: StrictStr
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    status: StrictStr
+    sandbox: dict[StrictStr, JsonValue] | None = None
+    approvalPolicy: StrictStr | None = None
 
 
 class PersistedTranscriptRecord(TranscriptRecord):
@@ -133,6 +147,7 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,

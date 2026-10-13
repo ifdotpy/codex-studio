@@ -14,6 +14,7 @@ const TRANSCRIPT_ASSET_URI: &str =
 const TRANSCRIPT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-transcript-record.schema.json";
 const EVENT_METADATA_URI: &str = "https://codex-studio.invalid/runtime-event-metadata.schema.json";
+const AGENT_RECORD_URI: &str = "https://codex-studio.invalid/persisted-agent-record.schema.json";
 
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
@@ -21,6 +22,7 @@ const USAGE_LIMITS: &[u8] = include_bytes!("schemas/workspace-usage-limits.schem
 const TRANSCRIPT_ASSET: &[u8] = include_bytes!("schemas/runtime-transcript-asset.schema.json");
 const TRANSCRIPT_RECORD: &[u8] = include_bytes!("schemas/persisted-transcript-record.schema.json");
 const EVENT_METADATA: &[u8] = include_bytes!("schemas/runtime-event-metadata.schema.json");
+const AGENT_RECORD: &[u8] = include_bytes!("schemas/persisted-agent-record.schema.json");
 
 type SchemaResult<T> = Result<T, String>;
 
@@ -42,6 +44,8 @@ pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistr
         .map_err(|error| format!("cannot parse persisted transcript-record schema: {error}"))?;
     let event_metadata: Value = serde_json::from_slice(EVENT_METADATA)
         .map_err(|error| format!("cannot parse event-metadata schema: {error}"))?;
+    let agent_record: Value = serde_json::from_slice(AGENT_RECORD)
+        .map_err(|error| format!("cannot parse persisted-agent-record schema: {error}"))?;
     registry_for_documents(
         document,
         &account_registry,
@@ -49,6 +53,7 @@ pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistr
         &transcript_asset,
         &transcript_record,
         &event_metadata,
+        &agent_record,
     )
 }
 
@@ -59,6 +64,7 @@ fn registry_for_documents<'document>(
     transcript_asset: &Value,
     transcript_record: &Value,
     event_metadata: &Value,
+    agent_record: &Value,
 ) -> SchemaResult<JsonSchemaRegistry<'document>> {
     JsonSchemaRegistry::new()
         .draft(Draft::Draft202012)
@@ -90,6 +96,11 @@ fn registry_for_documents<'document>(
         .add(
             EVENT_METADATA_URI,
             jsonschema::Resource::from_contents(event_metadata.clone()),
+        )
+        .map_err(|error| error.to_string())?
+        .add(
+            AGENT_RECORD_URI,
+            jsonschema::Resource::from_contents(agent_record.clone()),
         )
         .map_err(|error| error.to_string())?
         .prepare()
@@ -144,6 +155,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         .map_err(|error| format!("cannot parse persisted transcript-record schema: {error}"))?;
     let event_metadata: Value = serde_json::from_slice(EVENT_METADATA)
         .map_err(|error| format!("cannot parse event-metadata schema: {error}"))?;
+    let agent_record: Value = serde_json::from_slice(AGENT_RECORD)
+        .map_err(|error| format!("cannot parse persisted-agent-record schema: {error}"))?;
     let registry = registry_for_documents(
         &openapi,
         &account_registry,
@@ -151,6 +164,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         &transcript_asset,
         &transcript_record,
         &event_metadata,
+        &agent_record,
     )?;
     let mut validators = BTreeMap::new();
 
@@ -184,6 +198,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        ("PersistedAgentRecord", AGENT_RECORD_URI),
         (
             "account-registry/AccountRegistryRecord",
             ACCOUNT_REGISTRY_URI,
@@ -264,6 +279,61 @@ mod tests {
                 &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
             )
             .expect("agent schema exists")
+        );
+        assert!(
+            validate(
+                "PersistedAgentRecord",
+                &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
+            validate(
+                "PersistedAgentRecord",
+                &json!({
+                    "id":"agent-1",
+                    "rootId":"agent-1",
+                    "epoch":0,
+                    "status":"idle",
+                    "sandbox":null,
+                    "approvalPolicy":null
+                })
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
+            validate(
+                "PersistedAgentRecord",
+                &json!({
+                    "id":"agent-1",
+                    "rootId":"agent-1",
+                    "epoch":0,
+                    "status":"idle",
+                    "sandbox":{},
+                    "approvalPolicy":"never"
+                })
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
+            !validate(
+                "PersistedAgentRecord",
+                &json!({"id":"agent-1","rootId":null,"epoch":0,"status":"idle"})
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
+            !validate(
+                "PersistedAgentRecord",
+                &json!({
+                    "id":"agent-1",
+                    "rootId":"agent-1",
+                    "epoch":0,
+                    "status":"idle",
+                    "sandbox":"workspace-write"
+                })
+            )
+            .expect("persisted agent schema exists")
         );
         assert!(validate(
             "WorkItem",

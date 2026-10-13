@@ -1,0 +1,57 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Persisted agent identity plus the extensible state written by the runtime.",
+  "properties": {
+    "approvalPolicy": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Approvalpolicy"
+    },
+    "epoch": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Epoch",
+      "type": "integer"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "rootId": {
+      "title": "Rootid",
+      "type": "string"
+    },
+    "sandbox": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Sandbox"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": ["id", "rootId", "epoch", "status"],
+  "title": "PersistedAgentRecord",
+  "type": "object"
+}

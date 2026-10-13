@@ -192,6 +192,7 @@ fn questions_error(error: QuestionsReadsError) -> ApiError {
 }
 
 fn invalid_stored_object(object: &'static str, id: &str) -> ApiError {
+    let object = object.strip_prefix("runtime_").unwrap_or(object);
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("Invalid stored object {object}/{id}"),

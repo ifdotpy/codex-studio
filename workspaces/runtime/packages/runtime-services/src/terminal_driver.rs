@@ -857,7 +857,7 @@ mod tests {
             .arg(server_source.join("codex_python.py"))
             .arg("--exec")
             .arg("-c")
-            .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; Canvas(pathlib.Path(sys.argv[1]))")
+            .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; from codex_terminals import TerminalManager; root = pathlib.Path(sys.argv[1]); Canvas(root); TerminalManager(root)")
             .arg(&root)
             .arg(&server_source)
             .env("PYTHONDONTWRITEBYTECODE", "1")

@@ -6,22 +6,24 @@ use crate::StoreResult;
 use crate::records::{Table, TranscriptAssetId, TranscriptAssetRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 
+const TABLES: &[TableRequirement] = &[
+    TableRequirement {
+        name: "runtime_agents",
+        columns: &["id", "record"],
+    },
+    TableRequirement {
+        name: "runtime_assets",
+        columns: &["id", "record"],
+    },
+];
+
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[
-        TableRequirement {
-            name: "runtime_agents",
-            columns: &["id", "record"],
-        },
-        TableRequirement {
-            name: "runtime_assets",
-            columns: &["id", "record"],
-        },
-    ],
+    tables: TABLES,
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TABLES[1]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -54,7 +56,20 @@ mod tests {
             .expect("asset query works")
             .expect("asset exists");
         assert_eq!(asset.id().as_ref(), "asset");
-        assert_eq!(asset.value(), &serde_json::json!({"id":"asset"}));
+        assert_eq!(
+            asset.value(),
+            &serde_json::json!({
+                "id": "asset",
+                "agent": "agent",
+                "name": "a.txt",
+                "path": "/tmp/a.txt",
+                "mime": "text/plain",
+                "image": false,
+                "size": 1,
+                "hash": "h",
+                "created": 0,
+            })
+        );
         assert!(
             WorkspaceFilesRepository::asset(&db, "missing")
                 .expect("missing asset query works")

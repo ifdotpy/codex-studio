@@ -18,7 +18,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[PROFILE_TABLE],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

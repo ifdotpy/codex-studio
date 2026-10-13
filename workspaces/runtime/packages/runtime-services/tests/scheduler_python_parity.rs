@@ -16,6 +16,7 @@ const CREATE_PYTHON_EVENTS: &str = r#"
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[2])
 from codex_canvas import Canvas
+from codex_terminals import TerminalManager
 from codex_runtime import Runtime
 from codex_wakeups import pending_batch
 class QuietRuntime(Runtime):
@@ -23,6 +24,7 @@ class QuietRuntime(Runtime):
         return
 root = pathlib.Path(sys.argv[1])
 Canvas(root)
+TerminalManager(root)
 runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.create({"name":"scheduler fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
 agent["autoWake"] = True

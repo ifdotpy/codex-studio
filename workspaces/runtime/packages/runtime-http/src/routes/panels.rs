@@ -261,6 +261,13 @@ fn validation_error(field: &'static str) -> ApiError {
 
 fn profile_read_error(error: StoreError) -> ApiError {
     match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = table.strip_prefix("runtime_").unwrap_or(table);
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
         StoreError::SchemaMismatch(message)
             if message.starts_with("Invalid stored object profiles/") =>
         {

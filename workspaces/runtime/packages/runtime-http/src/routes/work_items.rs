@@ -285,6 +285,10 @@ pub(crate) fn write_error(error: EventWriteError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
+        EventWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table,
+            id,
+        }) => invalid_stored(table, &id),
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
     }
 }

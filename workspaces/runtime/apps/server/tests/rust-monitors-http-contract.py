@@ -33,7 +33,7 @@ try:
         "id": "monitor-contract-agent", "rootId": "monitor-contract-agent", "epoch": 0,
         "status": "idle", "name": "Monitor contract agent", "role": "orchestrator",
         "cwd": str(Path(os.environ["CODEX_CANVAS_CWD"])), "isLead": True,
-        "autoWake": True, "approvalPolicy": "never", "sandbox": "workspace-write",
+        "autoWake": True, "approvalPolicy": "never", "sandbox": dict(),
     }}
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent)
@@ -315,7 +315,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             self.assertEqual(database.execute("SELECT record FROM runtime_rules WHERE id='low-rule'").fetchone()[0], before)
-            database.execute("UPDATE runtime_rules SET record=json_set(record,'$.restartCheck',true,'$.error','old','$.previousOutcome','old','$.lowSince',123,'$.alerted',true,'$.minimumWorkers',4) WHERE id='low-rule'")
+            database.execute("UPDATE runtime_rules SET record=json_set(record,'$.restartCheck',json('{\"epoch\":0,\"checks\":0,\"monitorId\":\"stale\"}'),'$.error','old','$.previousOutcome','old','$.lowSince',123,'$.alerted',json('true'),'$.minimumWorkers',4) WHERE id='low-rule'")
         interval = {
             "action": "save", "id": "low-rule", "agent": "monitor-contract-agent",
             "name": "Replacement", "kind": "interval", "text": "fresh",

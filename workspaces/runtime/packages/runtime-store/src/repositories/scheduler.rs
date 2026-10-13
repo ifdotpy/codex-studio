@@ -34,7 +34,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TABLES[2]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -777,7 +777,7 @@ mod tests {
 
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent is queued with unresolved attempt");
@@ -814,7 +814,7 @@ mod tests {
             .expect("claim executes");
         transaction
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent epoch advances");
@@ -1011,7 +1011,10 @@ mod tests {
             .expect("recovery transaction begins");
         assert!(matches!(
             SchedulerRepository::recover_unsubmitted(&transaction),
-            Err(crate::StoreError::InvalidSyncObject { .. })
+            Err(crate::StoreError::InvalidSyncObject {
+                scope,
+                id,
+            }) if scope == "runtime_agents" && id == "agent"
         ));
         transaction.rollback().expect("refused recovery rolls back");
         let status: String = connection
@@ -1029,7 +1032,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false'))",
                 [],
             )
             .expect("disabled autowake writes");

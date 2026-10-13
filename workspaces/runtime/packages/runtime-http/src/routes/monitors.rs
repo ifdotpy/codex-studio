@@ -13,7 +13,7 @@ use super::extractors::{ApiHeaders, QueryParams};
 use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
-use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository};
+use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository, StoreError};
 
 const LOG_CHUNK_BYTES: u64 = 65_536;
 
@@ -46,7 +46,7 @@ async fn log(
     let prepared = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let monitor = MonitorsRepository::get(&connection, &id)
-            .map_err(|_| ApiError::internal())?
+            .map_err(store_read_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
         let monitor_id = monitor.id().as_ref();
         let value = monitor.value();
@@ -55,7 +55,7 @@ async fn log(
             .and_then(Value::as_str)
             .ok_or_else(|| invalid_monitor(monitor_id))?;
         let agent = AgentRepository::get(&connection, &AgentId::from(owner))
-            .map_err(|_| ApiError::internal())?
+            .map_err(store_read_error)?
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
         let agent_value = agent.value();
         if agent_value.get("deletedAt").is_some_and(is_truthy) {
@@ -276,6 +276,19 @@ fn invalid_monitor(id: &str) -> ApiError {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!("Invalid stored object monitors/{id}"),
     )
+}
+
+fn store_read_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = table.strip_prefix("runtime_").unwrap_or(table);
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
+        _ => ApiError::internal(),
+    }
 }
 
 fn is_truthy(value: &Value) -> bool {
