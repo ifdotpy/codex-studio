@@ -6,6 +6,9 @@ use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use tokio::sync::oneshot;
 const CREATE_AGENTS: &str = r#"
 import json, pathlib, sys
+sys.path.insert(0, sys.argv[4])
+from oracle_guard import install_guard
+_GUARD = install_guard()  # Runtime initialization owns a local Node crypto helper.
 sys.path.insert(0, sys.argv[2])
 from codex_runtime import Runtime
 class QuietRuntime(Runtime):
@@ -236,6 +239,7 @@ impl State {
                 .arg(&root)
                 .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"))
                 .arg("1")
+                .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle"))
                 .env("PYTHONDONTWRITEBYTECODE", "1")
                 .output()
                 .unwrap();
