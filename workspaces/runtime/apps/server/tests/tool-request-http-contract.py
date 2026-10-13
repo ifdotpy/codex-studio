@@ -39,7 +39,7 @@ class ToolRequestHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_provider_tool_request_is_recoverable_and_scoped_by_actor(self) -> None:
         lead = self.create_lead()
-        message_id = "tool-request-http-contract-message"
+        message_id = "10000000-0000-4000-8000-000000000103"
         sent = self.backend.request(
             "POST", "/api/messages",
             body={"id": message_id, "room": lead, "text": "Exercise the replayed tool request.",
