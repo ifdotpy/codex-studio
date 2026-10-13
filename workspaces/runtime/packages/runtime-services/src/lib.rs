@@ -1,4 +1,4 @@
-//! Synchronous application services between the HTTP edge and the store,
+//! Application services between the HTTP edge and the store,
 //! provider and process crates.
 //!
 //! Each service is one leaf module owned by one slice. A service takes
@@ -16,6 +16,7 @@ pub mod notification_dispatch;
 pub mod panels;
 pub mod progress_panel;
 pub mod provider_session;
+pub mod provider_session_task;
 pub mod questions_reads;
 pub mod queue_write;
 pub mod rules;

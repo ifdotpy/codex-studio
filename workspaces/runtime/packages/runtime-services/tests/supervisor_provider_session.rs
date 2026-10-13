@@ -281,6 +281,18 @@ for line in sys.stdin:
         ("PYTHONUNBUFFERED".into(), "1".into()),
         ("AUDIT_PATH".into(), audit.to_string_lossy().into_owned()),
         ("PATH".into(), "/usr/bin".into()),
+        ("HOME".into(), workspace.to_string_lossy().into_owned()),
+        (
+            "CODEX_HOME".into(),
+            workspace.join("codex-home").to_string_lossy().into_owned(),
+        ),
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            workspace
+                .join("claude-config")
+                .to_string_lossy()
+                .into_owned(),
+        ),
     ]);
     ProviderLaunchSpec::new(
         vec![python, "-u".into(), "-c".into(), script.into()],
@@ -304,6 +316,18 @@ for line in sys.stdin:
             ("PYTHONUNBUFFERED".into(), "1".into()),
             ("AUDIT_PATH".into(), audit.to_string_lossy().into_owned()),
             ("PATH".into(), "/usr/bin".into()),
+            ("HOME".into(), workspace.to_string_lossy().into_owned()),
+            (
+                "CODEX_HOME".into(),
+                workspace.join("codex-home").to_string_lossy().into_owned(),
+            ),
+            (
+                "CLAUDE_CONFIG_DIR".into(),
+                workspace
+                    .join("claude-config")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         ]),
         workspace.to_path_buf(),
     )
@@ -488,7 +512,21 @@ for line in sys.stdin:
         handle.clone(),
         ProviderLaunchSpec::new(
             vec![python_executable(), "-u".into(), "-c".into(), script.into()],
-            BTreeMap::from([("PATH".into(), "/usr/bin".into())]),
+            BTreeMap::from([
+                ("PATH".into(), "/usr/bin".into()),
+                ("HOME".into(), workspace.to_string_lossy().into_owned()),
+                (
+                    "CODEX_HOME".into(),
+                    workspace.join("codex-home").to_string_lossy().into_owned(),
+                ),
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    workspace
+                        .join("claude-config")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            ]),
             workspace,
         ),
     );
@@ -522,6 +560,7 @@ for line in sys.stdin:
 }
 
 #[test]
+#[ignore = "thread-based session: detach before the initialized write completes (review 4, A6); replaced by readiness_requires_real_initialized_receipt_and_stable_identity"]
 fn claude_initialize_reuses_cached_child_and_deduplicates_initialized() {
     let mut harness = DisposableSupervisor::new();
     let workspace = harness.root.join("provider-workspace");

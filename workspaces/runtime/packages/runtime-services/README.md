@@ -7,10 +7,12 @@
   per service.
 - **Public interface:** each service module's functions and port traits.
 - **Allowed dependencies:** `studio-runtime-store`, `studio-runtime-providers`,
-  `studio-runtime-process`, `studio-operations`.
-- **Forbidden dependencies:** `studio-runtime-http`, Axum, Tokio, the server
+  `studio-runtime-process`, `studio-operations`; Tokio and the existing
+  `futures-util` for the provider session task.
+- **Forbidden dependencies:** `studio-runtime-http`, Axum, the server
   application, the Python runtime.
-- **Invariants:** synchronous code only; no service holds a store transaction
+- **Invariants:** application decisions remain synchronous; the provider session
+  task owns asynchronous orchestration. No service holds a store transaction
   across a call into a provider or process port; an outcome that cannot be
   observed is reported as unknown and never retried here.
 - **Focused check:** `cargo nextest run -p studio-runtime-services`.
@@ -211,3 +213,105 @@ On macOS, Rust currently reports the named reason
 unchanged. Python can read passive Keychain authentication through its
 Security.framework helper; this slice does not add platform APIs or a new
 dependency to reproduce that behavior.
+
+## Provider session task
+
+`provider_session_task::SessionHandle::open(factory, handle, options, config)`
+validates the recovered book and the actual initialize command before opening
+anything. It returns before socket startup. No routes, account workers, or old
+thread-based session callers use this module yet.
+
+The handle owns `events: mpsc::Receiver<SessionEvent>`,
+`status: watch::Receiver<SessionStatus>`, and a cloneable `control: SessionControl`.
+Clone control to select admission futures alongside event reception. Control has:
+
+- `prepare(RequestSpec).await -> Result<PreparedRequest, SessionTaskError>`;
+- `submit(PreparedRequest).await -> Result<RequestTicket, SessionTaskError>`;
+- `prepare_frame(OperationId, &Frame)` and `submit_frame(PreparedFrame).await`
+  for callback responses and recognized notifications;
+- `settled(EventCursor).await` after the consumer commits durable settlement;
+- `cancel()` to signal shutdown independently of every bounded lane.
+
+The account supplies durable, unique request/operation identities, prepares before
+committing Submitted, then submits once. `PreparedRequest::deadline_ms()` and
+`recovery_record()` expose the original deadline and recovery intent before that
+commit. Preparation starts the deadline; persistence or admission delay never
+restarts it. The prepared record is intent, not evidence of a provider write.
+`AdmissionUnknown` means the admission
+receipt was lost; never resubmit. Other admission errors mean no write was admitted.
+Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
+Keep each admission future pinned/owned across unrelated select outcomes. Dropping
+its owner before observing the result fences the session, including a buffered
+result; ordinary polling by mutable reference does not fence it.
+
+Written request outcomes include `recovery: Some(RecoveredRequest)` containing
+`ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and
+`remote_id`.
+Persist this correlation record with the write outcome; numeric requests need the
+remote-to-local ID mapping after reattach. Supply these records through
+`SessionTaskConfig.recovered`; the session installs the adapter mappings before
+opening. Preserve the original deadline and update `unknown` when durable Unknown
+is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
+Recovery restores serialized thread ownership; a lightweight request does not
+reserve its thread. Conflicting recovered serialized owners are refused before
+open. All 32 unresolved requests can be recovered; initialization has a separate
+record slot. Merge late Written evidence by request/operation identity, preserving
+any durable Unknown flag. A late write receipt must not resurrect a request already
+durably resolved; restore only unresolved records.
+Deadlines and journal timestamps use the supplied `SessionClock` epoch. Preserve
+that epoch across reattachment in a running process; across runtime restart the
+account/store layer must translate its durable deadline into the new clock epoch.
+A missing remote ID after an uncertain write is still uncertainty, not evidence
+of NotSent or permission to resend.
+
+Crash window: Submitted is durable, but Written is not. This includes a crash
+before submit reaches the supervisor and a crash after acceptance but before the
+consumer persists Written. Restore the prepared record and keep the request Unknown;
+never resend it. Without the missing numeric correlation, a replayed reply remains
+an orphan envelope for durable reconciliation rather than a guessed local match.
+Protocol v1 returns the stored remote ID with `duplicate: true`, without writing
+stdin again, when a repeated operation ID has the same payload digest. However,
+if that operation ID is absent it accepts and writes the request. Its
+`operationStatus` lookup only supports `monitor:` identities, not arbitrary
+request operation IDs. Therefore repeating a write is not a safe receipt lookup
+for this crash window, and SessionControl exposes no such reconciliation call.
+
+Replies and deadlines are pure `RequestOutcome` decisions. The shared clock in
+OpenOptions timestamps arrival before the session consumes a journal entry;
+`receive_at` keeps lateness independent of timer/consumer scheduling.
+
+Each `SessionEvent` contains at most one original journal entry (including raw
+stdout, stderr, exit, initialization and orphan replies) plus bounded outcomes.
+Never settle a cursor just because it was read. Only a contiguous prefix of
+consumer-settled entries is ACKed. Control.settled success records that intent;
+it does not claim the supervisor already accepted the ACK. The settlement window
+is 64 entries, unresolved requests 32, each external lane 16, and pending callbacks 34. Each admitted request reserves its prepared write in its bounded record; callback
+capacity cannot prevent a serialized successor from being released. There are two
+retained event slots and one bounded pure transition batch. Non-shutdown select
+arms are unbiased; ACKs and writes alternate when both are ready, as do request
+and callback writes.
+
+Readiness is AwaitingReply, then InitializedWritePending, then Ready only after
+the initialized write receipt. The initialized operation is scoped to the actual
+child generation. The session owns the one SessionState and its deadline source.
+
+`shutdown().await` on the handle signals stop and joins the adapter before returning
+`SessionExit`. `completion().await` joins without initiating stop; cancelling either
+wait retains the join owner. Persist `exit.adapter.recovery_needed`, final outcomes,
+and `undelivered`; also drain buffered consumer events. After joining the adapter,
+the session drains its journal lane into this handoff: at most 17 envelopes (one
+retained transition plus 16 buffered entries). Retained control outcomes go in
+`exit.outcomes`. Evidence stays task-owned before fallible processing, including
+across an injected panic; terminal cleanup does not execute more protocol writes.
+Shutdown never ACKs or waits for room in the consumer lane.
+
+A consumer can commit durable settlement and receive `settled` success, then shut
+down before the ACK is sent or its receipt is observed. Shutdown can succeed with
+this prefix still unacknowledged. `SessionExit.pending_acknowledgement` returns the
+highest contiguous locally settled cursor without a confirmed ACK (also after a
+lost ACK receipt). Reconcile redelivery against durable settlement on the next
+attachment, then authorize that prefix again. Neither local settlement nor a
+successful shutdown proves supervisor ACK completion; worker/store crash-window
+and durable replay reconciliation tests belong to the account-worker stage.
+The adapter's documented blocking-job cleanup limitation still applies. Dropping a handle only signals
+cancellation; explicit shutdown/completion is required for the join barrier.

@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::{
     BookError, CodecError, Frame, Method, PendingBook, RequestFrame, RequestId, RequestState,
-    ResponseBody, ResponseMatch, encode_line,
+    ResponseBody, ResponseMatch, encode_line, validate_initialize_params,
 };
 
 /// Provider request or notification delivered to the account session owner.
@@ -24,6 +24,17 @@ pub enum Lifecycle {
     Closed,
 }
 
+/// Progress of the provider initialization handshake. `Ready` means both the
+/// initialize reply was accepted and the required `initialized` write settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InitializationStatus {
+    AwaitingReply,
+    InitializedWritePending,
+    Ready,
+    Refused,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestTicket {
     pub generation: u64,
@@ -39,7 +50,7 @@ pub enum RequestOutcome {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    Write(Vec<u8>),
+    Write(Frame),
     Resolve {
         ticket: RequestTicket,
         outcome: RequestOutcome,
@@ -70,6 +81,10 @@ pub enum SessionError {
     MissingRequest,
     #[error("Claude thread-serialized request requires a thread id")]
     MissingThreadId,
+    #[error("recovery contains conflicting active requests for a serialized thread")]
+    ConflictingRecoveredThread,
+    #[error("initialized notification cannot be marked written in this state")]
+    InitializationNotReady,
 }
 
 struct Pending {
@@ -89,6 +104,7 @@ pub struct SessionState {
     request_id_prefix: Option<String>,
     next_request_sequence: u64,
     lifecycle: Lifecycle,
+    initialization_status: InitializationStatus,
     book: PendingBook,
     pending: BTreeMap<RequestId, Pending>,
     active_threads: BTreeMap<String, RequestId>,
@@ -143,6 +159,7 @@ impl SessionState {
         recovered: Vec<(RequestId, Method, Option<String>)>,
         request_id_prefix: Option<String>,
     ) -> Result<(Self, Vec<Action>), SessionError> {
+        validate_initialize_params(&initialize_params)?;
         let mut state = Self {
             generation,
             claude,
@@ -150,6 +167,7 @@ impl SessionState {
             request_id_prefix,
             next_request_sequence: 1,
             lifecycle: Lifecycle::Initializing,
+            initialization_status: InitializationStatus::AwaitingReply,
             book: PendingBook::new(),
             pending: BTreeMap::new(),
             active_threads: BTreeMap::new(),
@@ -183,6 +201,47 @@ impl SessionState {
         thread_id: Option<String>,
     ) -> Result<RequestTicket, SessionError> {
         self.track_existing_request_until(id, method, thread_id, u64::MAX)
+    }
+
+    /// Restore the original deadline and uncertainty, without restarting a timer.
+    pub fn restore_request(
+        &mut self,
+        ticket: &RequestTicket,
+        thread_id: Option<String>,
+        deadline_ms: u64,
+        unknown: bool,
+        lightweight: bool,
+    ) -> Result<(), SessionError> {
+        if ticket.generation != self.generation {
+            return Err(SessionError::StaleGeneration);
+        }
+        let serialized = self.claude && !lightweight && is_thread_serialized(ticket.method);
+        if serialized {
+            let thread = thread_id.as_ref().ok_or(SessionError::MissingThreadId)?;
+            if self.active_threads.contains_key(thread) {
+                return Err(SessionError::ConflictingRecoveredThread);
+            }
+        }
+        self.track_existing_request_until(
+            ticket.id.clone(),
+            ticket.method,
+            thread_id.clone(),
+            deadline_ms,
+        )?;
+        if serialized && let Some(thread) = thread_id {
+            if let Some(pending) = self.pending.get_mut(&ticket.id) {
+                pending.serialized = true;
+            }
+            self.active_threads.insert(thread, ticket.id.clone());
+        }
+        if unknown {
+            self.book.mark_unknown(&ticket.id)?;
+        }
+        Ok(())
+    }
+
+    pub fn request_deadline_ms(&self, id: &RequestId) -> Option<u64> {
+        self.pending.get(id).map(|pending| pending.deadline_ms)
     }
 
     fn track_existing_request_until(
@@ -222,6 +281,38 @@ impl SessionState {
     #[must_use]
     pub const fn lifecycle(&self) -> Lifecycle {
         self.lifecycle
+    }
+
+    #[must_use]
+    pub const fn initialization_status(&self) -> InitializationStatus {
+        self.initialization_status
+    }
+
+    /// Mark the `initialized` notification complete after its writer receipt.
+    /// Repeated completion reports are idempotent.
+    pub fn mark_initialized_notification_written(&mut self) -> Result<(), SessionError> {
+        match self.initialization_status {
+            InitializationStatus::InitializedWritePending => {
+                self.initialization_status = InitializationStatus::Ready;
+                Ok(())
+            }
+            InitializationStatus::Ready => Ok(()),
+            InitializationStatus::AwaitingReply
+            | InitializationStatus::Refused
+            | InitializationStatus::Unknown => Err(SessionError::InitializationNotReady),
+        }
+    }
+
+    /// Earliest absolute deadline for an outstanding request. This is the
+    /// session's single deadline authority, including recovered requests.
+    #[must_use]
+    pub fn next_deadline_ms(&self) -> Option<u64> {
+        self.pending
+            .iter()
+            .filter(|(id, _)| self.book.state(id) == Some(RequestState::Pending))
+            .map(|(_, pending)| pending.deadline_ms)
+            .filter(|deadline| *deadline != u64::MAX)
+            .min()
     }
 
     pub fn submit(
@@ -395,16 +486,34 @@ impl SessionState {
             .pending
             .get(&ticket.id)
             .ok_or(SessionError::MissingRequest)?;
-        let bytes = encode_line(&Frame::Request(RequestFrame {
+        let frame = Frame::Request(RequestFrame {
             id: ticket.id.clone(),
             method: ticket.method,
             params: Some(pending.params.clone()),
             fields: Map::new(),
-        }))?;
-        Ok(vec![Action::Write(bytes)])
+        });
+        Ok(vec![Action::Write(frame)])
     }
 
     pub fn receive(&mut self, frame: Frame) -> Result<Vec<Action>, SessionError> {
+        self.receive_inner(frame, None)
+    }
+
+    /// Classify a response using the transport arrival time, even if a timer
+    /// already reported uncertainty while the journal consumer was behind.
+    pub fn receive_at(
+        &mut self,
+        frame: Frame,
+        received_at_ms: u64,
+    ) -> Result<Vec<Action>, SessionError> {
+        self.receive_inner(frame, Some(received_at_ms))
+    }
+
+    fn receive_inner(
+        &mut self,
+        frame: Frame,
+        received_at_ms: Option<u64>,
+    ) -> Result<Vec<Action>, SessionError> {
         if self.lifecycle == Lifecycle::Closed {
             return Ok(Vec::new());
         }
@@ -420,7 +529,10 @@ impl SessionState {
                 let Some(pending) = self.pending.remove(&id) else {
                     return Ok(Vec::new());
                 };
-                let late = matches!(matched, ResponseMatch::Late { .. });
+                let late = received_at_ms.map_or_else(
+                    || matches!(matched, ResponseMatch::Late { .. }),
+                    |received| received >= pending.deadline_ms,
+                );
                 let initialization_failed = pending.ticket.method == Method::Initialize
                     && self.lifecycle == Lifecycle::Initializing
                     && matches!(&body, ResponseBody::Error(_));
@@ -431,17 +543,22 @@ impl SessionState {
                 if pending.ticket.method == Method::Initialize
                     && self.lifecycle == Lifecycle::Initializing
                 {
+                    self.initialization_status = if initialization_failed {
+                        InitializationStatus::Refused
+                    } else {
+                        InitializationStatus::InitializedWritePending
+                    };
                     if initialization_failed {
                         actions.extend(self.mark_unknown(Lifecycle::Lost));
                     } else {
                         self.lifecycle = Lifecycle::Ready;
-                        actions.push(Action::Write(encode_line(&Frame::Notification(
+                        actions.push(Action::Write(Frame::Notification(
                             crate::NotificationFrame {
                                 method: Method::Initialized,
                                 params: None,
                                 fields: Map::new(),
                             },
-                        ))?));
+                        )));
                     }
                 }
                 if pending.serialized
@@ -461,15 +578,11 @@ impl SessionState {
         }
         let expired = self
             .pending
-            .iter_mut()
-            .filter_map(|(id, pending)| {
-                (now_ms >= pending.deadline_ms
-                    && self.book.state(id) == Some(RequestState::Pending))
-                .then(|| {
-                    pending.deadline_ms = u64::MAX;
-                    id.clone()
-                })
+            .iter()
+            .filter(|(id, pending)| {
+                now_ms >= pending.deadline_ms && self.book.state(id) == Some(RequestState::Pending)
             })
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         if expired.is_empty() {
             return (Ok(()), Vec::new());
@@ -480,6 +593,9 @@ impl SessionState {
                 continue;
             }
             if let Some(pending) = self.pending.get(&id) {
+                if pending.ticket.method == Method::Initialize {
+                    self.initialization_status = InitializationStatus::Unknown;
+                }
                 actions.push(Action::Resolve {
                     ticket: pending.ticket.clone(),
                     outcome: RequestOutcome::Unknown,
@@ -512,11 +628,13 @@ impl SessionState {
         }
         self.book.mark_connection_lost();
         self.lifecycle = lifecycle;
+        if self.initialization_status == InitializationStatus::AwaitingReply {
+            self.initialization_status = InitializationStatus::Unknown;
+        }
         self.active_threads.clear();
         self.queued_threads.clear();
         let mut actions = Vec::with_capacity(self.pending.len() + 1);
-        for pending in self.pending.values_mut() {
-            pending.deadline_ms = u64::MAX;
+        for pending in self.pending.values() {
             actions.push(Action::Resolve {
                 ticket: pending.ticket.clone(),
                 outcome: RequestOutcome::Unknown,
@@ -539,6 +657,20 @@ impl SessionState {
             return Err(SessionError::Book(BookError::UnknownId));
         }
         self.book.cancel(&ticket.id)?;
+        self.remove_request(ticket)
+    }
+
+    /// Use only with positive evidence that this request was never sent. Unlike
+    /// user cancellation this also retires deadline-unknown and Codex tickets.
+    pub fn reject_unsent(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
+        if ticket.generation != self.generation {
+            return Err(SessionError::StaleGeneration);
+        }
+        self.book.reject_unsent(&ticket.id)?;
+        self.remove_request(ticket)
+    }
+
+    fn remove_request(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
         let Some(pending) = self.pending.remove(&ticket.id) else {
             return Ok(Vec::new());
         };

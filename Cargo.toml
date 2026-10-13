@@ -47,5 +47,5 @@ axum = "=0.8.9"
 form_urlencoded = "=1.2.2"
 getrandom = "=0.3.4"
 subtle = "=2.6.1"
-tokio = { version = "=1.53.2", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "=1.53.2", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { version = "=0.5.3", features = ["util"] }

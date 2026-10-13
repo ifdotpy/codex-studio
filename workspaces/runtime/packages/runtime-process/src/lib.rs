@@ -4,6 +4,10 @@ mod client;
 mod ports;
 mod protocol;
 pub mod provider_process;
+pub mod provider_seam;
+mod provider_shared;
+#[cfg(unix)]
+pub mod provider_task;
 mod transport;
 
 pub use client::SupervisorClient;
