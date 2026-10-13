@@ -67,6 +67,13 @@ class PersistedAgentRecord(ContractModel):
     name: StrictStr | None = None
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
+    parentId: StrictStr | None = None
+    isLead: StrictBool | None = None
+    deletedAt: StrictBool | float | None = None
+    turnId: StrictStr | None = None
+    threadId: StrictStr | None = None
+    accountKey: StrictStr | None = None
+    model: StrictStr | None = None
 
 
 class _OpenPersistedRecord(ContractModel):
