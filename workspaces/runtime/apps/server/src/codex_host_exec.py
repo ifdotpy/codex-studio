@@ -26,6 +26,7 @@ def tool_definition() -> dict[str, Any]:
     return {"type": "function", "name": "host_exec", "description": (
         "Run a macOS command from your VM line. Sources return through layr. Slots keep stable paths and caches. "
         "Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. "
+        "The line's layr cache folders go to the Mac, but Mac changes inside them never return. "
         "Supply the same request_id for exact retries. Lost results never repeat the command. "
         "Use status to read saved output and cancel to stop the command. Artifacts return as files."),
         "inputSchema": {"type": "object", "properties": {

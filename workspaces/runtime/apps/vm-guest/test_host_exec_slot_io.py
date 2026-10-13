@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from host_exec_slot_io import collect
+from host_exec_slot_io import collect, run
 
 # `layr show <state>:<path>` from a folder that stands for the held state.
 FAKE_LAYR = """#!/bin/sh
@@ -98,6 +98,13 @@ class CollectTests(unittest.TestCase):
         self.put(self.slot, ".git/HEAD", "ref")
         self.assertEqual(self.collect([".layr-export.json", ".git/HEAD"]), {"copied": [], "conflicts": []})
         self.assertFalse((self.line / ".layr-export.json").exists())
+
+
+    def test_the_manifest_leaves_out_mac_only_paths(self):
+        self.put(self.slot, "chromium/src/a.cc", "a")
+        self.put(self.slot, "chromium/src/out/Default/a.o", "object")
+        entries = run({"action": "manifest", "root": str(self.slot), "skip": ["chromium/src/out"]})["entries"]
+        self.assertEqual(sorted(entries), ["chromium", "chromium/src", "chromium/src/a.cc"])
 
 
 if __name__ == "__main__":

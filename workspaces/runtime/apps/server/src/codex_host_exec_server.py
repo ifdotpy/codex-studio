@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import sqlite3
@@ -23,11 +24,18 @@ from codex_layout import VM_GUEST_ROOT
 # The host side shares the frame protocol with the guest (mypy finds it through mypy_path).
 sys.path.insert(0, str(VM_GUEST_ROOT))
 from host_exec_protocol import (CHUNK, FRAME_LIMIT, HostExecError, aliases, atomic,  # noqa: E402
-                                conflicts, inside, key, mapped, require, scan)
+                                conflicts, inside, key, mapped, page, relative, require, scan, under)
+
+# The limits of a project without a settings file.
+DEFAULT_SLOTS = 4
+DEFAULT_BUDGET = 20 * 1024**3
+SETTINGS = "host-exec.json"
+# The folder names of layr-projects/ (codex_linux_vm_share._id).
+PROJECT_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 
 
 class HostService:
-    def __init__(self, state: Path, *, slots: int = 4, budget: int = 20 * 1024**3):
+    def __init__(self, state: Path, *, slots: int = DEFAULT_SLOTS, budget: int = DEFAULT_BUDGET):
         self.state = state.resolve()
         self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.pool = self.state / "host-slots"
@@ -46,6 +54,10 @@ class HostService:
         self.commands: dict[str, asyncio.Task[None]] = {}
         self.children: dict[str, asyncio.subprocess.Process] = {}
         self.locks: dict[str, asyncio.Lock] = {}
+        # Per project folder: the bytes of the last walk plus the files written since then.
+        self.usage: dict[str, int] = {}
+        # Sorted manifests during paging, by operation and area.
+        self.pages: dict[str, list[tuple[str, Any]]] = {}
         self.clients = 0
 
     def close(self) -> None:
@@ -71,24 +83,88 @@ class HostService:
         self.db.execute("INSERT INTO events VALUES (?,?,?)", (identity, seq, json.dumps({"seq": seq, **value})))
         self.db.commit()
 
+    def settings(self, project_id: str) -> dict[str, Any]:
+        """The slot count, disk budget and Mac-only paths of a project. The operator sets them in
+        layr-projects/<project>/host-exec.json of this state folder; the VM cannot write it."""
+        path = self.state / "layr-projects" / project_id / SETTINGS
+        value: Any = {}
+        if PROJECT_FOLDER.fullmatch(project_id):
+            try:
+                value = json.loads(path.read_text())
+            except FileNotFoundError:
+                value = {}
+            except (OSError, ValueError) as exc:
+                raise HostExecError("invalid_config", f"{path} is not readable JSON: {exc}") from exc
+        require(isinstance(value, dict) and set(value) <= {"slots", "diskBudgetGiB", "macOnly"},
+                f"{path} accepts only slots, diskBudgetGiB and macOnly", "invalid_config")
+        slots = value.get("slots", self.slots)
+        require(type(slots) is int and 1 <= slots <= 64, f"{path}: slots must be an integer from 1 to 64", "invalid_config")
+        budget = self.budget
+        if "diskBudgetGiB" in value:
+            size = value["diskBudgetGiB"]
+            require(type(size) in (int, float) and 0 < size <= 1024**2,
+                    f"{path}: diskBudgetGiB must be a number above 0", "invalid_config")
+            budget = int(size * 1024**3)
+        mac_only = value.get("macOnly", [])
+        require(isinstance(mac_only, list) and len(mac_only) <= 256, f"{path}: macOnly must be a list of paths", "invalid_config")
+        for item in mac_only:
+            try:
+                relative(item)
+            except HostExecError as exc:
+                raise HostExecError("invalid_config", f"{path}: macOnly {item!r}: {exc}") from exc
+        return {"slots": slots, "diskBudget": budget, "macOnly": list(mac_only)}
+
+    def budget_of(self, op: dict[str, Any]) -> int:
+        return int(op.get("diskBudget", self.budget))
+
+    @staticmethod
+    def used_at(slot: Path) -> float:
+        return float(json.loads((slot / "slot.json").read_text()).get("usedAt", 0))
+
     @staticmethod
     def size(path: Path) -> int:
         total = 0
         for directory, _, files in os.walk(path, followlinks=False):
             for name in files:
-                total += (Path(directory) / name).lstat().st_blocks * 512
+                try:
+                    total += (Path(directory) / name).lstat().st_blocks * 512
+                except FileNotFoundError:
+                    pass
         return total
 
-    def evict(self, project: Path, *, reserve: int = 0, exclude: Path | None = None) -> None:
-        require(0 <= reserve <= self.budget, "The sources exceed the project disk budget", "disk_budget")
+    def evict(self, project: Path, budget: int, *, reserve: int = 0, exclude: Path | None = None) -> int:
+        """Remove idle slots, least recently used first, until `reserve` more bytes fit in the
+        budget. Returns the bytes in use."""
+        require(0 <= reserve <= budget, "The sources exceed the project disk budget", "disk_budget")
         candidates = [path for path in project.iterdir() if path.is_dir() and path != exclude and not (path / "lease.json").exists()]
-        candidates.sort(key=lambda path: json.loads((path / "slot.json").read_text()).get("usedAt", 0))
+        candidates.sort(key=self.used_at)
         used = self.size(project)
-        while used + reserve > self.budget and candidates:
+        while used + reserve > budget and candidates:
             victim = candidates.pop(0)
             used -= self.size(victim)
             shutil.rmtree(victim)
-        require(used + reserve <= self.budget, "The project disk budget has no free slot capacity", "disk_budget")
+        self.usage[str(project)] = used
+        require(used + reserve <= budget, "The project disk budget has no free slot capacity", "disk_budget")
+        return used
+
+    def reserve(self, project: Path, budget: int, length: int, exclude: Path) -> None:
+        """Room for a new file. The estimate grows with each file and a full walk of the project
+        folder happens only when the estimate reaches the budget."""
+        used = self.usage.get(str(project))
+        if used is None or used + length > budget:
+            used = self.evict(project, budget, reserve=length, exclude=exclude)
+        self.usage[str(project)] = used + length
+
+    def listing(self, name: str, path: Path, after: Any, entries: dict[str, Any] | None = None) -> dict[str, Any]:
+        """A page of a saved manifest. The sorted entries stay in memory until the last page."""
+        items = self.pages.get(name)
+        if entries is not None or items is None:
+            items = sorted((json.loads(path.read_text()) if entries is None else entries).items())
+            self.pages[name] = items
+        result = page(items, after)
+        if result["next"] is None:
+            self.pages.pop(name, None)
+        return result
 
     def slot(self, op: dict[str, Any]) -> Path:
         path = self.pool / key(op["projectId"]) / str(op["slotId"])
@@ -102,18 +178,24 @@ class HostService:
         require(isinstance(identity, str) and 0 < len(identity) <= 128, "Invalid operation ID")
         for field in ("projectId", "agentId", "linePath"):
             require(isinstance(params.get(field), str) and 0 < len(params[field]) <= 4096, "Missing host command context: " + field)
+        settings = self.settings(params["projectId"])
         project = self.pool / key(params["projectId"])
         async with self.locks.setdefault(str(project), asyncio.Lock()):
             project.mkdir(exist_ok=True, mode=0o700)
             require(not self.opdir(identity).exists(), "The operation already exists", "outcome_unknown")
-            self.evict(project)
-            free = [path for path in project.iterdir() if path.is_dir() and not (path / "lease.json").exists()]
-            free.sort(key=lambda path: json.loads((path / "slot.json").read_text()).get("usedAt", 0), reverse=True)
+            self.evict(project, settings["diskBudget"])
+            existing = [path for path in project.iterdir() if path.is_dir()]
+            free = sorted((path for path in existing if not (path / "lease.json").exists()), key=self.used_at)
+            # A smaller slot count removes idle slots, the least recently used first.
+            while len(existing) > settings["slots"] and free:
+                victim = free.pop(0)
+                shutil.rmtree(victim)
+                existing.remove(victim)
             if free:
-                slot = free[0]
+                slot = free[-1]
             else:
-                require(len(list(project.iterdir())) < self.slots, "All project slots are leased", "busy")
-                slot = next(project / str(index) for index in range(self.slots) if not (project / str(index)).exists())
+                require(len(existing) < settings["slots"], "All project slots are leased", "busy")
+                slot = next(project / str(index) for index in range(settings["slots"]) if not (project / str(index)).exists())
                 slot.mkdir(mode=0o700)
                 atomic(slot / "slot.json", {"generation": os.urandom(16).hex(), "usedAt": 0})
             for name in ("source", "DerivedData", "packages"):
@@ -127,7 +209,8 @@ class HostService:
             op = {"operationId": identity, **{field: params[field] for field in ("projectId", "agentId", "linePath")},
                   "slotId": slot.name, "generation": meta["generation"], "state": "leased", "createdAt": time.time(),
                   "slotPath": str(slot / "source"), "derivedData": str(slot / "DerivedData"),
-                  "packageCache": str(slot / "packages"), "artifactsPath": str(directory / "artifacts")}
+                  "packageCache": str(slot / "packages"), "artifactsPath": str(directory / "artifacts"),
+                  "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"]}
             self.save(identity, op)
             atomic(slot / "lease.json", {"operationId": identity})
             return op
@@ -155,10 +238,7 @@ class HostService:
             area: Any = params.get("area")
             require(area in {"changes", "artifacts"}, "Invalid result file area")
             require(op["state"] in {"exited", "released"}, "The command has no final files", "outcome_unknown")
-            entries = json.loads((self.opdir(identity) / (area + ".json")).read_text())
-            after = params.get("after", "")
-            page = [(path, entries[path]) for path in sorted(entries) if path > after][:256]
-            return {"entries": dict(page), "next": page[-1][0] if len(page) == 256 else None}
+            return self.listing(identity + "\0" + area, self.opdir(identity) / (area + ".json"), params.get("after", ""))
         if method == "read":
             require(op["state"] in {"exited", "released"}, "The command has no final files", "outcome_unknown")
             area = params.get("area")
@@ -171,21 +251,25 @@ class HostService:
                 data = stream.read(CHUNK)
             return {"data": base64.b64encode(data).decode(), "bytes": len(data)}
         slot = self.slot(op)
+        mac_only: list[str] = op.get("macOnly", [])
         if method == "manifest":
             manifest_path = self.opdir(identity) / "held-manifest.json"
-            if not params.get("after"):
-                atomic(manifest_path, scan(slot / "source"))
-            entries = json.loads(manifest_path.read_text())
-            after = params.get("after", "")
-            page = [(path, entries[path]) for path in sorted(entries) if path > after][:256]
-            return {"entries": dict(page), "next": page[-1][0] if len(page) == 256 else None}
+            if params.get("after"):
+                return self.listing(identity + "\0held", manifest_path, params["after"])
+            # Hashing a large slot takes minutes; the event loop keeps serving other requests.
+            held = await asyncio.to_thread(scan, slot / "source", mac_only)
+            atomic(manifest_path, held)
+            return self.listing(identity + "\0held", manifest_path, "", held)
         if method.startswith("sync."):
             require(op["state"] == "leased", "The slot is no longer open for source transfer")
             path = inside(slot / "source", params["path"])
+            require(not under(params["path"], mac_only), "The path stays on the Mac (macOnly)")
+            entry_dir = self.opdir(identity) / "entries"
             if method == "sync.delete":
                 if path.is_symlink() or path.is_file():
                     path.unlink()
-                elif path.exists():
+                elif path.exists() and not any(item.startswith(params["path"] + "/") for item in mac_only):
+                    # A folder above a Mac-only path stays: the guest deletes its other entries one by one.
                     shutil.rmtree(path)
             elif method == "sync.entry":
                 entry = params["entry"]
@@ -202,16 +286,17 @@ class HostService:
                     path.symlink_to(entry["target"])
                 else:
                     length = entry.get("bytes")
-                    require(isinstance(length, int) and 0 <= length <= self.budget, "Invalid file size")
-                    self.evict(slot.parent, reserve=length, exclude=slot)
+                    require(isinstance(length, int) and 0 <= length <= self.budget_of(op), "Invalid file size")
+                    self.reserve(slot.parent, self.budget_of(op), length, slot)
                     path.touch()
-                    atomic(self.opdir(identity) / (key(params["path"]) + ".json"), entry)
+                    entry_dir.mkdir(exist_ok=True)
+                    atomic(entry_dir / (key(params["path"]) + ".json"), entry)
             elif method == "sync.chunk":
                 require(path.is_file() and not path.is_symlink(), "The source file is not open")
                 data = base64.b64decode(params["data"], validate=True)
                 require(len(data) <= CHUNK, "The source chunk exceeds its limit")
                 require(path.stat().st_size == params["offset"], "The source chunk offset differs")
-                entry = json.loads((self.opdir(identity) / (key(params["path"]) + ".json")).read_text())
+                entry = json.loads((entry_dir / (key(params["path"]) + ".json")).read_text())
                 require(path.stat().st_size + len(data) <= entry["bytes"], "The source exceeds its declared size")
                 with path.open("ab") as stream:
                     stream.write(data)
@@ -219,7 +304,7 @@ class HostService:
                     os.fsync(stream.fileno())
             elif method == "sync.commit":
                 require(not path.is_symlink(), "The source file is a symbolic link")
-                entry = json.loads((self.opdir(identity) / (key(params["path"]) + ".json")).read_text())
+                entry = json.loads((entry_dir / (key(params["path"]) + ".json")).read_text())
                 with path.open("rb") as stream:
                     checksum = hashlib.file_digest(stream, "sha256").hexdigest()
                 require(path.stat().st_size == entry["bytes"] and checksum == entry["sha256"], "The source checksum differs")
@@ -234,18 +319,28 @@ class HostService:
             require(isinstance(argv, list) and 0 < len(argv) <= 1024 and all(isinstance(item, str) and "\0" not in item for item in argv), "Invalid command arguments")
             timeout = params.get("timeoutSeconds", 300)
             require(isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and 0 < timeout <= 3600, "Invalid command timeout")
-            source = scan(slot / "source")
-            require(not conflicts(list(source)), "The source names conflict on macOS", "name_conflict")
-            require(key(json.dumps(source, sort_keys=True)) == params.get("manifestSha256"), "The Mac sources differ from the layr slot", "sync_conflict")
-            cwd = slot / "source"
-            if params.get("cwd"):
-                cwd = inside(cwd, params["cwd"], leaf=True)
-                require(cwd.is_dir(), "The command cwd is not a directory")
-            self.evict(slot.parent, exclude=slot)
-            op.update(state="running", startedAt=time.time())
-            self.save(identity, op)
-            self.commands[identity] = asyncio.create_task(self.command(identity, dict(op), argv, cwd, timeout, source))
-            return op
+            # Cache folders of the line: the Mac receives them, and its changes there never return.
+            caches: Any = params.get("caches", [])
+            require(isinstance(caches, list) and len(caches) <= 256, "Invalid cache folders")
+            for item in caches:
+                relative(item)
+            async with self.locks.setdefault("run\0" + identity, asyncio.Lock()):
+                source = await asyncio.to_thread(scan, slot / "source", mac_only)
+                # The scan let other requests run: the operation must still be leased.
+                op = self.load(identity)
+                require(op["state"] == "leased", "The command already started", "outcome_unknown")
+                slot = self.slot(op)
+                require(not conflicts(list(source)), "The source names conflict on macOS", "name_conflict")
+                require(key(json.dumps(source, sort_keys=True)) == params.get("manifestSha256"), "The Mac sources differ from the layr slot", "sync_conflict")
+                cwd = slot / "source"
+                if params.get("cwd"):
+                    cwd = inside(cwd, params["cwd"], leaf=True)
+                    require(cwd.is_dir(), "The command cwd is not a directory")
+                self.evict(slot.parent, self.budget_of(op), exclude=slot)
+                op.update(state="running", startedAt=time.time(), caches=caches)
+                self.save(identity, op)
+                self.commands[identity] = asyncio.create_task(self.command(identity, dict(op), argv, cwd, timeout, source))
+                return op
         if method == "cancel":
             child = self.children.get(identity)
             if child is not None:
@@ -266,7 +361,13 @@ class HostService:
             (slot / "lease.json").unlink()
             if op["collected"]:
                 shutil.rmtree(self.opdir(identity) / "changes", ignore_errors=True)
-            self.evict(slot.parent)
+            # A large slot has a large manifest and one entry file per transferred file.
+            (self.opdir(identity) / "held-manifest.json").unlink(missing_ok=True)
+            shutil.rmtree(self.opdir(identity) / "entries", ignore_errors=True)
+            for name in ("held", "changes", "artifacts"):
+                self.pages.pop(identity + "\0" + name, None)
+            self.locks.pop("run\0" + identity, None)
+            self.evict(slot.parent, self.budget_of(op))
             return op
         raise HostExecError("invalid_params", "Unknown host method")
 
@@ -333,14 +434,21 @@ class HostService:
                 readers = [asyncio.create_task(drain(child.stdout, "stdout")), asyncio.create_task(drain(child.stderr, "stderr"))]
                 async def budget_watch() -> None:
                     nonlocal reason
+                    budget = self.budget_of(op)
                     while child is not None and child.returncode is None:
-                        try:
-                            self.evict(slot.parent, exclude=slot)
-                        except HostExecError:
-                            reason = "disk_budget"
-                            await self.terminate(child)
-                            return
-                        await asyncio.sleep(1)
+                        started = time.monotonic()
+                        # The walk of a large slot takes seconds: it runs off the event loop,
+                        # and the pause grows with it so that the walk takes at most a fifth of the time.
+                        used = await asyncio.to_thread(self.size, slot.parent)
+                        self.usage[str(slot.parent)] = used
+                        if used > budget:
+                            try:
+                                self.evict(slot.parent, budget, exclude=slot)
+                            except HostExecError:
+                                reason = "disk_budget"
+                                await self.terminate(child)
+                                return
+                        await asyncio.sleep(max(1.0, 4 * (time.monotonic() - started)))
                 watchdog = asyncio.create_task(budget_watch())
                 try:
                     await asyncio.wait_for(child.wait(), timeout)
@@ -358,7 +466,10 @@ class HostService:
                 code = child.returncode
                 if self.load(identity).get("cancelRequested"):
                     reason = "cancelled"
-            after = scan(slot / "source")
+            # Mac-only paths and cache folders never return to the line, so they are not compared.
+            caches: list[str] = op.get("caches", [])
+            after = await asyncio.to_thread(scan, slot / "source", [*op.get("macOnly", []), *caches])
+            before = {path: entry for path, entry in before.items() if not under(path, caches)}
             changed = {path: after.get(path) for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
             result_dir = self.opdir(identity) / "changes"
             result_dir.mkdir()
