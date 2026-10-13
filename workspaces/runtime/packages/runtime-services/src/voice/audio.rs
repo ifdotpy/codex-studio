@@ -51,12 +51,18 @@ pub fn save_audio(
 
     let directory = store.root().join("voice-audio");
     ensure_audio_directory(&directory)?;
-    prune_expired_audio(&directory)?;
+    let session_prefix = audio_session_prefix(agent_id, session_id);
+    let validated = validate_then_prune(request.clone(), session, &directory, &session_prefix)?;
 
     let name = audio_name(agent_id, session_id, chunk_id);
     let path = directory.join(&name);
-    let existing = read_existing_chunk(&path)?;
-    let decision = policy::decide_audio(request, session, existing.as_deref())?;
+    let legacy_path = directory.join(legacy_audio_name(agent_id, session_id, chunk_id));
+    let legacy_exists = legacy_path.exists();
+    let existing = read_existing_chunk(&path)?.or(read_existing_chunk(&legacy_path)?);
+    let decision = match existing.as_deref() {
+        Some(bytes) => policy::decide_audio(request, session, Some(bytes))?,
+        None => validated,
+    };
     let chunk = match decision {
         policy::AudioDecision::Store(chunk) => {
             match create_private_file(&path, chunk.bytes()) {
@@ -87,19 +93,53 @@ pub fn save_audio(
         VoiceRecordInput {
             agent_id: agent_id.to_owned(),
             session_id: session_id.to_owned(),
-            event_id: format!("audio:{}", chunk.file_name()),
+            event_id: format!(
+                "audio:{}",
+                legacy_audio_name(agent_id, session_id, chunk_id)
+            ),
             kind: "event".to_owned(),
             text: "audio saved".to_owned(),
             item_id: String::new(),
             previous_item_id: String::new(),
-            payload: Some(json!({"file": chunk.file_name(), "mime": chunk.mime()})),
+            payload: Some(json!({
+                "file": if legacy_exists { legacy_audio_name(agent_id, session_id, chunk_id) } else { name },
+                "mime": chunk.mime()
+            })),
             internal: false,
         },
     )?)
 }
 
 fn audio_name(agent: &str, session: &str, chunk: &str) -> String {
+    format!(
+        "{}{}",
+        audio_session_prefix(agent, session),
+        studio_runtime_store::sha256_hex(chunk.as_bytes())
+    )
+}
+
+fn legacy_audio_name(agent: &str, session: &str, chunk: &str) -> String {
     studio_runtime_store::sha256_hex(format!("{agent}:{session}:{chunk}").as_bytes())
+}
+
+fn audio_session_prefix(agent: &str, session: &str) -> String {
+    let mut identity = Vec::with_capacity(agent.len() + session.len() + 16);
+    identity.extend_from_slice(&(agent.len() as u64).to_be_bytes());
+    identity.extend_from_slice(agent.as_bytes());
+    identity.extend_from_slice(&(session.len() as u64).to_be_bytes());
+    identity.extend_from_slice(session.as_bytes());
+    format!("s-{}-c-", studio_runtime_store::sha256_hex(&identity))
+}
+
+fn validate_then_prune(
+    request: policy::AudioChunkRequest,
+    session_exists: bool,
+    directory: &Path,
+    session_prefix: &str,
+) -> Result<policy::AudioDecision, VoiceAudioError> {
+    let validated = policy::decide_audio(request, session_exists, None)?;
+    prune_expired_audio(directory, session_prefix)?;
+    Ok(validated)
 }
 
 fn ensure_audio_directory(path: &Path) -> Result<(), std::io::Error> {
@@ -150,6 +190,34 @@ fn read_existing_chunk(path: &Path) -> Result<Option<Vec<u8>>, std::io::Error> {
 }
 
 fn create_private_file(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    create_private_file_with(path, |output| {
+        output.write_all(bytes)?;
+        output.flush()?;
+        output.sync_all()
+    })
+}
+
+fn create_private_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> Result<(), std::io::Error>,
+) -> Result<(), std::io::Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("audio path has no parent"))?;
+    static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = format!(
+        "{}:{}:{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let temporary = parent.join(format!(
+        ".voice-{}.tmp",
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, nonce.as_bytes())
+    ));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -157,17 +225,40 @@ fn create_private_file(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> 
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut output = options.open(path)?;
-    output.write_all(bytes)?;
-    output.flush()
+    let result = (|| {
+        let mut output = options.open(&temporary)?;
+        write(&mut output)?;
+        output.flush()?;
+        output.sync_all()?;
+        drop(output);
+        // Hard-link publication is atomic and refuses to overwrite a racing
+        // chunk with different bytes; both names are on the same filesystem.
+        fs::hard_link(&temporary, path)?;
+        fs::remove_file(&temporary)
+    })();
+    if result.is_err() {
+        match fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+    result
 }
 
-fn prune_expired_audio(directory: &Path) -> Result<(), std::io::Error> {
+fn prune_expired_audio(directory: &Path, session_prefix: &str) -> Result<(), std::io::Error> {
     let cutoff = SystemTime::now().checked_sub(AUDIO_RETENTION);
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let metadata = entry.file_type()?;
         if !metadata.is_file() {
+            continue;
+        }
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(session_prefix)
+        {
             continue;
         }
         let modified = entry.metadata()?.modified()?;
@@ -180,4 +271,28 @@ fn prune_expired_audio(directory: &Path) -> Result<(), std::io::Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupted_audio_write_leaves_no_final_or_temporary_partial_file() {
+        let root = tempfile::tempdir().expect("private audio directory");
+        let path = root.path().join("chunk");
+        let interrupted = create_private_file_with(&path, |output| {
+            output.write_all(b"partial")?;
+            Err(std::io::Error::other("simulated write interruption"))
+        });
+        assert!(interrupted.is_err());
+        assert!(
+            !path.exists(),
+            "partial bytes must not become the final chunk"
+        );
+        assert_eq!(fs::read_dir(root.path()).expect("directory").count(), 0);
+
+        create_private_file(&path, b"complete retry").expect("exact retry can publish");
+        assert_eq!(fs::read(&path).expect("complete file"), b"complete retry");
+    }
 }

@@ -1,7 +1,8 @@
 # Voice provider mutation witnesses
 
-`voice_provider_corpus.rs` checks the policy's provider failure transition and
-the callback adapter's stop decision. `mutations.json` seeds the defects that
-must be caught by those named witnesses. Run the isolated shared mutation
-runner with `--manifest workspaces/runtime/packages/runtime-services/tests/voice_provider/mutations.json`
-and `--filter binary(/^voice_provider_corpus$/)`.
+`voice_provider_corpus.rs` exercises provider admission ordering, receipt
+ownership and identity, audio validation and file recovery, and each callback
+actor transcript lifecycle. `mutations.json` names a test witness for every
+seeded defect. Run the shared mutation runner with the manifest and a filter
+that includes the voice corpus plus the dispatch and receipt tests and the
+interrupted-audio test.

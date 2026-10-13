@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock, Weak};
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -18,6 +18,29 @@ use super::policy::{
 
 pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 const MAX_TRACKED_VOICE_SESSIONS: usize = 1024;
+
+type SessionDispatchLocks = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
+static DISPATCH_LOCKS: OnceLock<Mutex<SessionDispatchLocks>> = OnceLock::new();
+
+async fn session_dispatch_guard(
+    agent_id: &str,
+    session_id: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let table = DISPATCH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let lock = {
+        let mut locks = table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let key = (agent_id.to_owned(), session_id.to_owned());
+        locks.get(&key).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(key, std::sync::Arc::downgrade(&lock));
+            lock
+        })
+    };
+    lock.lock_owned().await
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoiceProviderContext {
@@ -185,10 +208,10 @@ impl VoiceCallbackActor {
                 {
                     return Ok(true);
                 }
-                if let Some(role) = params.get("role").and_then(Value::as_str) {
-                    if let Some(state) = sessions.get_mut(&session_id) {
-                        state.tail.remove(role);
-                    }
+                if let Some(role) = params.get("role").and_then(Value::as_str)
+                    && let Some(state) = sessions.get_mut(&session_id)
+                {
+                    state.tail.remove(role);
                 }
             }
             "thread/realtime/closed" => self.flush_session(store, &session_id)?,
@@ -318,6 +341,7 @@ pub async fn end(
     session_id: String,
     now: f64,
 ) -> Result<Value, VoiceProviderError> {
+    let _dispatch = session_dispatch_guard(&agent_id, &session_id).await;
     let store_for_write = store.clone();
     let write_agent = agent_id.clone();
     let write_session = session_id.clone();
@@ -386,13 +410,54 @@ pub fn read_speech_receipt(
     session_id: &str,
     record_id: &str,
 ) -> Result<Option<Value>, VoiceProviderError> {
-    super::checked_agent(&store.read()?, agent_id)
+    let connection = store.read()?;
+    super::checked_agent(&connection, agent_id)
         .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-    let request_id = format!("{session_id}:{record_id}");
-    Ok(VoiceRepository::speech_receipt(
-        &store.read()?,
-        &request_id,
-    )?)
+    if load_row(&connection, session_id, agent_id)?.is_none() {
+        return Ok(None);
+    }
+    lookup_speech_receipt(
+        &connection,
+        session_id,
+        record_id,
+        &speech_receipt_id(session_id, record_id),
+    )
+}
+
+fn speech_receipt_id(session_id: &str, record_id: &str) -> String {
+    let mut identity = Vec::with_capacity(session_id.len() + record_id.len() + 16);
+    identity.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
+    identity.extend_from_slice(session_id.as_bytes());
+    identity.extend_from_slice(&(record_id.len() as u64).to_be_bytes());
+    identity.extend_from_slice(record_id.as_bytes());
+    format!(
+        "voice-speech:{}",
+        studio_runtime_store::sha256_hex(&identity)
+    )
+}
+
+fn legacy_speech_receipt_id(session_id: &str, record_id: &str) -> String {
+    format!("{session_id}:{record_id}")
+}
+
+fn lookup_speech_receipt(
+    connection: &Connection,
+    session_id: &str,
+    record_id: &str,
+    request_id: &str,
+) -> Result<Option<Value>, VoiceProviderError> {
+    for id in [
+        request_id.to_owned(),
+        legacy_speech_receipt_id(session_id, record_id),
+    ] {
+        if let Some(receipt) = VoiceRepository::speech_receipt(connection, &id)? {
+            if receipt["session"] == session_id && receipt["record_id"] == record_id {
+                return Ok(Some(receipt));
+            }
+            return Err(policy::VoiceError::SessionIdentityConflict.into());
+        }
+    }
+    Ok(None)
 }
 
 fn prepare_end(
@@ -460,7 +525,7 @@ fn prepare_end(
         };
         update_session(transaction, &transition.session)?;
         Ok((session_value(&transition.session), context))
-    }).map_err(VoiceProviderError::from)
+    })
 }
 
 /// Submit orchestrator speech once. The durable receipt is reserved first and
@@ -475,7 +540,7 @@ pub async fn speech(
 ) -> Result<Value, VoiceProviderError> {
     let receipt_id = request_id
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| format!("{session_id}:{record_id}"));
+        .unwrap_or_else(|| speech_receipt_id(&session_id, &record_id));
     if receipt_id.chars().count() > 480 {
         return Err(VoiceProviderError::Policy(
             policy::VoiceError::InvalidSessionIdentity,
@@ -499,7 +564,7 @@ pub async fn speech(
     .map_err(|_| VoiceProviderError::Operation)??;
     let Some((context, text)) = reservation else {
         let connection = store.read()?;
-        return VoiceRepository::speech_receipt(&connection, &receipt_id)?
+        return lookup_speech_receipt(&connection, &session_id, &record_id, &receipt_id)?
             .ok_or(VoiceProviderError::Operation);
     };
     let thread_id = context.thread_id.clone();
@@ -535,7 +600,8 @@ pub async fn speech(
         return Err(provider_error(error));
     }
     let connection = store.read()?;
-    VoiceRepository::speech_receipt(&connection, &receipt_id)?.ok_or(VoiceProviderError::Operation)
+    lookup_speech_receipt(&connection, &session_id, &record_id, &receipt_id)?
+        .ok_or(VoiceProviderError::Operation)
 }
 
 fn reserve_speech(
@@ -551,7 +617,7 @@ fn reserve_speech(
         let session = load_row(transaction, session_id, agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
-        if let Some(old) = VoiceRepository::speech_receipt(transaction, request_id)? {
+        if let Some(old) = lookup_speech_receipt(transaction, session_id, record_id, request_id)? {
             if old["session"] != session_id || old["record_id"] != record_id {
                 return Err(VoiceProviderError::Policy(policy::VoiceError::SessionIdentityConflict));
             }
@@ -584,7 +650,7 @@ fn reserve_speech(
             rusqlite::params![request_id,session_id,record_id],
         )?;
         Ok(Some((context, record.text)))
-    }).map_err(VoiceProviderError::from)
+    })
 }
 
 fn update_session(
@@ -950,6 +1016,7 @@ pub async fn start(
     offer: String,
     now: f64,
 ) -> Result<Value, VoiceProviderError> {
+    let _dispatch = session_dispatch_guard(&agent_id, &session_id).await;
     let request = StartRequest::new(
         AgentId::from(agent_id.as_str()),
         session_id.clone(),
@@ -1116,7 +1183,7 @@ fn create_session(
                 })
             }
         }
-    }).map_err(VoiceProviderError::from)
+    })
 }
 
 fn set_start_failure(
@@ -1209,6 +1276,23 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<VoiceSessionRow
     })
 }
 
+fn start_call(context: VoiceProviderContext, session_id: &str, offer: &str) -> VoiceRpcCall {
+    VoiceRpcCall {
+        operation_id: format!("voice:start:{session_id}"),
+        context: context.clone(),
+        method: Method::ThreadRealtimeStart,
+        params: json!({
+            "threadId": context.thread_id,
+            "version": "v3",
+            "outputModality": "audio",
+            "realtimeSessionId": session_id,
+            "clientManagedHandoffs": false,
+            "flushTranscriptTailOnSessionEnd": false,
+            "transport": {"type": "webrtc", "sdp": offer},
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,21 +1356,61 @@ mod tests {
         assert_eq!(calls[0].params["transport"]["sdp"], "v=0\r\n...");
         assert_eq!(calls[0].params["clientManagedHandoffs"], false);
     }
-}
 
-fn start_call(context: VoiceProviderContext, session_id: &str, offer: &str) -> VoiceRpcCall {
-    VoiceRpcCall {
-        operation_id: format!("voice:start:{session_id}"),
-        context: context.clone(),
-        method: Method::ThreadRealtimeStart,
-        params: json!({
-            "threadId": context.thread_id,
-            "version": "v3",
-            "outputModality": "audio",
-            "realtimeSessionId": session_id,
-            "clientManagedHandoffs": false,
-            "flushTranscriptTailOnSessionEnd": false,
-            "transport": {"type": "webrtc", "sdp": offer},
-        }),
+    #[tokio::test]
+    async fn dispatch_guard_serializes_same_session_but_not_other_sessions() {
+        let held = session_dispatch_guard("agent", "session-a").await;
+        let (same_tx, mut same_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _guard = session_dispatch_guard("agent", "session-a").await;
+            same_tx.send(()).expect("same-session receiver remains");
+        });
+        let (other_tx, mut other_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _guard = session_dispatch_guard("agent", "session-b").await;
+            other_tx.send(()).expect("other-session receiver remains");
+        });
+        tokio::task::yield_now().await;
+        assert!(same_rx.try_recv().is_err(), "same-session work must wait");
+        assert_eq!(
+            other_rx.try_recv(),
+            Ok(()),
+            "different sessions stay independent"
+        );
+        drop(held);
+        same_rx.await.expect("same-session guard releases");
+    }
+
+    #[test]
+    fn speech_receipt_identity_is_tuple_unambiguous_and_replay_checks_record() {
+        assert_ne!(
+            speech_receipt_id("sessionone", "record"),
+            speech_receipt_id("session", "onerecord")
+        );
+        let connection = Connection::open_in_memory().expect("receipt database");
+        connection
+            .execute(
+                "CREATE TABLE voice_speech_requests(id TEXT PRIMARY KEY,session TEXT,record_id TEXT,state TEXT,error TEXT)",
+                [],
+            )
+            .expect("receipt table");
+        connection
+            .execute(
+                "INSERT INTO voice_speech_requests VALUES('session:one:record','session:one','record','unknown','private')",
+                [],
+            )
+            .expect("legacy receipt");
+        connection
+            .execute(
+                "INSERT INTO voice_speech_requests VALUES('new-id','session','different-record','unknown','private')",
+                [],
+            )
+            .expect("canonical receipt with wrong record");
+        assert!(
+            lookup_speech_receipt(&connection, "session:one", "record", "fresh-id")
+                .expect("exact legacy tuple is replayable")
+                .is_some()
+        );
+        assert!(lookup_speech_receipt(&connection, "session", "one:record", "new-id").is_err());
     }
 }

@@ -24,5 +24,278 @@
     ],
     "witnesses": ["realtime_error_notifications_require_stop_rpc"],
     "suite": "voice_provider"
+  },
+  {
+    "id": "VP3",
+    "description": "session-dispatch-lock-is-not-keyed-by-the-full-session-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "let key = (agent_id.to_owned(), session_id.to_owned());",
+        "after": "let key = (agent_id.to_owned(), String::from(\"shared-session\"));"
+      }
+    ],
+    "witnesses": [
+      "dispatch_guard_serializes_same_session_but_not_other_sessions"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP4",
+    "description": "providerless-speech-receipt-does-not-check-session-owner",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "if load_row(&connection, session_id, agent_id)?.is_none() {\n        return Ok(None);\n    }",
+        "after": "if false {\n        return Ok(None);\n    }"
+      }
+    ],
+    "witnesses": [
+      "providerless_receipt_replay_checks_agent_session_and_record_tuple"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP5",
+    "description": "speech-receipt-replay-does-not-validate-record-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "if receipt[\"session\"] == session_id && receipt[\"record_id\"] == record_id {",
+        "after": "if receipt[\"session\"] == session_id {"
+      }
+    ],
+    "witnesses": [
+      "speech_receipt_identity_is_tuple_unambiguous_and_replay_checks_record"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP6",
+    "description": "speech-receipt-default-identity-is-ambiguous",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "identity.extend_from_slice(&(session_id.len() as u64).to_be_bytes());",
+        "after": ""
+      },
+      {
+        "before": "identity.extend_from_slice(&(record_id.len() as u64).to_be_bytes());",
+        "after": ""
+      }
+    ],
+    "witnesses": [
+      "speech_receipt_identity_is_tuple_unambiguous_and_replay_checks_record"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP7",
+    "description": "invalid-audio-is-pruned-before-validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/audio.rs",
+    "edits": [
+      {
+        "before": "let validated = policy::decide_audio(request, session_exists, None)?;\n    prune_expired_audio(directory, session_prefix)?;",
+        "after": "prune_expired_audio(directory, session_prefix)?;\n    let validated = policy::decide_audio(request, session_exists, None)?;"
+      }
+    ],
+    "witnesses": ["audio_validation_precedes_scoped_expiry_pruning"],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP8",
+    "description": "audio-expiry-pruning-deletes-another-sessions-chunks",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/audio.rs",
+    "edits": [
+      {
+        "before": "if !entry\n            .file_name()\n            .to_string_lossy()\n            .starts_with(session_prefix)\n        {\n            continue;\n        }",
+        "after": "if false {\n            continue;\n        }"
+      }
+    ],
+    "witnesses": ["audio_validation_precedes_scoped_expiry_pruning"],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP9",
+    "description": "interrupted-audio-write-leaves-partial-temporary-file",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/audio.rs",
+    "edits": [{ "before": "if result.is_err() {", "after": "if false {" }],
+    "witnesses": [
+      "interrupted_audio_write_leaves_no_final_or_temporary_partial_file"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP10",
+    "description": "canonical-transcript-does-not-suppress-fallback-tail",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "sessions.entry(session_id.to_owned()).or_default().canonical = true;",
+        "after": "sessions.entry(session_id.to_owned()).or_default().canonical = false;"
+      }
+    ],
+    "witnesses": [
+      "callback_actor_prefers_canonical_transcript_over_fallback_delta"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP11",
+    "description": "transcript-done-does-not-discard-the-fallback-tail",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "state.tail.remove(role);",
+        "after": "state.tail.remove(\"ignored-role\");"
+      }
+    ],
+    "witnesses": [
+      "callback_actor_discards_fallback_tail_when_transcript_is_finalized_empty"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP12",
+    "description": "transcript-delta-buffer-limit-is-not-enforced",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "> super::MAX_RECORD_TEXT",
+        "after": "> super::MAX_RECORD_TEXT + 1"
+      }
+    ],
+    "witnesses": ["callback_actor_refuses_deltas_over_the_record_text_bound"],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP13",
+    "description": "provider-disconnect-does-not-flush-fallback-transcript",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "for id in ids {\n            self.flush_session(store, &id)?;\n        }",
+        "after": "for _id in ids {}"
+      }
+    ],
+    "witnesses": [
+      "callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP14",
+    "description": "provider-close-does-not-flush-fallback-transcript",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+    "edits": [
+      {
+        "before": "\"thread/realtime/closed\" => self.flush_session(store, &session_id)?,",
+        "after": "\"thread/realtime/closed\" => (),"
+      }
+    ],
+    "witnesses": ["callback_actor_flushes_fallback_tail_when_provider_closes"],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP15",
+    "description": "stop-before-admission-sends-stop-instead-of-tombstoning",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "if start_dispatched && current.ended.is_none() {",
+        "after": "if current.ended.is_none() {"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP16",
+    "description": "provider-answer-does-not-move-connecting-session-to-ready",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "session.state = Some(VoiceSessionState::Ready);",
+        "after": "session.state = Some(VoiceSessionState::Connecting);"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP17",
+    "description": "provider-close-overwrites-terminal-provider-failure",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "if session.state != Some(VoiceSessionState::Failed) {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP18",
+    "description": "provider-disconnect-is-not-recorded-as-lost",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "session.state = Some(VoiceSessionState::Lost);",
+        "after": "session.state = Some(VoiceSessionState::Ended);"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP19",
+    "description": "rejected-stop-write-does-not-become-unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "session.state = Some(VoiceSessionState::Unknown);",
+        "after": "session.state = Some(VoiceSessionState::Ended);"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP20",
+    "description": "admitted-stop-overwrites-a-provider-failure",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      {
+        "before": "if current.state != Some(VoiceSessionState::Failed) {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
+  },
+  {
+    "id": "VP21",
+    "description": "late-answer-revives-an-ended-session",
+    "file": "workspaces/runtime/packages/runtime-services/src/voice/policy.rs",
+    "edits": [
+      { "before": "if session.ended.is_none() {", "after": "if true {" }
+    ],
+    "witnesses": [
+      "session_machine_distinguishes_admitted_stop_rejection_and_disconnect"
+    ],
+    "suite": "voice_provider"
   }
 ]
