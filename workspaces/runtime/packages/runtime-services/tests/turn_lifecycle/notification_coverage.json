@@ -182,36 +182,9 @@
       "cases": ["policy-peer-175"]
     }
   ],
-  "named_deviations": [
-    {
-      "name": "token-usage-partials",
-      "reason": "contextUsage persists; usage-policy/budget-capture, agent-move/cache-capture-not-ported and analytics/token-rate-observation-not-ported are counted.",
-      "cases": ["deviation-token-usage"]
-    },
-    {
-      "name": "questions-service/async-question",
-      "reason": "Questions are counted; pending question/complaint service is outside this slice.",
-      "cases": ["deviation-questions"]
-    },
-    {
-      "name": "unhandled-notification-kinds",
-      "reason": "Module-table kinds persist their named counter and receipt; Python service effects are explicitly not compared.",
-      "cases": ["unhandled-inventory"]
-    },
-    {
-      "name": "radio-policy",
-      "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
-      "cases": ["policy-radio-turn", "submission-radio-no-metadata"]
-    },
-    {
-      "name": "bounded-open-streams",
-      "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
-      "cases": ["bounded-open-streams"]
-    }
-  ],
   "counts": {
-    "total": 274,
-    "fast": 40,
+    "total": 278,
+    "fast": 44,
     "unit": 1,
     "review3_original_stream_cases": 53,
     "stream_orders": {
@@ -284,5 +257,6 @@
       "user": 4,
       "work_decision": 3
     }
-  }
+  },
+  "deviation_registry": "deviations.json"
 }

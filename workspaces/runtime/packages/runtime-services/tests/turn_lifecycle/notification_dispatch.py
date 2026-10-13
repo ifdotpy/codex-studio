@@ -68,6 +68,8 @@ def seed(runtime, case):
         for key in case.get('remove', []):
             agent.pop(key, None)
         runtime.put(db, 'agents', agent)
+        for asset in case.get('assets', []):
+            runtime.put(db, 'assets', asset)
         for item in case.get('items', []):
             runtime.item(db, 'agent', item['id'], 'assistant', item.get('text', ''), **item.get('metadata', {}))
             if 'created' in item:
@@ -163,6 +165,18 @@ def assert_submission_boundary(runtime):
 
 
 def transition(runtime, case):
+    if case.get('routing_refusal'):
+        import __main__ as oracle
+        before = snapshot(runtime.root)
+        with patch.object(codex_streaming.threading, 'Timer', ManualTimer):
+            for step in case['steps']:
+                account = step.get('provider_handle', 'account:default').removeprefix('account:')
+                result = runtime.notification(step['frame'], account, 'connection-7')
+                assert result is None, 'Python routing refusal return'
+            with runtime.db() as db:
+                runtime._stream_buffer.flush_locked(db, force=True)
+        assert snapshot(runtime.root) == before, 'Python foreign routing wrote state'
+        return
     if case.get('expect_refusal'): return
     if case.get('submission'):
         captured = runtime.corpus_submission
@@ -236,7 +250,7 @@ def run_case(command, template, runtime_type):
         with _runtime.read_db() as db:
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
-    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result') if k in case}, sort_keys=True)
+    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets') if k in case}, sort_keys=True)
     runtime.close_notification_database()
     runtime.__dict__.pop('_agent_records_cache', None)
     prepared_path = runtime.root.parent / 'prepared.json'
@@ -267,11 +281,13 @@ def run_case(command, template, runtime_type):
     if prepared is not None:
         (rust.parent / 'prepared.json').write_text(prepared)
     before = snapshot(runtime.root)
+    import __main__ as oracle
+    oracle.assert_backup_equivalent(runtime.root, rust)
     assert snapshot(rust) == before, 'pre-states differ'
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
     transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root)}
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root)}
 
 
 def close():

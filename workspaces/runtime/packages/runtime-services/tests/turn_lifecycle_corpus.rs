@@ -58,7 +58,7 @@ impl Drop for State {
         fs::remove_dir_all(&self.0).expect("remove disposable states");
     }
 }
-fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
+fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
     let identity = TurnAttemptIdentity {
         agent_id: "agent".into(),
         epoch: 0,
@@ -67,7 +67,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
     let transition = case["transition"].as_str().expect("transition");
     match transition {
         "claim" => claim_intent(store, "agent", 0, "attempt", 10.0)
-            .map(|_| ())
+            .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
         "submission" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::mark_submitted_identity(
@@ -80,8 +80,9 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                 1,
                 "thread",
             )
-            .map(|_| ())
+            .map(|value| json!(value))
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "accepted" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
@@ -91,8 +92,9 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                 "attempt",
                 case["turnId"].as_str().unwrap_or("turn"),
             )
-            .map(|_| ())
+            .map(|value| json!(value))
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "unknown" | "not_sent" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_start_outcome(
@@ -106,6 +108,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                 None,
             )
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "rejected" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_start_rejected_provider(
@@ -119,8 +122,9 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                 "thread",
                 json!({"message":case["message"].as_str().unwrap_or("rejected")}),
             )
-            .map(|_| ())
+            .map(|value| json!(value))
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "completed" | "failed" | "interrupted" => {
             let mut turn = json!({"id":"turn","status":transition});
@@ -130,7 +134,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                 }
             }
             settle_terminal_attempt(store, &identity, &json!({"threadId":"thread","turn":turn}))
-                .map(|_| ())
+                .map(|value| json!(value))
                 .map_err(|e| e.to_string())
         }
         "interrupt_accepted" | "interrupt_rejected" | "interrupt_unknown" => {
@@ -155,30 +159,36 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<(), String> {
                     },
                 )
             })
+            .map(|value| json!(value))
             .map_err(|e| e.to_string())
         }
         "stop" | "pause" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::stop_agent(tx, "agent", "Stopped by user").map(|_| ())
+            SchedulerRepository::stop_agent(tx, "agent", "Stopped by user").map(|value| json!(value))
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "started" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::observe_started(tx, &identity, "turn").map(|_| ())
+            SchedulerRepository::observe_started(tx, &identity, "turn").map(|value| json!(value))
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "restart" => recover_on_startup(store)
-            .map(|_| ())
+            .map(|value| json!(value))
             .map_err(|e| e.to_string()),
         "disconnect" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::disconnect_account(tx, "default", 1, 20.0, false)
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "reattach" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::reconcile_generation(tx, "default", 1, 20.0)
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         "generation_change" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::reconcile_generation(tx, "default", 2, 20.0)
         })
+        .map(|value| json!(value))
         .map_err(|e| e.to_string()),
         _ => panic!("unimplemented Rust transition {transition}"),
     }
@@ -332,6 +342,7 @@ fn python_written_turn_lifecycle_corpus() {
     if let Ok(filter) = std::env::var("LIFECYCLE_CASE_FILTER") {
         cases.retain(|c| c["id"].as_str().is_some_and(|id| id.contains(&filter)));
     }
+    assert!(!cases.is_empty(), "case filter matched nothing");
     let root = State(std::env::temp_dir().join(format!("turn-corpus-{}", std::process::id())));
     fs::create_dir(&root.0).expect("unique corpus state");
     let mut oracle = Oracle::new(&root.0);
@@ -382,7 +393,8 @@ fn python_written_turn_lifecycle_corpus() {
             })
             .expect("nested hold restoration");
         }
-        let mut error = apply(&store, case).err();
+        let first = apply(&store, case);
+        let mut error = first.as_ref().err().cloned();
         if let Some(text) = case["afterEventText"].as_str() {
             store
                 .transaction(|tx| {
@@ -407,7 +419,12 @@ fn python_written_turn_lifecycle_corpus() {
             let before = store
                 .transaction(|tx| Ok(tx.total_changes()))
                 .expect("write counter");
-            error = apply(&store, case).err();
+            let replay = apply(&store, case);
+            assert_eq!(
+                replay, first,
+                "{id}: replay must return the saved first result"
+            );
+            error = replay.err();
             let after = store
                 .transaction(|tx| Ok(tx.total_changes()))
                 .expect("write counter");
@@ -423,9 +440,12 @@ fn python_written_turn_lifecycle_corpus() {
                 .take()
                 .expect("malformed or conflicting stored evidence must be refused");
             assert!(
-                message.contains(refusal["table"].as_str().expect("refusal table"))
-                    && message.contains(refusal["id"].as_str().expect("refusal id"))
-                    && !message.contains("CORPUS_PRIVATE_PAYLOAD"),
+                message
+                    == format!(
+                        "invalid stored sync object {}/{}",
+                        refusal["table"].as_str().expect("refusal table"),
+                        refusal["id"].as_str().expect("refusal id")
+                    ),
                 "error must locate table and stored id only"
             );
             &expected["before"]
@@ -454,7 +474,7 @@ fn python_written_turn_lifecycle_corpus() {
                 unexpected.len()
             );
         }
-        report.push(json!({"id":id,"differences":diff,"unexpected":unexpected,"error":error}));
+        report.push(json!({"id":id,"differences":diff,"unexpected":unexpected,"error":error,"firstResult":first.ok(),"pythonResult":expected["entryResult"]}));
     }
     let report_path = std::env::var_os("LIFECYCLE_CORPUS_REPORT")
         .map(PathBuf::from)

@@ -6423,7 +6423,7 @@
         }
       }
     ],
-    "expect_refusal": "runtime_event_meta:input-0",
+    "expect_refusal": "invalid stored object runtime_event_meta:input-0",
     "tier": "heavy"
   },
   {
@@ -6456,7 +6456,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "fast"
   },
   {
@@ -6519,7 +6519,7 @@
         }
       }
     ],
-    "expect_refusal": "runtime_event_meta:input-0",
+    "expect_refusal": "invalid stored object runtime_event_meta:input-0",
     "tier": "heavy"
   },
   {
@@ -6598,7 +6598,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -6677,7 +6677,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -6760,7 +6760,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "fast"
   },
   {
@@ -6802,7 +6802,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "fast"
   },
   {
@@ -6844,7 +6844,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -6927,7 +6927,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -6969,7 +6969,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -7011,7 +7011,7 @@
         }
       }
     ],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -7183,7 +7183,7 @@
       }
     ],
     "related": [],
-    "expect_refusal": "not authorized",
+    "expect_refusal": "submitted event is not authorized",
     "tier": "heavy"
   },
   {
@@ -7199,8 +7199,8 @@
       }
     ],
     "related": [],
-    "expect_refusal": "radio-policy",
-    "deviation": "radio-policy: scheduler refuses radio_turn/radioAnswerTurnId before this boundary; active-room binding and peer readiness belong to radio service.",
+    "expect_refusal": "Not implemented: requires radio-policy",
+    "deviation": "radio-policy",
     "tier": "fast"
   },
   {
@@ -7233,7 +7233,7 @@
         "value": "wrong"
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7267,7 +7267,7 @@
         "value": "SECRET_STORED_SENTINEL"
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast"
   },
@@ -7301,7 +7301,7 @@
         "value": {}
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7335,7 +7335,7 @@
         "value": 7
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7369,7 +7369,7 @@
         "value": []
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7405,7 +7405,7 @@
         }
       }
     ],
-    "expect_refusal": "runtime_agents:agent",
+    "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7439,7 +7439,7 @@
         "value": "wrong"
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast"
   },
@@ -7473,7 +7473,7 @@
         "value": "other"
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7507,7 +7507,7 @@
         "value": 7
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7541,7 +7541,7 @@
         "value": 17
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast"
   },
@@ -7575,7 +7575,7 @@
         "value": 17
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "heavy"
   },
@@ -7609,7 +7609,7 @@
         "value": "SECRET_STORED_SENTINEL"
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast"
   },
@@ -7643,7 +7643,7 @@
         "value": {}
       }
     ],
-    "expect_refusal": "runtime_items:agent:answer",
+    "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast"
   },
@@ -7660,7 +7660,7 @@
         "value": 17
       }
     ],
-    "expect_refusal": "runtime_event_meta:input-0",
+    "expect_refusal": "invalid stored object runtime_event_meta:input-0",
     "tier": "heavy"
   },
   {
@@ -7676,7 +7676,7 @@
         "value": 17
       }
     ],
-    "expect_refusal": "runtime_event_meta:input-0",
+    "expect_refusal": "invalid stored object runtime_event_meta:input-0",
     "tier": "heavy"
   },
   {
@@ -7701,21 +7701,23 @@
         }
       }
     ],
-    "deviation": "usage-policy/budget-capture; agent-move/cache-capture-not-ported; analytics/token-rate-observation-not-ported",
+    "deviation": "token-usage-partials",
     "expected_differences": [
       {
         "path": "/runtime_agents/0/record/tokenUsageAccounting",
         "python": "provisional",
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "token-usage-partials"
       },
       {
         "path": "/runtime_agents/0/record/tokensUsed",
         "python": 42,
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "token-usage-partials"
       },
       {
         "path": "/runtime_agents/0/record/unhandledNotifications",
@@ -7731,7 +7733,8 @@
             }
           }
         },
-        "rustPresent": true
+        "rustPresent": true,
+        "deviation": "token-usage-partials"
       },
       {
         "path": "/runtime_budget/0",
@@ -7756,7 +7759,8 @@
         },
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "token-usage-partials"
       },
       {
         "path": "/runtime_budget_usage/0",
@@ -7769,14 +7773,16 @@
         },
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "token-usage-partials"
       },
       {
         "path": "/sync_entities/0/payload/value/tokensUsed",
         "python": 42,
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "token-usage-partials"
       }
     ],
     "tier": "fast"
@@ -7820,7 +7826,8 @@
             }
           }
         },
-        "rustPresent": true
+        "rustPresent": true,
+        "deviation": "questions-service/async-question"
       },
       {
         "path": "/runtime_requests/0",
@@ -7856,7 +7863,8 @@
         },
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "questions-service/async-question"
       },
       {
         "path": "/sync_entities/2",
@@ -7900,7 +7908,8 @@
         },
         "pythonPresent": true,
         "rust": null,
-        "rustPresent": false
+        "rustPresent": false,
+        "deviation": "questions-service/async-question"
       }
     ],
     "tier": "fast"
@@ -7919,7 +7928,7 @@
       }
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -7936,7 +7945,7 @@
       }
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -7953,7 +7962,7 @@
       }
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -7970,7 +7979,7 @@
       }
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -7987,7 +7996,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8004,7 +8013,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8021,7 +8030,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8038,7 +8047,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8055,7 +8064,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8072,7 +8081,7 @@
       }
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8089,7 +8098,7 @@
       }
     ],
     "declared_unhandled": "provider-error-state-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8106,7 +8115,7 @@
       }
     ],
     "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8123,7 +8132,7 @@
       }
     ],
     "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8140,7 +8149,7 @@
       }
     ],
     "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8157,7 +8166,7 @@
       }
     ],
     "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8174,7 +8183,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8191,7 +8200,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8208,7 +8217,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8225,7 +8234,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8242,7 +8251,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8259,7 +8268,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8276,7 +8285,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8293,7 +8302,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8310,7 +8319,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8327,7 +8336,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8344,7 +8353,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8361,7 +8370,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8378,7 +8387,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8395,7 +8404,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8412,7 +8421,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8429,7 +8438,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8446,7 +8455,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8463,7 +8472,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8480,7 +8489,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8497,7 +8506,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8514,7 +8523,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8531,7 +8540,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8548,7 +8557,7 @@
       }
     ],
     "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "Listed unhandled kind; Python side effects are deliberately not ported. Oracle asserts only the exact Rust counter and delivery receipt against Python-written state, using real Python put/save_receipt.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8571,7 +8580,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8594,7 +8603,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8617,7 +8626,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8640,7 +8649,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8663,7 +8672,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8686,7 +8695,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8709,7 +8718,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8732,7 +8741,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8755,7 +8764,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8778,7 +8787,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8801,7 +8810,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8824,7 +8833,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8847,7 +8856,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8870,7 +8879,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8893,7 +8902,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8916,7 +8925,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8939,7 +8948,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8962,7 +8971,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -8985,7 +8994,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -9008,7 +9017,7 @@
       }
     ],
     "declared_unhandled": "non-text-provider-item",
-    "deviation": "Listed unhandled item type; only named counter and receipt are persisted.",
+    "deviation": "unhandled-notification-kinds",
     "tier": "heavy"
   },
   {
@@ -9930,7 +9939,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "policy-complaint-user-responder-null",
@@ -9972,7 +9981,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "policy-complaint-user-responder-number",
@@ -10014,7 +10023,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "policy-complaint-sender-responder-lead",
@@ -10097,7 +10106,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "policy-complaint-sender-responder-null",
@@ -10139,7 +10148,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "policy-complaint-sender-responder-number",
@@ -10181,7 +10190,7 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "not authorized"
+    "expect_refusal": "submitted event is not authorized"
   },
   {
     "id": "malformed-related-runtime_rooms",
@@ -10229,7 +10238,7 @@
         "value": {}
       }
     ],
-    "expect_refusal": "invalid stored object runtime_rooms:"
+    "expect_refusal": "invalid stored object runtime_rooms:room"
   },
   {
     "id": "malformed-related-runtime_complaints",
@@ -10279,7 +10288,7 @@
         "value": 12
       }
     ],
-    "expect_refusal": "invalid stored object runtime_complaints:"
+    "expect_refusal": "invalid stored object runtime_complaints:c"
   },
   {
     "id": "malformed-related-runtime_projects",
@@ -10344,7 +10353,7 @@
         ]
       }
     ],
-    "expect_refusal": "invalid stored object runtime_projects:"
+    "expect_refusal": "invalid stored object runtime_projects:$project"
   },
   {
     "id": "malformed-related-runtime_agents",
@@ -10385,7 +10394,7 @@
         "value": 12
       }
     ],
-    "expect_refusal": "invalid stored object runtime_agents:"
+    "expect_refusal": "invalid stored object runtime_agents:sender"
   },
   {
     "id": "malformed-event-created",
@@ -10422,9 +10431,128 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "invalid stored object runtime_operation_receipts:",
+    "expect_refusal": "invalid stored object runtime_operation_receipts:provider-notification:dbeee0c9a712f79ae3f68b466bada840bab40f18ec80a0720cee6de61984b7c5",
     "receipt_result": {
       "status": "invalid-status"
     }
+  },
+  {
+    "id": "foreign-account",
+    "module": "notification_dispatch",
+    "source": "review-3/stream-DSC-ticks0",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "before"
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
+        },
+        "tick": false,
+        "provider_handle": "account:foreign"
+      }
+    ],
+    "tier": "fast",
+    "expect_refusal": "invalid provider notification or delivery identity",
+    "routing_refusal": true
+  },
+  {
+    "id": "foreign-thread",
+    "module": "notification_dispatch",
+    "source": "review-3/stream-DSC-ticks0",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "foreign-thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "before"
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
+        },
+        "tick": false
+      }
+    ],
+    "tier": "fast",
+    "expect_refusal": "invalid provider notification or delivery identity",
+    "routing_refusal": true
+  },
+  {
+    "id": "late-service-failure",
+    "module": "notification_dispatch",
+    "source": "review-3/stream-DSC-ticks0",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "late-item",
+              "type": "agentMessage",
+              "text": "late partial write"
+            }
+          }
+        },
+        "tick": false
+      }
+    ],
+    "tier": "fast",
+    "expect_refusal": "injected late failure",
+    "late_failure": true
+  },
+  {
+    "id": "submission-prepared-assets",
+    "module": "notification_dispatch",
+    "steps": [],
+    "submission": true,
+    "events": [
+      {
+        "kind": "user",
+        "text": "first",
+        "metadata": {
+          "assets": ["asset-a"]
+        }
+      },
+      {
+        "kind": "followup",
+        "text": "second",
+        "metadata": {
+          "assets": ["asset-b", "asset-a"]
+        }
+      },
+      {
+        "kind": "work_decision",
+        "text": "third"
+      }
+    ],
+    "tier": "fast",
+    "assets": [
+      {
+        "id": "asset-a",
+        "agent": "agent",
+        "name": "a.txt",
+        "mime": "text/plain",
+        "size": 3,
+        "created": 10.0,
+        "path": "/fixture/a.txt"
+      },
+      {
+        "id": "asset-b",
+        "agent": "agent",
+        "name": "b.txt",
+        "mime": "text/plain",
+        "size": 3,
+        "created": 11.0,
+        "path": "/fixture/b.txt"
+      }
+    ]
   }
 ]

@@ -127,10 +127,36 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), Str
         bytes.push(b'\n');
         let frame = LineDecoder::new().push(&bytes).expect("frame").remove(0);
         let identity = ProviderDeliveryIdentity {
-            provider_handle: "account:default".into(),
+            provider_handle: step["provider_handle"]
+                .as_str()
+                .unwrap_or("account:default")
+                .into(),
             generation: step["generation"].as_u64().unwrap_or(7),
             cursor: step["cursor"].as_u64().unwrap_or(index as u64 + 1),
         };
+        if case["late_failure"] == true {
+            let original_streams = streams.clone();
+            let refusal = store.transaction_with(|tx| {
+                tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
+                let before = raw_rows(tx);
+                let refusal = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5).expect_err("late failure must reach the service caller");
+                assert_eq!(before, raw_rows(tx), "service leaked rows after caller caught its error");
+                assert_eq!(streams, original_streams, "service leaked stream state");
+                tx.execute_batch("DROP TRIGGER corpus_late_failure; INSERT INTO corpus_caller VALUES ('caller committed');")?;
+                Ok::<_, studio_runtime_store::StoreError>(refusal.to_string())
+            }).map_err(|e|e.to_string())?;
+            store
+                .transaction(|tx| {
+                    assert_eq!(
+                        tx.query_row("SELECT value FROM corpus_caller", [], |r| r
+                            .get::<_, String>(0))?,
+                        "caller committed"
+                    );
+                    Ok(())
+                })
+                .expect("unrelated caller work committed");
+            return Err(refusal);
+        }
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
             rolled = Some(dispatch_notification(tx, agent_id, store.root().to_str().expect("state path"), &streams, &identity, &frame, 1234.5)?);
@@ -205,6 +231,31 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), Str
     flush_agents(store, case, &mut streams)?;
     Ok(())
 }
+
+fn raw_rows(
+    tx: &studio_runtime_store::Transaction<'_>,
+) -> std::collections::BTreeMap<String, Vec<Vec<String>>> {
+    let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name != 'corpus_caller' ORDER BY name").expect("tables").query_map([], |r| r.get::<_,String>(0)).expect("names").collect::<Result<Vec<_>,_>>().expect("names");
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut statement = tx
+                .prepare(&format!("SELECT * FROM \"{}\"", table.replace('"', "\"\"")))
+                .expect("raw table");
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |r| {
+                    (0..columns)
+                        .map(|i| r.get_ref(i).map(|v| format!("{v:?}")))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .expect("raw rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("raw content");
+            (table, rows)
+        })
+        .collect()
+}
 fn flush_agents(
     store: &RuntimeStore,
     case: &Value,
@@ -276,6 +327,14 @@ fn differences(python: Option<&Value>, rust: Option<&Value>, path: &str, out: &m
     }
 }
 fn expected_with_deviations(mut expected: Value, case: &Value) -> Value {
+    let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))
+        .expect("central deviation registry");
+    if let Some(class) = case["deviation"].as_str() {
+        assert!(
+            registry.get(class).is_some(),
+            "deviation must be centrally declared: {class}"
+        );
+    }
     if let Some(patches) = case["expected_differences"].as_array() {
         assert!(
             case["deviation"].is_string(),
@@ -283,6 +342,33 @@ fn expected_with_deviations(mut expected: Value, case: &Value) -> Value {
         );
         for patch in patches {
             let path = patch["path"].as_str().expect("difference path");
+            let class = patch["deviation"]
+                .as_str()
+                .expect("field patch must name its deviation class");
+            assert_eq!(patch["deviation"], case["deviation"]);
+            let declaration = registry.get(class).expect("declared deviation");
+            let field = path
+                .split('/')
+                .map(|part| {
+                    if part.parse::<usize>().is_ok() {
+                        "*"
+                    } else {
+                        part
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            assert!(
+                declaration["fields"]
+                    .as_array()
+                    .expect("declared fields")
+                    .contains(&json!(field)),
+                "undeclared field: {class} {field}"
+            );
+            assert!(
+                patch["pythonPresent"] != patch["rustPresent"] || patch["python"] != patch["rust"],
+                "declared difference does not occur: {path}"
+            );
             let actual = expected.pointer(path);
             if patch["pythonPresent"] == true {
                 assert_eq!(actual, Some(&patch["python"]), "Python changed at {path}");
@@ -423,11 +509,18 @@ fn corpus(full: bool) {
         let mut diff = vec![];
         let expected_after = expected_with_deviations(expected["after"].clone(), case);
         differences(Some(&expected_after), Some(&actual), "", &mut diff);
-        let expected_error = case["expect_refusal"].as_str();
+        let expected_error = case["expect_refusal"].as_str().map(|e| {
+            e.replace(
+                "$project",
+                expected["pythonRoot"].as_str().expect("Python root"),
+            )
+        });
         let error_matches = match expected_error {
-            Some(message) => error
-                .as_deref()
-                .is_some_and(|error| error.contains(message)),
+            Some(message) => error.as_deref().is_some_and(|error| {
+                error == message.as_str()
+                    && !error.contains("SECRET_STORED_SENTINEL")
+                    && !error.contains("CORPUS_PRIVATE_PAYLOAD")
+            }),
             None => error.is_none(),
         };
         if diff.is_empty() && error_matches {

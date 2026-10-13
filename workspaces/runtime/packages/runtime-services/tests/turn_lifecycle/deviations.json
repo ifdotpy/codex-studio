@@ -79,5 +79,39 @@
       "/sync_entities/*/payload/value/startAttempt",
       "/sync_entities/*/payload/value/status"
     ]
+  },
+  "token-usage-partials": {
+    "reason": "contextUsage persists; usage-policy/budget-capture, agent-move/cache-capture-not-ported and analytics/token-rate-observation-not-ported are counted.",
+    "fields": [
+      "/runtime_agents/*/record/tokenUsageAccounting",
+      "/runtime_agents/*/record/tokensUsed",
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_budget/*",
+      "/runtime_budget_usage/*",
+      "/sync_entities/*/payload/value/tokensUsed"
+    ]
+  },
+  "questions-service/async-question": {
+    "reason": "Questions are counted; pending question/complaint service is outside this slice.",
+    "fields": [
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_requests/*",
+      "/sync_entities/*"
+    ]
+  },
+  "unhandled-notification-kinds": {
+    "reason": "Module-table kinds persist their named counter and receipt; Python service effects are explicitly not compared.",
+    "fields": [
+      "/runtime_agents/*/record/unhandledNotifications",
+      "/runtime_operation_receipts/*/result"
+    ]
+  },
+  "radio-policy": {
+    "reason": "radio_turn is unreachable through scheduler claim (also refuses radioAnswerTurnId); room binding and peer readiness belong to radio service. Plain radio follows Python.",
+    "fields": ["/entryResult"]
+  },
+  "bounded-open-streams": {
+    "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
+    "fields": ["/entryResult"]
   }
 }

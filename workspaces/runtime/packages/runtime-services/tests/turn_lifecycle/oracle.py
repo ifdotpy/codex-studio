@@ -86,6 +86,9 @@ if "--isolated" not in sys.argv:
 import copy
 import concurrent.futures
 import hashlib
+import datetime
+import math
+import re
 import json
 import sqlite3
 import threading
@@ -106,6 +109,9 @@ TABLES = (
     "runtime_search_indexed", "runtime_search_next_meta",
 )
 TIMES = {"created", "createdAt", "created_at", "finished", "at", "lastEvent", "reconciledAt", "updated", "updatedAt", "acceptedAt", "enqueuedAt", "dispatchPickedAt", "observedAt"}
+_PRESTATES = {}
+_PAIRS = {}
+_SHAPES = {}
 
 
 class QuietRuntime(Runtime):
@@ -127,10 +133,28 @@ class QuietRuntime(Runtime):
         pass
 
 
+def valid_time(value):
+    if type(value) in (int, float):
+        return math.isfinite(value) and value >= 0
+    if isinstance(value, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.tzinfo is not None
+        except ValueError:
+            return False
+    return False
+
+
 def normalize(value, key=""):
     if key in TIMES and value is not None:
+        # Malformed seed fields must remain visible for refusal/no-write cases.
+        # Never replace an invalid stored value with an opaque clock token.
+        if not valid_time(value):
+            return value
         return "<time>"
     if key in {"seq", "revision", "transcriptRevision"} and value is not None:
+        if type(value) is not int or value < 0:
+            return value
         return "<revision>"
     if isinstance(value, dict):
         return {k: normalize(v, k) for k, v in sorted(value.items())}
@@ -140,6 +164,19 @@ def normalize(value, key=""):
 
 
 def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
+    root = str(root)
+    shapes = {}
+    def inspect(value, path=(), key=""):
+        if value is not None and key in TIMES | {"seq", "revision", "transcriptRevision"}:
+            shape = ("number" if type(value) in (int, float) else type(value).__name__)
+            valid = valid_time(value) if key in TIMES else type(value) is int and value >= 0
+            shapes[path] = (shape, valid)
+        if isinstance(value, dict):
+            for key, field in value.items():
+                inspect(field, path + (key,), key)
+        elif isinstance(value, list):
+            for i, field in enumerate(value):
+                inspect(field, path + (str(i),))
     with sqlite3.connect(pathlib.Path(root) / "canvas.sqlite3") as db:
         db.row_factory = sqlite3.Row
         result = {}
@@ -159,9 +196,11 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
                 for field in ("record", "payload", "result"):
                     if field in record and record[field] is not None:
                         record[field] = json.loads(record[field])
+                inspect(record, (table, *(str(record[k]) for k in keys)))
                 if table == "sync_entities":
                     record["hash"] = hashlib.sha256(json.dumps(normalize(record["payload"]), sort_keys=True).encode()).hexdigest()
                 if table == "sync_versions":
+                    assert isinstance(record["hash"], str) and re.fullmatch(r"[0-9a-f]{64}", record["hash"]), "invalid version hash"
                     record["hash"] = "<revision>"
                 rows.append(normalize(record))
             if table not in ordered_tables:
@@ -171,7 +210,50 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
             db.execute("CREATE VIRTUAL TABLE temp.corpus_vocab USING fts5vocab(main,'runtime_search_next','instance')")
             result["runtime_search_next_postings"] = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM corpus_vocab ORDER BY 1,2,3,4")]
         result.setdefault("runtime_search_next_postings", [])
+        if root in _PAIRS:
+            reference = _SHAPES[_PAIRS[root]]
+            for path, shape in shapes.items():
+                assert shape == reference.get(path, (shape[0], True)), f"stored opaque field shape changed: {path}"
+        _SHAPES[root] = shapes
+        if root in _PRESTATES:
+            assert_revisions(_PRESTATES[root], opaque_state(db))
         return result
+
+
+def assert_backup_equivalent(left, right):
+    """SQLite backup equivalence: exact unnormalized SQL content, not file bytes."""
+    with sqlite3.connect(pathlib.Path(left) / "canvas.sqlite3") as a, \
+         sqlite3.connect(pathlib.Path(right) / "canvas.sqlite3") as b:
+        assert list(a.iterdump()) == list(b.iterdump()), "unnormalized backup content differs"
+        _PRESTATES[str(left)] = opaque_state(a)
+        _PRESTATES[str(right)] = opaque_state(b)
+        _PAIRS[str(right)] = str(left)
+
+
+def opaque_state(db):
+    state = {}
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table, keys, fields in (
+        ("sync_entities", "collection,id", "seq,hash,payload,deleted"),
+        ("sync_documents", "scope,id", "seq,payload,deleted"),
+        ("sync_versions", "scope", "seq,hash,deleted"),
+        ("runtime_transcript_revisions", "agent", "revision"),
+    ):
+        if table in tables:
+            count = len(keys.split(','))
+            state[table] = {tuple(r[:count]):tuple(r[count:]) for r in db.execute(f"SELECT {keys},{fields} FROM {table}")}
+    return state
+
+
+def assert_revisions(before, after):
+    for table, rows in after.items():
+        for key, row in rows.items():
+            assert type(row[0]) is int and row[0] >= 0, f"invalid stored revision: {table} {key}"
+            previous = before.get(table, {}).get(key)
+            if previous is not None:
+                assert row[0] >= previous[0], f"revision moved backwards: {table} {key}"
+                if row[1:] != previous[1:]:
+                    assert row[0] > previous[0], f"content changed without revision advance: {table} {key}"
 
 
 def capture_submission(runtime, *, stop="submitted"):
@@ -288,23 +370,24 @@ def seed(runtime, case):
 
 
 def transition(runtime, case):
+    runtime.corpus_result = None
     agent = runtime.agent("agent")
     attempt = copy.deepcopy(agent.get("startAttempt", {}))
     action = case["transition"]
     if action == "accepted":
         # Scope mutations occur after submission; the callback retains original scope.
         attempt.update(accountKey="default", threadId="thread")
-        runtime.start_accepted("agent", attempt, {"turn": {"id": "turn"}})
+        runtime.corpus_result = runtime.start_accepted("agent", attempt, {"turn": {"id": "turn"}})
     elif action in {"unknown", "rejected", "not_sent"}:
-        runtime.start_error("agent", "attempt", ValueError(case.get("message", action)),
+        runtime.corpus_result = runtime.start_error("agent", "attempt", ValueError(case.get("message", action)),
                             unknown=action == "unknown", preparation=action == "not_sent")
     elif action in {"completed", "failed", "interrupted", "started"}:
         turn = {"id": "turn", "status": action}
         turn.update(case.get("turn", {}))
-        runtime.notification({"method": "turn/" + ("started" if action == "started" else "completed"),
+        runtime.corpus_result = runtime.notification({"method": "turn/" + ("started" if action == "started" else "completed"),
                               "params": {"threadId": "thread", "turn": turn}})
     elif action in {"disconnect", "generation_change"}:
-        runtime.disconnected()
+        runtime.corpus_result = runtime.disconnected()
     elif action == "restart":
         # Constructor recovery must see the exact pre-state, without close()'s capture.
         with runtime.db() as db:
@@ -321,14 +404,15 @@ def transition(runtime, case):
         server = object()
         with patch.object(runtime,"server_for",lambda *_:server), patch.object(runtime,"connection_current",lambda *_:True):
             if case.get("seedRecovery") == "restart":
-                recovery.adopt_restart_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"})
+                runtime.corpus_result = recovery.adopt_restart_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"})
             else:
-                recovery.adopt_transport_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"},None)
+                runtime.corpus_result = recovery.adopt_transport_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"},None)
     elif action == "claim":
         with patch.object(codex_runtime, "uid", lambda:"attempt"):
-            runtime.dispatch_candidates("agent")
+            runtime.corpus_result = runtime.dispatch_candidates("agent")
     elif action == "submission":
         capture_submission(runtime)
+        runtime.corpus_result = {"boundary":"before_provider_submission"}
     elif action.startswith("interrupt_"):
         class InterruptProvider:
             def call(self, method, params):
@@ -336,9 +420,9 @@ def transition(runtime, case):
                 if action == "interrupt_rejected": raise ValueError("rejected")
                 if action == "interrupt_unknown": raise TimeoutError("interrupt response unknown")
         with patch.object(runtime,"server_for",lambda *_:InterruptProvider()):
-            Runtime.interrupt(runtime,agent)
+            runtime.corpus_result = Runtime.interrupt(runtime,agent)
     elif action in {"stop", "pause"}:
-        runtime.stop("agent", descendants=False)
+        runtime.corpus_result = runtime.stop("agent", descendants=False)
     else:
         raise AssertionError("unimplemented oracle transition " + action)
     return runtime
@@ -383,6 +467,7 @@ class LifecycleCases:
         with sqlite3.connect(rust / "canvas.sqlite3") as db:
             saved.backup(db)
         before = snapshot(runtime.root)
+        assert_backup_equivalent(runtime.root, rust)
         assert snapshot(rust) == before, "pre-states differ"
         python_error = None
         try:
@@ -393,7 +478,7 @@ class LifecycleCases:
         if case.get("afterEventText"):
             with self.runtime.db() as db:
                 db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
-        return {"before":before, "after":snapshot(self.runtime.root), "pythonRoot":str(self.runtime.root),"pythonError":python_error}
+        return {"before":before, "after":snapshot(self.runtime.root), "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
 
     def close(self):
         if self.runtime is not None:
@@ -426,7 +511,9 @@ def main():
             else:
                 module = sys.modules[__name__]
             try:
-                if command["command"] == "snapshot":
+                if command["command"] == "normalize":
+                    result = normalize(command["value"])
+                elif command["command"] == "snapshot":
                     result = module.snapshot(command["root"])
                 elif module is sys.modules[__name__]:
                     result = lifecycle.run(command)

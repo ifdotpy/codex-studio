@@ -3546,7 +3546,7 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "fast"
   },
   {
     "id": "started_notice__account_transfer",
