@@ -58,7 +58,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
 
 #[cfg(test)]
 mod registration_tests {
-    use super::manifest::{DependencyRegistration, RouteModuleRegistration};
+    use super::manifest::RouteModuleRegistration;
     use std::fs;
     use std::path::Path;
 
@@ -133,9 +133,10 @@ mod registration_tests {
         assert_eq!(dependencies.len(), 34);
         assert!(dependencies.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(
-            inventory::iter::<DependencyRegistration>
+            inventory::iter::<RouteModuleRegistration>
                 .into_iter()
-                .all(|registration| dependencies.contains(&registration.0))
+                .flat_map(|registration| registration.dependencies.iter())
+                .all(|dependency| dependencies.contains(dependency))
         );
     }
 

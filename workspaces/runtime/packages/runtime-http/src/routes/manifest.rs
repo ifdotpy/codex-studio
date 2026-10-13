@@ -8,16 +8,11 @@ use crate::router::HttpState;
 #[serde(transparent)]
 pub(crate) struct Dependency(&'static str);
 
-/// A dependency is declared beside the route slice that owns its capability.
-pub(crate) struct DependencyRegistration(pub(crate) &'static str);
-
-inventory::collect!(DependencyRegistration);
-
 #[cfg(test)]
 pub(crate) fn registered_dependencies() -> Vec<&'static str> {
-    let mut names = inventory::iter::<DependencyRegistration>
+    let mut names = inventory::iter::<RouteModuleRegistration>
         .into_iter()
-        .map(|dependency| dependency.0)
+        .flat_map(|registration| registration.dependencies.iter().copied())
         .collect::<Vec<_>>();
     names.sort_unstable();
     names
@@ -26,6 +21,7 @@ pub(crate) fn registered_dependencies() -> Vec<&'static str> {
 pub(crate) struct RouteModuleRegistration {
     pub(crate) name: &'static str,
     pub(crate) routes: Option<fn() -> RouteGroup>,
+    pub(crate) dependencies: &'static [&'static str],
 }
 
 inventory::collect!(RouteModuleRegistration);
@@ -34,6 +30,7 @@ inventory::submit! {
     RouteModuleRegistration {
         name: "manifest",
         routes: None,
+        dependencies: &[],
     }
 }
 
@@ -51,9 +48,9 @@ impl Dependency {
     }
 
     fn is_known(self) -> bool {
-        inventory::iter::<DependencyRegistration>
+        inventory::iter::<RouteModuleRegistration>
             .into_iter()
-            .any(|dependency| dependency.0 == self.0)
+            .any(|registration| registration.dependencies.contains(&self.0))
     }
 }
 

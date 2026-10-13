@@ -83,14 +83,27 @@ or hold a transaction across an await.
 Export a `routes() -> RouteGroup` from the group module. Register each route
 with one method-specific constructor such as `get(path, status, handler)` or
 `post(path, status, handler)`. That call creates the Axum method route and its
-manifest descriptor together. Register the module's `routes` function once in
-`RouteModuleRegistration` in that route file; `routes::groups()` collects and
-sorts the inventory by module key. Add each dependency capability beside its
-route owner with `DependencyRegistration`; operation validation checks against
-that inventory. The composer validates every route against the committed
-OpenAPI authority and rejects undocumented or repeated operations. Adding a
-group needs its explicit module line in alphabetical order and its inventory
-entry; a directory parity test catches an omitted module or group registration.
+manifest descriptor together. Each route module has exactly one
+`inventory::submit!` containing its `RouteModuleRegistration`, the module name,
+its optional `routes` function, and its dependency names:
+
+```rust
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "sync_documents",
+        routes: Some(routes),
+        dependencies: &["resource-policy/publish-drafts"],
+    }
+}
+```
+
+Use `dependencies: &[]` when the module has no declared capabilities. Do not
+add separate dependency submissions. `routes::groups()` sorts registrations
+by module key; operation validation checks dependency names against the same
+inventory. The composer validates every route against the committed OpenAPI
+authority and rejects undocumented or repeated operations. Adding a group
+needs its explicit module line in alphabetical order and its inventory entry;
+a directory parity test catches an omitted module or group registration.
 The ledger reads operation status from these registrations, so route authors do
 not maintain a second allowlist. Use
 `OperationStatus::Partial` with named `Dependency` values when a handler can

@@ -108,9 +108,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "queue_write",
         routes: None,
+        dependencies: &["event-driver/queue-mutations"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/queue-mutations")
 }

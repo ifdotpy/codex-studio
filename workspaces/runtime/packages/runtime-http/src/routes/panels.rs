@@ -273,17 +273,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "panels",
         routes: Some(routes),
+        dependencies: &["resource-policy/read-progress-panel", "resource-policy/windows-file-identity", "resource-policy/write-progress-layout"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("resource-policy/read-progress-panel")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("resource-policy/windows-file-identity")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("resource-policy/write-progress-layout")
 }

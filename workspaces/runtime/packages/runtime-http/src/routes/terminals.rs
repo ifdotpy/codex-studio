@@ -119,9 +119,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "terminals",
         routes: Some(routes),
+        dependencies: &["provider-session/app-server"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("provider-session/app-server")
 }

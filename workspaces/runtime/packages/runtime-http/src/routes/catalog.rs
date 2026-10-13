@@ -117,13 +117,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "catalog",
         routes: Some(routes),
+        dependencies: &["provider-session/account-rate-limits", "provider-session/model-list"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("provider-session/account-rate-limits")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("provider-session/model-list")
 }

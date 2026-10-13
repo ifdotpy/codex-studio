@@ -308,5 +308,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitors",
         routes: Some(routes),
+        dependencies: &[],
     }
 }

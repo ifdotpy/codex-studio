@@ -165,21 +165,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "transcript",
         routes: Some(routes),
+        dependencies: &["transcript/event-driver", "transcript/payload-store", "transcript/search-index", "transcript/workspace-state"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("transcript/event-driver")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("transcript/payload-store")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("transcript/search-index")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("transcript/workspace-state")
 }

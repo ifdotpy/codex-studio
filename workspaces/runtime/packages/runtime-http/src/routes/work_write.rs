@@ -197,5 +197,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "work_write",
         routes: Some(routes),
+        dependencies: &[],
     }
 }

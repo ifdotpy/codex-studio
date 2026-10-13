@@ -46,13 +46,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "desktop",
         routes: Some(routes),
+        dependencies: &["cross-server/remote-events", "federation-driver/rooms"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("cross-server/remote-events")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("federation-driver/rooms")
 }

@@ -278,9 +278,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "workspace_files",
         routes: Some(routes),
+        dependencies: &["workspace-state/image-execution"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("workspace-state/image-execution")
 }

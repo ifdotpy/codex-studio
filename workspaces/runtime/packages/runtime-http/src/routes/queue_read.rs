@@ -148,13 +148,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "queue_read",
         routes: None,
+        dependencies: &["event-driver/annotations", "event-driver/plan-updates"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/annotations")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/plan-updates")
 }

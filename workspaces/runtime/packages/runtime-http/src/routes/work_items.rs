@@ -346,13 +346,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "work_items",
         routes: Some(routes),
+        dependencies: &["event-driver/work-items", "workspace-state/organization-effects"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/work-items")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("workspace-state/organization-effects")
 }

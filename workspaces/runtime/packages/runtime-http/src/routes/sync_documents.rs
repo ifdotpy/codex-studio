@@ -294,25 +294,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "sync_documents",
         routes: Some(routes),
+        dependencies: &["resource-policy/publish-drafts", "sync-policy/entity-seeding", "sync-policy/entity-window-maintenance", "sync-policy/runtime-capabilities", "transcript-service/pull"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("resource-policy/publish-drafts")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("sync-policy/entity-seeding")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("sync-policy/entity-window-maintenance")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("sync-policy/runtime-capabilities")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("transcript-service/pull")
 }

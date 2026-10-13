@@ -154,9 +154,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "agents_create",
         routes: Some(routes),
+        dependencies: &["agent-discovery/launcher-status"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("agent-discovery/launcher-status")
 }

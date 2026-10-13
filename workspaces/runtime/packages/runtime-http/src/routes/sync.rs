@@ -21,5 +21,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "sync",
         routes: Some(routes),
+        dependencies: &[],
     }
 }

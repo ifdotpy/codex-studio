@@ -396,13 +396,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "rules",
         routes: Some(routes),
+        dependencies: &["monitor-driver/active-checks", "rule-driver/event-rules"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("monitor-driver/active-checks")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("rule-driver/event-rules")
 }

@@ -206,21 +206,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "messages",
         routes: Some(routes),
+        dependencies: &["coordination-policy/chat-history", "coordination-policy/room-visibility", "event-driver/message-receipts", "event-driver/message-send"],
     }
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("coordination-policy/chat-history")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("coordination-policy/room-visibility")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/message-receipts")
-}
-
-inventory::submit! {
-    crate::routes::manifest::DependencyRegistration("event-driver/message-send")
 }
