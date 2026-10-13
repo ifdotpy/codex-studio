@@ -107,6 +107,14 @@ def _receive(connection):
         raise AssertionError("focused-run fixture exited before sending its pipe checkpoint") from error
 
 
+@contextlib.contextmanager
+def _without_server_jobs_override():
+    """Keep --show-jobs tests independent from the parent runner's override."""
+    with mock.patch.dict(os.environ):
+        os.environ.pop("CODEX_SERVER_TEST_JOBS", None)
+        yield
+
+
 class ServerSuiteRunner(unittest.TestCase):
     def test_server_shards_partition_runnable_entries_stably(self):
         entries = [
@@ -1045,7 +1053,8 @@ class ServerSuiteRunner(unittest.TestCase):
         entries = [("suite-one.py", "safe"), ("suite-two.py", "safe")]
         for pattern, expected in (("one", "focused-slots"), ("suite-", "whole-run-lock")):
             output = io.StringIO()
-            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", pattern,
+            with (_without_server_jobs_override(),
+                  mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", pattern,
                                                             "--load-sample-seconds", "0"]),
                   mock.patch.object(RUNNER, "inventory", return_value=entries),
                   mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
@@ -1401,7 +1410,8 @@ class ServerSuiteRunner(unittest.TestCase):
         plans = []
         for other_runnable in (0, 24, 30):
             output = io.StringIO()
-            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs",
+            with (_without_server_jobs_override(),
+                  mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs",
                                                             "--load-sample-seconds", "0"]),
                   mock.patch.object(RUNNER, "inventory", return_value=entries),
                   mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
@@ -1448,7 +1458,8 @@ class ServerSuiteRunner(unittest.TestCase):
     def test_show_jobs_load_sample_window_can_come_from_environment(self):
         entries = [("only.py", "safe")]
         output = io.StringIO()
-        with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs"]),
+        with (_without_server_jobs_override(),
+              mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs"]),
               mock.patch.dict(os.environ, {"CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS": "0"}),
               mock.patch.object(RUNNER, "inventory", return_value=entries),
               mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
@@ -1462,7 +1473,8 @@ class ServerSuiteRunner(unittest.TestCase):
 
     def test_filtered_show_jobs_skips_load_sampling_when_suites_fit_cpus(self):
         output = io.StringIO()
-        with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", "only.py"]),
+        with (_without_server_jobs_override(),
+              mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", "only.py"]),
               mock.patch.object(RUNNER, "inventory", return_value=[("only.py", "safe")]),
               mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
