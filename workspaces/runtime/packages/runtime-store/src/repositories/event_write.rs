@@ -62,6 +62,13 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     bootstrap_connection_functions: &[],
 };
 
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "event_write",
+        requirements: &REQUIREMENTS,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventWriteReceipt {
     pub signature: String,
@@ -72,6 +79,41 @@ pub struct EventWriteReceipt {
 pub struct EventWriteRepository;
 
 impl EventWriteRepository {
+    /// Finish the active capacity retry when a manual input replaces it.
+    pub fn finish_capacity_retry(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        retry_id: &str,
+    ) -> StoreResult<Option<bool>> {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_capacity_retries')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let raw = transaction
+            .query_row(
+                "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
+                params![retry_id, agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(Some(false));
+        };
+        let mut record: Value = serde_json::from_str(&raw)?;
+        record["status"] = Value::String("finished".to_owned());
+        record["dueAt"] = Value::Null;
+        record["reason"] = Value::String("A new instruction replaces this retry.".to_owned());
+        transaction.execute(
+            "UPDATE runtime_capacity_retries SET record=?1 WHERE id=?2 AND agent=?3",
+            params![record.to_string(), retry_id, agent_id],
+        )?;
+        Ok(Some(true))
+    }
+
     pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
         Ok(connection
             .query_row(

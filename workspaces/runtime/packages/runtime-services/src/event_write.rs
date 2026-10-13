@@ -12,6 +12,10 @@ use thiserror::Error;
 
 pub use studio_runtime_store::{python_json, python_json_compact, truthy};
 
+pub fn request_signature(value: &Value) -> String {
+    studio_runtime_store::sha256_hex(python_json(value).as_bytes())
+}
+
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
@@ -281,7 +285,7 @@ fn refuse_if_event_rule_applies(
     Ok(())
 }
 
-fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
+pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
         return Err(EventWriteError::RemoteEventsUnavailable);
     }

@@ -271,7 +271,7 @@ fn post_managed_message(
     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
     let projection =
         serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
-    crate::agents_create::publish_agent(transaction, &projection).map_err(event_write_error)?;
+    crate::agents_create::publish_agent(transaction, &projection)?;
 
     let created = crate::event_write::unix_time().map_err(event_write_error)?;
     QueueWriteRepository::put_metadata(
