@@ -72,3 +72,64 @@ fn python_launch_plans_and_explicit_recovery_holds() {
         .is_some()
     );
 }
+
+#[test]
+fn bridge_source_fingerprint_and_generation_compatibility_are_conservative() {
+    use studio_runtime_services::claude_bridge::{bridge_build, compatibility_hold};
+    let root = tempfile::tempdir().expect("fixture");
+    for (name, body) in [
+        ("z.mjs", "last"),
+        ("a.mjs", "first: café"),
+        ("x.test.mjs", "ignored test"),
+        ("ignore.js", "ignored extension"),
+    ] {
+        std::fs::write(root.path().join(name), body).expect("fixture source");
+    }
+    let output = std::process::Command::new(
+        std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"),
+    )
+    .args([
+        "-B",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_runtime/bridge_oracle.py"
+        ),
+        "--build",
+    ])
+    .arg(root.path())
+    .output()
+    .expect("oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected: String = serde_json::from_slice(&output.stdout).expect("Python fingerprint");
+    assert_eq!(bridge_build(root.path()).expect("fingerprint"), expected);
+    std::fs::write(root.path().join("x.test.mjs"), "changed ignored test").expect("test edit");
+    assert_eq!(bridge_build(root.path()).expect("fingerprint"), expected);
+    let init = json!({"capabilities":{"claudeVersion":23,"claudeBuild":expected}});
+    assert!(compatibility_hold(&init, &expected, &json!({}), &json!({})).is_none());
+    assert!(
+        compatibility_hold(
+            &init,
+            &expected,
+            &json!({}),
+            &json!({"permissionMode":"plan"})
+        )
+        .is_some()
+    );
+    assert!(
+        compatibility_hold(
+            &json!({"capabilities":{"claudeVersion":22,"claudeBuild":expected}}),
+            &expected,
+            &json!({}),
+            &json!({})
+        )
+        .is_some()
+    );
+    std::fs::write(root.path().join("a.mjs"), "changed production source").expect("source edit");
+    let changed = bridge_build(root.path()).expect("changed fingerprint");
+    assert_ne!(changed, expected);
+    assert!(compatibility_hold(&init, &changed, &json!({}), &json!({})).is_some());
+}

@@ -8,6 +8,10 @@ import json,os
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[6]/"workspaces/runtime/apps/server/src"))
 import codex_claude as claude
+if "--build" in sys.argv:
+    from codex_claude_controls import bridge_build
+    print(json.dumps(bridge_build(Path(sys.argv[sys.argv.index("--build")+1]))))
+    raise SystemExit(0)
 cases=[]
 for args in ("","--chrome --add-dir 'relative folder' --betas test","--no-chrome --verbose","--debug --debug","--model invalid","--add-dir --verbose"):
     profile=dict(id="account",provider="claude",accountId="claude:fixture@example.test",email="fixture@example.test",status="ready",claudeOptions=dict(customModels=[],launchArgs=args))
