@@ -873,11 +873,7 @@ fn transcript_pull_write(
 }
 
 fn canonical_hash(value: &Value) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(value.to_string().as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sha256_hex(value.to_string().as_bytes())
 }
 
 #[cfg(test)]
