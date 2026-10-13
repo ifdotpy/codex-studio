@@ -134,6 +134,11 @@ class WorkBody(OperationBody):
 
 
 class QueueCancelBody(OperationBody):
+    model_config = ConfigDict(json_schema_extra={
+        "if": {"required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}}},
+        "else": {"required": ["message_id"], "properties": {"message_id": {"type": "string", "minLength": 1}}},
+    })
+
     id: StrictStr | None = None
     action: Literal["cancel"]
     request_id: StrictStr | None = Field(default=None, max_length=200)
@@ -294,6 +299,21 @@ class ProfileBody(ContractModel):
 
 
 class RuleBody(ContractModel):
+    model_config = ConfigDict(json_schema_extra={
+        "allOf": [
+            {
+                "properties": {"kind": {"type": "string"}},
+                "if": {"properties": {"kind": {"const": "low_workers"}}, "required": ["kind"]},
+                "then": {"properties": {"command": {"const": ""}}},
+            },
+            {
+                "properties": {"kind": {"type": "string"}},
+                "if": {"properties": {"kind": {"const": "file"}}, "required": ["kind"]},
+                "then": {"required": ["path"], "properties": {"path": {"type": "string", "minLength": 1}}},
+            },
+        ],
+    })
+
     action: Literal["save", "pause", "resume", "delete"] = "save"
     agent: StrictStr
     isNew: StrictBool | None = None

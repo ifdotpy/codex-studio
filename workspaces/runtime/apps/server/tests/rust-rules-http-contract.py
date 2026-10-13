@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from test_isolation import isolate_supervisor_environment
@@ -65,15 +66,19 @@ finally:
 
 
 def rules_state(backend):
-    with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+        existing = {
+            row[0] for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
         return {
-            "rules": database.execute(
-                "SELECT id,record FROM runtime_rules ORDER BY rowid"
-            ).fetchall(),
-            "agents": database.execute(
-                "SELECT id,record FROM runtime_agents "
-                "WHERE id LIKE 'rules-contract-%' ORDER BY rowid"
-            ).fetchall(),
+            name: database.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
+            for name in (
+                "runtime_rules", "runtime_agents", "runtime_events", "runtime_event_meta",
+                "runtime_operation_receipts", "sync_entities", "sync_entity_versions",
+            )
+            if name in existing
         }
 
 
@@ -93,6 +98,26 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": backend.session["token"],
             "X-Studio-API-Schema": backend.schema_hash,
         }
+
+    def test_out_of_window_rule_time_is_refused_without_writes(self) -> None:
+        values = (
+            0, 1.0, 2**64, 2**100, 1.5, -1, 1,
+            9_007_199_254_740_990, 9_007_199_254_740_992,
+            9_007_199_254_740_991,
+        )
+        for index, at in enumerate(values):
+            with self.subTest(at=at):
+                before = rules_state(self.backend)
+                response = self.backend.request(
+                    "POST", "/api/rules",
+                    body={
+                        "action": "save", "agent": "rules-contract-live",
+                        "id": f"must-not-save-{index}", "kind": "once", "at": at,
+                    },
+                    headers=self._headers(),
+                )
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertEqual(rules_state(self.backend), before)
 
     def test_get_rules_reads_python_written_state_and_filters_deleted_agents(self) -> None:
         response = self.backend.request("GET", "/api/rules", headers=self._headers())
