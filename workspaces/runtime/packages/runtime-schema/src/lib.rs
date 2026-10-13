@@ -246,25 +246,17 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
-<<<<<<< HEAD
         "runtime_workspace_operations" => "PersistedWorkspaceOperationRecord",
         "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" => "PersistedAccessRecord",
         "runtime_access_discovered" => "PersistedAccessRecord",
-=======
         "runtime_agent_moves" => "relocation/MoveRecord",
         "runtime_federation_settings" => "PersistedFederationSettings",
         "runtime_federation_peers" => "PersistedFederationPeer",
+        "runtime_federation_rooms" => "PersistedFederationRoomRecord",
         "runtime_federation_outbox" => "PersistedFederationOutbox",
         "runtime_federation_inbox" => "PersistedFederationInbox",
-        "runtime_federation_settings" => "PersistedFederationSettings",
-        "runtime_federation_peers" => "PersistedFederationPeer",
-        "runtime_federation_rooms" => "PersistedFederationRoom",
-        "runtime_federation_outbox" => "PersistedFederationOutbox",
-        "runtime_federation_inbox" => "PersistedFederationInbox",
->>>>>>> 661ff5b (integration lines (lead applies))
         "runtime_agents" => "PersistedAgentRecord",
-        "runtime_agent_moves" => "relocation/MoveRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
         "runtime_chat_messages" => "PersistedChatMessage",
@@ -274,7 +266,6 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_events" => "PersistedMessageEvent",
         "runtime_execution_effects" => "PersistedExecutionRecord",
         "runtime_execution_runs" => "PersistedExecutionRecord",
-        "runtime_federation_rooms" => "PersistedFederationRoomRecord",
         "runtime_items" => "PersistedTranscriptRecord",
         "runtime_monitors" => "PersistedMonitorRecord",
         "runtime_operation_receipts" => "PersistedOperationResult",
