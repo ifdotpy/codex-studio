@@ -672,6 +672,15 @@ pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
                 return Ok(normalize_path(&resolved));
             }
             Err(_) => {
+                if ancestor
+                    .components()
+                    .next_back()
+                    .is_some_and(|component| component == std::path::Component::ParentDir)
+                {
+                    suffix.push(std::ffi::OsString::from(".."));
+                    ancestor.pop();
+                    continue;
+                }
                 let part = ancestor
                     .file_name()
                     .ok_or(ProjectsError::Invalid("project path is invalid"))?
