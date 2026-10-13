@@ -1,0 +1,38 @@
+[
+  {
+    "id": "RADIO-M1",
+    "description": "allow participants whose radio is stopped",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "            if !agent.auto_wake || agent.native_failure_held {\n",
+        "after": "            if false && (!agent.auto_wake || agent.native_failure_held) {\n"
+      }
+    ],
+    "witnesses": ["stopped-recipient", "stopped-peer"]
+  },
+  {
+    "id": "RADIO-M2",
+    "description": "ignore a radio room blocked or stopping status",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "        if matches!(room.status, RadioStatus::Blocked | RadioStatus::Stopping)\n",
+        "after": "        if false && matches!(room.status, RadioStatus::Blocked | RadioStatus::Stopping)\n"
+      }
+    ],
+    "witnesses": ["blocked-room", "stopping-room"]
+  },
+  {
+    "id": "RADIO-M3",
+    "description": "bind a first thread without matching its reservation epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/radio.rs",
+    "edits": [
+      {
+        "before": "        || attempt.epoch != Some(active.epoch)\n",
+        "after": "        || false /* audit mutation: reservation epoch mismatch */\n"
+      }
+    ],
+    "witnesses": ["binding-wrong-epoch"]
+  }
+]
