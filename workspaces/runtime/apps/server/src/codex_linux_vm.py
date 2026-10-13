@@ -203,8 +203,15 @@ def _provision_info(console: Path) -> dict[str, Any]:
 
 
 # The guest prints kernel messages on hvc0 with a time stamp, and the helper clears
-# console.log at each boot, so a match is a panic of the current boot.
-_PANIC = re.compile(r'(?m)(?:^|\[\s*\d+\.\d+\]\s*)Kernel panic - not syncing:[ \t]*([^\r\n]*)')
+# console.log at each boot, so a match is from the current boot. After a panic, an oops or a
+# kernel BUG the kernel is no longer trustworthy: on 2026-10-13 an oops in autofs4 (guest
+# memory zeroed under host memory pressure) was followed by oopses in each reader of the
+# mount table and btrfs send hung in D state for hours, which the host cannot see. A match
+# must start the kernel line: "watchdog: BUG: soft lockup" (a stall that can pass under host
+# load) and "traps: <process> general protection fault" (a user process) do not.
+_KERNEL_DEATH = re.compile(r'(?m)(?:^|\[\s*\d+\.\d+\]\s*)'
+                           r'(Kernel panic - not syncing:|Internal error: Oops|Unable to handle kernel'
+                           r'|BUG: |general protection fault)([^\r\n]*)')
 # A guest that answered in this boot and then gave no answer for this many seconds, over
 # at least UNANSWERED_PROBES probes, is unresponsive. That state is shown, never restarted:
 # no answer does not prove death (codex_linux_vm_watchdog).
@@ -221,12 +228,15 @@ _HEALTH_FILE = 'guest-health.json'
 _INTENT_FILE = 'intent.json'
 
 
-def _kernel_panic(log: str) -> str | None:
-    match = _PANIC.search(log)
+def _kernel_death(log: str) -> tuple[str, str] | None:
+    """The kind and the line of the first kernel panic, oops or kernel BUG in the console."""
+    match = _KERNEL_DEATH.search(log)
     if match is None:
         return None
-    detail = re.sub(r'[^ -~]', '', match[1]).strip()[:200]
-    return 'Kernel panic - not syncing' + (': ' + detail if detail else '')
+    detail = re.sub(r'[^ -~]', '', match[2]).strip()
+    if match[1].startswith('Kernel panic'):
+        return 'kernel_panic', 'Kernel panic - not syncing' + (': ' + detail[:200] if detail else '')
+    return 'kernel_error', re.sub(r'[^ -~]', '', match[1] + match[2]).strip()[:220]
 
 
 def _provision_from_log(log: str) -> dict[str, Any]:
@@ -699,13 +709,13 @@ class Client:
         return saved
 
     def _guest_failure(self, host: dict[str, Any], log: str) -> dict[str, Any] | None:
-        """A dead (kernel_panic) or unresponsive (unanswered) guest behind a helper that
+        """A dead (kernel_panic, kernel_error) or unresponsive (unanswered) guest behind a helper that
         still reports running."""
         if host.get('state') != 'running':
             return None
-        panic = _kernel_panic(log)
-        if panic is not None:
-            return {'kind': 'kernel_panic', 'reason': panic}
+        death = _kernel_death(log)
+        if death is not None:
+            return {'kind': death[0], 'reason': death[1]}
         health = self._read_json(_HEALTH_FILE)
         since, last = health.get('failingSince'), health.get('lastFailureAt')
         if (host.get('pid') is not None and health.get('helperPid') == host.get('pid')
@@ -787,7 +797,7 @@ class Client:
         failure = self._guest_failure(result, log or '')
         if failure is not None:
             # The helper and its Virtualization process stay alive after a guest panic.
-            state = 'failed' if failure['kind'] == 'kernel_panic' else 'unresponsive'
+            state = 'unresponsive' if failure['kind'] == 'unanswered' else 'failed'
             result.update(state=state, helperState='running', error=failure['reason'], guestFailure=failure)
         from codex_linux_vm_watchdog import summary
         watchdog = summary(self.state_dir)
