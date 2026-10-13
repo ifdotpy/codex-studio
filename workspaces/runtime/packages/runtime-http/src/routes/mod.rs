@@ -1,6 +1,7 @@
 mod account_login;
 mod agents_create;
 mod catalog;
+mod catalog_agent;
 mod checkpoints;
 pub(crate) mod compose;
 mod desktop;
