@@ -182,6 +182,28 @@ fn malformed_records_are_located_and_never_decided() {
             .expect("malformed stored data rejected");
         assert!(error.to_string().contains("/record"));
     }
+    for key in [
+        "id",
+        "accountKey",
+        "threadId",
+        "epoch",
+        "turnId",
+        "status",
+        "failedAt",
+    ] {
+        for null in [false, true] {
+            let mut raw = original.clone();
+            if null {
+                raw["record"][key] = Value::Null;
+            } else {
+                raw["record"].as_object_mut().expect("record").remove(key);
+            }
+            assert!(
+                Snapshot::from_records(raw).is_err(),
+                "missing/null required {key}"
+            );
+        }
+    }
     let mut raw = original;
     raw["agent"]["autoWake"] = json!("yes");
     assert!(Snapshot::from_records(raw).is_err());
