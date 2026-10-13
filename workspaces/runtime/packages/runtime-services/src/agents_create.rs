@@ -12,7 +12,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum MutationError {
-    #[error("This creation or request id has different settings")]
+    #[error("This request id has different content")]
     Conflict,
     #[error("This conversation was deleted")]
     Deleted,
@@ -39,7 +39,7 @@ pub type CreateError = MutationError;
 pub type RenameError = MutationError;
 pub type SettingsError = MutationError;
 
-pub fn new_id() -> Result<String, CreateError> {
+fn new_id() -> Result<String, CreateError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| {
         CreateError::Store(StoreError::StateDirectory(std::io::Error::other(
@@ -93,7 +93,7 @@ pub fn mode_fields(record: &mut Value) {
 }
 
 /// Use the shared canonical renderer builder for every agent publication.
-pub fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
+fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
     let mut record = record.clone();
     mode_fields(&mut record);
     let context = crate::sync_entity_context::agent_view_context(transaction, &record)?;
@@ -122,7 +122,7 @@ fn same_intent(saved: &str, requested: &str) -> bool {
     }
 }
 
-pub fn replay_lead(
+fn replay_lead(
     transaction: &Connection,
     request_id: &str,
     signature: &str,
@@ -169,7 +169,7 @@ pub fn replay_lead(
     Ok(Some(record))
 }
 
-pub fn replay_agent(
+fn replay_agent(
     transaction: &Connection,
     id: &str,
     request: &Value,
@@ -299,7 +299,7 @@ fn ensure_project(
 
 /// Persist a lead and its first pending message atomically. The caller supplies
 /// the fully validated, product-shaped record and controls account admission.
-pub fn create_agent(
+fn create_agent(
     transaction: &Transaction<'_>,
     id: &str,
     prompt: &str,
@@ -307,21 +307,6 @@ pub fn create_agent(
     created: f64,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
-    let existing = if record.get("quickCreate").and_then(Value::as_bool) == Some(true) {
-        replay_lead(
-            transaction,
-            id,
-            record["quickCreateRequest"]
-                .as_str()
-                .ok_or(CreateError::Conflict)?,
-            &validate,
-        )?
-    } else {
-        replay_agent(transaction, id, &record["creationIntent"], &validate)?
-    };
-    if let Some(existing) = existing {
-        return Ok(sync_projection(transaction, &existing)?);
-    }
     if !validate("AgentRecordResponse", &record) {
         return Err(CreateError::InvalidStoredObject {
             object: "runtime_agents",
@@ -368,7 +353,7 @@ pub fn create_agent(
     Ok(projection)
 }
 
-pub fn update_exclusions(
+fn update_exclusions(
     transaction: &Transaction<'_>,
     id: &str,
     expected_account: Option<&str>,
@@ -419,7 +404,7 @@ pub fn update_exclusions(
 }
 
 /// Apply the persisted team storage and token limits without provider calls.
-pub fn configure_limits(
+fn configure_limits(
     transaction: &Transaction<'_>,
     id: &str,
     max_agents: Option<i64>,
@@ -492,7 +477,7 @@ pub fn configure_limits(
     }
     Ok(json!({
         "id": id,
-        "concurrency": root_value.get("concurrency").cloned().unwrap_or(Value::Null),
+        "concurrency": root_value.get("concurrency").cloned().unwrap_or(json!(0)),
         "agentMode": if root_value.get("concurrency").and_then(Value::as_i64).unwrap_or(0) == 0 { "single" } else { "multi" },
         "agentModeRevision": root_value.get("agentModeRevision").cloned().unwrap_or(json!(0)),
         "maxAgents": root_value.get("maxAgents").cloned().unwrap_or(Value::Null),
@@ -500,7 +485,7 @@ pub fn configure_limits(
     }))
 }
 
-pub fn rename(
+fn rename(
     transaction: &Transaction<'_>,
     id: &str,
     name: Option<&str>,
@@ -574,6 +559,37 @@ mod tests {
             )
             .expect("agent-create tables exist");
         connection
+    }
+
+    #[test]
+    fn mode_fields_matches_python_on_schema_boundary_corpus() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let corpus =
+            include_str!("../../../apps/server/tests/fixtures/rust-agents-create/mode-corpus.json");
+        let mut actual: Vec<serde_json::Value> = serde_json::from_str(corpus).expect("mode corpus");
+        for record in &mut actual {
+            super::mode_fields(record);
+        }
+        let python = std::env::var("CODEX_AGENTS_PYTHON")
+            .expect("set CODEX_AGENTS_PYTHON to the prepared interpreter");
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let mut child = Command::new(python).args(["-c", "import json,sys; from codex_agent_modes import mode_fields; print(json.dumps([mode_fields(row) for row in json.load(sys.stdin)]))"])
+            .env("PYTHONPATH", source).env("PYTHONDONTWRITEBYTECODE", "1")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Python oracle starts");
+        child
+            .stdin
+            .take()
+            .expect("oracle stdin")
+            .write_all(corpus.as_bytes())
+            .expect("send corpus");
+        let output = child.wait_with_output().expect("oracle exits");
+        assert!(output.status.success());
+        let expected: Vec<serde_json::Value> =
+            serde_json::from_slice(&output.stdout).expect("oracle output");
+        for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(actual, expected, "mode corpus input {index}");
+        }
     }
 
     #[test]
@@ -674,15 +690,8 @@ mod tests {
         );
 
         let tx = connection.transaction().expect("replay transaction starts");
-        create_agent(
-            &tx,
-            "agent-a",
-            "Start the task",
-            record.clone(),
-            99.0,
-            |_, _| true,
-        )
-        .expect("same content replays");
+        super::replay_agent(&tx, "agent-a", &record["creationIntent"], |_, _| true)
+            .expect("same content replays");
         tx.commit().expect("replay transaction commits");
         let event_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM runtime_events", [], |row| row.get(0))
@@ -702,10 +711,7 @@ mod tests {
         let mut changed = record;
         changed["creationIntent"]["name"] = json!("Changed");
         assert!(
-            create_agent(&tx, "agent-a", "Start the task", changed, 100.0, |_, _| {
-                true
-            })
-            .is_err()
+            super::replay_agent(&tx, "agent-a", &changed["creationIntent"], |_, _| true).is_err()
         );
         drop(tx);
         let after = connection

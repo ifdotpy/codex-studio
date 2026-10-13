@@ -106,16 +106,21 @@ fn create(
     let signature = lead_signature(&request.intent, workspace, requested_cwd.as_deref());
     let read = context.store.read()?;
     let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
-    let existing = if draft {
-        replay_lead(&read, &id, &signature, validate)?
-    } else {
-        replay_agent(&read, &id, &request.intent, validate)?
+    let intent = request.intent.clone();
+    let replay = |connection: &Connection| {
+        if draft {
+            replay_lead(connection, &id, &signature, validate)
+        } else {
+            replay_agent(connection, &id, &intent, validate)
+        }
     };
+    let existing = replay(&read)?;
     drop(read);
-    if let Some(existing) = existing {
-        return context
-            .store
-            .transaction_with_error(|tx| Ok(sync_projection(tx, &existing)?));
+    if existing.is_some() {
+        return context.store.transaction_with_error(|tx| {
+            let current = replay(tx)?.ok_or(CreateError::Conflict)?;
+            Ok(sync_projection(tx, &current)?)
+        });
     }
     let read = context.store.read()?;
     let previous = request
@@ -235,7 +240,7 @@ fn create(
         json!(request.token_budget),
         draft,
         created,
-        draft.then_some(signature),
+        draft.then_some(signature.clone()),
     );
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
@@ -246,31 +251,16 @@ fn create(
         record["profileInstructions"] = profile["instructions"].clone();
     }
     if !draft {
-        record["creationIntent"] = request.intent;
+        record["creationIntent"] = intent.clone();
     }
     mutate(context, |tx| {
-        {
-            // Replay is rechecked while holding the writer lock, before admission.
-            let existing = if draft {
-                replay_lead(
-                    tx,
-                    &id,
-                    record["quickCreateRequest"]
-                        .as_str()
-                        .ok_or(OperationError::Internal)?,
-                    validate,
-                )?
-            } else {
-                replay_agent(tx, &id, &record["creationIntent"], validate)?
-            };
-            if let Some(existing) = existing {
-                return Ok::<_, OperationError>(sync_projection(tx, &existing)?);
-            }
-            refresh_account(context, &account)?;
-            Ok(super::create_agent(
-                tx, &id, prompt, record, created, validate,
-            )?)
+        if let Some(existing) = replay(tx)? {
+            return Ok(sync_projection(tx, &existing)?);
         }
+        refresh_account(context, &account)?;
+        Ok(super::create_agent(
+            tx, &id, prompt, record, created, validate,
+        )?)
     })
 }
 

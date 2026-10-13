@@ -10288,7 +10288,7 @@ export interface components {
     ConfigureRequest: {
       /**
        * Concurrency
-       * @default null
+       * @default 32
        */
       concurrency?: number;
       /**
@@ -10300,7 +10300,7 @@ export interface components {
       id: string;
       /**
        * Maxagents
-       * @default null
+       * @default 64
        */
       maxAgents?: number;
       /**
@@ -10952,9 +10952,9 @@ export interface components {
       agent_mode?: components["schemas"]["AgentMode"] | null;
       /**
        * Cwd
-       * @default null
+       * @default
        */
-      cwd?: null | string;
+      cwd?: string;
       /**
        * Daybreak Enabled
        * @default null
@@ -10967,12 +10967,12 @@ export interface components {
       effort?: string | null;
       /**
        * Excluded Account Keys
-       * @default null
+       * @default []
        */
       excluded_account_keys?: string[];
       /**
        * Expected Account Key
-       * @default null
+       * @default default
        */
       expected_account_key?: string;
       /**
@@ -11006,14 +11006,14 @@ export interface components {
       review_defaults?: components["schemas"]["ReviewDefaults"] | null;
       /**
        * Subagent Concurrency
-       * @default null
+       * @default 32
        */
       subagent_concurrency?: number;
       /** @default null */
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Yolo Mode
-       * @default null
+       * @default true
        */
       yolo_mode?: boolean;
     };
@@ -11087,19 +11087,19 @@ export interface components {
     CreateAgentRequest: {
       /**
        * Account Key
-       * @default null
+       * @default default
        */
-      account_key?: string | null;
+      account_key?: string;
       /**
        * Concurrency
-       * @default null
+       * @default 32
        */
       concurrency?: number;
       /**
        * Cwd
-       * @default null
+       * @default
        */
-      cwd?: null | string;
+      cwd?: string;
       /**
        * Daybreak Enabled
        * @default null
@@ -11122,7 +11122,7 @@ export interface components {
       id?: string | null;
       /**
        * Maxagents
-       * @default null
+       * @default 64
        */
       maxAgents?: number;
       /**
@@ -11132,9 +11132,9 @@ export interface components {
       model?: string | null;
       /**
        * Name
-       * @default null
+       * @default Lead
        */
-      name?: string | null;
+      name?: string;
       /**
        * Parent
        * @default null
@@ -11147,8 +11147,8 @@ export interface components {
       profile_id?: string | null;
       /** Prompt */
       prompt: string;
-      /** @default null */
-      role?: components["schemas"]["AgentRole-Input"] | null;
+      /** @default orchestrator */
+      role?: components["schemas"]["AgentRole-Input"];
       /**
        * Tokenbudget
        * @default null
@@ -11158,12 +11158,13 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default null
+       * @default worktree
+       * @enum {string}
        */
-      workspaceMode?: ("layr" | "image" | "worktree") | null;
+      workspaceMode?: "layr" | "image" | "worktree";
       /**
        * Yolo Mode
-       * @default null
+       * @default true
        */
       yolo_mode?: boolean;
     };
@@ -11222,14 +11223,14 @@ export interface components {
     CreateLeadRequest: {
       /**
        * Account Key
-       * @default null
+       * @default default
        */
-      account_key?: string | null;
+      account_key?: string;
       /**
        * Cwd
-       * @default null
+       * @default
        */
-      cwd?: null | string;
+      cwd?: string;
       /**
        * Daybreak Enabled
        * @default null
@@ -11277,7 +11278,7 @@ export interface components {
       project_server_id?: string | null;
       /**
        * Reuse Empty
-       * @default null
+       * @default true
        */
       reuse_empty?: boolean;
       /** @default null */
@@ -11286,12 +11287,13 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /**
        * Workspacemode
-       * @default null
+       * @default worktree
+       * @enum {string}
        */
-      workspaceMode?: ("layr" | "image" | "worktree") | null;
+      workspaceMode?: "layr" | "image" | "worktree";
       /**
        * Yolo Mode
-       * @default null
+       * @default true
        */
       yolo_mode?: boolean;
     };

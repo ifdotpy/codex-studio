@@ -21042,7 +21042,7 @@
         "additionalProperties": false,
         "properties": {
           "concurrency": {
-            "default": null,
+            "default": 32,
             "maximum": 512.0,
             "minimum": 0.0,
             "title": "Concurrency",
@@ -21069,7 +21069,7 @@
             "type": "string"
           },
           "maxAgents": {
-            "default": null,
+            "default": 64,
             "maximum": 1024.0,
             "minimum": 1.0,
             "title": "Maxagents",
@@ -22283,16 +22283,9 @@
             "default": null
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -22321,7 +22314,7 @@
             "title": "Effort"
           },
           "excluded_account_keys": {
-            "default": null,
+            "default": [],
             "items": {
               "minLength": 1,
               "pattern": "\\S",
@@ -22333,7 +22326,7 @@
             "uniqueItems": true
           },
           "expected_account_key": {
-            "default": null,
+            "default": "default",
             "maxLength": 200,
             "minLength": 1,
             "title": "Expected Account Key",
@@ -22424,7 +22417,7 @@
             "default": null
           },
           "subagent_concurrency": {
-            "default": null,
+            "default": 32,
             "maximum": 512.0,
             "minimum": 0.0,
             "title": "Subagent Concurrency",
@@ -22442,7 +22435,7 @@
             "default": null
           },
           "yolo_mode": {
-            "default": null,
+            "default": true,
             "title": "Yolo Mode",
             "type": "boolean"
           }
@@ -22617,36 +22610,22 @@
         "additionalProperties": false,
         "properties": {
           "account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Account Key"
+            "default": "default",
+            "maxLength": 200,
+            "title": "Account Key",
+            "type": "string"
           },
           "concurrency": {
-            "default": null,
+            "default": 32,
             "maximum": 512.0,
             "minimum": 0.0,
             "title": "Concurrency",
             "type": "integer"
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -22702,7 +22681,7 @@
             "title": "Id"
           },
           "maxAgents": {
-            "default": null,
+            "default": 64,
             "maximum": 1024.0,
             "minimum": 1.0,
             "title": "Maxagents",
@@ -22724,19 +22703,12 @@
             "title": "Model"
           },
           "name": {
-            "anyOf": [
-              {
-                "maxLength": 100,
-                "minLength": 1,
-                "pattern": "\\S",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
+            "default": "Lead",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Name",
+            "type": "string"
           },
           "parent": {
             "anyOf": [
@@ -22773,15 +22745,8 @@
             "type": "string"
           },
           "role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentRole-Input"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+            "$ref": "#/components/schemas/AgentRole-Input",
+            "default": "orchestrator"
           },
           "tokenBudget": {
             "anyOf": [
@@ -22810,24 +22775,17 @@
             "default": null
           },
           "workspaceMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "default": "worktree",
+            "enum": [
+              "layr",
+              "image",
+              "worktree"
             ],
-            "default": null,
-            "title": "Workspacemode"
+            "title": "Workspacemode",
+            "type": "string"
           },
           "yolo_mode": {
-            "default": null,
+            "default": true,
             "title": "Yolo Mode",
             "type": "boolean"
           }
@@ -22973,30 +22931,16 @@
         "additionalProperties": false,
         "properties": {
           "account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Account Key"
+            "default": "default",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Account Key",
+            "type": "string"
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -23119,7 +23063,7 @@
             "title": "Project Server Id"
           },
           "reuse_empty": {
-            "default": null,
+            "default": true,
             "title": "Reuse Empty",
             "type": "boolean"
           },
@@ -23146,24 +23090,17 @@
             "default": null
           },
           "workspaceMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "default": "worktree",
+            "enum": [
+              "layr",
+              "image",
+              "worktree"
             ],
-            "default": null,
-            "title": "Workspacemode"
+            "title": "Workspacemode",
+            "type": "string"
           },
           "yolo_mode": {
-            "default": null,
+            "default": true,
             "title": "Yolo Mode",
             "type": "boolean"
           }

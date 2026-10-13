@@ -101,9 +101,9 @@ async fn create_lead(
             || body.project_server_id.flatten().is_some()
             || body.project_folder.flatten().is_some(),
         id: body.id.flatten(),
-        cwd: body.cwd.flatten(),
-        account: body.account_key.flatten(),
-        workspace: body.workspace_mode.flatten().map(|value| value.to_string()),
+        cwd: body.cwd,
+        account: body.account_key,
+        workspace: body.workspace_mode.map(|value| value.to_string()),
         yolo: body.yolo_mode,
         previous: body.previous.flatten(),
         reuse_empty: body.reuse_empty,
@@ -118,6 +118,11 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    if state.store.is_none() && state.account_driver.is_none() {
+        return Err(operation_error(OperationError::Unavailable(
+            "account-driver/unavailable",
+        )));
+    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.is_some()
@@ -126,12 +131,12 @@ async fn create_agent(
             || body.daybreak_enabled.is_some(),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
-        cwd: body.cwd.flatten(),
-        account: body.account_key.flatten(),
-        workspace: body.workspace_mode.flatten().map(|value| value.to_string()),
-        name: body.name.flatten(),
+        cwd: body.cwd,
+        account: body.account_key,
+        workspace: body.workspace_mode.map(|value| value.to_string()),
+        name: body.name,
         prompt: body.prompt,
-        role: body.role.flatten().map(|value| value.to_string()),
+        role: body.role.map(|value| value.to_string()),
         yolo: body.yolo_mode,
         concurrency: body.concurrency,
         max_agents: body.max_agents,
@@ -166,7 +171,7 @@ async fn conversation(
     ApiJson(body): ApiJson<generated::ConversationRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request = agents_create::Conversation {
-        settings: body.cwd.flatten().is_some()
+        settings: body.cwd.is_some()
             || body.yolo_mode.is_some()
             || body.model.is_some()
             || body.effort.is_some()
@@ -212,6 +217,12 @@ async fn delete_conversation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Valu
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
+    if matches!(
+        error,
+        OperationError::Create(MutationError::RequestIdRequired)
+    ) {
+        return ApiError::validation(vec![Value::String("body".to_owned())]);
+    }
     let status = match &error {
         OperationError::Unavailable(_)
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
