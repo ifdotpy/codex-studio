@@ -1,3 +1,5 @@
+#[path = "../support/prepared_python.rs"]
+mod python_oracle;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
@@ -24,22 +26,8 @@ fn test_directory() -> tempfile::TempDir {
 pub fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
         let root = test_directory();
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| {
-            let resolver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/server/src/codex_python.py");
-            let output = Command::new("python3")
-                .arg(resolver)
-                .output()
-                .expect("resolve prepared Python");
-            assert!(
-                output.status.success(),
-                "prepare the isolated API interpreter with install-cli.py"
-            );
-            String::from_utf8(output.stdout)
-                .expect("Python path")
-                .trim()
-                .into()
-        });
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = python_oracle::prepared_python(&source);
         let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("packages")
