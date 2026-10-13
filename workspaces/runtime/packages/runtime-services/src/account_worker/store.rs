@@ -1,7 +1,8 @@
 //! Synchronous account transactions. Only StoreBridge calls these operations.
 use super::*;
 use crate::notification_dispatch::{
-    PreparedSubmission, ProviderDeliveryIdentity, dispatch_notification, flush_notification_streams,
+    NotificationPublicationBatch, PreparedSubmission, ProviderDeliveryIdentity,
+    dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::params;
 use studio_runtime_store::EventWriteRepository;
@@ -643,6 +644,7 @@ pub(super) fn journal(
         )?;
         let mut next = streams.clone();
         let mut effect = None;
+        let mut publications = Vec::new();
         if let JournalPayload::Frame(frame) = &entry.payload {
             let notice = match frame {
                 Frame::Notification(f) => {
@@ -693,6 +695,7 @@ pub(super) fn journal(
                                 now(),
                             )?
                             .unwrap_or_else(|| streams.clone());
+                            publications.push(next.take_post_commit()?);
                             if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
                                 crate::notification_dispatch::prune_inactive_streams(
                                     tx,
@@ -704,7 +707,7 @@ pub(super) fn journal(
                             }
                         }
                         _ => {
-                            let dispatched = dispatch_notification(
+                            let dispatched = dispatch_notification_with_effects(
                                 tx,
                                 &identity.agent_id,
                                 &publication,
@@ -718,18 +721,25 @@ pub(super) fn journal(
                                 },
                                 frame,
                                 now(),
+                                &crate::notification_runtime_effects::RuntimeNotificationEffects,
                             )?;
+                            publications.push(dispatched.post_commit);
                             let staged =
                                 dispatched.stream_update.unwrap_or_else(|| streams.clone());
                             next = if staged.pending_bytes() >= STREAM_FLUSH_BYTES {
-                                flush_notification_streams(
+                                let flushed = flush_notification_streams(
                                     tx,
                                     &identity.agent_id,
                                     &publication,
                                     &staged,
                                     now(),
-                                )?
-                                .unwrap_or(staged)
+                                )?;
+                                if let Some(mut flushed) = flushed {
+                                    publications.push(flushed.take_post_commit()?);
+                                    flushed
+                                } else {
+                                    staged
+                                }
                             } else {
                                 staged
                             };
@@ -737,6 +747,9 @@ pub(super) fn journal(
                     }
                 }
             }
+        }
+        for batch in &publications {
+            persist_publication_batch(tx, account, batch)?;
         }
         if let Some(effect) = &effect {
             persist_effect(tx, account, effect)?;
@@ -1078,6 +1091,42 @@ fn settle_callback_in_transaction(
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
+fn persist_publication_batch(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    batch: &NotificationPublicationBatch,
+) -> Result<(), WorkerError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    for (index, effect) in batch.effects.iter().enumerate() {
+        let operation = format!(
+            "notification-publication:{account}:{}:{index}",
+            batch.sequence
+        );
+        save(
+            tx,
+            &operation,
+            "pending",
+            json!({"account":account,"sequence":batch.sequence,"index":index,"effect":effect}),
+        )?;
+    }
+    if batch.analytics_overflow > 0 {
+        let operation = format!(
+            "notification-publication:{account}:{}:{}",
+            batch.sequence,
+            batch.effects.len()
+        );
+        save(
+            tx,
+            &operation,
+            "pending",
+            json!({"account":account,"sequence":batch.sequence,"index":batch.effects.len(),"analyticsOverflow":batch.analytics_overflow}),
+        )?;
+    }
+    Ok(())
+}
+
 fn persist_streams(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
@@ -1170,6 +1219,9 @@ pub(super) fn flush_streams(
                     now(),
                 )?
             {
+                let mut next = next;
+                let batch = next.take_post_commit()?;
+                persist_publication_batch(tx, account, &batch)?;
                 streams = next;
             }
         }

@@ -1228,6 +1228,32 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     .expect("scripted provider terminal notification reaches the agent record");
     assert_eq!(terminal_agent["status"], "completed");
     assert!(state.sync_changes_handle().snapshot().revision > initial_revision);
+    let publication_rows: Vec<String> = fixture
+        .store
+        .read()
+        .unwrap()
+        .prepare(
+            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(!publication_rows.is_empty(), "P06 effects are journaled");
+    for row in publication_rows {
+        let publication: Value = serde_json::from_str(&row).unwrap();
+        assert_eq!(publication["account"], "default");
+        assert!(
+            publication["sequence"]
+                .as_u64()
+                .is_some_and(|value| value > 0)
+        );
+        assert!(publication["index"].as_u64().is_some());
+        assert!(
+            publication.get("effect").is_some() || publication["analyticsOverflow"].is_number()
+        );
+    }
 
     let request = axum::http::Request::builder()
         .method("GET")
