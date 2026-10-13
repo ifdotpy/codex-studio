@@ -46,5 +46,29 @@
       }
     ],
     "witnesses": ["4097 character code rejected"]
+  },
+  {
+    "id": "C5",
+    "description": "empty and oversized add-flow labels are refused before writes",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_login/service.rs",
+    "edits": [
+      {
+        "before": "            if label.is_empty()\n                || label.chars().count() > 32\n                || email.as_ref().is_some_and(|e| {",
+        "after": "            if email.as_ref().is_some_and(|e| {"
+      }
+    ],
+    "witnesses": ["add_label_and_email_admission_match_python_before_any_write"]
+  },
+  {
+    "id": "C6",
+    "description": "malformed add-flow email hints are refused before writes",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_login/service.rs",
+    "edits": [
+      {
+        "before": "                    !regex::Regex::new(r\"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$\").is_ok_and(|r| r.is_match(e))",
+        "after": "                    false && !regex::Regex::new(r\"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$\").is_ok_and(|r| r.is_match(e))"
+      }
+    ],
+    "witnesses": ["add_label_and_email_admission_match_python_before_any_write"]
   }
 ]

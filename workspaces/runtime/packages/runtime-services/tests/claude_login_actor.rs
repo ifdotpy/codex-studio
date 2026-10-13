@@ -398,3 +398,243 @@ exit 0
         }
     }
 }
+
+fn oracle(args: &[&str]) -> serde_json::Value {
+    let output = std::process::Command::new(
+        std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"),
+    )
+    .args([
+        "-B",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_runtime/login_oracle.py"
+        ),
+    ])
+    .args(args)
+    .output()
+    .expect("Python writer");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.stdout.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&output.stdout).expect("oracle")
+    }
+}
+
+#[tokio::test]
+async fn add_label_and_email_admission_match_python_before_any_write() {
+    for case in oracle(&[])["admissions"].as_array().expect("admissions") {
+        let f = Fixture::new();
+        let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
+        let s = f.open().await;
+        let result = s
+            .start(
+                ID.into(),
+                None,
+                case["email"].as_str().map(str::to_owned),
+                case["label"].as_str().map(str::to_owned),
+            )
+            .await;
+        assert_eq!(
+            result.is_ok(),
+            case["admitted"].as_bool().expect("admitted"),
+            "{case}"
+        );
+        if result.is_ok() {
+            let saved = f.receipts.load().expect("receipt").pop().expect("saved");
+            assert_eq!(
+                saved.record()["metadata"]["label"],
+                case["label"]
+                    .as_str()
+                    .map(str::trim)
+                    .unwrap_or("Claude Code")
+            );
+            assert_eq!(
+                saved.record()["metadata"]["emailHint"].as_str(),
+                case["email"].as_str().map(str::trim)
+            );
+            s.cancel(ID).await.expect("cancel");
+        } else {
+            assert!(f.receipts.load().expect("receipts").is_empty());
+            assert!(
+                !f.receipts
+                    .file
+                    .directory()
+                    .join(format!("config-{ID}"))
+                    .exists()
+            );
+        }
+        s.shutdown().await.expect("shutdown");
+        assert_eq!(
+            std::fs::read(f.directory.join("registry.json")).expect("registry"),
+            registry
+        );
+    }
+}
+
+#[tokio::test]
+async fn python_legacy_reauth_resolves_free_lease_or_explicit_exact_cancel() {
+    use serde_json::json;
+    use studio_runtime_services::claude_login::LoginError;
+    const OTHER: &str = "987edcdc-0e86-4fdf-a1c6-1513517d3ad0";
+    for explicit in [false, true] {
+        let f = Fixture::new();
+        let config = f.directory.join("reauth-config");
+        std::fs::create_dir(&config).expect("config");
+        std::fs::write(config.join("keep"), "fixture data").expect("marker");
+        let metadata = studio_runtime_services::account_driver::claude::auth_metadata_from_output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#, true);
+        let key = f
+            .accounts
+            .register_claude_verified(
+                json!({"configDir":config,"binaryPath":"/fixture/scripted","customModels":[]})
+                    .as_object()
+                    .expect("options")
+                    .clone(),
+                "Fixture",
+                &f.directory,
+                &metadata,
+            )
+            .expect("account");
+        oracle(&["legacy", f.directory.to_str().expect("path"), &key]);
+        let original = f.receipts.load().expect("Python receipts");
+        assert_eq!(original.len(), 2);
+        assert!(original.iter().all(|s| s.record()["metadata"] == json!({})));
+        let registry = std::fs::read(f.directory.join("registry.json")).expect("registry");
+        let lease = std::fs::File::create(f.receipts.file.directory().join(format!(
+            "{}.lock",
+            studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
+        )))
+        .expect("lease");
+        lease.try_lock().expect("locked");
+        let service = f.open().await;
+        let held = service.status(ID).await.expect("status");
+        assert_eq!(held["status"], "error");
+        assert!(
+            held["error"]
+                .as_str()
+                .expect("visible hold")
+                .contains("Cancel this request")
+        );
+        assert!(matches!(
+            service
+                .start(
+                    "80c4d37a-0823-488b-96d8-e30d52e28d18".into(),
+                    Some(key.clone()),
+                    None,
+                    None
+                )
+                .await,
+            Err(LoginError::Busy)
+        ));
+        if explicit {
+            let before_other = f
+                .receipts
+                .load()
+                .expect("receipts")
+                .into_iter()
+                .find(|s| s.request_id() == OTHER)
+                .expect("other")
+                .record()
+                .clone();
+            assert_eq!(
+                service.cancel(ID).await.expect("explicit cancel")["status"],
+                "cancelled"
+            );
+            let records = f.receipts.load().expect("receipts");
+            let cleared = records
+                .iter()
+                .find(|s| s.request_id() == ID)
+                .expect("cleared");
+            assert_eq!(cleared.record()["metadata"]["outcomeUnknown"], false);
+            assert_eq!(cleared.record()["metadata"]["operatorCleared"], true);
+            assert_eq!(
+                records
+                    .iter()
+                    .find(|s| s.request_id() == OTHER)
+                    .expect("other")
+                    .record(),
+                &before_other
+            );
+            assert_eq!(
+                service.cancel(ID).await.expect("idempotent cancel")["status"],
+                "cancelled"
+            );
+        }
+        drop(lease);
+        service.status(ID).await.expect("free lease settlement");
+        assert!(
+            f.receipts
+                .load()
+                .expect("receipts")
+                .iter()
+                .all(|s| s.record()["metadata"]["outcomeUnknown"] == false)
+        );
+        assert!(config.join("keep").is_file());
+        assert_eq!(
+            std::fs::read(f.directory.join("registry.json")).expect("registry"),
+            registry
+        );
+        assert!(f.launcher.receiver.lock().await.try_recv().is_err());
+        service.shutdown().await.expect("shutdown");
+        let restart = f.open().await;
+        assert_eq!(
+            restart
+                .start(ID.into(), Some(key.clone()), None, None)
+                .await
+                .expect("old id replays")["status"],
+            if explicit { "cancelled" } else { "error" }
+        );
+        assert!(f.launcher.receiver.lock().await.try_recv().is_err());
+        let new_id = "80c4d37a-0823-488b-96d8-e30d52e28d18";
+        restart
+            .start(new_id.into(), Some(key), None, None)
+            .await
+            .expect("free lease admits a new identity");
+        restart.cancel(new_id).await.expect("cancel new request");
+        restart.shutdown().await.expect("shutdown");
+    }
+}
+
+#[cfg(unix)]
+#[path = "claude_runtime/login_failures.rs"]
+mod failures;
+
+#[tokio::test]
+async fn unknown_receipt_cancel_write_failures_reopen_without_resend() {
+    for after in [false, true] {
+        let f = Fixture::new();
+        // An unavailable legacy account prevents automatic lease proof.
+        oracle(&[
+            "legacy",
+            f.directory.to_str().expect("path"),
+            "removed-account",
+        ]);
+        let service = f.open().await;
+        f.receipts.fail.store(true, Ordering::SeqCst);
+        f.receipts.after.store(after, Ordering::SeqCst);
+        assert!(service.cancel(ID).await.is_err());
+        service.shutdown().await.expect("shutdown");
+        f.receipts.fail.store(false, Ordering::SeqCst);
+        let restarted = f.open().await;
+        let saved = restarted.status(ID).await.expect("status");
+        assert_eq!(saved["status"], if after { "cancelled" } else { "error" });
+        restarted.cancel(ID).await.expect("resolve exact receipt");
+        restarted
+            .code(ID, "fixture-code".into())
+            .await
+            .expect("terminal code is not retried");
+        assert!(f.launcher.receiver.lock().await.try_recv().is_err());
+        assert_eq!(
+            restarted
+                .status("987edcdc-0e86-4fdf-a1c6-1513517d3ad0")
+                .await
+                .expect("other receipt")["status"],
+            "error"
+        );
+        restarted.shutdown().await.expect("shutdown");
+    }
+}

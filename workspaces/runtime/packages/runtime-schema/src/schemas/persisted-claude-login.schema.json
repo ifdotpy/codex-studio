@@ -126,6 +126,17 @@
           ],
           "title": "Label"
         },
+        "operatorCleared": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Operatorcleared"
+        },
         "outcomeUnknown": {
           "anyOf": [
             {
