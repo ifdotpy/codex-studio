@@ -6,14 +6,22 @@
 
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
 use crate::event_write::python_strip;
+use base64::Engine as _;
+#[cfg(unix)]
+use process_wrap::std::ChildWrapper;
+#[cfg(unix)]
+use process_wrap::std::CommandWrap;
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -360,7 +368,139 @@ fn run_claude_status(
     binary: &str,
     options: Option<&Value>,
 ) -> Result<(Vec<u8>, bool), &'static str> {
-    let mut command = Command::new(binary);
+    run_claude_status_with_timeout(binary, options, CLAUDE_TIMEOUT)
+}
+
+fn run_claude_status_with_timeout(
+    binary: &str,
+    options: Option<&Value>,
+    timeout: Duration,
+) -> Result<(Vec<u8>, bool), &'static str> {
+    #[cfg(unix)]
+    let mut child = CommandWrap::with_new(binary, |command| {
+        configure_claude_status_command(command, options);
+    })
+    .wrap(ProcessGroup::leader())
+    .spawn()
+    .map_err(|_| "spawn")?;
+    #[cfg(windows)]
+    let mut child = {
+        let mut command = Command::new(binary);
+        configure_claude_status_command(&mut command, options);
+        command.spawn().map_err(|_| "spawn")?
+    };
+    #[cfg(unix)]
+    let Some(stdout) = child.stdout().take() else {
+        return Err("spawn");
+    };
+    #[cfg(windows)]
+    let Some(stdout) = child.stdout.take() else {
+        return Err("spawn");
+    };
+    let exceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_exceeded = exceeded.clone();
+    let reader_finished = finished.clone();
+    let reader = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut source = stdout.take((CLAUDE_OUTPUT_LIMIT + 1) as u64);
+        let result = source.read_to_end(&mut output);
+        if output.len() > CLAUDE_OUTPUT_LIMIT || result.is_err() {
+            reader_exceeded.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        reader_finished.store(true, std::sync::atomic::Ordering::Release);
+        output
+    });
+    let started = Instant::now();
+    #[cfg(unix)]
+    let status = loop {
+        if exceeded.load(std::sync::atomic::Ordering::Relaxed) {
+            terminate_claude_process_group(child);
+            return Err("parser");
+        }
+        let pid = rustix::process::Pid::from_raw(child.id() as i32).ok_or("spawn")?;
+        let exited = match rustix::process::waitid(
+            rustix::process::WaitId::Pid(pid),
+            rustix::process::WaitIdOptions::EXITED
+                | rustix::process::WaitIdOptions::NOHANG
+                | rustix::process::WaitIdOptions::NOWAIT,
+        ) {
+            Ok(status) => status.is_some(),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => {
+                terminate_claude_process_group(child);
+                return Err("spawn");
+            }
+        };
+        if exited && finished.load(std::sync::atomic::Ordering::Acquire) {
+            break child
+                .inner_mut()
+                .try_wait()
+                .map_err(|_| "spawn")?
+                .ok_or("spawn")?;
+        }
+        if started.elapsed() >= timeout {
+            terminate_claude_process_group(child);
+            return Err("timeout");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    #[cfg(windows)]
+    let status = loop {
+        if exceeded.load(std::sync::atomic::Ordering::Relaxed) {
+            let _kill_result = child.kill();
+            return Err("parser");
+        }
+        if let Some(status) = child.try_wait().map_err(|_| "spawn")? {
+            if finished.load(std::sync::atomic::Ordering::Acquire) {
+                break status;
+            }
+        }
+        if started.elapsed() >= timeout {
+            let _kill_result = child.kill();
+            return Err("timeout");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    while !finished.load(std::sync::atomic::Ordering::Acquire) {
+        if started.elapsed() >= timeout {
+            return Err("timeout");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = reader.join().map_err(|_| "parser")?;
+    if output.len() <= CLAUDE_OUTPUT_LIMIT {
+        Ok((output, status.success()))
+    } else {
+        Err("parser")
+    }
+}
+
+#[cfg(unix)]
+fn terminate_claude_process_group(mut child: Box<dyn ChildWrapper>) {
+    if child.start_kill().is_err() {
+        let _direct_kill_result = child.inner_mut().start_kill();
+    }
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < deadline {
+        if child.inner_mut().try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
+    let _reaper = std::thread::Builder::new()
+        .name("claude-status-reaper".to_owned())
+        .spawn(move || {
+            loop {
+                if child.inner_mut().try_wait().ok().flatten().is_some() {
+                    break;
+                }
+                std::thread::park_timeout(Duration::from_millis(25));
+            }
+        });
+}
+
+fn configure_claude_status_command(command: &mut Command, options: Option<&Value>) {
     command.args(["auth", "status", "--json"]);
     for name in [
         "ANTHROPIC_API_KEY",
@@ -382,61 +522,12 @@ fn run_claude_status(
     {
         command.env("CLAUDE_CONFIG_DIR", config_dir.trim());
     }
-    // `Command` inherits all other environment values, matching Python's
+    // `Command` inherits other environment values, matching Python's
     // subscription_env while ensuring the credential environment is cleared.
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "spawn")?;
-    let Some(stdout) = child.stdout.take() else {
-        return Err("spawn");
-    };
-    let exceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reader_exceeded = exceeded.clone();
-    let reader_finished = finished.clone();
-    let reader = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut source = stdout.take((CLAUDE_OUTPUT_LIMIT + 1) as u64);
-        let result = source.read_to_end(&mut output);
-        if output.len() > CLAUDE_OUTPUT_LIMIT || result.is_err() {
-            reader_exceeded.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        reader_finished.store(true, std::sync::atomic::Ordering::Release);
-        output
-    });
-    let started = Instant::now();
-    let status = loop {
-        if exceeded.load(std::sync::atomic::Ordering::Relaxed) {
-            let _kill_result = child.kill();
-            break child.wait().map_err(|_| "spawn")?;
-        }
-        if let Some(status) = child.try_wait().map_err(|_| "spawn")? {
-            break status;
-        }
-        if started.elapsed() >= CLAUDE_TIMEOUT {
-            let _kill_result = child.kill();
-            let _wait_result = child.wait();
-            // If a descendant inherited stdout, the reader may not reach EOF
-            // even after the direct child is reaped. Detach it at the bound.
-            return Err("timeout");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    while !finished.load(std::sync::atomic::Ordering::Acquire) {
-        if started.elapsed() >= CLAUDE_TIMEOUT {
-            return Err("timeout");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let output = reader.join().map_err(|_| "parser")?;
-    if output.len() <= CLAUDE_OUTPUT_LIMIT {
-        Ok((output, status.success()))
-    } else {
-        Err("parser")
-    }
+        .stderr(Stdio::null());
 }
 
 fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
@@ -1239,7 +1330,6 @@ fn atomic_replace_with(
     replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), ReplaceError> {
-    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
     fs::create_dir_all(parent).map_err(|_| ReplaceError::NotReplaced)?;
     #[cfg(unix)]
@@ -1248,28 +1338,18 @@ fn atomic_replace_with(
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
             .map_err(|_| ReplaceError::NotReplaced)?;
     }
-    let sequence = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = parent.join(format!("registry-{}-{sequence}.tmp", std::process::id()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| {
-        let mut file = options.open(&temp).map_err(|_| ReplaceError::NotReplaced)?;
-        file.write_all(bytes)
+    let mut temp =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| ReplaceError::NotReplaced)?;
+    (|| {
+        temp.write_all(bytes)
             .map_err(|_| ReplaceError::NotReplaced)?;
-        file.sync_all().map_err(|_| ReplaceError::NotReplaced)?;
-        replace(&temp, path).map_err(|_| ReplaceError::NotReplaced)?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|_| ReplaceError::NotReplaced)?;
+        replace(temp.path(), path).map_err(|_| ReplaceError::NotReplaced)?;
         sync_parent(parent).map_err(|_| ReplaceError::ReplacedNotDurable)?;
         Ok(())
-    })();
-    if matches!(result, Err(ReplaceError::NotReplaced)) {
-        let _cleanup_result = fs::remove_file(temp);
-    }
-    result
+    })()
 }
 
 fn nonempty_string(value: &Value) -> Option<String> {
@@ -1284,36 +1364,145 @@ fn hex_sha256(value: &[u8]) -> String {
 }
 
 fn base64url_decode(value: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(value.len() * 3 / 4);
-    let mut accumulator = 0_u32;
-    let mut bits = 0_u8;
-    for byte in value.bytes() {
-        let digit = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            b'=' => break,
-            _ => return None,
-        };
-        accumulator = (accumulator << 6) | u32::from(digit);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push(((accumulator >> bits) & 0xff) as u8);
-        }
-    }
-    Some(output)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn codex_metadata_requires_strict_unpadded_base64url_jwt_payloads() {
+        let metadata = |payload: &str| {
+            codex_metadata_from_value(&serde_json::json!({
+                "tokens": { "id_token": format!("header.{payload}.signature") }
+            }))
+            .expect("well-formed auth object")
+        };
+        let valid = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"https://api.openai.com/profile":{"email":"person@example.com"}}"#);
+        assert_eq!(
+            metadata(&valid).email.as_deref(),
+            Some("person@example.com")
+        );
+        for rejected in [
+            "eyJlbWFpbCI6IngifQ==",
+            "eyJlbWFpbCI6IngifR",
+            "A",
+            "AAAAA",
+            "e30=garbage",
+        ] {
+            assert_eq!(metadata(rejected).email, None, "payload {rejected}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claude_status_timeout_kills_group_after_parent_exits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("create Claude command fixture");
+        let command = directory.path().join("claude");
+        let pid_file = directory.path().join("descendant-pid");
+        let script = format!(
+            "#!/bin/sh\n(exec sleep 30) &\necho $! > '{}'\nexit 0\n",
+            pid_file.display(),
+        );
+        fs::write(&command, script).expect("write Claude command fixture");
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
+            .expect("make Claude command executable");
+
+        let started = Instant::now();
+        assert!(matches!(
+            run_claude_status_with_timeout(
+                command.to_str().expect("fixture path is UTF-8"),
+                None,
+                Duration::from_secs(2),
+            ),
+            Err("timeout")
+        ));
+        assert!(
+            pid_file.is_file(),
+            "descendant started and recorded its pid"
+        );
+        let descendant_pid: i32 = fs::read_to_string(&pid_file)
+            .expect("read descendant pid")
+            .trim()
+            .parse()
+            .expect("valid descendant pid");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "timeout cleanup is bounded"
+        );
+        let pid = rustix::process::Pid::from_raw(descendant_pid).expect("valid pid");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_is_running(pid) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!process_is_running(pid), "group descendant terminated");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claude_status_timeout_is_bounded_when_child_leaves_group() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("create Claude command fixture");
+        let command = directory.path().join("claude");
+        let pid_file = directory.path().join("escaped-pid");
+        let script = format!(
+            r#"#!/bin/sh
+(setsid sh -c 'echo $$ > "{}"; exec sleep 30') &
+exit 0
+"#,
+            pid_file.display(),
+        );
+        fs::write(&command, script).expect("write Claude command fixture");
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
+            .expect("make Claude command executable");
+        let started = Instant::now();
+        assert!(matches!(
+            run_claude_status_with_timeout(
+                command.to_str().expect("fixture path is UTF-8"),
+                None,
+                Duration::from_secs(2),
+            ),
+            Err("timeout")
+        ));
+        assert!(pid_file.is_file(), "escaped child started");
+        let escaped_pid: i32 = fs::read_to_string(&pid_file)
+            .expect("read escaped pid")
+            .trim()
+            .parse()
+            .expect("valid escaped pid");
+        let pid = rustix::process::Pid::from_raw(escaped_pid).expect("valid pid");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "timeout cleanup is bounded"
+        );
+        assert!(
+            rustix::process::test_kill_process(pid).is_ok(),
+            "escaped group is not signalled"
+        );
+        let _cleanup_result = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while process_is_running(pid) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!process_is_running(pid), "fixture child cleaned up");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: rustix::process::Pid) -> bool {
+        fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid()))
+            .ok()
+            .and_then(|status| status.rsplit_once(')').map(|(_, status)| status.to_owned()))
+            .and_then(|status| status.trim_start().chars().next())
+            .is_some_and(|state| state != 'Z')
+    }
 
     struct FakeReader(AuthMetadata);
 
@@ -1323,26 +1512,25 @@ mod tests {
         }
     }
 
-    struct TestDir(PathBuf);
+    struct TestDir {
+        path: PathBuf,
+        _directory: tempfile::TempDir,
+    }
 
     impl TestDir {
         fn new() -> Self {
             let root = env::var_os("CS_RUST_ACCOUNT_DRIVER_TEST_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(env::temp_dir);
-            let path = root.join(format!(
-                "account-driver-test-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&path).expect("create disposable fixture directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _cleanup_result = fs::remove_dir_all(&self.0);
+            fs::create_dir_all(&root).expect("create fixture parent directory");
+            let directory = tempfile::Builder::new()
+                .prefix("account-driver-test-")
+                .tempdir_in(root)
+                .expect("create disposable fixture directory");
+            Self {
+                path: directory.path().to_path_buf(),
+                _directory: directory,
+            }
         }
     }
 
@@ -1408,14 +1596,14 @@ mod tests {
     #[test]
     fn refresh_reads_codex_placeholder_credentials_and_never_persists_token_values() {
         let fixture = TestDir::new();
-        let home = fixture.0.join("codex-home");
+        let home = fixture.path.join("codex-home");
         fs::create_dir_all(&home).expect("create fake Codex home");
         fs::write(
             home.join("auth.json"),
             format!(r#"{{"OPENAI_API_KEY":"{PLACEHOLDER_KEY}"}}"#),
         )
         .expect("write placeholder auth file");
-        let path = fixture.0.join("state/accounts/registry.json");
+        let path = fixture.path.join("state/accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         fs::write(&path, registry(&home)).expect("write Python-shaped registry");
@@ -1475,7 +1663,7 @@ mod tests {
     #[test]
     fn codex_auth_metadata_uses_access_token_when_id_token_is_empty() {
         let fixture = TestDir::new();
-        let home = fixture.0.join("codex-home");
+        let home = fixture.path.join("codex-home");
         fs::create_dir_all(&home).expect("create fake Codex home");
         fs::write(
             home.join("auth.json"),
@@ -1506,22 +1694,22 @@ from codex_accounts import AccountStore
 store = AccountStore(root / 'state')
 print(store.path)
 "#;
-        let home = fixture.0.join("python-home");
-        let cache = fixture.0.join("python-cache");
-        let temp = fixture.0.join("python-tmp");
+        let home = fixture.path.join("python-home");
+        let cache = fixture.path.join("python-cache");
+        let temp = fixture.path.join("python-tmp");
         for directory in [&home, &cache, &temp] {
             fs::create_dir_all(directory).expect("create disposable Python environment");
         }
-        let output = Command::new(isolated_python(&fixture.0))
+        let output = Command::new(isolated_python(&fixture.path))
             .args(["-c", script])
             .arg(&server)
-            .arg(&fixture.0)
+            .arg(&fixture.path)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("TMPDIR", &temp)
             .env("HOME", &home)
             .env("XDG_CACHE_HOME", &cache)
-            .env("XDG_CONFIG_HOME", fixture.0.join("fake-config"))
-            .env("XDG_STATE_HOME", fixture.0.join("fake-state"))
+            .env("XDG_CONFIG_HOME", fixture.path.join("fake-config"))
+            .env("XDG_STATE_HOME", fixture.path.join("fake-state"))
             .output()
             .expect("run isolated Python AccountStore writer");
         assert!(output.status.success(), "Python AccountStore writer failed");
@@ -1543,11 +1731,11 @@ print(store.path)
     #[test]
     fn changed_identity_is_persisted_and_blocks_admission() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("accounts/registry.json");
+        let path = fixture.path.join("accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let mut value: Value =
-            serde_json::from_slice(&registry(&fixture.0)).expect("registry fixture");
+            serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
         let row = value["accounts"]["default"]
             .as_object_mut()
             .expect("account row");
@@ -1575,11 +1763,11 @@ print(store.path)
     #[test]
     fn disconnected_or_deleted_accounts_are_never_admissible() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("accounts/registry.json");
+        let path = fixture.path.join("accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let mut value: Value =
-            serde_json::from_slice(&registry(&fixture.0)).expect("registry fixture");
+            serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
         let row = value["accounts"]["default"]
             .as_object_mut()
             .expect("account row");
@@ -1605,13 +1793,13 @@ print(store.path)
     #[test]
     fn refresh_preserves_python_account_insertion_order() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("accounts/registry.json");
+        let path = fixture.path.join("accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let bytes = format!(
             r#"{{"version":1,"defaultAccountKey":"z","accounts":{{"z":{{"id":"z","home":"{}","label":"Z","source":"Codex CLI","status":"signedOut"}},"a":{{"id":"a","home":"{}","label":"A","source":"Codex CLI","status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
-            fixture.0.display(),
-            fixture.0.display()
+            fixture.path.display(),
+            fixture.path.display()
         );
         fs::write(&path, bytes).expect("write ordered registry");
         let driver = AccountDriver::open_with_reader(
@@ -1629,7 +1817,7 @@ print(store.path)
     #[test]
     fn refused_registry_is_not_written_and_errors_do_not_echo_contents() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("accounts/registry.json");
+        let path = fixture.path.join("accounts/registry.json");
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let invalid = format!(r#"{{"sensitive":"{PLACEHOLDER_KEY}"}}"#);
@@ -1650,7 +1838,7 @@ print(store.path)
     #[test]
     fn fake_claude_executable_uses_override_and_parses_only_metadata() {
         let fixture = TestDir::new();
-        let binary = fixture.0.join("claude-fake");
+        let binary = fixture.path.join("claude-fake");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1662,7 +1850,7 @@ print(store.path)
             let environment = BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), override_value)]);
             let profile = AuthProfile {
                 provider: "claude".into(),
-                home: fixture.0.clone(),
+                home: fixture.path.clone(),
                 claude_options: None,
             };
             let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
@@ -1673,14 +1861,14 @@ print(store.path)
             );
             assert_eq!(parse_claude_status(b"[]", true).status, AuthStatus::Error);
 
-            let fallback_home = fixture.0.join("fake-home");
+            let fallback_home = fixture.path.join("fake-home");
             let fallback_binary = fallback_home.join(".local/bin/claude");
             fs::create_dir_all(fallback_binary.parent().expect("fallback parent"))
                 .expect("create fallback bin directory");
             fs::copy(&binary, &fallback_binary).expect("copy fake CLI to fallback path");
             fs::set_permissions(&fallback_binary, fs::Permissions::from_mode(0o700))
                 .expect("make fallback CLI executable");
-            let empty_path = fixture.0.join("empty-path");
+            let empty_path = fixture.path.join("empty-path");
             fs::create_dir_all(&empty_path).expect("create isolated PATH");
             let environment = BTreeMap::from([
                 (
@@ -1697,13 +1885,13 @@ print(store.path)
     #[test]
     fn malformed_and_unreadable_registry_loads_are_refused() {
         let fixture = TestDir::new();
-        let malformed = fixture.0.join("malformed.json");
+        let malformed = fixture.path.join("malformed.json");
         fs::write(&malformed, b"{").expect("write malformed fixture");
         assert_eq!(
             AccountDriver::open(&malformed).err(),
             Some(AccountDriverError::InvalidRegistry)
         );
-        let unreadable = fixture.0.join("directory.json");
+        let unreadable = fixture.path.join("directory.json");
         fs::create_dir(&unreadable).expect("create unreadable fixture");
         assert_eq!(
             AccountDriver::open(&unreadable).err(),
@@ -1714,7 +1902,7 @@ print(store.path)
     #[test]
     fn failed_replacement_does_not_change_original_and_sync_failure_is_distinct() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("registry.json");
+        let path = fixture.path.join("registry.json");
         fs::write(&path, b"before").expect("write original");
         let fail = |_: &Path, _: &Path| Err(std::io::Error::other("refused"));
         assert!(matches!(
@@ -1732,13 +1920,25 @@ print(store.path)
             Err(ReplaceError::ReplacedNotDurable)
         ));
         assert_eq!(fs::read(&path).expect("read replaced registry"), b"after");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("read registry permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
     fn post_refresh_validation_failure_leaves_registry_untouched() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("registry.json");
-        let original = registry(&fixture.0);
+        let path = fixture.path.join("registry.json");
+        let original = registry(&fixture.path);
         fs::write(&path, &original).expect("write valid registry");
         let (mut candidate, order) = decode_registry(&original).expect("decode original");
         candidate["accounts"]["default"]["status"] = Value::String("invalid".into());
@@ -1750,8 +1950,9 @@ print(store.path)
     #[test]
     fn refresh_keeps_unknown_fields_and_signed_out_identity() {
         let fixture = TestDir::new();
-        let path = fixture.0.join("registry.json");
-        let mut value: Value = serde_json::from_slice(&registry(&fixture.0)).expect("fixture JSON");
+        let path = fixture.path.join("registry.json");
+        let mut value: Value =
+            serde_json::from_slice(&registry(&fixture.path)).expect("fixture JSON");
         let row = value["accounts"]["default"]
             .as_object_mut()
             .expect("account row");
@@ -1792,9 +1993,9 @@ print(store.path)
     fn refresh_statuses_match_python_account_store_on_shared_fixture() {
         let fixture = TestDir::new();
         let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let home = fixture.0.join("codex-home");
+        let home = fixture.path.join("codex-home");
         fs::create_dir_all(&home).expect("create fixture home");
-        let root = fixture.0.join("python-state");
+        let root = fixture.path.join("python-state");
         let py_registry = root.join("accounts/registry.json");
         fs::create_dir_all(py_registry.parent().expect("parent")).expect("create Python state");
         let mut base: Value = serde_json::from_slice(&registry(&home)).expect("registry");
@@ -1807,17 +2008,17 @@ print(store.path)
             serde_json::json!({"status":"error", "error":"Cannot read this profile's authentication"}),
         ].into_iter().enumerate() {
             fs::write(&py_registry, serde_json::to_vec(&base).expect("Python registry bytes")).expect("write Python fixture");
-            let home_dir = fixture.0.join(format!("py-home-{index}"));
-            let cache = fixture.0.join(format!("py-cache-{index}"));
-            let temp = fixture.0.join(format!("py-tmp-{index}"));
+            let home_dir = fixture.path.join(format!("py-home-{index}"));
+            let cache = fixture.path.join(format!("py-cache-{index}"));
+            let temp = fixture.path.join(format!("py-tmp-{index}"));
             for path in [&home_dir, &cache, &temp] { fs::create_dir_all(path).expect("isolate Python"); }
             let script = "import json,sys; sys.path.insert(0,sys.argv[1]); from codex_accounts import AccountStore; store=AccountStore(sys.argv[2]); store.refresh('default', json.loads(sys.argv[3])); print(json.dumps(store._row('default')))";
-            let py = Command::new(isolated_python(&fixture.0)).args(["-c", script]).arg(&server).arg(&root).arg(auth.to_string())
+            let py = Command::new(isolated_python(&fixture.path)).args(["-c", script]).arg(&server).arg(&root).arg(auth.to_string())
                 .env("HOME", &home_dir).env("XDG_CACHE_HOME", &cache).env("TMPDIR", &temp)
                 .env("PYTHONDONTWRITEBYTECODE", "1").output().expect("run Python refresh");
             assert!(py.status.success(), "Python AccountStore.refresh failed");
             let oracle: Value = serde_json::from_slice(&py.stdout).expect("Python row");
-            let rust_path = fixture.0.join(format!("rust-{index}.json"));
+            let rust_path = fixture.path.join(format!("rust-{index}.json"));
             fs::write(&rust_path, serde_json::to_vec(&base).expect("Rust fixture")).expect("write Rust fixture");
             let md = AuthMetadata {
                 status: match auth["status"].as_str().unwrap_or_default() { "ready" => AuthStatus::Ready, "error" => AuthStatus::Error, _ => AuthStatus::SignedOut },

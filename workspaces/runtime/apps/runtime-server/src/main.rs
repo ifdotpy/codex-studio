@@ -20,10 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let token = token
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
     let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;

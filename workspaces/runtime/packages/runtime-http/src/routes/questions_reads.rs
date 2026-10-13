@@ -7,7 +7,6 @@ use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use studio_runtime_services::questions_reads::{self, QuestionReadRecord, QuestionsReadsError};
 use studio_runtime_store::QuestionsReadsRepository;
 
@@ -120,14 +119,7 @@ pub(crate) async fn checkpoints(
 
 fn checkpoint_response(value: Value, headers: HeaderMap) -> Result<Response, ApiError> {
     let body = serde_json::to_vec(&value).map_err(|_| ApiError::internal())?;
-    let digest = Sha256::digest(&body);
-    let etag = format!(
-        "\"{}\"",
-        digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    );
+    let etag = format!("\"{}\"", studio_runtime_store::sha256_hex(&body));
     if headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
