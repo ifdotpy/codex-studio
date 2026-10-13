@@ -7,10 +7,14 @@ mod schema;
 pub use schema::sha256_hex;
 
 pub use repositories::account_state;
+pub use repositories::checkpoints::{
+    CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use rusqlite::{Connection, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
@@ -136,6 +140,13 @@ impl RuntimeStore {
             bootstrap::prepare_sync_schema(transaction)?;
             feature_schema::prepare(transaction)?;
             schema::verify_bootstrap(transaction)
+        })?;
+        let recovery_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or_default();
+        store.transaction(|transaction| {
+            CheckpointsRepository::recover_captures(transaction, recovery_time)
         })?;
         Ok(store)
     }

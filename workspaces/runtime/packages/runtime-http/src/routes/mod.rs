@@ -4,6 +4,7 @@ pub(crate) mod manifest;
 
 mod agents_create;
 mod catalog;
+mod checkpoints;
 mod desktop;
 mod messages;
 mod monitors;
@@ -38,6 +39,7 @@ fn generated_json<T: DeserializeOwned + Serialize>(
 pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
         agents_create::routes(),
+        checkpoints::routes(),
         session::routes(),
         rules::routes(),
         questions_reads::routes(),

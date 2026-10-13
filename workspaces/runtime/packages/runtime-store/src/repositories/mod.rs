@@ -1,5 +1,6 @@
 pub mod account_state;
 pub(crate) mod agents;
+pub(crate) mod checkpoints;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
@@ -23,6 +24,7 @@ use crate::schema::SchemaRequirements;
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &agents::REQUIREMENTS,
     &account_state::REQUIREMENTS,
+    &checkpoints::REQUIREMENTS,
     &coordination::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
