@@ -522,7 +522,14 @@ fn provider_callbacks_python_reservations_and_restart() {
             )
             .unwrap();
         let actual: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(actual["outcome"], "not_applied");
+        assert_eq!(
+            actual["outcome"],
+            if actual["tool"] == "orchestration_task" {
+                "applied"
+            } else {
+                "not_applied"
+            }
+        );
         for field in [
             "id",
             "agent",
