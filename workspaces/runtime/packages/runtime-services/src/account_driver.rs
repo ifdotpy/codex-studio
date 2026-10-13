@@ -518,6 +518,16 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
+        self.refresh(account, true)
+    }
+
+    /// Read current admission metadata without changing the registry. Callers
+    /// that may still refuse a database transaction must not persist a refresh.
+    pub fn inspect(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
+        self.refresh(account, false)
+    }
+
+    fn refresh(&self, account: &str, persist: bool) -> Result<AccountStatus, AccountDriverError> {
         let profile = {
             let state = self
                 .state
@@ -593,6 +603,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .map_err(|_| AccountDriverError::InvalidRegistry)?;
         let (checked, order) =
             decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        if !persist {
+            return Ok(status);
+        }
         match atomic_replace(&self.path, &encoded) {
             Ok(()) => {}
             Err(ReplaceError::NotReplaced) => return Err(AccountDriverError::WriteRegistry),
@@ -962,6 +975,12 @@ mod tests {
             .expect("create registry directory");
         fs::write(&path, registry(&home)).expect("write Python-shaped registry");
         let driver = AccountDriver::open(&path).expect("open validated registry");
+        let before = fs::read(&path).expect("read original registry");
+        assert_eq!(
+            driver.inspect("default").expect("inspect account"),
+            AccountStatus::Ready
+        );
+        assert_eq!(fs::read(&path).expect("read unmodified registry"), before);
         assert_eq!(
             driver.get("default").expect("refresh account"),
             AccountStatus::Ready

@@ -319,6 +319,16 @@ pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<()
     Ok(())
 }
 
+fn same_intent(saved: &str, requested: &str) -> bool {
+    match (
+        serde_json::from_str::<Value>(saved),
+        serde_json::from_str::<Value>(requested),
+    ) {
+        (Ok(saved), Ok(requested)) => saved == requested,
+        _ => false,
+    }
+}
+
 pub fn replay_lead(
     transaction: &Connection,
     request_id: &str,
@@ -339,14 +349,24 @@ pub fn replay_lead(
     )?;
     let stored = load_agent_value(transaction, &agent_id, &validate)?;
     let Some(record) = stored else {
-        return Ok(None);
+        return if aliased {
+            Err(CreateError::InvalidStoredObject {
+                object: "runtime_lead_requests",
+                id: request_id.to_owned(),
+            })
+        } else {
+            Ok(None)
+        };
     };
     if aliased {
-        if saved_signature != signature {
+        if !same_intent(&saved_signature, signature) {
             return Err(CreateError::Conflict);
         }
     } else if record.get("quickCreate").and_then(Value::as_bool) != Some(true)
-        || record.get("quickCreateRequest").and_then(Value::as_str) != Some(signature)
+        || !record
+            .get("quickCreateRequest")
+            .and_then(Value::as_str)
+            .is_some_and(|saved| same_intent(saved, signature))
     {
         return Err(CreateError::Conflict);
     }
@@ -368,46 +388,8 @@ pub fn replay_agent(
     if crate::event_write::truthy(record.get("deletedAt")) {
         return Err(CreateError::Deleted);
     }
-    let prompt = request
-        .get("prompt")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    let name = request
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("Lead")
-        .trim();
-    if record.get("prompt").and_then(Value::as_str) != Some(prompt)
-        || record.get("name").and_then(Value::as_str) != Some(name)
-        || (record.get("isLead").and_then(Value::as_bool) == Some(true)
-            && record.get("maxAgentsExplicit").and_then(Value::as_bool)
-                != Some(request.get("maxAgents").is_some()))
-        || (request.get("account_key").is_some()
-            && record
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                != request
-                    .get("account_key")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default())
-    {
+    if record.get("creationIntent") != Some(request) {
         return Err(CreateError::Conflict);
-    }
-    for (request_field, record_field) in [
-        ("model", "model"),
-        ("effort", "effort"),
-        ("fast_mode", "fastMode"),
-        ("daybreak_enabled", "daybreakEnabled"),
-        ("yolo_mode", "yoloMode"),
-        ("workspaceMode", "workspaceMode"),
-    ] {
-        if let Some(value) = request.get(request_field)
-            && record.get(record_field) != Some(value)
-        {
-            return Err(CreateError::Conflict);
-        }
     }
     Ok(Some(record))
 }
@@ -483,58 +465,19 @@ pub fn create_agent(
     created: f64,
     validate: impl Fn(&Value) -> bool,
 ) -> Result<Value, CreateError> {
-    if let Some((agent_id, saved_signature)) = transaction
-        .query_row(
-            "SELECT agent,signature FROM runtime_lead_requests WHERE id=?1",
-            [id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()
-        .map_err(StoreError::from)?
-    {
-        if record.get("quickCreateRequest").and_then(Value::as_str)
-            != Some(saved_signature.as_str())
-        {
-            return Err(CreateError::Conflict);
-        }
-        if let Some(existing) = load_agent_value(transaction, &agent_id, &validate)? {
-            if crate::event_write::truthy(existing.get("deletedAt")) {
-                return Err(CreateError::Deleted);
-            }
-            return Ok(existing);
-        }
-        return Err(CreateError::InvalidStoredObject {
-            object: "runtime_lead_requests",
-            id: id.to_owned(),
-        });
-    }
-    if let Some(existing) = load_agent_value(transaction, id, &validate)? {
-        if existing
-            .get("deletedAt")
-            .is_some_and(|value| crate::event_write::truthy(Some(value)))
-        {
-            return Err(CreateError::Deleted);
-        }
-        let is_draft = existing.get("quickCreate").and_then(Value::as_bool) == Some(true);
-        if existing.get("id").and_then(Value::as_str) != Some(id)
-            || (is_draft && existing.get("quickCreateRequest") != record.get("quickCreateRequest"))
-            || (!is_draft && existing.get("prompt").and_then(Value::as_str) != Some(prompt))
-            || (!is_draft && existing.get("name") != record.get("name"))
-            || (!is_draft && existing.get("accountKey") != record.get("accountKey"))
-            || (!is_draft
-                && [
-                    "role",
-                    "yoloMode",
-                    "workspaceMode",
-                    "concurrency",
-                    "maxAgents",
-                    "tokenBudget",
-                ]
-                .iter()
-                .any(|field| existing.get(*field) != record.get(*field)))
-        {
-            return Err(CreateError::Conflict);
-        }
+    let existing = if record.get("quickCreate").and_then(Value::as_bool) == Some(true) {
+        replay_lead(
+            transaction,
+            id,
+            record["quickCreateRequest"]
+                .as_str()
+                .ok_or(CreateError::Conflict)?,
+            &validate,
+        )?
+    } else {
+        replay_agent(transaction, id, &record["creationIntent"], &validate)?
+    };
+    if let Some(existing) = existing {
         return Ok(existing);
     }
     if !validate(&record) {
@@ -927,6 +870,53 @@ mod tests {
     }
 
     #[test]
+    fn canonical_agent_replay_checks_every_saved_value_after_rename() {
+        let connection = database();
+        let intent = json!({"prompt":"Task", "name":"Original", "cwd":"/project", "role":"orchestrator", "concurrency":32, "maxAgents":64, "tokenBudget":null, "parent":null, "profile_id":null});
+        let record = json!({"id":"agent", "name":"Renamed", "creationIntent":intent});
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES(?1,?2)",
+                rusqlite::params!["agent", record.to_string()],
+            )
+            .expect("insert");
+        assert!(
+            super::replay_agent(&connection, "agent", &intent, |_| true)
+                .expect("replay")
+                .is_some()
+        );
+        for field in intent.as_object().expect("intent object").keys() {
+            let mut changed = intent.clone();
+            changed[field] = json!("changed");
+            assert!(
+                super::replay_agent(&connection, "agent", &changed, |_| true).is_err(),
+                "{field}"
+            );
+        }
+        let mut omitted = intent.clone();
+        omitted.as_object_mut().expect("object").remove("maxAgents");
+        assert!(super::replay_agent(&connection, "agent", &omitted, |_| true).is_err());
+    }
+
+    #[test]
+    fn missing_alias_target_is_refused_by_preliminary_replay() {
+        let connection = database();
+        connection
+            .execute(
+                "INSERT INTO runtime_lead_requests VALUES('alias','missing','{}')",
+                [],
+            )
+            .expect("alias");
+        assert!(matches!(
+            super::replay_lead(&connection, "alias", "{}", |_| true),
+            Err(super::CreateError::InvalidStoredObject {
+                object: "runtime_lead_requests",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn agent_creation_is_atomic_replayable_and_publishes_sync_projection() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction starts");
@@ -934,7 +924,7 @@ mod tests {
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
             "accountKey":"default", "isLead":true, "needsTitle":false, "autoWake":true,
-            "quickCreateRequest":null
+            "creationIntent":{"name":"Agent A","prompt":"Start the task"}
         });
         let created = create_agent(
             &tx,
@@ -1003,7 +993,7 @@ mod tests {
             .transaction()
             .expect("conflict transaction starts");
         let mut changed = record;
-        changed["name"] = json!("Changed");
+        changed["creationIntent"]["name"] = json!("Changed");
         assert!(create_agent(&tx, "agent-a", "Start the task", changed, 100.0, |_| true).is_err());
         drop(tx);
         let after = connection
