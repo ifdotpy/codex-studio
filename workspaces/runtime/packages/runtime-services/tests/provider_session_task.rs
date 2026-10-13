@@ -256,7 +256,7 @@ async fn initialization_requires_reply_and_written_notification_receipt() {
     let event = session.events.recv().await.unwrap();
     assert_eq!(event.journal.unwrap().cursor, EventCursor(1));
     pending(peer.commands.recv()).await; // no implicit ACK of initialize
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     assert!(exit.result.is_ok());
     assert!(exit.adapter.unwrap().recovery_needed.is_none());
     peer.gone.await.unwrap();
@@ -304,7 +304,7 @@ async fn durable_settlement_forwards_only_delivered_contiguous_prefix() {
         .send(CommandReceipt::Acknowledged(cursor))
         .ok()
         .unwrap();
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -342,7 +342,7 @@ async fn every_journal_kind_and_previous_generation_reaches_consumer() {
         }
     }
     pending(peer.commands.recv()).await;
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -360,7 +360,7 @@ async fn recovered_deadline_emits_without_any_further_input() {
     tokio::time::advance(Duration::from_millis(100)).await;
     let event = session.events.recv().await.unwrap();
     assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { ticket, outcome: RequestOutcome::Unknown } if ticket.id == RequestId::Number(42))));
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -376,7 +376,7 @@ async fn stalled_write_does_not_block_deadline_or_shutdown_barrier() {
     tokio::time::advance(Duration::from_millis(10)).await;
     let event = session.events.recv().await.unwrap();
     assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { ticket: seen, outcome: RequestOutcome::Unknown } if *seen == ticket)));
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     peer.gone.await.unwrap();
     assert!(exit.outcomes.iter().any(|outcome| matches!(
         outcome,
@@ -411,7 +411,7 @@ async fn predeadline_arrival_admitted_after_deadline_is_on_time_and_mirror_is_la
             .unwrap();
         let event = session.events.recv().await.unwrap();
         assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
-        session.shutdown().await;
+        session.checked_shutdown().await;
     }
 }
 
@@ -484,7 +484,7 @@ async fn bounded_startup_replay_can_initialize_and_stop_with_full_consumer() {
         session.control.settled(EventCursor(17)).await,
         Err(SessionTaskError::UndeliveredCursor)
     ));
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     peer.gone.await.unwrap();
     assert_eq!(exit.undelivered.len(), 17);
     assert_eq!(
@@ -514,9 +514,9 @@ async fn unknown_and_not_sent_write_receipts_are_distinct_and_never_retried() {
         let exit = if rejected {
             delivered = session.events.recv().await.unwrap().outcomes;
             assert!(session.control.prepare(spec(3, 100)).await.is_ok());
-            session.shutdown().await
+            session.checked_shutdown().await
         } else {
-            session.completion().await
+            session.checked_completion().await
         };
         if !rejected {
             assert!(exit.result.is_err());
@@ -582,14 +582,14 @@ async fn callbacks_do_not_register_or_steal_outgoing_request_correlation() {
     assert!(
         matches!(&event.outcomes[0], SessionOutcome::Resolved { ticket: seen, outcome: RequestOutcome::Reply { .. } } if *seen == ticket)
     );
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn incomplete_initialization_shutdown_surfaces_recovery_after_adapter_join() {
     let (mut session, mut peer) = open().await;
     let _unanswered = write(&mut peer).await;
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     peer.gone.await.unwrap();
     let recovery = exit.adapter.unwrap().recovery_needed.unwrap();
     assert_eq!(recovery.handle, ProviderHandle::for_account("test"));
@@ -641,7 +641,7 @@ async fn before_at_and_after_deadline_arrivals_keep_classification_under_full_ba
             }
         };
         assert!(response.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
-        session.shutdown().await;
+        session.checked_shutdown().await;
     }
 }
 
@@ -680,7 +680,7 @@ async fn unsettled_journal_horizon_is_bounded_until_durable_prefix_advances() {
         session.events.recv().await.unwrap().journal.unwrap().cursor,
         EventCursor(65)
     );
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[cfg(unix)]
@@ -738,7 +738,7 @@ for line in sys.stdin:
         }
         assert_eq!(first.status.borrow().attachment.info.as_ref().unwrap().acknowledged, EventCursor(1));
         let pid = first.status.borrow().attachment.info.as_ref().unwrap().pid;
-        assert!(first.shutdown().await.adapter.unwrap().recovery_needed.is_none());
+        assert!(first.checked_shutdown().await.adapter.unwrap().recovery_needed.is_none());
         let mut opts = options();
         opts.launch = launch;
         opts.launch.handled_cursor = 1;
@@ -753,7 +753,7 @@ for line in sys.stdin:
         let replay = second.events.recv().await.unwrap().journal.unwrap();
         assert_eq!(Some(replay.cursor), replay_cursor);
         assert_eq!(replay.generation, Generation(1));
-        assert!(second.shutdown().await.adapter.unwrap().recovery_needed.is_none());
+        assert!(second.checked_shutdown().await.adapter.unwrap().recovery_needed.is_none());
     }).await.expect("disposable supervisor session exceeded local watchdog");
 }
 
@@ -787,7 +787,7 @@ async fn claude_prepare_rejects_missing_thread_before_durable_submission() {
         ))
     ));
     pending(peer.commands.recv()).await;
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -826,7 +826,7 @@ async fn expired_serialized_request_is_not_sent_and_next_request_is_released() {
         if event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Write { ticket: Some(ticket), outcome: WriteOutcome::Written, .. } if *ticket == third)) { break; }
     }
     pending(peer.commands.recv()).await;
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -853,7 +853,7 @@ async fn definitive_not_sent_releases_serialized_successor_without_closing_sessi
         sent |= event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Write { ticket: Some(ticket), outcome: WriteOutcome::Written, .. } if *ticket == second));
     }
     assert!(session.control.prepare(serialized(4, 100)).await.is_ok());
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -883,7 +883,7 @@ async fn full_command_and_event_lanes_do_not_block_cancellation_or_join() {
         submitted.push(submit);
     }
     control.cancel();
-    session.shutdown().await;
+    session.checked_shutdown().await;
     peer.gone.await.unwrap();
     for submit in submitted {
         assert!(submit.await.is_err());
@@ -907,7 +907,7 @@ async fn cancelled_completion_wait_retains_adapter_stop_barrier() {
     peer.stopping.await.unwrap();
     pending(session.completion()).await;
     release.send(()).unwrap();
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     peer.gone.await.unwrap();
     assert!(exit.adapter.unwrap().result.is_ok());
 }
@@ -924,8 +924,8 @@ async fn prepared_request_cannot_cross_attachment_owners() {
         Err(SessionTaskError::Invalid)
     ));
     pending(peer_second.commands.recv()).await;
-    first.shutdown().await;
-    second.shutdown().await;
+    first.checked_shutdown().await;
+    second.checked_shutdown().await;
 }
 
 struct OpenGuard(Option<oneshot::Sender<()>>);
@@ -964,7 +964,7 @@ async fn shutdown_interrupts_factory_open_before_attachment_exists() {
     .await
     .unwrap();
     barrier.await.unwrap();
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     cleaned.await.unwrap();
     assert!(exit.result.is_ok());
     assert!(exit.adapter.is_none());
@@ -1003,7 +1003,7 @@ async fn unresolved_request_limit_includes_unknown_until_positive_reply() {
         .unwrap();
     session.events.recv().await.unwrap();
     assert!(session.control.prepare(spec(100, 100)).await.is_ok());
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 fn recovered(id: RequestId, method: Method, deadline_ms: u64) -> RecoveredRequest {
@@ -1030,7 +1030,7 @@ async fn review_shutdown_retains_adapter_buffered_journal() {
             .try_send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
             .unwrap();
     }
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     let returned = exit
         .undelivered
         .iter()
@@ -1060,7 +1060,7 @@ async fn review_dropped_buffered_submission_fences_session() {
     written(first);
     let prepared = ctl.prepare(spec(3, 100)).await;
     let admitted_after_abandonment = prepared.is_ok();
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     let mut outcomes = exit.outcomes;
     for event in exit.undelivered {
         outcomes.extend(event.outcomes);
@@ -1116,7 +1116,7 @@ async fn review_full_callback_queue_retains_taken_response_and_resolution() {
             .as_ref()
             .is_some_and(|j| j.cursor == EventCursor(1))
     );
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     drop(blocked);
     let mut preserved = event.journal.is_some()
         || exit.undelivered.iter().any(|e| {
@@ -1167,7 +1167,7 @@ for line in sys.stdin:
         let ticket = first.control.submit(first.control.prepare(spec(77,10000)).await.unwrap()).await.unwrap();
         let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
         assert!(recovery.remote_id.is_some());
-        first.shutdown().await;
+        first.checked_shutdown().await;
         let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
         let mut cfg=config(); cfg.timeout_ms=10000; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![recovery];
         let mut second=SessionHandle::open(factory,ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
@@ -1176,7 +1176,7 @@ for line in sys.stdin:
         second.control.submit_frame(second.control.prepare_frame(OperationId("release".into()), &release).unwrap()).await.unwrap();
         let event=loop { let e=second.events.recv().await.unwrap(); if e.journal.is_some() {break e;} };
         let resolved=event.outcomes.iter().any(|o|matches!(o, SessionOutcome::Resolved { ticket:t,outcome:RequestOutcome::Reply {..} } if *t==ticket));
-        second.shutdown().await;
+        second.checked_shutdown().await;
         assert!(resolved,"retained local request 77 replayed as orphan: no public session receipt exposes remote mapping");
     }).await.expect("disposable recovery probe watchdog");
 }
@@ -1221,7 +1221,7 @@ async fn review_backlogged_on_time_reply_must_not_send_expired_successor() {
         }
     }
     let sent = matches!(peer.commands.try_recv(), Ok(Observed::Write(_)));
-    let exit = session.shutdown().await;
+    let exit = session.checked_shutdown().await;
     assert!(
         !sent,
         "expired serialized successor {:?} sent after backlog release, shutdown={:?}",
@@ -1254,7 +1254,7 @@ async fn callback_admission_drop_fences_but_retained_future_survives_select() {
         written(receipt);
         let prepared = control.prepare(spec(3, 100)).await;
         assert_eq!(prepared.is_err(), abandon);
-        let exit = session.shutdown().await;
+        let exit = session.checked_shutdown().await;
         let mut all = exit.outcomes;
         for e in exit.undelivered {
             all.extend(e.outcomes);
@@ -1300,9 +1300,9 @@ async fn shutdown_and_lost_ack_return_locally_settled_unacknowledged_prefix() {
             };
             assert_eq!(cursor, EventCursor(1));
             drop(reply);
-            session.completion().await
+            session.checked_completion().await
         } else {
-            let exit = session.shutdown().await;
+            let exit = session.checked_shutdown().await;
             assert!(exit.result.is_ok());
             exit
         };
@@ -1342,7 +1342,7 @@ async fn recovered_unknown_does_not_reset_deadline_or_repeat_uncertainty() {
             ..
         }
     )));
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -1389,7 +1389,7 @@ async fn replenished_journal_and_settlement_lanes_allow_command_and_receipt_prog
     }
     stop.send(true).unwrap();
     producer.await.unwrap();
-    session.shutdown().await;
+    session.checked_shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -1432,5 +1432,241 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
     assert_eq!(recovery.ticket, ticket);
     assert_eq!(recovery.remote_id, Some(99));
     assert_eq!(recovery.deadline_ms, 100);
-    session.shutdown().await;
+    session.checked_shutdown().await;
+}
+#[tokio::test]
+async fn closure_crash_before_written_persistence_keeps_unknown_without_resend() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        use support::*;
+        let root = DisposableState::new();
+        let python = python_executable();
+        let mut supervisor = SupervisorProcess::start(&root, &python);
+        let script = r#"
+import json,sys
+saved=None
+count=0
+for line in sys.stdin:
+ m=json.loads(line)
+ if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
+ elif m.get('method')=='model/list':
+  saved=m
+  count+=1
+ elif m.get('method')=='thread/unsubscribe' and saved:
+  print(json.dumps({'id':saved['id'],'result':{'models':[], 'receivedCount':count}}),flush=True)
+"#;
+        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
+        let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
+        let mut opts = options(); opts.launch=launch.clone();
+        let mut cfg=config(); cfg.timeout_ms=10000;
+        let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
+        status(&mut first, InitializationStatus::Ready).await;
+        supervisor.own_child(first.status.borrow().attachment.info.as_ref().unwrap().pid);
+        let initial = first.events.recv().await.unwrap().journal.unwrap();
+        first.control.settled(initial.cursor).await.unwrap();
+        loop { if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; } first.status.changed().await.unwrap(); }
+        let prepared = first.control.prepare(spec(77,10000)).await.unwrap();
+        let submitted = prepared.recovery_record();
+        assert_eq!(submitted.deadline_ms, prepared.deadline_ms());
+        let ticket = first.control.submit(prepared).await.unwrap();
+        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
+        assert!(recovery.remote_id.is_some());
+        first.checked_shutdown().await;
+        let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
+        let mut cfg=config(); cfg.timeout_ms=10000; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![submitted];
+        let mut second=SessionHandle::open(factory,ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
+        status(&mut second,InitializationStatus::Ready).await;
+        let release=Frame::Notification(studio_runtime_providers::NotificationFrame { method: Method::ThreadUnsubscribe,params:None,fields:Default::default() });
+        second.control.submit_frame(second.control.prepare_frame(OperationId("release".into()), &release).unwrap()).await.unwrap();
+        let event=loop { let e=second.events.recv().await.unwrap(); if e.journal.is_some() {break e;} };
+        let resolved=event.outcomes.iter().any(|o|matches!(o, SessionOutcome::Resolved { ticket:t,outcome:RequestOutcome::Reply {..} } if *t==ticket));
+        let JournalPayload::Frame(Frame::Response { body: ResponseBody::Result(value), .. }) = &event.journal.as_ref().unwrap().payload else { panic!("retained orphan envelope"); };
+        assert_eq!(value["receivedCount"], 1, "no new child write during recovery");
+        let exit = second.checked_shutdown().await;
+        assert!(!resolved, "missing remote mapping must not be guessed");
+        assert!(exit.outcomes.iter().any(|o| matches!(o, SessionOutcome::Resolved { ticket:t, outcome:RequestOutcome::Unknown } if *t==ticket)));
+
+    }).await.expect("disposable recovery probe watchdog");
+}
+
+#[tokio::test(start_paused = true)]
+async fn closure_full_admission_window_can_be_recovered() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.recovered = (2..34)
+        .map(|id| {
+            let mut r = recovered(RequestId::Number(id), Method::ModelList, 1000);
+            r.operation_id = OperationId(format!("recovered:{id}"));
+            r
+        })
+        .collect();
+    let result =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg).await;
+    assert!(
+        result.is_ok(),
+        "the 32 requests accepted by the session cannot be restored together"
+    );
+    let mut session = result.unwrap();
+    ready(&mut session, &mut peer).await;
+    assert!(matches!(
+        session.control.prepare(spec(34, 1000)).await,
+        Err(SessionTaskError::Capacity)
+    ));
+    peer.events
+        .send(entry(
+            1,
+            1,
+            JournalPayload::Frame(reply(RequestId::Number(2))),
+        ))
+        .await
+        .unwrap();
+    session.events.recv().await.unwrap();
+    session.control.prepare(spec(34, 1000)).await.unwrap();
+    session.checked_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn closure_recovered_thread_remains_serialized_until_reply() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.claude = true;
+    let mut r = recovered(RequestId::Number(42), Method::TurnStart, 1000);
+    r.thread_id = Some("thread".into());
+    cfg.recovered.push(r);
+    let mut session =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
+            .await
+            .unwrap();
+    ready(&mut session, &mut peer).await;
+    session
+        .control
+        .submit(session.control.prepare(serialized(43, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    pending(peer.commands.recv()).await;
+    peer.events
+        .send(entry(
+            1,
+            1,
+            JournalPayload::Frame(reply(RequestId::Number(42))),
+        ))
+        .await
+        .unwrap();
+    session.events.recv().await.unwrap();
+    written(write(&mut peer).await);
+    session.checked_shutdown().await;
+}
+#[tokio::test(start_paused = true)]
+async fn closure_ack_prefix_after_positive_final_receipt_and_gap() {
+    for settle_middle in [false, true] {
+        let (mut session, mut peer) = open().await;
+        ready(&mut session, &mut peer).await;
+        for cursor in 1..=3 {
+            peer.events
+                .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+                .await
+                .unwrap();
+            session.events.recv().await.unwrap();
+        }
+        session.control.settled(EventCursor(3)).await.unwrap();
+        session.control.settled(EventCursor(1)).await.unwrap();
+        let Observed::Ack(cursor, receipt) = peer.commands.recv().await.unwrap() else {
+            panic!("ack");
+        };
+        assert_eq!(cursor, EventCursor(1));
+        if settle_middle {
+            session.control.settled(EventCursor(2)).await.unwrap();
+        }
+        receipt
+            .send(CommandReceipt::Acknowledged(cursor))
+            .ok()
+            .unwrap();
+        let exit = session.checked_shutdown().await;
+        assert_eq!(
+            exit.pending_acknowledgement,
+            if settle_middle {
+                Some(EventCursor(3))
+            } else {
+                None
+            }
+        );
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn closure_recovery_with_deadline_already_elapsed_reports_unknown_once() {
+    let clock = SessionClock::default();
+    tokio::time::advance(Duration::from_millis(20)).await;
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.recovered
+        .push(recovered(RequestId::Number(42), Method::ModelList, 5));
+    let mut opts = options();
+    opts.clock = clock;
+    let mut session = SessionHandle::open(factory, ProviderHandle::for_account("test"), opts, cfg)
+        .await
+        .unwrap();
+    ready(&mut session, &mut peer).await;
+    let event = session.events.recv().await.unwrap();
+    assert_eq!(event.outcomes.iter().filter(|o|matches!(o,SessionOutcome::Resolved{ticket,outcome:RequestOutcome::Unknown} if ticket.id==RequestId::Number(42))).count(),1);
+    let exit = session.checked_shutdown().await;
+    assert!(!exit.outcomes.iter().any(|o|matches!(o,SessionOutcome::Resolved{ticket,outcome:RequestOutcome::Unknown} if ticket.id==RequestId::Number(42))));
+}
+
+#[path = "support/session_outcomes.rs"]
+mod outcome_checks;
+use outcome_checks::CheckedExit;
+
+#[tokio::test(start_paused = true)]
+async fn prepared_deadline_is_durable_before_submit_and_never_restarted() {
+    for elapsed in [5, 20] {
+        let (mut session, mut peer) = open().await;
+        ready(&mut session, &mut peer).await;
+        let prepared = session.control.prepare(spec(2, 10)).await.unwrap();
+        let durable = prepared.recovery_record();
+        assert_eq!(prepared.deadline_ms(), 10);
+        assert_eq!(durable.deadline_ms, 10);
+        assert_eq!(durable.remote_id, None);
+        tokio::time::advance(Duration::from_millis(elapsed)).await;
+        session.control.submit(prepared).await.unwrap();
+        if elapsed < 10 {
+            written(write(&mut peer).await);
+        }
+        let event = session.events.recv().await.unwrap();
+        assert!(event.outcomes.iter().any(|o| match o {
+            SessionOutcome::Write {
+                outcome: WriteOutcome::Written,
+                recovery: Some(r),
+                ..
+            } => elapsed < 10 && r.deadline_ms == durable.deadline_ms,
+            SessionOutcome::Write {
+                outcome: WriteOutcome::NotSent,
+                ..
+            } => elapsed >= 10,
+            _ => false,
+        }));
+        pending(peer.commands.recv()).await;
+        session.checked_shutdown().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovered_lightweight_request_does_not_reserve_serialized_thread() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.claude = true;
+    let mut r = recovered(RequestId::Number(42), Method::TurnStart, 1000);
+    r.thread_id = Some("thread".into());
+    r.lightweight = true;
+    cfg.recovered.push(r);
+    let mut session =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
+            .await
+            .unwrap();
+    ready(&mut session, &mut peer).await;
+    session
+        .control
+        .submit(session.control.prepare(serialized(43, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.checked_shutdown().await;
 }

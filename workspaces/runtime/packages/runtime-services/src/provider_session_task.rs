@@ -62,9 +62,33 @@ pub struct RequestSpec {
 /// Admission can still be refused if readiness or capacity changes afterward.
 pub struct PreparedRequest {
     spec: RequestSpec,
+    prepared_at_ms: u64,
     write: Option<PreparedWrite>,
     generation: Generation,
     owner: mpsc::Sender<Command>,
+}
+impl PreparedRequest {
+    /// Persist this absolute deadline with Submitted, before calling submit.
+    pub fn deadline_ms(&self) -> u64 {
+        self.prepared_at_ms.saturating_add(self.spec.timeout_ms)
+    }
+    /// Intent only: no write has happened. On crash without a durable Written
+    /// receipt, record Unknown and never treat this missing mapping as NotSent.
+    pub fn recovery_record(&self) -> RecoveredRequest {
+        RecoveredRequest {
+            ticket: RequestTicket {
+                generation: self.generation.0,
+                id: self.spec.id.clone(),
+                method: self.spec.method,
+            },
+            operation_id: self.spec.operation_id.clone(),
+            thread_id: self.spec.thread_id.clone(),
+            lightweight: self.spec.lightweight,
+            deadline_ms: self.deadline_ms(),
+            unknown: false,
+            remote_id: None,
+        }
+    }
 }
 pub struct PreparedFrame {
     write: PreparedWrite,
@@ -93,7 +117,7 @@ pub enum SessionOutcome {
     },
 }
 
-/// One state transition, bounded by MAX_PENDING_RESPONSES outcomes and one entry.
+/// One bounded state transition (32 requests plus initialization) and one entry.
 /// Positive replies remain associated with their durable journal envelope.
 pub struct SessionEvent {
     pub journal: Option<JournalEntry>,
@@ -149,6 +173,7 @@ pub struct SessionHandle {
 /// futures alongside the separately owned bounded event receiver.
 #[derive(Clone)]
 pub struct SessionControl {
+    clock: SessionClock,
     commands: mpsc::Sender<Command>,
     settlements: mpsc::Sender<Settlement>,
     status: watch::Receiver<SessionStatus>,
@@ -179,7 +204,7 @@ impl SessionHandle {
                     || r.operation_id.0.len() > 1024
             })
             || config.timeout_ms > MAX_TIMEOUT_MS
-            || config.recovered.len() >= MAX_PENDING_RESPONSES
+            || config.recovered.len() > MAX_PENDING_RESPONSES
             || config.recovered.iter().any(|r| {
                 r.thread_id
                     .as_ref()
@@ -198,12 +223,9 @@ impl SessionHandle {
             vec![],
             config.request_id_prefix,
         )?;
-        let frame = decode_write(
-            initial
-                .into_iter()
-                .next()
-                .ok_or(SessionTaskError::Invalid)?,
-        )?;
+        let Some(Action::Write(frame)) = initial.into_iter().next() else {
+            return Err(SessionTaskError::Invalid);
+        };
         // Validate the stricter supervisor envelope limit before factory.open.
         let initialize = PreparedWrite::new(config.initialize_operation.clone(), &frame)?;
         let Frame::Request(initialize_frame) = frame else {
@@ -241,7 +263,7 @@ impl SessionHandle {
                 Record {
                     unknown_reported: recovered.unknown,
                     ticket: recovered.ticket,
-                    operation: Some(recovered.operation_id),
+                    operation: recovered.operation_id,
                     thread_id: recovered.thread_id,
                     lightweight: recovered.lightweight,
                     send: SendState::Unknown,
@@ -255,7 +277,7 @@ impl SessionHandle {
             Record {
                 unknown_reported: false,
                 ticket: ticket.clone(),
-                operation: Some(config.initialize_operation.clone()),
+                operation: config.initialize_operation.clone(),
                 send: SendState::Queued,
                 thread_id: None,
                 lightweight: false,
@@ -279,7 +301,7 @@ impl SessionHandle {
         let stop = Shutdown::default();
         let actor = SessionTask {
             state,
-            clock,
+            clock: clock.clone(),
             handle,
             records,
             commands: inbox,
@@ -297,6 +319,7 @@ impl SessionHandle {
         Ok(Self {
             events: receiver,
             control: SessionControl {
+                clock,
                 commands,
                 settlements,
                 status: observed.clone(),
@@ -363,6 +386,7 @@ impl SessionControl {
         let write = PreparedWrite::new(spec.operation_id.clone(), &frame)?;
         let prepared = PreparedRequest {
             spec,
+            prepared_at_ms: self.clock.now_ms(),
             write: Some(write),
             generation: self.status.borrow().generation,
             owner: self.commands.clone(),
@@ -383,16 +407,8 @@ impl SessionControl {
             return Err(SessionTaskError::Invalid);
         }
         let (reply, receipt) = oneshot::channel();
-        let mut guard = AdmissionGuard(Some(self.stop.clone()));
-        self.commands
-            .send(Command::Request { prepared, reply })
+        self.admission(Command::Request { prepared, reply }, receipt)
             .await
-            .map_err(|_| SessionTaskError::Closed)?;
-        let result = receipt
-            .await
-            .map_err(|_| SessionTaskError::AdmissionUnknown)?;
-        guard.0 = None;
-        result
     }
 
     /// Callback responses do not register outgoing request correlation.
@@ -414,9 +430,18 @@ impl SessionControl {
 
     pub async fn submit_frame(&self, prepared: PreparedFrame) -> Result<(), SessionTaskError> {
         let (reply, receipt) = oneshot::channel();
+        self.admission(Command::Frame { prepared, reply }, receipt)
+            .await
+    }
+
+    async fn admission<T>(
+        &self,
+        command: Command,
+        receipt: oneshot::Receiver<Result<T, SessionTaskError>>,
+    ) -> Result<T, SessionTaskError> {
         let mut guard = AdmissionGuard(Some(self.stop.clone()));
         self.commands
-            .send(Command::Frame { prepared, reply })
+            .send(command)
             .await
             .map_err(|_| SessionTaskError::Closed)?;
         let result = receipt
@@ -485,7 +510,7 @@ enum SendState {
 struct Record {
     unknown_reported: bool,
     ticket: RequestTicket,
-    operation: Option<OperationId>,
+    operation: OperationId,
     send: SendState,
     thread_id: Option<String>,
     lightweight: bool,
@@ -587,13 +612,7 @@ impl SessionTask {
         // owned here; preserve positive evidence without invoking protocol code.
         for action in std::mem::take(&mut self.retained.actions) {
             if let Action::Resolve { ticket, outcome } = action {
-                if !matches!(outcome, RequestOutcome::Unknown) {
-                    self.records.remove(&ticket.id);
-                }
-                self.emit(
-                    self.retained.pending.is_none(),
-                    SessionOutcome::Resolved { ticket, outcome },
-                );
+                self.retain_resolution(ticket, outcome, self.retained.pending.is_none());
             }
         }
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
@@ -642,14 +661,12 @@ impl SessionTask {
         let mut outcomes = vec![];
         for record in self.records.values() {
             if record.send == SendState::Queued {
-                if let Some(operation_id) = &record.operation {
-                    outcomes.push(SessionOutcome::Write {
-                        operation_id: operation_id.clone(),
-                        ticket: Some(record.ticket.clone()),
-                        outcome: WriteOutcome::NotSent,
-                        recovery: None,
-                    });
-                }
+                outcomes.push(SessionOutcome::Write {
+                    operation_id: record.operation.clone(),
+                    ticket: Some(record.ticket.clone()),
+                    outcome: WriteOutcome::NotSent,
+                    recovery: None,
+                });
             } else if !record.unknown_reported {
                 outcomes.push(SessionOutcome::Resolved {
                     ticket: record.ticket.clone(),
@@ -731,10 +748,7 @@ impl SessionTask {
                         record.send = SendState::Attempting;
                         record.write.take().map(|write| PendingWrite {
                             write,
-                            operation: record
-                                .operation
-                                .clone()
-                                .unwrap_or(OperationId(String::new())),
+                            operation: record.operation.clone(),
                             ticket: Some(record.ticket.clone()),
                             initialized: false,
                         })
@@ -838,6 +852,8 @@ impl SessionTask {
             },
         );
         self.retained.actions = self.state.expire(at).1;
+        #[cfg(test)]
+        tests::panic_at(4);
         self.apply_actions(false)?;
         if generation.0 == self.state.generation() {
             let frame = self
@@ -969,7 +985,7 @@ impl SessionTask {
         if self
             .records
             .values()
-            .any(|r| r.operation.as_ref() == Some(&spec.operation_id))
+            .any(|r| r.operation == spec.operation_id)
         {
             return Err(SessionTaskError::Invalid);
         }
@@ -977,7 +993,7 @@ impl SessionTask {
             spec.id,
             spec.method,
             spec.params,
-            self.clock.now_ms(),
+            prepared.prepared_at_ms,
             spec.timeout_ms,
             spec.thread_id.clone(),
             spec.lightweight,
@@ -991,7 +1007,7 @@ impl SessionTask {
             Record {
                 unknown_reported: false,
                 ticket: ticket.clone(),
-                operation: Some(spec.operation_id),
+                operation: spec.operation_id,
                 send: SendState::Queued,
                 thread_id: spec.thread_id,
                 lightweight: spec.lightweight,
@@ -1036,51 +1052,9 @@ impl SessionTask {
                     _ => return Err(SessionTaskError::Invalid),
                 },
                 Action::Resolve { ticket, outcome } => {
-                    let queued = self
-                        .records
-                        .get(&ticket.id)
-                        .is_some_and(|r| r.send == SendState::Queued);
-                    if matches!(outcome, RequestOutcome::Unknown) && queued {
-                        if let Some(operation_id) = self
-                            .records
-                            .get(&ticket.id)
-                            .and_then(|r| r.operation.clone())
-                        {
-                            self.emit(
-                                control,
-                                SessionOutcome::Write {
-                                    operation_id,
-                                    ticket: Some(ticket.clone()),
-                                    outcome: WriteOutcome::NotSent,
-                                    recovery: None,
-                                },
-                            );
-                        }
-                        self.records.remove(&ticket.id);
+                    if self.retain_resolution(ticket.clone(), outcome, control) {
                         let released = self.state.reject_unsent(&ticket)?;
                         self.retained.actions.extend(released);
-                    } else {
-                        let duplicate_unknown = matches!(outcome, RequestOutcome::Unknown)
-                            && self
-                                .records
-                                .get(&ticket.id)
-                                .is_some_and(|r| r.unknown_reported);
-                        if !duplicate_unknown {
-                            self.emit(
-                                control,
-                                SessionOutcome::Resolved {
-                                    ticket: ticket.clone(),
-                                    outcome: outcome.clone(),
-                                },
-                            );
-                        }
-                        if matches!(outcome, RequestOutcome::Unknown) {
-                            if let Some(record) = self.records.get_mut(&ticket.id) {
-                                record.unknown_reported = true;
-                            }
-                        } else {
-                            self.records.remove(&ticket.id);
-                        }
                     }
                 }
                 Action::GenerationClosed { generation } => {
@@ -1091,6 +1065,63 @@ impl SessionTask {
             self.retained.actions.remove(0);
         }
         Ok(())
+    }
+
+    /// Shared by ordinary transitions and unwind cleanup. Returns whether pure
+    /// state should retire an unsent request; cleanup never executes that step.
+    fn retain_resolution(
+        &mut self,
+        ticket: RequestTicket,
+        outcome: RequestOutcome,
+        control: bool,
+    ) -> bool {
+        let Some(record) = self.records.get_mut(&ticket.id) else {
+            return false;
+        };
+        let event = if matches!(outcome, RequestOutcome::Unknown) {
+            if record.send == SendState::Queued {
+                SessionOutcome::Write {
+                    operation_id: record.operation.clone(),
+                    ticket: Some(ticket.clone()),
+                    outcome: WriteOutcome::NotSent,
+                    recovery: None,
+                }
+            } else {
+                if record.unknown_reported {
+                    return false;
+                }
+                record.unknown_reported = true;
+                SessionOutcome::Resolved {
+                    ticket: ticket.clone(),
+                    outcome,
+                }
+            }
+        } else {
+            SessionOutcome::Resolved {
+                ticket: ticket.clone(),
+                outcome,
+            }
+        };
+        let unsent = matches!(
+            event,
+            SessionOutcome::Write {
+                outcome: WriteOutcome::NotSent,
+                ..
+            }
+        );
+        let retired = unsent
+            || matches!(
+                event,
+                SessionOutcome::Resolved {
+                    outcome: RequestOutcome::Reply { .. },
+                    ..
+                }
+            );
+        self.emit(control, event);
+        if retired {
+            self.records.remove(&ticket.id);
+        }
+        unsent
     }
 
     fn retain_receipt_outcome(&mut self) {
@@ -1174,11 +1205,7 @@ impl SessionTask {
             .ok_or(SessionTaskError::Invalid)?;
         match flight {
             Flight::Ack(cursor) => match receipt {
-                CommandReceipt::Acknowledged(ack) if ack == cursor => {
-                    self.acknowledged = cursor;
-                    self.seen.retain(|seen, _| *seen > cursor.0);
-                    Ok(())
-                }
+                CommandReceipt::Acknowledged(ack) if ack == cursor => Ok(()),
                 _ => Err(SessionTaskError::Closed),
             },
             Flight::Write {
@@ -1278,12 +1305,6 @@ fn valid_id(id: &RequestId) -> bool {
     !matches!(id, RequestId::String(text) if text.len() > 1024)
 }
 
-fn decode_write(action: Action) -> Result<Frame, SessionTaskError> {
-    match action {
-        Action::Write(frame) => Ok(frame),
-        _ => Err(SessionTaskError::Invalid),
-    }
-}
 fn send_once(
     sender: mpsc::Sender<AdapterCommand>,
     command: AdapterCommand,

@@ -233,7 +233,11 @@ Clone control to select admission futures alongside event reception. Control has
 - `cancel()` to signal shutdown independently of every bounded lane.
 
 The account supplies durable, unique request/operation identities, prepares before
-committing Submitted, then submits once. `AdmissionUnknown` means the admission
+committing Submitted, then submits once. `PreparedRequest::deadline_ms()` and
+`recovery_record()` expose the original deadline and recovery intent before that
+commit. Preparation starts the deadline; persistence or admission delay never
+restarts it. The prepared record is intent, not evidence of a provider write.
+`AdmissionUnknown` means the admission
 receipt was lost; never resubmit. Other admission errors mean no write was admitted.
 Accepted requests report Written, NotSent, or Unknown via `SessionOutcome::Write`.
 Keep each admission future pinned/owned across unrelated select outcomes. Dropping
@@ -241,17 +245,37 @@ its owner before observing the result fences the session, including a buffered
 result; ordinary polling by mutable reference does not fence it.
 
 Written request outcomes include `recovery: Some(RecoveredRequest)` containing
-`ticket`, `operation_id`, `thread_id`, `deadline_ms`, `unknown`, and `remote_id`.
+`ticket`, `operation_id`, `thread_id`, `lightweight`, `deadline_ms`, `unknown`, and
+`remote_id`.
 Persist this correlation record with the write outcome; numeric requests need the
 remote-to-local ID mapping after reattach. Supply these records through
 `SessionTaskConfig.recovered`; the session installs the adapter mappings before
 opening. Preserve the original deadline and update `unknown` when durable Unknown
 is reported. Recovery does not start a fresh timeout or repeat prior Unknown.
+Recovery restores serialized thread ownership; a lightweight request does not
+reserve its thread. Conflicting recovered serialized owners are refused before
+open. All 32 unresolved requests can be recovered; initialization has a separate
+record slot. Merge late Written evidence by request/operation identity, preserving
+any durable Unknown flag. A late write receipt must not resurrect a request already
+durably resolved; restore only unresolved records.
 Deadlines and journal timestamps use the supplied `SessionClock` epoch. Preserve
 that epoch across reattachment in a running process; across runtime restart the
 account/store layer must translate its durable deadline into the new clock epoch.
 A missing remote ID after an uncertain write is still uncertainty, not evidence
 of NotSent or permission to resend.
+
+Crash window: Submitted is durable, but Written is not. This includes a crash
+before submit reaches the supervisor and a crash after acceptance but before the
+consumer persists Written. Restore the prepared record and keep the request Unknown;
+never resend it. Without the missing numeric correlation, a replayed reply remains
+an orphan envelope for durable reconciliation rather than a guessed local match.
+Protocol v1 returns the stored remote ID with `duplicate: true`, without writing
+stdin again, when a repeated operation ID has the same payload digest. However,
+if that operation ID is absent it accepts and writes the request. Its
+`operationStatus` lookup only supports `monitor:` identities, not arbitrary
+request operation IDs. Therefore repeating a write is not a safe receipt lookup
+for this crash window, and SessionControl exposes no such reconciliation call.
+
 Replies and deadlines are pure `RequestOutcome` decisions. The shared clock in
 OpenOptions timestamps arrival before the session consumes a journal entry;
 `receive_at` keeps lateness independent of timer/consumer scheduling.
