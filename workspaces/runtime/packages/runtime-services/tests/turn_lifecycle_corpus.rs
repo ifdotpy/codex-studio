@@ -429,7 +429,36 @@ fn python_written_turn_lifecycle_corpus() {
         let expected = oracle.call(
             json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
         );
-        let store = RuntimeStore::open(Some(&rust)).expect("open Python-written state");
+        let store = match RuntimeStore::open(Some(&rust)) {
+            Ok(store) => store,
+            Err(error) => {
+                let refusal = case
+                    .get("expectRefusal")
+                    .unwrap_or_else(|| panic!("{id}: open Python-written state: {error}"));
+                let location = format!(
+                    "{}/{}",
+                    refusal["table"].as_str().expect("table"),
+                    refusal["id"].as_str().expect("id")
+                );
+                let message = error.to_string();
+                assert!(
+                    message.contains(&location),
+                    "{id}: startup refusal must locate {location}: {message}"
+                );
+                assert!(
+                    !message.contains("CORPUS_PRIVATE_PAYLOAD")
+                        && !message.contains("SECRET_STORED_SENTINEL")
+                );
+                let actual = oracle.call(json!({"command":"snapshot","root":rust}));
+                assert_eq!(
+                    actual, expected["before"],
+                    "{id}: startup refusal must not write"
+                );
+                report.push(json!({"id":id,"differences":[],"unexpected":[],"error":null,"firstResult":null,"pythonResult":expected["entryResult"]}));
+                green += 1;
+                continue;
+            }
+        };
         if case["roundtripHold"] == true {
             lifecycle_transaction(&store, |tx| {
                 SchedulerRepository::hold_account(tx, "default", Some(7), "first account hold")?;

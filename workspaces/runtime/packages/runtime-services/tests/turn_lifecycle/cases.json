@@ -2383,7 +2383,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true,
@@ -2567,7 +2567,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": null,
@@ -2768,7 +2768,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true,
@@ -2957,7 +2957,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": null,
@@ -3051,7 +3051,7 @@
     "findings": ["B6"],
     "expectedDifferences": [],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": false
@@ -3268,7 +3268,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true,
@@ -3531,7 +3531,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true,
@@ -3788,7 +3788,7 @@
       }
     ],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true,
@@ -3896,7 +3896,7 @@
     "findings": ["B6"],
     "expectedDifferences": [],
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "tier": "full",
     "return": true
@@ -5456,7 +5456,7 @@
     "seedRecovery": true,
     "state": "workspace_operation",
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "findings": ["A6", "B6"],
     "expectedDifferences": [],
@@ -5683,7 +5683,7 @@
     "phase": "queued",
     "state": "workspace_operation",
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "findings": ["B6"],
     "expectedDifferences": [],
@@ -5767,7 +5767,7 @@
     "phase": "queued",
     "state": "workspace_operation",
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "findings": ["B6"],
     "expectedDifferences": [],
@@ -5858,7 +5858,7 @@
     "phase": "queued",
     "state": "workspace_operation",
     "agent": {
-      "workspaceOperation": "checkpoint"
+      "workspaceOperation": "restore"
     },
     "findings": ["B6"],
     "expectedDifferences": [],
