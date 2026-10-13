@@ -1550,6 +1550,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.closed = False
         self._close_event = threading.Event()
         self._fast_delivery_enabled = False
+        self._fast_dispatch_lock = threading.Lock()
+        self._fast_dispatch_states = {}
         self._wal_keeper = None
         self._shutdown_writers_drained = False
         self.server = None
@@ -2202,9 +2204,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 local.agent_cache_dirty = False
                 self.invalidate_agent_records()
             jobs = pending.pop(db)
-            for agent_id, kind, event_ids in jobs:
+            for agent_id, kind, queued_at in jobs:
                 try:
-                    self.schedule_fast_dispatch(agent_id, kind, event_ids)
+                    self.schedule_fast_dispatch(agent_id, kind, queued_at)
                 except Exception:
                     self.changed.set()
         except BaseException as error:
@@ -4351,15 +4353,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.rule_event(db, a, kind, text, key)
             if (a["autoWake"] and type(self).schedule is Runtime.schedule and not self.closed
                     and self.__dict__.get("_fast_delivery_enabled", True)):
-                self.mark_event_timing(db, [key], "fastQueuedAt")
+                fast_queued_at = time.monotonic_ns()
+                self.mark_event_timing(db, [key], "fastQueuedAt", fast_queued_at)
                 pending = getattr(self.__dict__.setdefault("_callback_db", threading.local()),
                                   "after_commit_dispatch", {}).get(db)
                 if pending is not None:
-                    pending.append((a["id"], kind, [key]))
+                    pending.append((a["id"], kind, fast_queued_at))
                 else:
                     # A caller-owned connection has no commit callback. Keep the
                     # scheduler wake as the durable fallback for that caller.
-                    self.schedule_fast_dispatch(a["id"], kind, [key])
+                    self.schedule_fast_dispatch(a["id"], kind, fast_queued_at)
                     self.changed.set()
             else:
                 reason = ("autoWake" if not a["autoWake"] else
@@ -4371,26 +4374,111 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.changed.set()
         return key
 
-    def schedule_fast_dispatch(self, agent_id, kind, event_ids):
-        scheduled_at = time.monotonic_ns()
-        if kind == "user":
-            self.dispatch_executor().submit(self.dispatch_after_user_batch,
-                                            agent_id, event_ids, scheduled_at)
-        else:
-            self.dispatch_executor().submit(self.dispatch_fast,
-                                            agent_id, event_ids, scheduled_at)
+    @staticmethod
+    def _merge_fast_dispatch_window(window, queued_at):
+        if window is None:
+            return (queued_at, queued_at)
+        return (min(window[0], queued_at), max(window[1], queued_at))
 
-    def dispatch_after_user_batch(self, agent_id, event_ids=None, scheduled_at=None):
-        # A second input often follows a user send in the same UI action.
-        time.sleep(.04)
-        if not self.closed:
-            self.dispatch_fast(agent_id, event_ids, scheduled_at)
+    def schedule_fast_dispatch(self, agent_id, kind, queued_at=None):
+        # Get the executor before the admission lock: Runtime.send calls this
+        # while holding Runtime.lock, and workers never acquire Runtime.lock
+        # while holding the admission lock.
+        executor = self.dispatch_executor()
+        queued_at = time.monotonic_ns() if queued_at is None else queued_at
+        urgent = kind != "user"
+        submit = False
+        with self._fast_dispatch_lock:
+            if self.closed:
+                self.changed.set()
+                return
+            state = self._fast_dispatch_states.get(agent_id)
+            if state is None:
+                state = {
+                    "current": self._merge_fast_dispatch_window(None, queued_at),
+                    "current_urgent": urgent,
+                    "current_wake": threading.Event(),
+                    "followup": None,
+                    "followup_urgent": False,
+                    "active": False,
+                }
+                self._fast_dispatch_states[agent_id] = state
+                submit = True
+            elif state["active"]:
+                state["followup"] = self._merge_fast_dispatch_window(state["followup"], queued_at)
+                state["followup_urgent"] = state["followup_urgent"] or urgent
+                if urgent:
+                    state["current_wake"].set()
+            else:
+                state["current"] = self._merge_fast_dispatch_window(state["current"], queued_at)
+                state["current_urgent"] = state["current_urgent"] or urgent
+                if urgent:
+                    state["current_wake"].set()
+        if submit:
+            try:
+                executor.submit(self._run_fast_dispatch_task, agent_id, state)
+            except Exception:
+                with self._fast_dispatch_lock:
+                    if self._fast_dispatch_states.get(agent_id) is state:
+                        self._fast_dispatch_states.pop(agent_id, None)
+                self.changed.set()
+                raise
 
-    def dispatch_fast(self, agent_id, event_ids=None, scheduled_at=None):
+    def _run_fast_dispatch_task(self, agent_id, state):
+        with self._fast_dispatch_lock:
+            if self.closed or self._fast_dispatch_states.get(agent_id) is not state:
+                return
+            state["active"] = True
+            window = state["current"]
+            urgent = state["current_urgent"]
+            wake = state["current_wake"]
+        try:
+            if not urgent:
+                wake.wait(.04)
+            if not self.closed:
+                self.dispatch_fast(agent_id, None, None, window)
+        except Exception:
+            self.changed.set()
+            self._finish_fast_dispatch_task(agent_id, state, failed=True)
+            raise
+        self._finish_fast_dispatch_task(agent_id, state, failed=False)
+
+    def _finish_fast_dispatch_task(self, agent_id, state, *, failed):
+        with self._fast_dispatch_lock:
+            if self._fast_dispatch_states.get(agent_id) is not state:
+                return
+            if self.closed or failed:
+                self._fast_dispatch_states.pop(agent_id, None)
+                return
+            followup = state["followup"]
+            if followup is None:
+                self._fast_dispatch_states.pop(agent_id, None)
+                return
+            state["current"] = followup
+            state["current_urgent"] = state["followup_urgent"]
+            state["current_wake"] = threading.Event()
+            state["followup"] = None
+            state["followup_urgent"] = False
+            state["active"] = False
+            executor = self.__dict__.get("_dispatch_executor")
+            if executor is None:
+                self._fast_dispatch_states.pop(agent_id, None)
+                self.changed.set()
+                return
+            try:
+                # Keep this per-agent state installed while submitting the
+                # successor so concurrent admissions merge into its window.
+                executor.submit(self._run_fast_dispatch_task, agent_id, state)
+            except Exception:
+                self._fast_dispatch_states.pop(agent_id, None)
+                self.changed.set()
+
+    def dispatch_fast(self, agent_id, event_ids=None, scheduled_at=None, event_window=None):
         entered_at = time.monotonic_ns()
         try:
             reserved = self.dispatch_candidates(agent_id, fast_event_ids=event_ids,
-                fast_scheduled_at=scheduled_at, fast_entered_at=entered_at)
+                fast_scheduled_at=scheduled_at, fast_entered_at=entered_at,
+                fast_event_window=event_window)
         except Exception:
             self.changed.set()
             raise
@@ -4430,6 +4518,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                      f"ON CONFLICT(id) DO UPDATE SET record=json_set(record, {slots})")
         for event_id in event_ids:
             db.execute(statement, (event_id, *values, *values))
+
+    def mark_fast_dispatch_window(self, db, agent_id, window, marks):
+        """Use each durable fastQueuedAt as fastScheduledAt; record actual pass times."""
+        fields = [("$.timing." + name,
+                   json.dumps(value) if isinstance(value, (dict, list)) else value,
+                   isinstance(value, (dict, list))) for name, value in marks.items()]
+        slots = ", ".join("?, json(?)" if structured else "?, ?" for _, _, structured in fields)
+        values = [value for path, stamp, _ in fields for value in (path, stamp)]
+        record = "json_set(record, '$.timing.fastScheduledAt', " \
+                 "json_extract(record, '$.timing.fastQueuedAt'))"
+        if slots:
+            record = f"json_set({record}, {slots})"
+        db.execute(
+            "UPDATE runtime_event_meta SET record=" + record +
+            " WHERE id IN (SELECT m.id FROM runtime_event_meta m "
+            "JOIN runtime_events e ON e.id=m.id "
+            "WHERE e.status IN ('pending','reserved') AND e.agent=? "
+            "AND CAST(json_extract(m.record,'$.timing.fastQueuedAt') AS INTEGER) BETWEEN ? AND ?)",
+            (*values, agent_id, window[0], window[1]),
+        )
 
     def store_completed_broadcasts(self, db, agent):
         """Keep information broadcasts in history when no assignment remains."""
@@ -6577,13 +6685,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.lock.release()
 
     def dispatch_candidates(self, agent_id=None, current_agents=None,
-                            fast_event_ids=None, fast_scheduled_at=None, fast_entered_at=None):
-        lock_owners = [] if fast_event_ids else None
+                            fast_event_ids=None, fast_scheduled_at=None, fast_entered_at=None,
+                            fast_event_window=None):
+        fast_dispatch = bool(fast_event_ids or fast_event_window)
+        lock_owners = [] if fast_dispatch else None
         indexes_created = False
         with self.dispatch_lock(lock_owners) as locked_at, self.db() as db:
             if fast_event_ids:
                 self.mark_event_timings(db, fast_event_ids, {
                     "fastScheduledAt": fast_scheduled_at or fast_entered_at,
+                    "fastEnteredAt": fast_entered_at,
+                    "fastLockedAt": locked_at,
+                    "fastLockOwners": lock_owners,
+                })
+            elif fast_event_window:
+                self.mark_fast_dispatch_window(db, agent_id, fast_event_window, {
                     "fastEnteredAt": fast_entered_at,
                     "fastLockedAt": locked_at,
                     "fastLockOwners": lock_owners,
@@ -6594,24 +6710,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             reserved_count = 0
             indexes_created = self.ensure_dispatch_indexes(db)
             if current_agents is None:
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastIndexesReadyAt"] = time.monotonic_ns()
                 from codex_team_isolation import cancel_pending
                 cancel_pending(self, db, agent_id)
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastTeamCheckedAt"] = time.monotonic_ns()
                 agents = [self.agent(agent_id, db)]
                 agents = [a for a in agents if a is not None]
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastAgentLoadedAt"] = time.monotonic_ns()
                 active = self.dispatch_active_slots(db)
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastActiveScanAt"] = time.monotonic_ns()
                 reserved_cwds = {str(Path(row[0]).resolve()) for row in db.execute(
                     "SELECT json_extract(record,'$.cwd') FROM runtime_agents "
                     "WHERE json_type(record,'$.workspaceOperation')='text' "
                     "AND json_extract(record,'$.workspaceOperation')!=''") if row[0]}
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastWorkspaceScanAt"] = time.monotonic_ns()
             else:
                 agents = current_agents(db)
@@ -6688,7 +6804,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 ),
                 key=lambda a: (not a.get("inFlight"), a["parentId"] is not None, a["created"]),
             )
-            if fast_event_ids:
+            if fast_dispatch:
                 fast_marks["fastCandidatesAt"] = time.monotonic_ns()
             global_limit = global_concurrency_limit()
             # Keep one busy account from filling its native reply stream with
@@ -6706,7 +6822,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
                     continue
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
                 if not busy and len(active) >= global_limit:
                     continue
@@ -6718,12 +6834,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and sum(t["rootId"] == a["rootId"] and t["id"] != t["rootId"]
                                 for t in active) >= a["concurrency"]):
                     continue
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastCapacityCheckedAt"] = time.monotonic_ns()
                 from codex_native_tools import account_reserved
                 if account_reserved(self, a.get("accountKey", "default")):
                     continue
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastAccountCheckedAt"] = time.monotonic_ns()
                 from codex_budget import budget_admission
                 try:
@@ -6733,7 +6849,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a.update(budgetBlocked=str(error), error=str(error))
                         self.put(db, "agents", a)
                     continue
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastBudgetCheckedAt"] = time.monotonic_ns()
                 if a.get("budgetBlocked"):
                     if a.get("error") == a["budgetBlocked"]:  # type: ignore[call-arg]  # typed-update
@@ -6762,7 +6878,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a.get("nativeFailureHold"):
                     continue
                 a = self.agent(a["id"], db)
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastActorReloadedAt"] = time.monotonic_ns()
                 # A busy turn keeps its current tool schema. Claude has no Codex
                 # header to refresh. Preserve existing update notices and tickets.
@@ -6772,7 +6888,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_native_tools import gate as native_tools_gate
                     if not native_tools_gate(self, db, a, self.tool_definitions(a)):
                         continue
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastToolGateAt"] = time.monotonic_ns()
                 from codex_agent_review import claim as claim_review
                 review_attempt = claim_review(self, db, a) if not busy else None
@@ -6804,7 +6920,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "AND json_extract(record,'$.delivery')='after_turn'", [e["id"] for e in pending])}
                     pending = [e for e in pending if e["id"] not in held]
                 rows = pending[:32]
-                if fast_event_ids:
+                if fast_dispatch:
                     fast_marks["fastBatchLoadedAt"] = time.monotonic_ns()
                 if not rows:
                     if not busy:
@@ -6881,9 +6997,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if a.get("provider", "codex") == "codex":
                         recent_starts[account_key] = recent_starts.get(account_key, 0) + 1
                 self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
-            if fast_event_ids:
+            if fast_dispatch:
                 fast_marks["fastDispatchDoneAt"] = time.monotonic_ns()
-                self.mark_event_timings(db, fast_event_ids, fast_marks)
+                if fast_event_ids:
+                    self.mark_event_timings(db, fast_event_ids, fast_marks)
+                elif fast_event_window:
+                    self.mark_fast_dispatch_window(db, agent_id, fast_event_window, fast_marks)
         if indexes_created:
             self._dispatch_indexes_ready = True
             self._dispatch_busy_input_index_ready = True
@@ -11488,6 +11607,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     capture_restart(agent)
                     self.put(db, "agents", agent)
             self.closed = True
+            with self._fast_dispatch_lock:
+                self._fast_dispatch_states.clear()
         self._close_event.set()
         with self.ui_condition:
             self.ui_condition.notify_all()
