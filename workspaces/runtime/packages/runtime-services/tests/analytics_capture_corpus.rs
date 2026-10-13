@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -11,8 +13,9 @@ use studio_runtime_services::analytics_rollout::{RolloutAction, RolloutContext};
 fn oracle() -> &'static Value {
     static DATA: OnceLock<Value> = OnceLock::new();
     DATA.get_or_init(|| {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("CODEX_AGENTS_PYTHON must name an isolated prepared interpreter");
+        let python = prepared_python::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let out = Command::new(python)
             .arg(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/analytics_capture/oracle.py"),

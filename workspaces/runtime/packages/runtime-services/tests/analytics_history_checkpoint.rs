@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,14 +28,16 @@ fn fixture() -> (tempfile::TempDir, Value) {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Value)> = OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
         let root = fixture_directory();
-        let out = Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"))
-            .arg(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/analytics_capture/state_fixture.py"),
-            )
-            .arg(root.path())
-            .output()
-            .expect("Python writer");
+        let out = Command::new(prepared_python::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/analytics_capture/state_fixture.py"),
+        )
+        .arg(root.path())
+        .output()
+        .expect("Python writer");
         assert!(
             out.status.success(),
             "{}",
@@ -421,14 +425,16 @@ fn terminal_error_repair_matches_python_exact_and_ambiguous_notices() {
         for name in ["canvas.sqlite3", "analytics.sqlite3"] {
             fs::copy(root.path().join(name), reference.path().join(name)).expect("clone");
         }
-        let out = Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
-            .arg(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/analytics_capture/repair_oracle.py"),
-            )
-            .arg(reference.path())
-            .output()
-            .expect("oracle");
+        let out = Command::new(prepared_python::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/analytics_capture/repair_oracle.py"),
+        )
+        .arg(reference.path())
+        .output()
+        .expect("oracle");
         assert!(
             out.status.success(),
             "{}",
@@ -527,16 +533,17 @@ fn full_tail_import_matches_real_python_rows_and_checkpoint() {
         lines.push(json!({"type":"response_item","timestamp":4,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"tail \u{03bb}"}]}}));
         lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
         let path = file(root.path(), &lines, suffix);
-        let output =
-            Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"))
-                .arg(
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("tests/analytics_capture/history_oracle.py"),
-                )
-                .arg(oracle_root.path())
-                .arg(&path)
-                .output()
-                .expect("Python importer");
+        let output = Command::new(prepared_python::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/analytics_capture/history_oracle.py"),
+        )
+        .arg(oracle_root.path())
+        .arg(&path)
+        .output()
+        .expect("Python importer");
         assert!(
             output.status.success(),
             "{}",
