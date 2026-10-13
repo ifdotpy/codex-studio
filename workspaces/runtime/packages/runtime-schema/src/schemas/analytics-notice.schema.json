@@ -1,0 +1,312 @@
+{
+  "$defs": {
+    "AnalyticsNativeItem": {
+      "additionalProperties": true,
+      "properties": {
+        "durationMs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Durationms"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Id"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tool"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Type"
+        }
+      },
+      "title": "AnalyticsNativeItem",
+      "type": "object"
+    },
+    "AnalyticsTokenEnvelope": {
+      "additionalProperties": true,
+      "properties": {
+        "last": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelContextWindow": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Modelcontextwindow"
+        },
+        "total": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "AnalyticsTokenEnvelope",
+      "type": "object"
+    },
+    "AnalyticsTokens": {
+      "additionalProperties": true,
+      "properties": {
+        "cacheWriteInputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cachewriteinputtokens"
+        },
+        "cachedInputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cachedinputtokens"
+        },
+        "inputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Inputtokens"
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Outputtokens"
+        },
+        "reasoningOutputTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reasoningoutputtokens"
+        },
+        "totalTokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Totaltokens"
+        }
+      },
+      "title": "AnalyticsTokens",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "completedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Completedat"
+    },
+    "item": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsNativeItem"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "itemId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Itemid"
+    },
+    "rawTokenUsageRecord": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rawtokenusagerecord"
+    },
+    "requestUsage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsTokens"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "responseId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Responseid"
+    },
+    "startedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Startedat"
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    },
+    "tokenUsage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsTokenEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turn": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turn"
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnid"
+    }
+  },
+  "title": "AnalyticsNotice",
+  "type": "object"
+}

@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "AnalyticsContext": {
+      "additionalProperties": true,
+      "properties": {
+        "allowedSourceThreadIds": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "title": "Allowedsourcethreadids",
+          "type": "array"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Effort"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "noticeAssociation": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Noticeassociation"
+        },
+        "pendingUsage": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pendingusage"
+        },
+        "threadId": {
+          "title": "Threadid",
+          "type": "string"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnid"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Window"
+        }
+      },
+      "required": ["threadId"],
+      "title": "AnalyticsContext",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "accountKey": {
+      "title": "Accountkey",
+      "type": "string"
+    },
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "anchor": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Anchor"
+    },
+    "context": {
+      "$ref": "#/$defs/AnalyticsContext"
+    },
+    "filesystemIdentity": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Filesystemidentity"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "identity": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Identity"
+    },
+    "importedRecords": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Importedrecords",
+      "type": "integer"
+    },
+    "malformedLines": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Malformedlines",
+      "type": "integer"
+    },
+    "offset": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Offset",
+      "type": "integer"
+    },
+    "threadId": {
+      "title": "Threadid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "agent",
+    "accountKey",
+    "threadId",
+    "offset",
+    "importedRecords",
+    "malformedLines",
+    "context"
+  ],
+  "title": "AnalyticsHistory",
+  "type": "object"
+}
