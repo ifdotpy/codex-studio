@@ -77,3 +77,11 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+[doc("Run the explicitly selected full Rust runtime corpus and durable failure matrix.")]
+test-rust-runtime-corpora filter="binary(rules_engine_corpus) or binary(rules_tick_atomic)":
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E {{quote(filter)}}
+
+[doc("Run the rules mutation corpus in an isolated target outside the checkout.")]
+test-rust-rules-mutations target *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/rules_engine/mutations.json --filter 'binary(rules_engine_corpus) or binary(rules_tick_atomic)' {{args}}
