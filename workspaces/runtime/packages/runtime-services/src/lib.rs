@@ -49,6 +49,7 @@ pub mod monitor_receipts;
 pub mod monitor_runtime;
 pub mod multi_server;
 pub mod notification_dispatch;
+pub mod notification_runtime_effects;
 pub mod panels;
 pub mod payload_store;
 pub mod pricing;
