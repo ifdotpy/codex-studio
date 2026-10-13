@@ -15,7 +15,9 @@ use futures_util::stream;
 use serde_json::{Value, json};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
-use studio_runtime_services::resource_notify::{ResourceNotifications, ResourceNotifyError};
+use studio_runtime_services::resource_notify::{
+    ResourceChanges, ResourceNotifications, ResourceNotifyError,
+};
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
@@ -125,7 +127,7 @@ async fn sync_stream(
     };
     let change_hub = Arc::clone(&state.sync_changes);
     let mut changes = change_hub.subscribe();
-    let subscription_snapshot = changes.borrow_and_update().clone();
+    changes.borrow_and_update();
     let progress_agents = match active_panel_agents(Arc::clone(&store), &resources).await {
         Ok(agents) => agents,
         Err(error) => return error.into_response(),
@@ -152,18 +154,13 @@ async fn sync_stream(
     } else {
         "initial"
     };
-    let initial_event = resource_event(
-        &state.workspace_id,
-        &subscription_snapshot.epoch,
-        subscription_snapshot.revision,
-        reason,
-        &resources,
-        initial_entity_sequence,
-        match state.resource_notifications.entity_reset_after(0) {
-            Ok(reset) => reset,
-            Err(_) => return ApiError::internal().into_response(),
-        },
-    );
+    let view = match state.resource_notifications.changes_since(&resources, None) {
+        Ok(view) if !view.cursor.closed => view,
+        _ => return ApiError::internal().into_response(),
+    };
+    let subscription_snapshot = view.cursor.clone();
+    let initial_event =
+        resource_changes_event(&state.workspace_id, &view, reason, initial_entity_sequence);
     let mut initial = VecDeque::new();
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
@@ -174,12 +171,8 @@ async fn sync_stream(
         initial_event,
     ));
     let mut token_rates = state.token_rates.subscribe();
-    let rates = token_rates.borrow_and_update().clone();
-    initial.push_back(token_rate_event(
-        &state.workspace_id,
-        &subscription_snapshot,
-        &rates,
-    ));
+    let (rates, cursor) = token_snapshot(&mut token_rates, || changes.borrow().clone());
+    initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
 
     let stream_state = ResourceStream {
         initial,
@@ -320,72 +313,93 @@ async fn next_frame(
     }
 
     loop {
-        let snapshot = tokio::select! {
+        let heartbeat = tokio::select! {
             biased;
-            changed = state.changes.changed() => {
-                if changed.is_err() {
-                    return None;
-                }
-                state.changes.borrow_and_update().clone()
-            },
+            // A pending latest-value slot wins even when every reader poll follows a publication.
             changed = state.token_rates.changed() => {
                 if changed.is_err() { return None; }
-                let rates = state.token_rates.borrow_and_update().clone();
-                let snapshot = state.changes.borrow().clone();
-                if snapshot.closed { return None; }
-                return Some((Ok(token_rate_event(&state.workspace_id, &snapshot, &rates)), state));
+                let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
+                if cursor.closed { return None; }
+                return Some((Ok(token_rate_event(&state.workspace_id, &cursor, &rates)), state));
             },
-            _ = state.heartbeat.tick() => state.changes.borrow().clone(),
+            changed = state.changes.changed() => {
+                if changed.is_err() { return None; }
+                state.changes.borrow_and_update();
+                false
+            },
+            _ = state.heartbeat.tick() => true,
         };
-        if snapshot.closed {
-            return None;
-        }
-        if snapshot.revision > state.last_revision {
-            let entity_sequence =
+        let view = match state
+            .notifications
+            .changes_since(&state.resources, Some(state.last_revision))
+        {
+            Ok(view) if !view.cursor.closed => view,
+            _ => return None,
+        };
+        let previous = state.last_revision;
+        state.last_revision = view.cursor.revision;
+        if !view.resources.is_empty() {
+            state.entity_sequence =
                 match read_entity_sequence(state.store.clone(), &state.resources).await {
                     Ok(sequence) => sequence,
-                    // Once headers are sent, closing the stream is the visible
-                    // fail-closed behavior; the client will reconnect and retry.
                     Err(_) => return None,
                 };
-            let reason = if snapshot.revision.saturating_sub(state.last_revision) > 1 {
-                "overflow"
-            } else {
-                "change"
-            };
-            let entity_reset = match state.notifications.entity_reset_after(state.last_revision) {
-                Ok(reset) => reset,
-                Err(_) => return None,
-            };
-            state.last_revision = snapshot.revision;
-            state.entity_sequence = entity_sequence;
-            let event = resource_event(
-                &state.workspace_id,
-                &state.epoch,
-                snapshot.revision,
-                reason,
-                &state.resources,
-                state.entity_sequence,
-                entity_reset,
-            );
+            let reason =
+                if view.overflow || view.cursor.resource_revision.saturating_sub(previous) > 1 {
+                    "overflow"
+                } else {
+                    "change"
+                };
+            let event =
+                resource_changes_event(&state.workspace_id, &view, reason, state.entity_sequence);
             return Some((
-                Ok(sse_event("resources", Some(snapshot.revision), event)),
+                Ok(sse_event("resources", Some(view.cursor.revision), event)),
                 state,
             ));
         }
-        if snapshot.revision == state.last_revision {
+        if heartbeat {
             let event = json!({
-                "protocol": 3,
-                "workspaceId": state.workspace_id,
-                "epoch": state.epoch,
-                "revision": snapshot.revision,
+                "protocol": 3, "workspaceId": state.workspace_id,
+                "epoch": state.epoch, "revision": view.cursor.revision,
             });
             return Some((
-                Ok(sse_event("heartbeat", Some(snapshot.revision), event)),
+                Ok(sse_event("heartbeat", Some(view.cursor.revision), event)),
                 state,
             ));
         }
     }
+}
+
+// Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
+fn token_snapshot(
+    rates: &mut tokio::sync::watch::Receiver<TokenRates>,
+    cursor: impl FnOnce() -> ChangeSnapshot,
+) -> (TokenRates, ChangeSnapshot) {
+    let rates = rates.borrow_and_update();
+    (rates.clone(), cursor())
+}
+
+fn resource_changes_event(
+    workspace: &str,
+    view: &ResourceChanges,
+    reason: &str,
+    sequence: i64,
+) -> Value {
+    let mut event = resource_event(
+        workspace,
+        &view.cursor.epoch,
+        view.cursor.revision,
+        reason,
+        &view.resources,
+        sequence,
+        view.entity_reset,
+    );
+    for (index, resource) in view.resources.iter().enumerate() {
+        if resource["kind"] != "state" {
+            event["resourceVersions"][index]["revision"] = json!(view.versions[index]);
+        }
+    }
+    event
 }
 
 fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &TokenRates) -> Event {
@@ -528,6 +542,7 @@ mod tests {
                 &ChangeSnapshot {
                     epoch: "epoch".into(),
                     revision: 0,
+                    resource_revision: 0,
                     closed: false,
                 },
                 &TokenRates::from_value(case["rates"].clone()).expect("rates"),
@@ -555,6 +570,7 @@ mod tests {
     #[tokio::test]
     async fn overflow_is_recovered_by_next_frame_with_the_latest_full_resource_event() {
         let hub = ChangeNotificationHub::new();
+        let tokens = TokenRateHub::new();
         let mut changes = hub.subscribe();
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
@@ -567,7 +583,7 @@ mod tests {
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
-            token_rates: TokenRateHub::new().subscribe(),
+            token_rates: tokens.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -594,10 +610,7 @@ mod tests {
     async fn token_rate_burst_keeps_only_latest_snapshot_and_monotone_cursor() {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
-        let token_hub = TokenRateHub::with_change_callback({
-            let hub = hub.clone();
-            Arc::new(move || hub.notify_one())
-        });
+        let token_hub = TokenRateHub::with_change_hub(hub.clone());
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
@@ -622,9 +635,6 @@ mod tests {
                 "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
             })).expect("publish");
         }
-        let (_, state) = next_frame(state).await.expect("resource frame");
-        assert!(state.initial.is_empty());
-        assert_eq!(state.last_revision, MAX_RESOURCE_COUNT as i64 + 1);
         let (event, state) = next_frame(state).await.expect("token frame");
         assert!(state.initial.is_empty());
         let body = axum::body::to_bytes(
@@ -660,6 +670,241 @@ mod tests {
             event["resourceVersions"],
             json!([{"revision":4}, {"revision":2,"entitySequenceReset":true}])
         );
+    }
+
+    fn test_rates(rate: u64) -> Value {
+        json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}},"teams":{}})
+    }
+
+    fn test_stream(
+        hub: &Arc<ChangeNotificationHub>,
+        tokens: &TokenRateHub,
+        notifications: Arc<ResourceNotifications>,
+        resources: Vec<Value>,
+    ) -> ResourceStream {
+        let changes = hub.subscribe();
+        let baseline = changes.borrow().clone();
+        ResourceStream {
+            initial: VecDeque::new(),
+            workspace_id: "workspace".into(),
+            epoch: baseline.epoch,
+            last_revision: baseline.revision,
+            resources,
+            entity_sequence: 0,
+            store: None,
+            changes,
+            notifications,
+            token_rates: tokens.subscribe(),
+            _progress_watch: None,
+            heartbeat: interval_at(
+                Instant::now() + Duration::from_secs(15),
+                Duration::from_secs(15),
+            ),
+        }
+    }
+
+    async fn event_document(event: Result<Event, Infallible>) -> Value {
+        let body = axum::body::to_bytes(
+            Sse::new(stream::iter([event])).into_response().into_body(),
+            262144,
+        )
+        .await
+        .expect("frame");
+        let frame = String::from_utf8(body.to_vec()).expect("UTF8");
+        serde_json::from_str(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("document")
+    }
+
+    #[test]
+    fn token_snapshot_keeps_cursor_guarded_during_a_competing_publication() {
+        use std::sync::mpsc;
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        tokens.publish(test_rates(1)).expect("first");
+        let mut reader = tokens.subscribe();
+        let (captured, capture_gate) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let reading = {
+            let hub = hub.clone();
+            std::thread::spawn(move || {
+                token_snapshot(&mut reader, || {
+                    captured.send(()).expect("rate read gate");
+                    released.recv().expect("cursor read gate");
+                    hub.snapshot()
+                })
+            })
+        };
+        capture_gate.recv().expect("reader holds rate guard");
+        let (attempting, attempted) = mpsc::channel();
+        let publishing = {
+            let tokens = tokens.clone();
+            std::thread::spawn(move || {
+                attempting.send(()).expect("publication gate");
+                tokens.publish(test_rates(2)).expect("second")
+            })
+        };
+        attempted
+            .recv()
+            .expect("publication admitted while pair read is gated");
+        release
+            .send(())
+            .expect("read cursor before releasing rate guard");
+        let (rates, cursor) = reading.join().expect("reader");
+        assert_eq!(rates.to_value(), test_rates(1));
+        assert_eq!(cursor.revision, 1);
+        assert!(publishing.join().expect("publisher"));
+        let (rates, cursor) = token_snapshot(&mut tokens.subscribe(), || hub.snapshot());
+        assert_eq!(rates.to_value(), test_rates(2));
+        assert_eq!(cursor.revision, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gated_publications_between_reader_polls_cannot_starve_tokens_or_invalidate_resources()
+    {
+        use futures_util::StreamExt;
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let mut first = Box::pin(stream::unfold(
+            test_stream(
+                &hub,
+                &tokens,
+                notifications.clone(),
+                vec![json!({"kind":"accounts"})],
+            ),
+            next_frame,
+        ));
+        let mut second = Box::pin(stream::unfold(
+            test_stream(
+                &hub,
+                &tokens,
+                notifications.clone(),
+                vec![json!({"kind":"accounts"})],
+            ),
+            next_frame,
+        ));
+        for rate in 1..=4 {
+            let (publish, gate) = tokio::sync::oneshot::channel();
+            let producer = {
+                let tokens = tokens.clone();
+                tokio::spawn(async move {
+                    gate.await.expect("reader gate");
+                    tokens.publish(test_rates(rate)).expect("publish")
+                })
+            };
+            publish
+                .send(())
+                .expect("release one publication between polls");
+            assert!(producer.await.expect("producer"));
+            let document = event_document(first.next().await.expect("token frame")).await;
+            assert_eq!(document["rates"], test_rates(rate)["rates"]);
+            assert_eq!(document["revision"], rate);
+            assert!(document.get("resources").is_none());
+        }
+        let latest = event_document(second.next().await.expect("slow reader latest")).await;
+        assert_eq!(latest["rates"], test_rates(4)["rates"]);
+        let mut pending = first.next();
+        assert!(
+            futures_util::poll!(&mut pending).is_pending(),
+            "token-only changes produced an unrelated frame"
+        );
+        notifications
+            .publish_once(&json!({"requestId":"account-change","resources":[{"kind":"accounts"}]}))
+            .expect("resource publication");
+        let document = event_document(pending.await.expect("resource frame")).await;
+        assert_eq!(document["resources"], json!([{"kind":"accounts"}]));
+        assert_eq!(document["resourceVersions"], json!([{"revision":5}]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn post_publication_documents_match_python_with_interleaved_consumers() {
+        use futures_util::{FutureExt, StreamExt};
+        use std::io::Write;
+        use std::path::Path;
+        use std::process::{Command, Stdio};
+        let cases = json!([
+            {"resources":[{"kind":"accounts"},{"kind":"panel","agentId":"agent"}],"steps":[
+                {"op":"notify","resources":[{"kind":"models"}]},{"op":"consume"},
+                {"op":"rates","body":test_rates(1)},{"op":"consume"},
+                {"op":"notify","resources":[{"kind":"accounts"}]},{"op":"consume"},
+                {"op":"notify","resources":[{"kind":"panel","agentId":"agent"}]},
+                {"op":"rates","body":test_rates(2)},{"op":"consume"},{"op":"consume"},{"op":"consume"}
+            ]},
+            {"resources":[{"kind":"accounts"}],"steps":[
+                {"op":"rates","body":test_rates(1)},
+                {"op":"notify","resources":[{"kind":"accounts"}]},
+                {"op":"rates","body":test_rates(2)},{"op":"rates","body":test_rates(3)},
+                {"op":"consume"},{"op":"consume"},
+                {"op":"rates","body":test_rates(3)},{"op":"consume"}
+            ]}
+        ]);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let mut child = Command::new(python::prepared_python(&source))
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../runtime-services/tests/wave7_p14_oracle.py"),
+            )
+            .arg("stream")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("oracle");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(cases.to_string().as_bytes())
+            .expect("cases");
+        let output = child.wait_with_output().expect("oracle exits");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: Vec<Vec<Value>> = serde_json::from_slice(&output.stdout).expect("documents");
+        for (case, expected) in cases.as_array().expect("cases").iter().zip(expected) {
+            let hub = Arc::new(ChangeNotificationHub::new());
+            let tokens = TokenRateHub::with_change_hub(hub.clone());
+            let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+            let state = test_stream(
+                &hub,
+                &tokens,
+                notifications.clone(),
+                case["resources"].as_array().expect("resources").clone(),
+            );
+            let mut events = Box::pin(stream::unfold(state, next_frame));
+            let mut expected = expected.into_iter();
+            for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
+                match step["op"].as_str().expect("operation") {
+                    "rates" => {
+                        tokens.publish(step["body"].clone()).expect("rates");
+                    }
+                    "notify" => {
+                        notifications.publish_once(&json!({"requestId":index.to_string(),"resources":step["resources"]})).expect("notify");
+                    }
+                    _ => {
+                        let expected = expected.next().expect("oracle consumption");
+                        if expected.is_null() {
+                            assert!(
+                                events.next().now_or_never().is_none(),
+                                "unexpected frame at step {index}"
+                            );
+                        } else {
+                            let mut actual =
+                                event_document(events.next().await.expect("frame")).await;
+                            actual["epoch"] = json!("epoch");
+                            assert_eq!(actual, expected, "consumer step {index}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

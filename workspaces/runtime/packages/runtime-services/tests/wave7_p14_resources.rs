@@ -22,9 +22,16 @@ fn rates(index: usize) -> Value {
     json!({"rates": {"agent": rate}, "teams": {"lead": {"agent": rate}}})
 }
 
+fn floating_rates(rate: f64) -> Value {
+    let mut value = rates(0);
+    value["rates"]["agent"]["rate"] = json!(rate);
+    value["rates"]["agent"]["outputTokens"] = json!(rate);
+    value["teams"]["lead"]["agent"] = value["rates"]["agent"].clone();
+    value
+}
+
 fn token_hub(changes: &Arc<ChangeNotificationHub>) -> TokenRateHub {
-    let changes = changes.clone();
-    TokenRateHub::with_change_callback(Arc::new(move || changes.notify_one()))
+    TokenRateHub::with_change_hub(changes.clone())
 }
 
 #[test]
@@ -36,6 +43,7 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
         json!({"op": "rates", "body": rates(0)}),
         json!({"op": "rates", "body": rates(0)}),
         json!({"op": "rates", "body": rates(123)}),
+        json!({"op": "rates", "body": floating_rates(123.0)}),
         json!({"op": "rates", "body": {"rates": {}, "teams": {}}}),
         json!({"op": "notify", "body": request("", json!([{"kind":"accounts"}]))}),
         json!({"op": "notify", "body": request("empty", json!([]))}),
@@ -256,4 +264,23 @@ fn token_snapshot_byte_bound_is_checked_before_replacing_the_last_value() {
     assert!(publisher.publish(above_bound).is_err());
     assert_eq!(publisher.snapshot().to_value(), at_bound);
     assert_eq!(changes.snapshot().revision, 1);
+}
+
+#[test]
+fn numeric_equality_preserves_first_representation_without_rounding_large_integers() {
+    let changes = Arc::new(ChangeNotificationHub::new());
+    let hub = token_hub(&changes);
+    assert!(hub.publish(rates(1)).expect("integer"));
+    assert!(!hub.publish(floating_rates(1.0)).expect("float"));
+    assert_eq!(hub.snapshot().to_value(), rates(1));
+    assert_eq!(changes.snapshot().revision, 1);
+    assert!(
+        hub.publish(rates(9_007_199_254_740_993))
+            .expect("exact large integer")
+    );
+    assert!(
+        hub.publish(floating_rates(9_007_199_254_740_992.0))
+            .expect("distinct large float")
+    );
+    assert_eq!(changes.snapshot().revision, 3);
 }

@@ -44,6 +44,36 @@ if len(sys.argv) > 1 and sys.argv[1] == "documents":
     print(json.dumps(documents))
     sys.exit(0)
 
+if len(sys.argv) > 1 and sys.argv[1] == "stream":
+    import asyncio
+    from studio_api.sync.resources.models import ResourceRef
+
+    async def stream_documents():
+        documents = []
+        for case in steps:
+            current = ResourceHub("workspace")
+            current.epoch = "epoch"
+            loop = asyncio.get_running_loop()
+            subscription = current.subscribe([ResourceRef.model_validate(value) for value in case["resources"]], loop=loop)
+            events = []
+            for step in case["steps"]:
+                if step["op"] == "rates":
+                    current.publish_token_rates(TokenRateSnapshot.model_validate(step["body"]))
+                elif step["op"] == "notify":
+                    current.publish_many(ResourceRef.model_validate(value) for value in step["resources"])
+                else:
+                    gate = loop.create_future()
+                    loop.call_soon(gate.set_result, None)
+                    await gate
+                    event = await subscription.next_event() if subscription._wake.is_set() else None
+                    events.append(None if event is None else event.model_dump(mode="json", by_alias=True, exclude_none=True))
+            subscription.close()
+            documents.append(events)
+        return documents
+
+    print(json.dumps(asyncio.run(stream_documents())))
+    sys.exit(0)
+
 outputs = []
 for step in steps:
     try:

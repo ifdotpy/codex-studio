@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
+use crate::change_notifications::ChangeNotificationHub;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::watch;
@@ -22,8 +24,30 @@ pub struct TokenRateValue {
     output_tokens: FiniteRate,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct FiniteRate(serde_json::Number);
+
+// Python compares integers and floats numerically, including beyond f64's exact integer range.
+impl PartialEq for FiniteRate {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.0.as_u64(), other.0.as_u64()) {
+            (Some(left), Some(right)) => left == right,
+            (Some(integer), None) | (None, Some(integer)) => {
+                let float = if self.0.as_u64().is_none() {
+                    self.0.as_f64()
+                } else {
+                    other.0.as_f64()
+                };
+                float.is_some_and(|value| {
+                    value.fract() == 0.0
+                        && value < 18446744073709551616.0
+                        && value as u64 == integer
+                })
+            }
+            _ => self.0.as_f64() == other.0.as_f64(),
+        }
+    }
+}
 
 impl Default for FiniteRate {
     fn default() -> Self {
@@ -76,7 +100,7 @@ pub enum TokenRateError {
 #[derive(Clone)]
 pub struct TokenRateHub {
     sender: watch::Sender<TokenRateSnapshot>,
-    on_change: Option<Arc<dyn Fn() + Send + Sync>>,
+    changes: Option<Arc<ChangeNotificationHub>>,
 }
 
 impl TokenRateSnapshot {
@@ -126,15 +150,15 @@ impl TokenRateHub {
     pub fn new() -> Self {
         Self {
             sender: watch::channel(TokenRateSnapshot::empty()).0,
-            on_change: None,
+            changes: None,
         }
     }
 
-    /// Bind publication to the existing resource cursor. The callback must not read this hub.
+    /// Bind token-only publication to the shared cursor without invalidating other resources.
     #[must_use]
-    pub fn with_change_callback(on_change: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub fn with_change_hub(changes: Arc<ChangeNotificationHub>) -> Self {
         Self {
-            on_change: Some(on_change),
+            changes: Some(changes),
             ..Self::new()
         }
     }
@@ -155,12 +179,10 @@ impl TokenRateHub {
         Ok(self.sender.send_if_modified(|current| {
             if *current == snapshot {
                 false
+            } else if let Some(changes) = &self.changes {
+                changes.try_publish(1, false, |_| *current = snapshot)
             } else {
                 *current = snapshot;
-                // Advance the cursor while the snapshot is locked, before either watch wakes.
-                if let Some(publish) = &self.on_change {
-                    publish();
-                }
                 true
             }
         }))
