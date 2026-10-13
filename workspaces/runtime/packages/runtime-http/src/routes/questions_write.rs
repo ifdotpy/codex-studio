@@ -57,7 +57,7 @@ async fn defer_question(
     let validators = state.validators.clone();
     let result = write(store, move |transaction| {
         questions_write::defer_question(transaction, &id, deferred, |record| {
-            validators.validate_stored("RequestRecordResponse", record)
+            validators.validate_table_record("runtime_requests", record)
         })
     })
     .await?;
@@ -73,7 +73,7 @@ async fn delete_question(
     let validators = state.validators.clone();
     let result = write(store, move |transaction| {
         questions_write::delete_question(transaction, &id, |record| {
-            validators.validate_stored("RequestRecordResponse", record)
+            validators.validate_table_record("runtime_requests", record)
         })
     })
     .await?;
@@ -133,7 +133,7 @@ async fn complaints(
     let result = write(store, move |transaction| {
         if action == "submit" {
             questions_write::submit_complaint(transaction, &lead_id, &request_id, &text, |record| {
-                validators.validate_stored("ComplaintRecordResponse", record)
+                validators.validate_table_record("runtime_complaints", record)
             })
         } else {
             questions_write::respond_to_complaint(
@@ -146,7 +146,7 @@ async fn complaints(
                     version,
                     signature: &signature,
                 },
-                |record| validators.validate_stored("ComplaintRecordResponse", record),
+                |record| validators.validate_table_record("runtime_complaints", record),
             )
         }
     })

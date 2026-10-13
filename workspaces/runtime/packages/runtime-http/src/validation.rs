@@ -347,17 +347,26 @@ impl Registry {
     }
 
     pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
-        self.stored_schemas
-            .get(schema)
-            .is_some_and(|validator| validator.is_valid(value))
+        if let Some(validator) = self.stored_schemas.get(schema) {
+            return validator.is_valid(value);
+        }
+        false
+    }
+
+    pub(crate) fn validate_table_record(&self, table: &str, value: &Value) -> bool {
+        let Some(schema) = studio_runtime_schema::table_schema(table) else {
+            return false;
+        };
+        studio_runtime_schema::validate(schema, value).unwrap_or(false)
     }
 
     pub(crate) fn validate_component(&self, schema: &str, value: &Value) -> bool {
         self.validate_stored(schema, value)
     }
 
-    pub(crate) fn valid_stored_record(&self, schema: &str, id: &str, value: &Value) -> bool {
-        self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
+    pub(crate) fn valid_table_record(&self, table: &str, id: &str, value: &Value) -> bool {
+        self.validate_table_record(table, value)
+            && value.get("id").and_then(Value::as_str) == Some(id)
     }
 
     pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
@@ -1588,6 +1597,26 @@ mod tests {
             .validated_stored("CheckpointSummary", checkpoint)
             .expect("valid extension record retains its integer");
         assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
+    }
+
+    #[test]
+    fn persisted_runtime_schemas_are_used_for_typed_store_records() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let agent = json!({"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
+        assert!(registry.validate_table_record("runtime_agents", &agent));
+        assert!(!registry.validate_table_record(
+            "runtime_agents",
+            &json!({"id":"a","epoch":0,"status":"idle"})
+        ));
+        assert!(!registry.validate_table_record("unknown_table", &agent));
+    }
+
+    #[test]
+    fn typed_table_schema_takes_precedence_over_openapi_dto_shape() {
+        let registry = Registry::compile(&[]).expect("stored schemas compile");
+        let dto_only = json!({});
+        assert!(registry.validate_stored("RequestRecordResponse", &dto_only));
+        assert!(!registry.validate_table_record("runtime_requests", &dto_only));
     }
 
     #[test]

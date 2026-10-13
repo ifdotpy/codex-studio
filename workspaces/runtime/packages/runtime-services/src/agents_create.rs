@@ -255,7 +255,7 @@ fn save_agent(
     record: &Value,
     validate: &impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, MutationError> {
-    if !validate("AgentRecordResponse", record) {
+    if !validate("PersistedAgentRecord", record) {
         return Err(MutationError::InvalidStoredObject {
             table: "runtime_agents",
             id: record["id"].as_str().unwrap_or_default().to_owned(),

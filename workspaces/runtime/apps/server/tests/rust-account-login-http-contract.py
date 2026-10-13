@@ -53,6 +53,17 @@ def assert_status(test: unittest.TestCase, response: HttpResult, expected: int) 
 
 
 class AccountLoginHTTPContract(unittest.TestCase):
+    # A few tests need a pristine candidate set or default-account order. The
+    # remaining tests mutate disjoint fixture rows and are cheaper to run on
+    # the same disposable backend than to restart the full HTTP stack.
+    RESET_BEFORE = {
+        "test_deleted_account_reconnect_verifies_changed_auth_without_writing",
+        "test_discovery_follows_disposable_symlink_and_respects_candidate_cap",
+        "test_insertion_order_selects_default_replacement",
+        "test_z_disconnect_refusal_does_not_commit_changed_auth_refresh",
+        "test_disconnect_reconnect_and_delete_refusal_do_not_lose_registry_state",
+    }
+
     @classmethod
     def setUpClass(cls) -> None:
         scratch = os.environ.get("TMPDIR")
@@ -151,10 +162,9 @@ class AccountLoginHTTPContract(unittest.TestCase):
         return self.backend.request(method, path, body=body, headers=self.headers())
 
     def setUp(self) -> None:
-        # Each contract starts from the same disposable registry; mutations in
-        # one test must not change the candidate set observed by another.
-        self.backend.close()
-        type(self).setUpClass()
+        if self._testMethodName in self.RESET_BEFORE:
+            self.backend.close()
+            type(self).setUpClass()
 
     def test_default_write_is_durable_and_visible_to_next_accounts_read(self) -> None:
         response = self.request("POST", "/api/accounts/default", {"account_key": self.extra_key})

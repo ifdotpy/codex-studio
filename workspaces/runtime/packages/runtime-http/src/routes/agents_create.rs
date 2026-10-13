@@ -75,7 +75,12 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
             store,
             accounts: state.account_policy.as_deref(),
             driver: state.account_driver.as_deref(),
-            validate: &|schema, value| state.validators.validate_stored(schema, value),
+            validate: &|schema, value| match schema {
+                "PersistedAgentRecord" => state
+                    .validators
+                    .validate_table_record("runtime_agents", value),
+                _ => state.validators.validate_stored(schema, value),
+            },
         };
         let result = operation(&context).map_err(operation_error)?;
         state.event_wake.notify_one();

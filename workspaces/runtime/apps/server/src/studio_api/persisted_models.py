@@ -86,6 +86,13 @@ class PersistedPlanRecord(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     agent: StrictStr | None = None
+    id: StrictStr
+    rootId: StrictStr
+    text: StrictStr
+    version: Annotated[SafeInt, Field(ge=0, json_schema_extra={"minimum": 0})]
+    updated: SafeInt | StrictFloat | None
+    steps: list[JsonValue] = Field(default_factory=list)
+    native: dict[StrictStr, JsonValue] | None = None
 
 
 class PersistedAnnotationRecord(_OpenPersistedRecord):
@@ -137,6 +144,7 @@ class PersistedUsageResumeRecord(ContractModel):
 
 
 class PersistedWorkItemRecord(_OpenPersistedRecord):
+    rootId: StrictStr | None = None
     status: StrictStr | None = None
     title: StrictStr | None = None
 

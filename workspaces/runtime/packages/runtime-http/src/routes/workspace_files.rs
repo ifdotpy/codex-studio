@@ -303,6 +303,13 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
         error @ PayloadStoreError::InvalidStoredAsset { .. } => {
             ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
         }
+        PayloadStoreError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
+            table: "runtime_assets",
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object runtime_assets/{id}"),
+        ),
         PayloadStoreError::Io(_)
         | PayloadStoreError::Store(_)
         | PayloadStoreError::Json(_)

@@ -24,7 +24,6 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 REVIEW_CORPUS = json.loads((HERE / "fixtures/rust-agents-create/review-corpus.json").read_text())
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 _fixture_spec = importlib.util.spec_from_file_location(

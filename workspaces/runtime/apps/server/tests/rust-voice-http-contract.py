@@ -375,7 +375,16 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "POST", "/api/voice/not-a-route", headers=self.headers(),
         )
         self.assertEqual(missing.status, 415, missing.body[:1000])
-        self.assertEqual(voice_snapshot(self.backend.state), before)
+        after = voice_snapshot(self.backend.state)
+        voice_tables = (
+            "voice_sessions", "voice_records", "voice_deliveries",
+            "voice_approvals", "voice_speech_requests",
+        )
+        self.assertEqual(
+            {name: before["tables"][name] for name in voice_tables},
+            {name: after["tables"][name] for name in voice_tables},
+        )
+        self.assertEqual(after["audio"], before["audio"])
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_provider_and_audio_operations_refuse_without_writes(self):

@@ -55,7 +55,7 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             }
             _ => ApiError::internal(),
         })?;
-        let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
+        let records = stored_values("runtime_work", records, validators, false)?;
         Ok(work_policy::work_list(&agent.root_id.0, &records))
     })
     .await
@@ -99,7 +99,7 @@ pub(crate) async fn plan(
                     return Err(invalid_stored("runtime_plans", &row.id));
                 }
                 let value = record_value("runtime_plans", &row)?;
-                if !validators.valid_stored_record("PlanView", &row.id, &value) {
+                if !validators.valid_table_record("runtime_plans", &row.id, &value) {
                     return Err(invalid_stored("runtime_plans", &row.id));
                 }
                 Some(value)
@@ -139,7 +139,6 @@ where
 
 fn stored_values(
     object: &'static str,
-    schema: &str,
     records: Vec<StoredRecord>,
     validators: &Registry,
     remove_path: bool,
@@ -154,7 +153,7 @@ fn stored_values(
                     .expect("record is object")
                     .remove("path");
             }
-            if !validators.valid_stored_record(schema, &row.id, &value) {
+            if !validators.valid_table_record(object, &row.id, &value) {
                 return Err(invalid_stored(object, &row.id));
             }
             Ok(value)

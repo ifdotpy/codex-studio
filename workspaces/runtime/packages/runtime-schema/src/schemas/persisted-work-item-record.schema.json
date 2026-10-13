@@ -10,6 +10,17 @@
       "title": "Id",
       "type": "string"
     },
+    "rootId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Rootid"
+    },
     "status": {
       "anyOf": [
         {
