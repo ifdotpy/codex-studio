@@ -60,7 +60,6 @@ pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
     preference_field: Option<Validator>,
     stored_schemas: Arc<BTreeMap<String, Validator>>,
-    definitions: Arc<Map<String, Value>>,
 }
 
 #[derive(Debug)]
@@ -115,28 +114,28 @@ impl Registry {
             "CheckpointSummary",
             "ComplaintEntityDto",
             "ComplaintRecordResponse",
+            "ConfigureResponse",
             "EdgeEntityDto",
             "EventEntityDto",
             "MonitorEntityDto",
-            "MonitorRecordResponse",
-            "PeerTeamEntityDto",
             "PlanView",
+            "PeerTeamEntityDto",
+            "ProfileRecord",
             "ProjectEntityDto",
+            "ProjectMutationRecord",
             "QueueItem",
-            "RequestEntityDto",
             "RequestRecordResponse",
-            "ResourceRef",
+            "RequestEntityDto",
             "RoomEntityDto",
             "RuleEntityDto",
-            "RuleRecordResponse",
             "SyncEntityPayload",
             "SyncPullResetResponse",
             "SyncPullResponse",
-            "TaskDetailResponse",
             "TaskEntityDto",
+            "TaskDetailResponse",
             "TranscriptAsset",
-            "WorkEntityDto",
             "WorkItem",
+            "WorkEntityDto",
             "WorkspaceEntityDto",
         ] {
             let validator = jsonschema::options()
@@ -195,7 +194,6 @@ impl Registry {
             operations: Arc::new(compiled),
             preference_field: Some(preference_field),
             stored_schemas: Arc::new(stored_schemas),
-            definitions,
         })
     }
 
@@ -353,70 +351,9 @@ impl Registry {
             .is_some_and(|validator| validator.is_valid(value))
     }
 
-    pub(crate) fn valid_stored_record(&self, schema: &str, id: &str, value: &Value) -> bool {
-        self.validate_stored(schema, value) && value.get("id").and_then(Value::as_str) == Some(id)
-    }
-
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
         let value = serde_json::from_str(raw).ok()?;
         self.validate_stored(schema, &value).then_some(value)
-    }
-
-    pub(crate) fn project_entity(&self, schema: &str, value: &Value) -> Option<Value> {
-        let properties = self
-            .definitions
-            .get(schema)?
-            .get("properties")?
-            .as_object()?;
-        let source = value.as_object()?;
-        Some(Value::Object(
-            source
-                .iter()
-                .filter(|(key, _)| properties.contains_key(*key))
-                .map(|(key, value)| (key.clone(), bound_display_value(value, key, 200)))
-                .collect(),
-        ))
-    }
-}
-
-fn bound_display_value(value: &Value, key: &str, list_limit: usize) -> Value {
-    match value {
-        Value::String(text) => {
-            let limit = match key {
-                "overview" => 9000,
-                "error" | "tail" | "description" | "command" | "query" => 2000,
-                "text" | "lastAnswer" => 4000,
-                _ => 12000,
-            };
-            Value::String(text.chars().take(limit).collect())
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .take(list_limit)
-                .map(|item| bound_display_value(item, "", list_limit))
-                .collect(),
-        ),
-        Value::Object(items) => Value::Object(
-            items
-                .iter()
-                .map(|(name, item)| {
-                    (
-                        name.clone(),
-                        bound_display_value(
-                            item,
-                            name,
-                            if name == "sidebarOrder" {
-                                10_000
-                            } else {
-                                list_limit
-                            },
-                        ),
-                    )
-                })
-                .collect(),
-        ),
-        value => value.clone(),
     }
 }
 
@@ -1088,7 +1025,6 @@ mod tests {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
@@ -1313,7 +1249,6 @@ mod tests {
             )])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         let valid = registry
             .validate_route(
@@ -1506,7 +1441,6 @@ mod tests {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
             stored_schemas: Arc::new(BTreeMap::new()),
-            definitions: Arc::new(serde_json::Map::new()),
         };
         let validated = arrays
             .validate(

@@ -1,0 +1,63 @@
+{
+  "replayChanges": {
+    "role": "reviewer",
+    "concurrency": 0,
+    "maxAgents": 12,
+    "tokenBudget": 123,
+    "profile_id": "unknown-profile"
+  },
+  "catalogNulls": [
+    "model",
+    "effort",
+    "fast_mode",
+    "daybreak_enabled",
+    "worker_defaults",
+    "review_defaults"
+  ],
+  "creationCatalogNulls": ["effort", "fast_mode", "daybreak_enabled"],
+  "boundaries": [
+    ["/api/leads", { "model": "gpt-6-astra" }, "provider-session/model-list"],
+    [
+      "/api/leads",
+      { "worker_defaults": null },
+      "worker-driver/settings-catalog"
+    ],
+    [
+      "/api/leads",
+      { "review_defaults": null },
+      "worker-driver/settings-catalog"
+    ],
+    [
+      "/api/leads",
+      { "workspaceMode": "image" },
+      "workspace-state/lead-workspace"
+    ],
+    ["/api/leads", { "project_id": "project" }, "project-driver/chat-binding"],
+    [
+      "/api/agents",
+      { "parent": "parent" },
+      "worker-driver/workspace-preparation"
+    ],
+    ["/api/agents", { "effort": null }, "provider-session/model-list"],
+    [
+      "/api/agents",
+      { "worker_defaults": null },
+      "worker-driver/settings-catalog"
+    ],
+    [
+      "/api/agents",
+      { "workspaceMode": "image" },
+      "workspace-state/lead-workspace"
+    ],
+    [
+      "/api/configure",
+      { "concurrency": 0 },
+      "agent-management/agent-mode-settings"
+    ],
+    [
+      "/api/conversation",
+      { "agent_mode": "single" },
+      "agent-management/conversation-settings"
+    ]
+  ]
+}

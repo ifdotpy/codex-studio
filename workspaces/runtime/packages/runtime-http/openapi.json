@@ -21042,18 +21042,11 @@
         "additionalProperties": false,
         "properties": {
           "concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Concurrency"
+            "default": 32,
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Concurrency",
+            "type": "integer"
           },
           "expected_mode_revision": {
             "anyOf": [
@@ -21076,18 +21069,11 @@
             "type": "string"
           },
           "maxAgents": {
-            "anyOf": [
-              {
-                "maximum": 1024,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Maxagents"
+            "default": 64,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Maxagents",
+            "type": "integer"
           },
           "request_id": {
             "anyOf": [
@@ -22297,16 +22283,9 @@
             "default": null
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -22335,37 +22314,23 @@
             "title": "Effort"
           },
           "excluded_account_keys": {
-            "anyOf": [
-              {
-                "items": {
-                  "minLength": 1,
-                  "pattern": "\\S",
-                  "type": "string"
-                },
-                "maxItems": 512,
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 512,
             "title": "Excluded Account Keys",
+            "type": "array",
             "uniqueItems": true
           },
           "expected_account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Account Key"
+            "default": "default",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Expected Account Key",
+            "type": "string"
           },
           "expected_mode_revision": {
             "anyOf": [
@@ -22452,18 +22417,11 @@
             "default": null
           },
           "subagent_concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Subagent Concurrency"
+            "default": 32,
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Subagent Concurrency",
+            "type": "integer"
           },
           "worker_defaults": {
             "anyOf": [
@@ -22477,16 +22435,9 @@
             "default": null
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Yolo Mode"
+            "default": true,
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -22659,43 +22610,22 @@
         "additionalProperties": false,
         "properties": {
           "account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Account Key"
+            "default": "default",
+            "maxLength": 200,
+            "title": "Account Key",
+            "type": "string"
           },
           "concurrency": {
-            "anyOf": [
-              {
-                "maximum": 512,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Concurrency"
+            "default": 32,
+            "maximum": 512.0,
+            "minimum": 0.0,
+            "title": "Concurrency",
+            "type": "integer"
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -22751,18 +22681,11 @@
             "title": "Id"
           },
           "maxAgents": {
-            "anyOf": [
-              {
-                "maximum": 1024,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Maxagents"
+            "default": 64,
+            "maximum": 1024.0,
+            "minimum": 1.0,
+            "title": "Maxagents",
+            "type": "integer"
           },
           "model": {
             "anyOf": [
@@ -22780,19 +22703,12 @@
             "title": "Model"
           },
           "name": {
-            "anyOf": [
-              {
-                "maxLength": 100,
-                "minLength": 1,
-                "pattern": "\\S",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
+            "default": "Lead",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Name",
+            "type": "string"
           },
           "parent": {
             "anyOf": [
@@ -22829,15 +22745,8 @@
             "type": "string"
           },
           "role": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentRole-Input"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
+            "$ref": "#/components/schemas/AgentRole-Input",
+            "default": "orchestrator"
           },
           "tokenBudget": {
             "anyOf": [
@@ -22866,33 +22775,19 @@
             "default": null
           },
           "workspaceMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "default": "worktree",
+            "enum": [
+              "layr",
+              "image",
+              "worktree"
             ],
-            "default": null,
-            "title": "Workspacemode"
+            "title": "Workspacemode",
+            "type": "string"
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Yolo Mode"
+            "default": true,
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "required": [
@@ -23036,30 +22931,16 @@
         "additionalProperties": false,
         "properties": {
           "account_key": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Account Key"
+            "default": "default",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Account Key",
+            "type": "string"
           },
           "cwd": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Cwd"
+            "default": "",
+            "title": "Cwd",
+            "type": "string"
           },
           "daybreak_enabled": {
             "anyOf": [
@@ -23101,8 +22982,9 @@
           "id": {
             "anyOf": [
               {
-                "maxLength": 200,
-                "minLength": 1,
+                "maxLength": 36,
+                "minLength": 36,
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
                 "type": "string"
               },
               {
@@ -23181,16 +23063,9 @@
             "title": "Project Server Id"
           },
           "reuse_empty": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reuse Empty"
+            "default": true,
+            "title": "Reuse Empty",
+            "type": "boolean"
           },
           "review_defaults": {
             "anyOf": [
@@ -23215,33 +23090,19 @@
             "default": null
           },
           "workspaceMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "default": "worktree",
+            "enum": [
+              "layr",
+              "image",
+              "worktree"
             ],
-            "default": null,
-            "title": "Workspacemode"
+            "title": "Workspacemode",
+            "type": "string"
           },
           "yolo_mode": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Yolo Mode"
+            "default": true,
+            "title": "Yolo Mode",
+            "type": "boolean"
           }
         },
         "title": "CreateLeadRequest",

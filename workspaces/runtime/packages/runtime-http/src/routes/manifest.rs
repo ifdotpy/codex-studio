@@ -8,33 +8,6 @@ use crate::router::HttpState;
 #[serde(transparent)]
 pub(crate) struct Dependency(&'static str);
 
-#[cfg(test)]
-pub(crate) fn registered_dependencies() -> Vec<&'static str> {
-    let mut names = inventory::iter::<RouteModuleRegistration>
-        .into_iter()
-        .flat_map(|registration| registration.dependencies.iter().copied())
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    names
-}
-
-pub(crate) struct RouteModuleRegistration {
-    pub(crate) name: &'static str,
-    pub(crate) routes: Option<fn() -> RouteGroup>,
-    pub(crate) dependencies: &'static [&'static str],
-}
-
-inventory::collect!(RouteModuleRegistration);
-
-inventory::submit! {
-    RouteModuleRegistration {
-        name: "manifest",
-        routes: None,
-        dependencies: &[],
-    }
-}
-
 /// Names use `<slice>/<capability>` and are removed when the slice that provides them merges.
 const KNOWN_DEPENDENCIES: &[&str] = &[
     "coordination-policy/inbox",
@@ -44,34 +17,19 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/queue-mutations",
     "event-driver/work-items",
     "monitor-driver/active-checks",
-    "payload-store/uploads",
-    "payload-store/voice-audio",
     "provider-session/account-rate-limits",
-    "provider-session/account-rate-limits",
-    "provider-session/app-server",
-    "provider-session/claude-discovery",
-    "provider-session/claude-login",
-    "provider-session/claude-profile-auth",
-    "provider-session/codex-login",
     "provider-session/model-list",
-    "provider-session/thread-fork",
-    "provider-session/voice",
-    "resource-policy/publish-drafts",
+    "provider-session/app-server",
+    "provider-session/title-generation",
     "resource-policy/read-progress-panel",
     "resource-policy/windows-file-identity",
     "resource-policy/write-progress-layout",
     "rule-driver/event-rules",
-    "store-bootstrap/checkpoints-schema",
-    "sync-policy/entity-seeding",
-    "sync-policy/entity-window-maintenance",
-    "sync-policy/runtime-capabilities",
     "transcript-service/pull",
     "transcript/event-driver",
+    "transcript/payload-store",
     "transcript/search-index",
     "transcript/workspace-state",
-    "usage-policy/session-cost-refresh",
-    "usage-policy/token-rates",
-    "usage-policy/session-cost-refresh",
     "work-policy/views",
     "workspace-state/git-changes",
     "workspace-state/image-execution",
@@ -79,12 +37,21 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "workspace-state/snapshot",
     "coordination-policy/chat-history",
     "coordination-policy/room-visibility",
+    "agent-management/conversation-termination",
     "event-driver/message-receipts",
     "event-driver/message-send",
     "federation-driver/rooms",
     "agent-discovery/launcher-status",
+    "account-driver/unavailable",
+    "worker-driver/settings-catalog",
+    "worker-driver/work-assignment",
+    "worker-driver/workspace-preparation",
+    "project-driver/chat-binding",
+    "agent-management/empty-chat-reuse",
+    "agent-management/agent-mode-settings",
+    "agent-management/conversation-settings",
+    "workspace-state/lead-workspace",
 ];
-
 
 impl Dependency {
     #[allow(
@@ -100,9 +67,7 @@ impl Dependency {
     }
 
     fn is_known(self) -> bool {
-        inventory::iter::<RouteModuleRegistration>
-            .into_iter()
-            .any(|registration| registration.dependencies.contains(&self.0))
+        KNOWN_DEPENDENCIES.contains(&self.0)
     }
 }
 
@@ -137,7 +102,7 @@ impl OperationStatus {
         reason = "partial route slices use this to bind 501 behavior"
     )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
-        matches!(self, Self::Partial { dependencies: declared } if dependencies.iter().all(|dependency| declared.contains(dependency)))
+        matches!(self, Self::Partial { dependencies: declared } if declared == dependencies)
     }
 }
 

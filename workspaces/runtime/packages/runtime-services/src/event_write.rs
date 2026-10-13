@@ -383,7 +383,9 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
     let mut updated = agent.clone();
     updated.status = AgentStatus::Queued;
     AgentRepository::put(connection, &updated)?;
-    EventWriteRepository::set_agent_sync_status(connection, &updated.id.0, "queued")?;
+    let projection =
+        serde_json::to_value(&updated).map_err(studio_runtime_store::StoreError::from)?;
+    crate::agents_create::publish_agent(connection, &projection)?;
     Ok(())
 }
 
@@ -544,6 +546,7 @@ mod tests {
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);

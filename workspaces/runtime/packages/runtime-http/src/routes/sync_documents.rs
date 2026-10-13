@@ -15,7 +15,6 @@ use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MAX_MUTATION_SYNC_ENTITIES: usize = 500;
 const SYNC_STREAM_BYTE_LIMIT: i64 = 1_048_576;
 const TRANSCRIPT_PULL_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript-service/pull")];
 
@@ -344,59 +343,29 @@ pub(crate) async fn push_preferences(
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    let (merged, sync_entities, sync_after) =
-        tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
-            let before_connection = store.read().map_err(|_| ApiError::internal())?;
-            let before = SyncDocumentsRepository::entity_sequence(&before_connection)
-                .map_err(|_| ApiError::internal())?;
-            drop(before_connection);
-            let merged = sync_policy::push_preferences(&store, scope, &fields, move |field| {
-                validators.validate_preference_field(field)
-            })
-            .map_err(|error| match error {
-                SyncPolicyError::InvalidPreferences => {
-                    ApiError::validation(vec![Value::String("body".to_owned())])
-                }
-                SyncPolicyError::InvalidStoredObject { .. } => {
-                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-                }
-                _ => ApiError::internal(),
-            })?;
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let rows = SyncDocumentsRepository::entities_after(
-                &connection,
-                before,
-                i64::try_from(MAX_MUTATION_SYNC_ENTITIES + 1).unwrap_or(i64::MAX),
-            )
+    let response = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
+        let before_connection = store.read().map_err(|_| ApiError::internal())?;
+        let before = SyncDocumentsRepository::entity_sequence(&before_connection)
             .map_err(|_| ApiError::internal())?;
-            let floor = SyncDocumentsRepository::entity_tombstone_floor(&connection)
-                .map_err(|_| ApiError::internal())?;
-            let sync_after =
-                (rows.len() <= MAX_MUTATION_SYNC_ENTITIES && floor <= before).then_some(before);
-            Ok((merged, rows, sync_after))
+        drop(before_connection);
+        let merged = sync_policy::push_preferences(&store, scope, &fields, move |field| {
+            validators.validate_preference_field(field)
         })
-        .await
-        .map_err(|_| ApiError::internal())??;
-    let mut response = json!({"fields": merged});
-    if !sync_entities.is_empty() {
-        response["_syncEntities"] = Value::Array(
-            sync_entities
-                .iter()
-                .take(MAX_MUTATION_SYNC_ENTITIES)
-                .map(|row| {
-                    json!({
-                        "id": format!("entity:{}:{}", row.collection, row.id),
-                        "seq": row.sequence,
-                        "payload": row.payload,
-                        "_deleted": row.deleted,
-                    })
-                })
-                .collect(),
-        );
-        if let Some(sync_after) = sync_after {
-            response["_syncEntitiesAfter"] = json!(sync_after);
-        }
-    }
+        .map_err(|error| match error {
+            SyncPolicyError::InvalidPreferences => {
+                ApiError::validation(vec![Value::String("body".to_owned())])
+            }
+            SyncPolicyError::InvalidStoredObject { .. } => {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+            _ => ApiError::internal(),
+        })?;
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        sync_documents::with_entity_delta(&connection, before, json!({"fields": merged}))
+            .map_err(|_| ApiError::internal())
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
     Ok(Json(super::generated_json::<
         crate::generated::PreferencePushResponse,
     >(response)?))

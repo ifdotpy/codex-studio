@@ -171,6 +171,10 @@ class BackendProcess:
             "CODEX_HOME": str(self.codex_home),
             "CLAUDE_CONFIG_DIR": str(self.claude_home),
             "CLAUDE_SECURESTORAGE_CONFIG_DIR": str(self.claude_home),
+            # Match the Python provider tests' inert Claude command override.
+            # A profile may name its own fixture binary; absent that, never
+            # resolve a caller-installed Claude executable from the test host.
+            "STUDIO_CLAUDE_BIN": "/usr/bin/false",
             "CODEX_AGENTS_STATE_DIR": str(self.state),
             "CODEX_CANVAS_CWD": str(self.cwd),
             "XDG_CONFIG_HOME": str(self.xdg_config),

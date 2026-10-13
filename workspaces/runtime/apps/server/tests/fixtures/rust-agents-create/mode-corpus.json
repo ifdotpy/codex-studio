@@ -1,0 +1,32 @@
+[
+  { "isLead": true },
+  {
+    "isLead": true,
+    "agentMode": "single",
+    "concurrency": 32,
+    "subagentConcurrencyVersion": 1
+  },
+  {
+    "isLead": true,
+    "agentMode": "single",
+    "concurrency": 32,
+    "subagentConcurrencyVersion": 2
+  },
+  { "isLead": true, "agentMode": "single", "subagentConcurrencyVersion": 2 },
+  { "isLead": true, "concurrency": 0, "maxAgents": 64 },
+  { "isLead": true, "concurrency": 512, "maxAgents": 514 },
+  {
+    "isLead": true,
+    "concurrency": 1,
+    "maxAgents": 12,
+    "maxAgentsExplicit": false,
+    "agentModeRevision": 7
+  },
+  { "isLead": false, "concurrency": 100 },
+  {
+    "isLead": false,
+    "concurrency": 32,
+    "agentMode": "multi",
+    "subagentConcurrencyVersion": 1
+  }
+]

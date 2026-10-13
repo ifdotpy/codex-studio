@@ -7,6 +7,7 @@ use axum::routing::any;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use tokio::sync::Notify;
 
 use crate::error::error_response;
@@ -30,6 +31,7 @@ pub struct HttpState {
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+    pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) event_wake: Arc<Notify>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
@@ -46,9 +48,12 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
-        let model_catalog =
-            studio_runtime_services::model_catalog::ModelCatalogService::new(native_path.clone());
         let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let model_changes = Arc::clone(&sync_changes);
+        let model_catalog = studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
+            native_path.clone(),
+            Arc::new(move || model_changes.notify_one()),
+        );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
@@ -65,14 +70,28 @@ impl HttpState {
             store,
             account_policy,
             model_catalog,
+            sync_changes,
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
     }
 
+    /// Attach the retained account refresh driver used by account admission.
+    pub fn with_account_driver(
+        mut self,
+        driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
+    ) -> Self {
+        self.account_driver = Some(driver);
+        self
+    }
+
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
+        Arc::clone(&self.sync_changes)
     }
 }
 
