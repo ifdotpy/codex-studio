@@ -57,6 +57,7 @@ from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_scheduler_wake import SchedulerWake, record_needs_dispatch
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
+from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEUE_LIMIT
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
@@ -439,7 +440,7 @@ class SubmissionUnknown(ResponseTimeout):
 
 class AppServer:
     WRITE_TIMEOUT = 5
-    CALLBACK_QUEUE_LIMIT = 65536
+    CALLBACK_QUEUE_LIMIT = PROVIDER_CALLBACK_QUEUE_LIMIT
     # Streamed fragments are redundant: item/completed carries the full text.
     # Past this depth they are shed so the queue never closes the connection.
     DELTA_SHED_DEPTH = 2048

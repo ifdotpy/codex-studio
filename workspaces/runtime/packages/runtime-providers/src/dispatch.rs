@@ -8,8 +8,7 @@ use std::thread::{self, JoinHandle};
 use crate::{Frame, RequestFrame};
 use thiserror::Error;
 
-/// Maximum number of queued provider callbacks, matching the Python reader.
-pub const CALLBACK_QUEUE_LIMIT: usize = 65_536;
+pub use crate::callback_queue_limit_generated::CALLBACK_QUEUE_LIMIT;
 
 /// One provider callback in wire arrival order.
 #[derive(Clone, Debug, PartialEq)]
