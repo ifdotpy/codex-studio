@@ -530,6 +530,20 @@ impl Peer {
             }
         }
     }
+    async fn acknowledged_or_worker_exits(&mut self, cursor: u64, worker: &mut AccountHandle) {
+        loop {
+            let received = tokio::select! {
+                result = tokio::time::timeout(std::time::Duration::from_secs(120), self.acks.recv()) =>
+                    result.expect("settlement deadline"),
+                result = worker.completion() => panic!("worker exited before cursor {cursor} ACK: {result:?}"),
+            };
+            let got = received.expect("session acknowledges").0;
+            if got >= cursor {
+                assert_eq!(got, cursor);
+                return;
+            }
+        }
+    }
     async fn reply(&mut self, request: &Value, result: Value) {
         let cursor = self
             .frame(json!({"id":request["id"],"result":result}))

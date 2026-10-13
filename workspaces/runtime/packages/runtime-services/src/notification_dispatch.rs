@@ -994,13 +994,22 @@ fn write_text_notification(
         .unwrap_or_default();
     if matches!(update, TextUpdate::Started(..)) {
         for existing in streams.selected(Some(&key)) {
-            if streams.preserve_base(&existing, sha256_hex(previous.as_bytes())) {
+            let snapshot = match update {
+                TextUpdate::Started(Some(text), _) => Some(text),
+                _ => None,
+            };
+            let replaced = if let Some(snapshot) = snapshot {
+                streams.set_snapshot_base(&existing, sha256_hex(snapshot.as_bytes()))
+            } else {
+                streams.preserve_base(&existing, sha256_hex(previous.as_bytes()))
+            };
+            if replaced {
                 NotificationDispatchRepository::put_stream_base(
                     transaction,
                     &stream_base_id(&existing),
-                    Some(&previous),
+                    Some(snapshot.unwrap_or(&previous)),
                 )?;
-            } else {
+            } else if snapshot.is_some() {
                 // An unflushed provider snapshot supersedes the buffered text
                 // that preceded it; later deltas append to the snapshot.
                 streams.replace_unflushed_with_snapshot(&existing);

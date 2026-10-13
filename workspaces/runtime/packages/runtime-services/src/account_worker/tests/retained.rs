@@ -166,10 +166,8 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
             "result":{"thread":{"id":"fake-thread-0","revision":1}}
         }))
         .await;
-    tokio::select! {
-        _ = peer.acknowledged(first_cursor) => {},
-        result = worker.completion() => panic!("worker exited before first history ACK: {result:?}"),
-    }
+    peer.acknowledged_or_worker_exits(first_cursor, &mut worker)
+        .await;
     let first_result: HistoryReceipt = first.await.unwrap().unwrap();
 
     let second_scope = scope.clone();
@@ -206,10 +204,8 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
             "result":{"thread":{"id":"fake-thread-0","revision":2}}
         }))
         .await;
-    tokio::select! {
-        _ = peer.acknowledged(second_cursor) => {},
-        result = worker.completion() => panic!("worker exited before second history ACK: {result:?}"),
-    }
+    peer.acknowledged_or_worker_exits(second_cursor, &mut worker)
+        .await;
     let second_result = second.await.unwrap().unwrap();
     assert_eq!(first_result.body["thread"]["revision"], 1);
     assert_eq!(second_result.body["thread"]["revision"], 2);

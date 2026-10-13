@@ -310,6 +310,16 @@ impl NotificationStreamBuffer {
         }
         false
     }
+    pub(super) fn set_snapshot_base(&mut self, key: &StreamKey, hash: String) -> bool {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key) {
+            entry.base = Some(hash);
+            entry.pending.clear();
+            entry.count = 0;
+            entry.characters = 0;
+            return true;
+        }
+        false
+    }
     pub(super) fn replace_unflushed_with_snapshot(&mut self, key: &StreamKey) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key)
             && !entry.flushed
