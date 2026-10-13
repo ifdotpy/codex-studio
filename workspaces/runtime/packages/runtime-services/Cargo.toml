@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 chrono = { version = "=0.4.42", default-features = false, features = ["clock"] }
 getrandom = { workspace = true }
+rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mime_guess = { workspace = true }
