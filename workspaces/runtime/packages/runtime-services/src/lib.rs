@@ -35,6 +35,7 @@ pub mod payload_store;
 pub mod progress_panel;
 pub mod progress_watch;
 pub mod projects;
+pub mod provider_callbacks;
 pub(crate) mod provider_exchange;
 pub mod provider_session_task;
 pub mod questions_reads;
