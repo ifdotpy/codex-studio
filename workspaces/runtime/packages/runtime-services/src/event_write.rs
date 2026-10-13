@@ -651,17 +651,26 @@ mod tests {
 
     #[test]
     fn python_json_uses_python_exponent_spelling_for_floats() {
-        assert_eq!(python_json(&serde_json::from_str("1e-6").unwrap()), "1e-06");
-        assert_eq!(python_json(&serde_json::from_str("1e16").unwrap()), "1e+16");
         assert_eq!(
-            python_json(&serde_json::from_str("1e-4").unwrap()),
+            python_json(&serde_json::from_str("1e-6").expect("float JSON parses")),
+            "1e-06"
+        );
+        assert_eq!(
+            python_json(&serde_json::from_str("1e16").expect("float JSON parses")),
+            "1e+16"
+        );
+        assert_eq!(
+            python_json(&serde_json::from_str("1e-4").expect("float JSON parses")),
             "0.0001"
         );
         assert_eq!(
-            python_json(&serde_json::from_str("1e15").unwrap()),
+            python_json(&serde_json::from_str("1e15").expect("float JSON parses")),
             "1000000000000000.0"
         );
-        assert_eq!(python_json(&serde_json::from_str("-0.0").unwrap()), "-0.0");
+        assert_eq!(
+            python_json(&serde_json::from_str("-0.0").expect("float JSON parses")),
+            "-0.0"
+        );
         assert_eq!(
             python_json(&json!({"z":1,"a":"é"})),
             "{\"a\":\"é\",\"z\":1}"
