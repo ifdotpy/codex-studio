@@ -107,19 +107,14 @@ impl ProfileRepository {
     }
 
     pub fn new_id(connection: &Connection) -> StoreResult<String> {
-        let mut bytes =
+        let bytes =
             connection.query_row("SELECT randomblob(16)", [], |row| row.get::<_, Vec<u8>>(0))?;
-        if bytes.len() != 16 {
-            return Err(StoreError::SchemaMismatch(
-                "SQLite returned invalid UUID bytes".to_owned(),
-            ));
-        }
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
         let bytes: [u8; 16] = bytes.try_into().map_err(|_| {
             StoreError::SchemaMismatch("SQLite returned invalid UUID bytes".to_owned())
         })?;
-        Ok(uuid::Uuid::from_bytes(bytes).to_string())
+        Ok(uuid::Builder::from_random_bytes(bytes)
+            .into_uuid()
+            .to_string())
     }
 }
 

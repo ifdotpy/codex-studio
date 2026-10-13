@@ -1,9 +1,7 @@
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -1039,11 +1037,11 @@ fn resolve_python() -> PathBuf {
     selected
 }
 
-struct TemporaryState(PathBuf);
+struct TemporaryState(PathBuf, tempfile::TempDir);
 
 impl TemporaryState {
     fn cleanup(self) -> std::io::Result<()> {
-        fs::remove_dir_all(&self.0)
+        self.1.close()
     }
 }
 
@@ -1055,21 +1053,10 @@ impl std::ops::Deref for TemporaryState {
     }
 }
 
-impl Drop for TemporaryState {
-    fn drop(&mut self) {
-        let _cleanup_result = fs::remove_dir_all(&self.0);
-    }
-}
-
 fn temporary_state(label: &str) -> TemporaryState {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("cross-runtime test operation succeeds")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "codex-runtime-store-{label}-{}-{nonce}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).expect("cross-runtime test operation succeeds");
-    TemporaryState(root)
+    let directory = tempfile::Builder::new()
+        .prefix(&format!("codex-runtime-store-{label}-"))
+        .tempdir()
+        .expect("cross-runtime test operation succeeds");
+    TemporaryState(directory.path().to_path_buf(), directory)
 }
