@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_services::{
@@ -7,8 +9,7 @@ use studio_runtime_services::{
 };
 fn oracle(args: &[&str]) -> Value {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let python = std::env::var("CODEX_AGENTS_PYTHON")
-        .expect("set CODEX_AGENTS_PYTHON to an isolated equipped interpreter");
+    let python = prepared_python::prepared_python(&root.join("../../apps/server/src"));
     let result = Command::new(python)
         .arg(root.join("tests/turn_lifecycle/continuation_oracle.py"))
         .args(args)

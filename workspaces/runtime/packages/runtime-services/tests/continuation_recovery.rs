@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -13,13 +15,15 @@ fn template_kind(kind: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("isolated template");
     let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/turn_lifecycle/continuation_oracle.py");
-    let result = Command::new(std::env::var("CODEX_AGENTS_PYTHON").expect("isolated Python"))
-        .arg(oracle)
-        .arg("template")
-        .arg(dir.path())
-        .arg(kind)
-        .output()
-        .expect("Python writer");
+    let result = Command::new(prepared_python::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(oracle)
+    .arg("template")
+    .arg(dir.path())
+    .arg(kind)
+    .output()
+    .expect("Python writer");
     assert!(
         result.status.success(),
         "{}",

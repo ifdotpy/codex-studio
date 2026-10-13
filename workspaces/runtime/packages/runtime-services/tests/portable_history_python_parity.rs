@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -427,9 +429,7 @@ fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
 }
 
 fn python_executable() -> PathBuf {
-    std::env::var_os("CODEX_AGENTS_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python3"))
+    prepared_python::prepared_python(&server_source())
 }
 
 fn isolated_test_root() -> tempfile::TempDir {
