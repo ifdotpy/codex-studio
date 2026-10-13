@@ -1,11 +1,221 @@
 [
   {
-    "id": "payload-threshold",
+    "id": "payload-threshold-high",
     "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
     "edits": [
       {
         "before": "const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;",
         "after": "const EXTERNALIZE_THRESHOLD: usize = 80 * 1024;"
+      }
+    ]
+  },
+  {
+    "id": "payload-threshold-low",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;",
+        "after": "const EXTERNALIZE_THRESHOLD: usize = 64 * 1024 - 1;"
+      }
+    ]
+  },
+  {
+    "id": "payload-checkpoint-field",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "        \"checkpoints\" => &[\"items\"],",
+        "after": "        \"checkpoints\" => &[],"
+      }
+    ]
+  },
+  {
+    "id": "payload-stale-small-reference",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "            refs.remove(*field);",
+        "after": "            let _ = field;"
+      }
+    ]
+  },
+  {
+    "id": "payload-clear-empty-reference-map",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "        record.remove(\"_payloadBlobs\");",
+        "after": "        let _ = record.get(\"_payloadBlobs\");"
+      }
+    ]
+  },
+  {
+    "id": "payload-array-preview",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)",
+        "after": "small_preview(&Value::Array(items.iter().take(0).cloned().collect()), 0)"
+      }
+    ]
+  },
+  {
+    "id": "payload-object-preview-success",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "for key in [\"success\", \"outcome\", \"stage\"] {",
+        "after": "for key in [\"outcome\", \"stage\"] {"
+      }
+    ]
+  },
+  {
+    "id": "payload-reference-hash-validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "                hash.len() == 64",
+        "after": "                hash.len() > 0"
+      }
+    ]
+  },
+  {
+    "id": "payload-stored-reference-validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "        BlobRef::parse(reference)?;",
+        "after": "        let _ = reference;"
+      }
+    ]
+  },
+  {
+    "id": "payload-symlink-directory",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "    if !fs::symlink_metadata(path)?.is_dir() {",
+        "after": "    if !path.is_dir() {"
+      }
+    ]
+  },
+  {
+    "id": "payload-symlink-target",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "    if !fs::symlink_metadata(path)?.is_file() {",
+        "after": "    if !path.is_file() {"
+      }
+    ]
+  },
+  {
+    "id": "payload-stored-size-integrity",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "if bytes.len() as u64 != reference.size || hash_hex(&bytes) != reference.sha256 {",
+        "after": "if bytes.len() as u64 == reference.size || hash_hex(&bytes) != reference.sha256 {"
+      }
+    ]
+  },
+  {
+    "id": "payload-stored-digest-integrity",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "if bytes.len() as u64 != reference.size || hash_hex(&bytes) != reference.sha256 {",
+        "after": "if bytes.len() as u64 != reference.size || hash_hex(&bytes) == reference.sha256 {"
+      }
+    ]
+  },
+  {
+    "id": "payload-task-preview-limit",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "const TASK_PREVIEW_BYTES: usize = 512;",
+        "after": "const TASK_PREVIEW_BYTES: usize = 511;"
+      }
+    ]
+  },
+  {
+    "id": "payload-task-truncated-marker",
+    "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+    "edits": [
+      {
+        "before": "record.insert(\"outputTruncated\".into(), Value::Bool(true));",
+        "after": "record.insert(\"outputTruncated\".into(), Value::Bool(false));"
+      }
+    ]
+  },
+  {
+    "id": "safety-in-flight",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "        self.in_flight\n            && self.auto_wake",
+        "after": "        !self.in_flight\n            && self.auto_wake"
+      }
+    ]
+  },
+  {
+    "id": "safety-auto-wake",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.auto_wake\n            && !self.account_transfer",
+        "after": "            && !self.auto_wake\n            && !self.account_transfer"
+      }
+    ]
+  },
+  {
+    "id": "safety-account-transfer",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && !self.account_transfer\n            && self.turn_id",
+        "after": "            && self.account_transfer\n            && self.turn_id"
+      }
+    ]
+  },
+  {
+    "id": "safety-requested-turn",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.turn_id == requested_turn",
+        "after": "            && self.turn_id != requested_turn"
+      }
+    ]
+  },
+  {
+    "id": "safety-buffering-turn",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.buffering_turn_id == requested_turn",
+        "after": "            && self.buffering_turn_id != requested_turn"
+      }
+    ]
+  },
+  {
+    "id": "safety-buffering-thread",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.buffering_thread_id == self.thread_id",
+        "after": "            && self.buffering_thread_id != self.thread_id"
+      }
+    ]
+  },
+  {
+    "id": "safety-ui-visible",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.show_buffering_ui\n            && !self.response_started",
+        "after": "            && !self.show_buffering_ui\n            && !self.response_started"
       }
     ]
   },
@@ -20,12 +230,132 @@
     ]
   },
   {
-    "id": "safety-receipt-epoch",
+    "id": "safety-native-response-turn",
     "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
     "edits": [
       {
-        "before": "        && receipt.get(\"epoch\").and_then(Value::as_i64)\n            == agent.get(\"epoch\").and_then(Value::as_i64)\n",
-        "after": "        && receipt.get(\"epoch\").and_then(Value::as_i64)\n            != agent.get(\"epoch\").and_then(Value::as_i64)\n"
+        "before": "            && !self.native_response_is_turn\n",
+        "after": "            && self.native_response_is_turn\n"
+      }
+    ]
+  },
+  {
+    "id": "safety-connection-current",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "            && self.connection_current\n",
+        "after": "            && !self.connection_current\n"
+      }
+    ]
+  },
+  {
+    "id": "safety-thread-open",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "    if !snapshot.thread_open {",
+        "after": "    if snapshot.thread_open {"
+      }
+    ]
+  },
+  {
+    "id": "safety-faster-model-required",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "        .ok_or(SafetyBufferingError::MissingFasterModel)?;",
+        "after": "        .unwrap_or(&snapshot.agent_id);"
+      }
+    ]
+  },
+  {
+    "id": "safety-choice-validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "    if !matches!(choice, \"wait\" | \"retry\" | \"cancel\") {",
+        "after": "    if matches!(choice, \"wait\" | \"retry\" | \"cancel\") {"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-agent-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "receipt.get(\"agent\").and_then(Value::as_str) != Some(&snapshot.agent_id)",
+        "after": "receipt.get(\"agent\").and_then(Value::as_str) == Some(&snapshot.agent_id)"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-account-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "receipt.get(\"accountKey\").and_then(Value::as_str) != Some(&snapshot.account_key)",
+        "after": "receipt.get(\"accountKey\").and_then(Value::as_str) == Some(&snapshot.account_key)"
+      }
+    ]
+  },
+  {
+    "id": "safety-receipt-epoch-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "receipt.get(\"epoch\").and_then(Value::as_i64) != Some(snapshot.epoch)",
+        "after": "receipt.get(\"epoch\").and_then(Value::as_i64) == Some(snapshot.epoch)"
+      }
+    ]
+  },
+  {
+    "id": "safety-start-already-submitted",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "receipt.get(\"rpcMethod\").and_then(Value::as_str) == Some(\"turn/start\")",
+        "after": "receipt.get(\"rpcMethod\").and_then(Value::as_str) != Some(\"turn/start\")"
+      }
+    ]
+  },
+  {
+    "id": "safety-active-fork-stage",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "    SafetyRetryStage::Fork,\n    SafetyRetryStage::Start,",
+        "after": "    SafetyRetryStage::Start,"
+      }
+    ]
+  },
+  {
+    "id": "safety-active-receipt-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "receipt.get(\"epoch\").and_then(Value::as_i64)\n            == agent.get(\"epoch\").and_then(Value::as_i64)",
+        "after": "receipt.get(\"epoch\").and_then(Value::as_i64)\n            != agent.get(\"epoch\").and_then(Value::as_i64)"
+      }
+    ]
+  },
+  {
+    "id": "safety-public-receipt-model",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "        \"model\",\n        \"turnId\",",
+        "after": "        \"turnId\","
+      }
+    ]
+  },
+  {
+    "id": "safety-restart-receipt-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/safety_buffering.rs",
+    "edits": [
+      {
+        "before": "operation.get(\"agent\").and_then(Value::as_str) != agent.get(\"id\").and_then(Value::as_str)",
+        "after": "operation.get(\"agent\").and_then(Value::as_str) == agent.get(\"id\").and_then(Value::as_str)"
       }
     ]
   }

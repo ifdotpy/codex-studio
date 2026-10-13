@@ -454,9 +454,16 @@ mod tests {
             panic!("retry decision")
         };
         assert_eq!(receipt["agent"], "agent");
+        assert_eq!(receipt["id"], "agent:turn");
         assert_eq!(receipt["connectionId"], "conn");
         assert_eq!(receipt["epoch"], 4);
+        assert_eq!(receipt["threadId"], "thread");
+        assert_eq!(receipt["sourceThreadId"], "thread");
+        assert_eq!(receipt["turnId"], "turn");
+        assert_eq!(receipt["model"], "model");
         assert_eq!(receipt["stage"], "turns");
+        assert_eq!(receipt["attemptId"], "attempt");
+        assert_eq!(receipt["created"], 1.0);
     }
 
     #[test]
@@ -503,5 +510,130 @@ mod tests {
                 .expect("message")
                 .contains("did not repeat")
         );
+    }
+
+    #[test]
+    fn retry_requires_every_current_buffering_condition() {
+        let stored = agent();
+        let base = SafetySnapshot::from_agent(&stored, true, true).expect("snapshot");
+        let mut inactive = Vec::new();
+        let mut snapshot = base.clone();
+        snapshot.in_flight = false;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.auto_wake = false;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.account_transfer = true;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.turn_id = "other".into();
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.buffering_turn_id = "other".into();
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.buffering_thread_id = "other".into();
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.show_buffering_ui = false;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.response_started = true;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.native_response_is_turn = true;
+        inactive.push(snapshot);
+        let mut snapshot = base.clone();
+        snapshot.connection_current = false;
+        inactive.push(snapshot);
+
+        for snapshot in inactive {
+            assert_eq!(
+                decide_action(&snapshot, "retry", "turn", None, "", "", 1.0),
+                Err(SafetyBufferingError::Inactive)
+            );
+        }
+        let SafetyDecision::BeginRetry { receipt } =
+            decide_action(&base, "retry", "turn", None, "", "", 1.0).expect("active retry")
+        else {
+            panic!("expected retry receipt");
+        };
+        assert_eq!(receipt["model"], "model");
+    }
+
+    #[test]
+    fn retry_requires_open_thread_model_and_valid_choice() {
+        let stored = agent();
+        let open = SafetySnapshot::from_agent(&stored, true, true).expect("snapshot");
+        let closed = SafetySnapshot::from_agent(&stored, true, false).expect("snapshot");
+        assert_eq!(
+            decide_action(&closed, "wait", "turn", None, "", "", 1.0),
+            Err(SafetyBufferingError::ThreadNotOpen)
+        );
+        assert_eq!(
+            decide_action(&open, "again", "turn", None, "", "", 1.0),
+            Err(SafetyBufferingError::InvalidChoice)
+        );
+        assert_eq!(
+            decide_action(&open, "cancel", "turn", None, "", "", 1.0),
+            Err(SafetyBufferingError::NoRetryToCancel)
+        );
+        let mut no_model = stored;
+        no_model["nativeSafetyBuffering"]
+            .as_object_mut()
+            .expect("buffering")
+            .remove("fasterModel");
+        let no_model = SafetySnapshot::from_agent(&no_model, true, true).expect("snapshot");
+        assert_eq!(
+            decide_action(&no_model, "retry", "turn", None, "", "", 1.0),
+            Err(SafetyBufferingError::MissingFasterModel)
+        );
+        assert_eq!(
+            decide_action(&open, "wait", "turn", None, "", "", 1.0),
+            Ok(SafetyDecision::Waiting {
+                agent_id: "agent".into(),
+                turn_id: "turn".into()
+            })
+        );
+    }
+
+    #[test]
+    fn existing_receipts_require_matching_identity_and_cancel_only_unsent_active_stages() {
+        let stored = agent();
+        let snapshot = SafetySnapshot::from_agent(&stored, true, true).expect("snapshot");
+        let receipt = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"stage":"fork","private":"keep","model":"fast"});
+        for stale in [
+            json!({"id":"agent:turn","agent":"other","accountKey":"acct","epoch":4,"stage":"fork"}),
+            json!({"id":"agent:turn","agent":"agent","accountKey":"other","epoch":4,"stage":"fork"}),
+            json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":3,"stage":"fork"}),
+        ] {
+            assert_eq!(
+                decide_action(&snapshot, "retry", "turn", Some(&stale), "", "", 1.0),
+                Err(SafetyBufferingError::StaleRetry)
+            );
+        }
+        let SafetyDecision::Cancelled { receipt: cancelled } =
+            decide_action(&snapshot, "cancel", "turn", Some(&receipt), "", "", 1.0)
+                .expect("cancel unsent active retry")
+        else {
+            panic!("expected cancellation");
+        };
+        assert_eq!(cancelled["stage"], "cancelled");
+        assert_eq!(cancelled["error"], serde_json::Value::Null);
+        assert_eq!(cancelled["private"], "keep");
+        let SafetyDecision::Replay { receipt: public } =
+            decide_action(&snapshot, "retry", "turn", Some(&receipt), "", "", 1.0)
+                .expect("replay existing receipt")
+        else {
+            panic!("expected receipt replay");
+        };
+        assert_eq!(public["model"], "fast");
+        assert!(public.get("private").is_none());
+        let terminal = json!({"id":"agent:turn","agent":"agent","accountKey":"acct","epoch":4,"stage":"failed"});
+        assert!(matches!(
+            decide_action(&snapshot, "cancel", "turn", Some(&terminal), "", "", 1.0),
+            Ok(SafetyDecision::Replay { .. })
+        ));
     }
 }
