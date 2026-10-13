@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_store::RuntimeStore;
+use tokio::sync::Notify;
 
 use crate::error::error_response;
 use crate::middleware;
@@ -27,7 +28,8 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
-    pub(crate) event_wake: Arc<ChangeNotificationHub>,
+    pub(crate) event_wake: Arc<Notify>,
+    pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
 
@@ -43,6 +45,11 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
+        let sync_changes = Arc::new(ChangeNotificationHub::new());
+        if let Some(store) = &store {
+            let changes = Arc::clone(&sync_changes);
+            store.set_commit_notifier(move || changes.notify_one());
+        }
         Self {
             token,
             workspace_id,
@@ -53,14 +60,20 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
-            event_wake: Arc::new(ChangeNotificationHub::new()),
+            event_wake: Arc::new(Notify::new()),
+            sync_changes,
             etag_operations: BTreeSet::new(),
         }
     }
 
-    /// Shared post-commit signal for durable event writers and the scheduler.
-    pub fn event_wake_handle(&self) -> Arc<ChangeNotificationHub> {
+    /// Existing scheduler wake signal for event-oriented writers.
+    pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    /// Stream change publisher closed during graceful server shutdown.
+    pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
+        Arc::clone(&self.sync_changes)
     }
 }
 

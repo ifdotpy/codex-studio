@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(store),
         Some(account_policy),
     );
-    let event_wake = state.event_wake_handle();
+    let sync_changes = state.sync_changes_handle();
     let app = router(state)?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;
-        event_wake.close();
+        sync_changes.close();
     })
     .await?;
     Ok(())
