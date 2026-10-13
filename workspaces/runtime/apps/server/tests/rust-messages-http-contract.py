@@ -277,10 +277,15 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 (retry["id"], cls.capacity_agent_id, json.dumps(retry)),
             )
             database.commit()
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Freeze Python dispatch before the first accepted thread is started.
+            cls.backend.hold_provider("thread/start")
         cls.backend.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            cls.backend.release_provider_gate()
         cls.backend.stop()
 
     def headers(self):
@@ -519,6 +524,11 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json().get("id"), message_id)
             self.assertEqual(response.json().get("status"), "queued")
+            if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                self.backend.wait_until(
+                    self.backend.provider_gate_started,
+                    "accepted message held at the provider thread/start boundary",
+                )
             self.assertEqual(
                 managed_message_snapshot(self.backend.state / "canvas.sqlite3", message_id), expected,
             )
@@ -526,11 +536,6 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", agent_id,
             )
             for field in ("status", "inFlight", "turnId", "autoWake", "error", "capacityRetry"):
-                if field == "status":
-                    # The dispatcher may advance accepted agents at codex_runtime.py:6857.
-                    self.assertIn(projection.get(field), {"queued", "starting"})
-                    self.assertIn(record.get(field), {"queued", "starting"})
-                    continue
                 self.assertEqual(projection.get(field), record.get(field), f"agent projection field {field}")
 
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
