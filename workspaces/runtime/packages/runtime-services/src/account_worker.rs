@@ -27,7 +27,7 @@ use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
 };
 use tokio::{
-    sync::{Mutex, Semaphore, mpsc, watch},
+    sync::{Semaphore, mpsc, watch},
     task::JoinHandle,
 };
 pub mod callback;
@@ -42,6 +42,7 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -57,12 +58,17 @@ pub enum WorkerError {
     AlreadyRunning,
     #[error("account worker is closed")]
     Closed,
+    #[error("account worker shutdown timed out; pending store work remains owned by bridge")]
+    ShutdownTimeout,
     #[error("account worker task failed")]
     TaskFailed,
     #[error("account evidence capacity exhausted; recovery required")]
     Capacity,
     #[error("provider callback response is unresolved; recovery required")]
     CallbackUnknown,
+    #[cfg(test)]
+    #[error("injected worker crash")]
+    InjectedCrash,
 }
 
 /// Share one bridge among all account workers of a runtime. The permit bounds
@@ -71,7 +77,9 @@ pub enum WorkerError {
 pub struct StoreBridge {
     store: Arc<RuntimeStore>,
     slot: Arc<Semaphore>,
-    accounts: Arc<Mutex<BTreeSet<String>>>,
+    accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    #[cfg(test)]
+    faults: Arc<tests::Faults>,
 }
 impl StoreBridge {
     pub async fn new(store: Arc<RuntimeStore>) -> Result<Self, WorkerError> {
@@ -79,6 +87,8 @@ impl StoreBridge {
             store,
             slot: Arc::new(Semaphore::new(1)),
             accounts: Arc::default(),
+            #[cfg(test)]
+            faults: Arc::default(),
         };
         bridge
             .run(|store| Ok(scheduler::recover_on_startup(store)?))
@@ -103,9 +113,52 @@ impl StoreBridge {
         .await
         .map_err(|_| WorkerError::TaskFailed)?
     }
+    async fn worker_run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
+        #[cfg(test)]
+        let index = self.faults.before()?;
+        #[cfg(test)]
+        self.faults.pause(index).await;
+        let result = self.run(operation).await;
+        #[cfg(test)]
+        self.faults.after(index)?;
+        result
+    }
+}
+
+struct AccountLease {
+    bridge: StoreBridge,
+    account: String,
+}
+impl AccountLease {
+    fn acquire(bridge: &StoreBridge, account: &str) -> Result<Self, WorkerError> {
+        if !bridge
+            .accounts
+            .lock()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .insert(account.into())
+        {
+            return Err(WorkerError::AlreadyRunning);
+        }
+        Ok(Self {
+            bridge: bridge.clone(),
+            account: account.into(),
+        })
+    }
+}
+impl Drop for AccountLease {
+    fn drop(&mut self) {
+        if let Ok(mut accounts) = self.bridge.accounts.lock() {
+            accounts.remove(&self.account);
+        }
+    }
 }
 
 pub enum AccountCommand {
+    #[cfg(test)]
+    Barrier(tokio::sync::oneshot::Sender<usize>),
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
     Wake { agent_id: String, epoch: i64 },
     /// Revoke the epoch and interrupt any observed native turn, including before its reply.
@@ -120,7 +173,7 @@ pub struct AccountHandle {
 impl AccountHandle {
     pub async fn send(&self, command: AccountCommand) -> Result<(), WorkerError> {
         let mut stop = self.stop.subscribe();
-        tokio::select! { biased; _ = cancelled(&mut stop) => Err(WorkerError::Closed), result = self.commands.send(command) => result.map_err(|_|WorkerError::Closed) }
+        tokio::select! { biased; _ = Shutdown::cancelled(&mut stop) => Err(WorkerError::Closed), result = self.commands.send(command) => result.map_err(|_|WorkerError::Closed) }
     }
     pub fn try_send(
         &self,
@@ -156,36 +209,30 @@ pub async fn start_account_worker(
     options: OpenOptions,
     mut config: SessionTaskConfig,
 ) -> Result<AccountHandle, WorkerError> {
-    let mut accounts = bridge.accounts.lock().await;
-    if accounts.contains(&account) {
-        return Err(WorkerError::AlreadyRunning);
-    }
+    let lease = AccountLease::acquire(&bridge, &account)?;
     let recovery_account = account.clone();
     let generation = config.generation;
-    let recovery = bridge
-        .run(move |store| store::recover(store, &recovery_account, generation))
-        .await;
-    let recovered = match recovery {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(error);
-        }
-    };
+    let recovered = bridge
+        .worker_run(move |store| store::recover(store, &recovery_account, generation))
+        .await?;
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let timeout_ms = config.timeout_ms;
-    let session = SessionHandle::open(
+    let mut session = SessionHandle::open(
         factory,
         ProviderHandle::for_account(&account),
         options,
         config,
     )
-    .await;
-    let mut session = match session {
-        Ok(value) => value,
-        Err(error) => {
-            return Err(error.into());
-        }
-    };
+    .await?;
+    let effect_account = account.clone();
+    let (effects, streams) = bridge
+        .worker_run(move |store| {
+            Ok((
+                store::recover_effects(store, &effect_account)?,
+                store::restore_streams(store, &effect_account)?,
+            ))
+        })
+        .await?;
     let events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
     let (commands, inbox) = mpsc::channel(COMMAND_CAPACITY);
     let stop = Shutdown::default();
@@ -203,17 +250,27 @@ pub async fn start_account_worker(
             .into_iter()
             .map(|(context, record)| (record.ticket.id, context))
             .collect(),
-        streams: NotificationStreamBuffer::default(),
+        streams,
         deferred: VecDeque::new(),
         callbacks: BTreeMap::new(),
-        effects: VecDeque::new(),
+        effects,
         closing: false,
     };
-    accounts.insert(account.clone());
-    drop(accounts);
+    let mut cancelled_owner = stop.subscribe();
+    #[cfg(test)]
+    let faults = bridge.faults.clone();
     let task = tokio::spawn(async move {
-        let result = worker.run().await;
-        bridge.accounts.lock().await.remove(&account);
+        let run = worker.run();
+        tokio::pin!(run);
+        let result = tokio::select! { biased;
+            result = &mut run => result,
+            _ = Shutdown::cancelled(&mut cancelled_owner) => {
+                #[cfg(test)]
+                faults.shutdown_wait.notify_one();
+                tokio::time::timeout(SHUTDOWN_GRACE, &mut run).await.unwrap_or(Err(WorkerError::ShutdownTimeout))
+            },
+        };
+        drop(lease);
         result
     });
     Ok(AccountHandle {
@@ -240,7 +297,9 @@ impl Pending {
         })
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 enum Effect {
+    #[serde(skip)]
     Callback(studio_runtime_process::EventCursor, Frame),
     Submit(TurnIntent),
     Interrupt {
@@ -271,18 +330,31 @@ impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
         let result = self.serve().await;
         self.control.cancel();
+        #[cfg(test)]
+        if matches!(result, Err(WorkerError::InjectedCrash)) {
+            return result;
+        }
         let exit = self.session.completion().await;
         // Completion has an independent lane. Drain bounded delivered and retained
         // evidence before persisting disconnect; abandoned cursors are never ACKed.
         let cleanup = self.finish(exit).await;
-        result.and(cleanup)
+        match result.and(cleanup) {
+            Err(WorkerError::Session(SessionTaskError::Closed)) if *self.stop.borrow() => Ok(()),
+            result => result,
+        }
     }
     async fn serve(&mut self) -> Result<(), WorkerError> {
+        let cadence = std::time::Duration::from_millis(750);
+        let mut flush = tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if self.closing || *self.stop.borrow() {
                 return Ok(());
             }
-            if let Some(effect) = self.effects.pop_front() {
+            if self.session.status.borrow().initialization == InitializationStatus::Ready
+                && let Some(effect) = self.effects.pop_front()
+            {
+                let durable = store::effect_key(&self.account, &effect);
                 match effect {
                     Effect::Callback(cursor, frame) => self.answer_callback(cursor, frame).await?,
                     Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
@@ -293,18 +365,33 @@ impl Worker {
                     } => self.interrupt(agent, thread, turn).await?,
                     Effect::Wake(agent_id, epoch) => self.wake(agent_id, epoch).await?,
                 }
+                if !self.closing
+                    && let Some(key) = durable
+                {
+                    self.db(move |store| store::complete_effect(store, &key))
+                        .await?;
+                }
                 continue;
             }
+            #[cfg(test)]
+            self.bridge.faults.cycle();
             tokio::select! {
                 biased;
-                _ = cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
-                event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
-                changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
+                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
                 command = self.inbox.recv(), if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
+                    #[cfg(test)]
+                    Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
                     None => return Ok(()),
-                }
+                },
+                event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
+                _ = flush.tick(), if self.streams.pending_bytes() > 0 => self.flush().await?,
+                changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
+            }
+            // One ready event after a command prevents a command flood starving evidence.
+            if let Ok(event) = self.events.try_recv() {
+                self.event(event).await?;
             }
         }
     }
@@ -313,10 +400,10 @@ impl Worker {
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
         let bridge = self.bridge.clone();
-        let job = bridge.run(operation);
+        let job = bridge.worker_run(operation);
         tokio::pin!(job);
         tokio::select! { biased;
-            _ = cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
+            _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
             result = &mut job => result,
         }
     }
@@ -329,7 +416,7 @@ impl Worker {
         tokio::pin!(future);
         loop {
             tokio::select! { biased;
-                _ = cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); },
+                _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); },
                 result = &mut future => return result.map_err(Into::into),
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
             }
@@ -411,11 +498,13 @@ impl Worker {
         }
         let recovery = prepared.recovery_record();
         let save_context = context.clone();
+        let account = self.account.clone();
         let authorized = self
             .db(move |store| {
                 store::submitted(
                     store,
                     &save_context,
+                    &account,
                     &recovery,
                     interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
                     submission.as_ref(),
@@ -428,13 +517,12 @@ impl Worker {
         self.pending.insert(id.clone(), context);
         let control = self.control.clone();
         if let Err(error) = self.drive(control.submit(prepared)).await {
-            let outcome = if matches!(
-                error,
-                WorkerError::Session(SessionTaskError::AdmissionUnknown)
-            ) {
-                WriteOutcome::Unknown
-            } else {
+            // Only the session's explicit pre-admission rejection proves NotSent.
+            // A failure while draining unrelated evidence may follow an enqueued write.
+            let outcome = if definite_rejection(&error) {
                 WriteOutcome::NotSent
+            } else {
+                WriteOutcome::Unknown
             };
             self.event(SessionEvent {
                 journal: None,
@@ -498,11 +586,18 @@ impl Worker {
             {
                 let operation = operation_id.0.clone();
                 let written = *outcome == WriteOutcome::Written;
-                self.db(move |store| store::callback_written(store, &operation, written))
+                let write_outcome = *outcome;
+                self.db(move |store| store::callback_written(store, &operation, write_outcome))
                     .await?;
                 if !written {
                     return Err(WorkerError::CallbackUnknown);
                 }
+                let account = self.account.clone();
+                let generation = self.generation.0;
+                self.db(move |store| {
+                    store::callback_settled(store, &account, generation, cursor.0)
+                })
+                .await?;
                 if !self.closing {
                     self.control.settled(cursor).await?;
                 }
@@ -541,20 +636,26 @@ impl Worker {
     async fn journal(&mut self, entry: JournalEntry) -> Result<(), WorkerError> {
         let cursor = entry.cursor;
         let account = self.account.clone();
-        let streams = self.streams.clone();
-        let (entry, committed) = self
+        let streams = std::mem::take(&mut self.streams);
+        let (entry, previous, committed) = self
             .db(move |store| {
                 let result = store::journal(store, &account, &streams, &entry)?;
-                Ok((entry, result))
+                Ok((entry, streams, result))
             })
             .await?;
         let Some((streams, effect)) = committed else {
+            self.streams = previous;
             if self.deferred.len() == MAX_UNSETTLED {
                 return Err(WorkerError::Capacity);
             }
             self.deferred.push_back(entry);
             return Ok(());
         };
+        #[cfg(test)]
+        self.bridge
+            .faults
+            .journal_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
         if let Some(effect) = effect {
             self.push(effect)?;
@@ -577,6 +678,13 @@ impl Worker {
         cursor: studio_runtime_process::EventCursor,
         frame: Frame,
     ) -> Result<(), WorkerError> {
+        while self.session.status.borrow().initialization != InitializationStatus::Ready {
+            tokio::select! { biased;
+                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; return Ok(()); },
+                changed = self.session.status.changed() => { changed.map_err(|_| WorkerError::Closed)?; },
+                event = self.events.recv() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },
+            }
+        }
         let operation = format!(
             "callback:{}:{}:{}",
             self.account, self.generation.0, cursor.0
@@ -585,8 +693,10 @@ impl Worker {
             .control
             .prepare_frame(OperationId(operation.clone()), &frame)?;
         let key = operation.clone();
+        let account = self.account.clone();
+        let generation = self.generation.0;
         let admission = self
-            .db(move |store| store::callback_admission(store, &key))
+            .db(move |store| store::callback_admission(store, &key, &account, generation, cursor.0))
             .await?;
         if admission {
             self.control.settled(cursor).await?;
@@ -595,9 +705,26 @@ impl Worker {
         if self.callbacks.len() >= MAX_PENDING_RESPONSES {
             return Err(WorkerError::Capacity);
         }
-        self.callbacks.insert(operation, cursor);
+        self.callbacks.insert(operation.clone(), cursor);
         let control = self.control.clone();
-        self.drive(control.submit_frame(prepared)).await?;
+        if let Err(error) = self.drive(control.submit_frame(prepared)).await {
+            if definite_rejection(&error) {
+                self.callbacks.remove(&operation);
+                self.db(move |store| {
+                    store::callback_written(store, &operation, WriteOutcome::NotSent)
+                })
+                .await?;
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+    async fn flush(&mut self) -> Result<(), WorkerError> {
+        let account = self.account.clone();
+        let streams = std::mem::take(&mut self.streams);
+        self.streams = self
+            .db(move |store| store::flush_streams(store, &account, streams))
+            .await?;
         Ok(())
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
@@ -613,6 +740,7 @@ impl Worker {
             outcomes: exit.outcomes,
         })
         .await?;
+        self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
@@ -629,17 +757,20 @@ impl Worker {
         exit.result.map_err(Into::into)
     }
 }
+fn definite_rejection(error: &WorkerError) -> bool {
+    matches!(
+        error,
+        WorkerError::Session(
+            SessionTaskError::Protocol(studio_runtime_providers::SessionError::NotReady)
+                | SessionTaskError::Capacity
+                | SessionTaskError::Invalid
+        )
+    )
+}
 fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
-}
-async fn cancelled(stop: &mut watch::Receiver<bool>) {
-    loop {
-        if *stop.borrow_and_update() || stop.changed().await.is_err() {
-            return;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -654,6 +785,16 @@ pub fn commit_prepared_turn(
     generation: u64,
     submission: &crate::notification_dispatch::PreparedSubmission,
 ) -> Result<bool, WorkerError> {
+    if AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?.is_none_or(|agent| {
+        agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != intent.account_key
+    }) {
+        return Ok(false);
+    }
     let replay = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
         .is_some_and(|a| a["receipts"]["submission"].is_object());
     let may_submit = replay

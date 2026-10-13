@@ -319,16 +319,26 @@ pub fn claim_intent(
     if !attempt_created.is_finite() {
         return Err(SchedulerError::InvalidAttemptTimestamp);
     }
-    let claimed = lifecycle_transaction(store, |transaction| {
-        SchedulerRepository::claim(
-            transaction,
-            agent_id,
-            epoch,
-            attempt_id,
-            attempt_created,
-            32,
-        )
-    })?;
+    lifecycle_transaction_with(store, |tx| {
+        claim_intent_in_transaction(tx, agent_id, epoch, attempt_id, attempt_created)
+    })
+}
+
+pub(crate) fn claim_intent_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    attempt_id: &str,
+    attempt_created: f64,
+) -> Result<Option<TurnIntent>, SchedulerError> {
+    let claimed = SchedulerRepository::claim(
+        transaction,
+        agent_id,
+        epoch,
+        attempt_id,
+        attempt_created,
+        32,
+    )?;
     let Some(claimed) = claimed else {
         return Ok(None);
     };

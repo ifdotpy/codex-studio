@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let app = router(HttpState::new(
+    let state = HttpState::new(
         token,
         workspace_id,
         native_path,
@@ -83,14 +83,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         public_origin,
         Some(store),
         Some(account_policy),
-    ))?;
+    );
+    let app = router(state.clone())?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    axum::serve(
+    let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    .await;
+    state.shutdown_services().await?;
+    result?;
     Ok(())
 }
 

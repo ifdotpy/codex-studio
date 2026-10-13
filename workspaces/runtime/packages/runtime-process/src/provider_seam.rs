@@ -194,6 +194,13 @@ impl Default for Shutdown {
     }
 }
 impl Shutdown {
+    pub async fn cancelled(stop: &mut watch::Receiver<bool>) {
+        loop {
+            if *stop.borrow_and_update() || stop.changed().await.is_err() {
+                return;
+            }
+        }
+    }
     pub fn cancel(&self) {
         self.0.send_replace(true);
     }

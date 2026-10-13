@@ -31,6 +31,35 @@ class ManualTimer:
 def snapshot(root):
     import __main__ as oracle
     result = oracle.snapshot(root, tables=TABLES)
+    if _runtime is not None and pathlib.Path(root) != _runtime.root:
+        # Rust durably stores only a base obscured by a later item/started.
+        # Compare it to Python's live buffer before removing this exact internal
+        # receipt kind from relational parity; missing/extra/wrong bases fail.
+        expected_bases = {}
+        with _runtime.read_db() as db:
+            for key, entry in _runtime._stream_buffer.entries.items():
+                account, connection, thread, turn, item, method = key
+                base = entry['base']
+                if base is None or method != 'item/agentMessage/delta':
+                    continue
+                agent = db.execute("SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?", (thread,)).fetchone()
+                if agent is None:
+                    continue
+                item_id = agent[0] + ':' + item
+                saved = db.execute('SELECT record FROM runtime_items WHERE id=?', (item_id,)).fetchone()
+                record = json.loads(saved[0]) if saved else {}
+                full = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?', (item_id,)).fetchone()
+                visible = full[0] if record.get('truncated') and full else record.get('text', '')
+                if base == visible:
+                    continue
+                stream_key = dict(account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
+                encoded = json.dumps(stream_key, ensure_ascii=False, separators=(',', ':'))
+                identity = 'account-worker:stream-base:' + hashlib.sha256(encoded.encode()).hexdigest()
+                expected_bases[identity] = base
+        receipts = result['runtime_operation_receipts']
+        actual_bases = {row['id']:row['result'] for row in receipts if row['id'].startswith('account-worker:stream-base:') and row['signature'] == 'stream-base'}
+        assert actual_bases == expected_bases, 'durable stream bases differ from Python live state'
+        result['runtime_operation_receipts'] = [row for row in receipts if row['id'] not in actual_bases]
     prepared = pathlib.Path(root).parent / 'prepared.json'
     if prepared.exists(): result['prepared'] = json.loads(prepared.read_text())
     return result

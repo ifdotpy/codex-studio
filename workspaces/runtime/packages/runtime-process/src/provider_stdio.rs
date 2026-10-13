@@ -13,6 +13,7 @@ use tokio::{
 
 // POSIX ESRCH: the process group exited before the stop signal.
 const NO_SUCH_PROCESS: i32 = 3;
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct StdioProviderTaskFactory {
     pub deadline: Instant,
@@ -109,12 +110,19 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
                 };
                 let result = tokio::select! {
                     biased;
-                    _ = crate::provider_task::cancelled(&mut stop) => Ok(()),
+                    _ = Shutdown::cancelled(&mut stop) => Ok(()),
                     result = tokio::time::timeout_at(deadline, exchange) => result.unwrap_or(Err(AdapterError::Timeout)),
                 };
                 // Always wait, including when the group already exited (ESRCH).
                 let killed = child.start_kill();
-                let reaped = child.wait().await;
+                let reaped = tokio::time::timeout(REAP_GRACE, child.wait())
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "provider reap deadline",
+                        ))
+                    });
                 let cleanup = killed
                     .or_else(|error| {
                         if error.raw_os_error() == Some(NO_SUCH_PROCESS) {

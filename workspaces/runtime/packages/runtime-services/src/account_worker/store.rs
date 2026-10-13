@@ -74,18 +74,50 @@ pub(super) fn recover(
     generation: Generation,
 ) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
     scheduler::lifecycle_transaction(store, |tx| {
-        // Only this account is owned here. Global unsubmitted recovery belongs to
-        // the server startup boundary, before any worker can claim new input.
-        SchedulerRepository::reconcile_generation(tx, account, generation.0, now())
+        SchedulerRepository::recover_unsubmitted_for_account(tx, account)?;
+        SchedulerRepository::reconcile_generation(tx, account, generation.0, now())?;
+        // The repository preserves Python recovery records. Journal delivery needs
+        // the scoped attempt restored before notifications can be acknowledged.
+        let mut statement = tx.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.startAttempt') IS NULL AND COALESCE(json_extract(record,'$.disconnectRecovery.startAttempt.connectionGeneration'),json_extract(record,'$.restartRecovery.startAttempt.connectionGeneration'))=?2")?;
+        let ids = statement
+            .query_map(
+                params![
+                    account,
+                    i64::try_from(generation.0)
+                        .map_err(|_| StoreError::SchemaMismatch("generation overflow".into()))?
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            let mut agent =
+                AgentRepository::get(tx, &AgentId::from(id.as_str()))?.ok_or_else(|| {
+                    StoreError::InvalidSyncObject {
+                        scope: "runtime_agents".into(),
+                        id: id.clone(),
+                    }
+                })?;
+            let attempt = agent
+                .extra
+                .get("disconnectRecovery")
+                .or_else(|| agent.extra.get("restartRecovery"))
+                .and_then(|value| value.get("startAttempt"))
+                .cloned();
+            if let Some(attempt) = attempt {
+                agent.extra.insert("startAttempt".into(), attempt);
+                AgentRepository::put(tx, &agent)?;
+            }
+        }
+        Ok(())
     })?;
     scheduler::lifecycle_transaction_with(store, |tx| {
         let prefix = format!("account-worker:account:{account}:");
-        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE substr(r.id,1,?1)=?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.request.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
+        let mut stmt=tx.prepare("SELECT r.result FROM runtime_operation_receipts r WHERE r.id>=?1 AND r.id<?2 AND substr(r.id,-10)=':submitted' AND json_extract(r.result,'$.request.generation')=?3 AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved') ORDER BY r.id LIMIT 33")?;
         let rows = stmt
             .query_map(
                 params![
-                    prefix.len() as i64,
                     prefix,
+                    format!("{prefix}~"),
                     i64::try_from(generation.0).map_err(|_| invalid(account))?
                 ],
                 |r| r.get::<_, String>(0),
@@ -129,25 +161,29 @@ pub(super) fn claim(
     agent: &str,
     epoch: i64,
 ) -> Result<Option<TurnIntent>, WorkerError> {
-    let record = AgentRepository::get(&store.read()?, &AgentId::from(agent))?;
-    if record.as_ref().is_none_or(|a| {
-        a.extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            != account
-    }) {
-        return Ok(None);
-    }
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;
     let attempt = studio_runtime_store::sha256_hex(&bytes);
-    match scheduler::claim_intent(store, agent, epoch, &attempt, now()) {
-        Ok(intent) => Ok(intent),
-        Err(scheduler::SchedulerError::PolicyRefused(_)) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        let record = AgentRepository::get(tx, &AgentId::from(agent))?;
+        if record.as_ref().is_none_or(|a| account_key(a) != account) {
+            return Ok(None);
+        }
+        match scheduler::claim_intent_in_transaction(tx, agent, epoch, &attempt, now()) {
+            Ok(intent) => Ok(intent),
+            Err(scheduler::SchedulerError::PolicyRefused(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    })
 }
+fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
+    agent
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+}
+
 pub(super) fn params(
     store: &RuntimeStore,
     intent: &TurnIntent,
@@ -185,6 +221,7 @@ pub(super) fn params(
 pub(super) fn submitted(
     store: &RuntimeStore,
     context: &Pending,
+    account: &str,
     request: &RecoveredRequest,
     turn: Option<&str>,
     submission: Option<&PreparedSubmission>,
@@ -197,6 +234,9 @@ pub(super) fn submitted(
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))? else {
             return Ok(false);
         };
+        if account_key(&agent) != account || i.account_key != account {
+            return Ok(false);
+        }
         let authorized = match context.method()? {
             Method::TurnStart => commit_prepared_turn(
                 tx,
@@ -247,91 +287,103 @@ pub(super) fn outcome(
         }
         return Ok((false, None));
     };
-    let i = &context.intent;
-    let mut effect = None;
-    let retired = match outcome {
-        SessionOutcome::Write {
-            outcome: WriteOutcome::Written,
-            recovery: Some(request),
-            ..
-        } => {
-            store
-                .transaction_with(|tx| save(tx, &context.operation, "written", record(&request)))?;
-            false
-        }
-        SessionOutcome::Write {
-            outcome: WriteOutcome::Written,
-            ..
-        } => false,
-        SessionOutcome::Write {
-            outcome, ticket, ..
-        } => {
-            let not_sent = outcome == WriteOutcome::NotSent;
-            uncertain(store, context, ticket.as_ref(), not_sent)?;
-            not_sent
-        }
-        SessionOutcome::Resolved {
-            outcome: RequestOutcome::Unknown,
-            ticket,
-        } => {
-            uncertain(store, context, Some(&ticket), false)?;
-            false
-        }
-        SessionOutcome::Resolved {
-            ticket,
-            outcome: RequestOutcome::Reply { body, .. },
-        } => {
-            match context.method()? {
-                Method::ThreadResume => {
-                    if let ResponseBody::Result(ref value) = body
-                        && value["thread"]["id"].as_str() == i.thread_id.as_deref()
-                    {
-                        effect = Some(Effect::Submit(i.clone()));
-                    } else {
-                        scheduler::settle_start_outcome(
-                            store,
-                            i,
-                            TurnStart::Blocked {
-                                reason: "Provider thread resume failed; input remains pending."
-                                    .into(),
-                            },
-                        )?;
-                    }
-                }
-                Method::TurnStart => match body {
-                    ResponseBody::Result(value) => {
-                        if let Some(turn) = value["turn"]["id"].as_str().filter(|s| !s.is_empty()) {
-                            if scheduler::settle_started_provider(
-                                store,
-                                i,
-                                &id_string(&ticket.id),
-                                ticket.generation,
-                                turn,
-                            )? == Some(true)
-                            {
-                                effect = Some(Effect::Interrupt {
-                                    agent: i.agent_id.clone(),
-                                    thread: i.thread_id.clone().unwrap_or_default(),
-                                    turn: turn.into(),
-                                });
-                            }
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        let i = &context.intent;
+        let mut effect = None;
+        let retired = match outcome {
+            SessionOutcome::Write {
+                outcome: WriteOutcome::Written,
+                recovery: Some(request),
+                ..
+            } => {
+                save(tx, &context.operation, "written", record(&request))?;
+                false
+            }
+            SessionOutcome::Write {
+                outcome: WriteOutcome::Written,
+                ..
+            } => false,
+            SessionOutcome::Write {
+                outcome, ticket, ..
+            } => {
+                let not_sent = outcome == WriteOutcome::NotSent;
+                uncertain(tx, context, ticket.as_ref(), not_sent)?;
+                not_sent
+            }
+            SessionOutcome::Resolved {
+                outcome: RequestOutcome::Unknown,
+                ticket,
+            } => {
+                uncertain(tx, context, Some(&ticket), false)?;
+                false
+            }
+            SessionOutcome::Resolved {
+                ticket,
+                outcome: RequestOutcome::Reply { body, .. },
+            } => {
+                match context.method()? {
+                    Method::ThreadResume => {
+                        if let ResponseBody::Result(ref value) = body
+                            && value["thread"]["id"].as_str() == i.thread_id.as_deref()
+                        {
+                            effect = Some(Effect::Submit(i.clone()));
                         } else {
-                            scheduler::settle_start_outcome(store, i, TurnStart::Unknown)?;
-                            return Ok((false, None));
+                            SchedulerRepository::settle_start_outcome(
+                                tx,
+                                &i.identity(),
+                                "held",
+                                Some("Provider thread resume failed; input remains pending."),
+                            )?;
                         }
                     }
-                    ResponseBody::Error(error) => {
-                        scheduler::settle_start_rejected_provider(
-                            store,
-                            i,
-                            &id_string(&ticket.id),
-                            ticket.generation,
-                            error,
-                        )?;
-                    }
-                },
-                Method::TurnInterrupt => {
-                    scheduler::lifecycle_transaction(store, |tx| {
+                    Method::TurnStart => match body {
+                        ResponseBody::Result(value) => {
+                            if let Some(turn) =
+                                value["turn"]["id"].as_str().filter(|s| !s.is_empty())
+                            {
+                                if SchedulerRepository::settle_started_provider(
+                                    tx,
+                                    &i.agent_id,
+                                    i.epoch,
+                                    &i.attempt_id,
+                                    &id_string(&ticket.id),
+                                    &i.account_key,
+                                    ticket.generation,
+                                    i.thread_id.as_deref().unwrap_or(""),
+                                    turn,
+                                )? == Some(true)
+                                {
+                                    effect = Some(Effect::Interrupt {
+                                        agent: i.agent_id.clone(),
+                                        thread: i.thread_id.clone().unwrap_or_default(),
+                                        turn: turn.into(),
+                                    });
+                                }
+                            } else {
+                                SchedulerRepository::settle_start_outcome(
+                                    tx,
+                                    &i.identity(),
+                                    "uncertain",
+                                    None,
+                                )?;
+                                return Ok((false, None));
+                            }
+                        }
+                        ResponseBody::Error(error) => {
+                            SchedulerRepository::settle_start_rejected_provider(
+                                tx,
+                                &i.agent_id,
+                                i.epoch,
+                                &i.attempt_id,
+                                &id_string(&ticket.id),
+                                &i.account_key,
+                                ticket.generation,
+                                i.thread_id.as_deref().unwrap_or(""),
+                                error,
+                            )?;
+                        }
+                    },
+                    Method::TurnInterrupt => {
                         SchedulerRepository::settle_interrupt(
                             tx,
                             &id_string(&ticket.id),
@@ -341,38 +393,37 @@ pub(super) fn outcome(
                             } else {
                                 "accepted"
                             },
-                        )
-                    })?;
+                        )?;
+                    }
+                    _ => {}
                 }
-                _ => {}
+                true
             }
-            true
+            _ => false,
+        };
+        if retired {
+            forget_request(tx, &context.operation)?;
         }
-        _ => false,
-    };
-    if retired {
-        scheduler::lifecycle_transaction_with(store, |tx| {
-            save(tx, &context.operation, "resolved", json!(true))
-        })?;
-    }
-    Ok((retired, effect))
+        if let Some(effect) = &effect {
+            persist_effect(tx, account, effect)?;
+        }
+        Ok((retired, effect))
+    })
 }
 fn uncertain(
-    store: &RuntimeStore,
+    tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     not_sent: bool,
 ) -> Result<(), WorkerError> {
     if context.method()? == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
-        scheduler::lifecycle_transaction(store, |tx| {
-            SchedulerRepository::settle_interrupt(
-                tx,
-                &id_string(&ticket.id),
-                ticket.generation,
-                if not_sent { "unsent" } else { "unknown" },
-            )
-        })?;
+        SchedulerRepository::settle_interrupt(
+            tx,
+            &id_string(&ticket.id),
+            ticket.generation,
+            if not_sent { "unsent" } else { "unknown" },
+        )?;
     } else {
         let outcome = if not_sent {
             TurnStart::NotSubmitted
@@ -383,7 +434,19 @@ fn uncertain(
                 reason: "Provider thread resume outcome is unknown; input remains pending.".into(),
             }
         };
-        scheduler::settle_start_outcome(store, &context.intent, outcome)?;
+        SchedulerRepository::settle_start_outcome(
+            tx,
+            &context.intent.identity(),
+            match &outcome {
+                TurnStart::NotSubmitted => "pending",
+                TurnStart::Unknown => "uncertain",
+                TurnStart::Blocked { .. } => "held",
+            },
+            match &outcome {
+                TurnStart::Blocked { reason } => Some(reason.as_str()),
+                _ => None,
+            },
+        )?;
     }
     Ok(())
 }
@@ -406,13 +469,25 @@ pub(super) fn journal(
         JournalPayload::Exit(value) => json!({"exit":value}),
         JournalPayload::Other { kind, payload } => json!({"kind":kind,"payload":payload}),
     };
+    let digest = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
     scheduler::lifecycle_transaction_with(store, |tx| {
-        if let Some(old) = receipt(tx, &operation, "settled")? {
-            if old != payload {
-                return Err(invalid(&operation));
-            }
+        if entry.cursor.0 <= checkpoint(tx, account, entry.generation.0)? {
             return Ok(Some((streams.clone(), None)));
         }
+        if let Some(old) = receipt(tx, &operation, "settled")? {
+            if old["digest"] != digest {
+                return Err(invalid(&operation));
+            }
+            if old["committed"] == true {
+                return Ok(Some((streams.clone(), None)));
+            }
+        }
+        replace(
+            tx,
+            &operation,
+            "settled",
+            json!({"cursor":entry.cursor.0,"digest":digest,"ready":false,"committed":false}),
+        )?;
         let mut next = streams.clone();
         let mut effect = None;
         if let JournalPayload::Frame(frame) = &entry.payload {
@@ -466,6 +541,9 @@ pub(super) fn journal(
                             )?
                             .unwrap_or_else(|| streams.clone());
                             if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                                crate::notification_dispatch::prune_inactive_streams(
+                                    tx, &mut next,
+                                )?;
                                 effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
                             }
                         }
@@ -487,20 +565,35 @@ pub(super) fn journal(
                             )?;
                             let staged =
                                 dispatched.stream_update.unwrap_or_else(|| streams.clone());
-                            next = flush_notification_streams(
-                                tx,
-                                &identity.agent_id,
-                                &store.root().to_string_lossy(),
-                                &staged,
-                                now(),
-                            )?
-                            .unwrap_or(staged);
+                            next = if staged.pending_bytes() >= STREAM_FLUSH_BYTES {
+                                flush_notification_streams(
+                                    tx,
+                                    &identity.agent_id,
+                                    &store.root().to_string_lossy(),
+                                    &staged,
+                                    now(),
+                                )?
+                                .unwrap_or(staged)
+                            } else {
+                                staged
+                            };
                         }
                     }
                 }
             }
         }
-        save(tx, &operation, "settled", payload)?;
+        if let Some(effect) = &effect {
+            persist_effect(tx, account, effect)?;
+        }
+        persist_streams(tx, account, &next)?;
+        let callback = matches!(&entry.payload, JournalPayload::Frame(frame) if super::callback::response(frame).is_some());
+        replace(
+            tx,
+            &operation,
+            "settled",
+            json!({"cursor":entry.cursor.0,"digest":digest,"ready":!callback,"committed":true}),
+        )?;
+        compact(tx, account, entry.generation.0)?;
         Ok(Some((next, effect)))
     })
 }
@@ -516,7 +609,7 @@ pub(super) fn stop(
     account: &str,
     agent: &str,
 ) -> Result<Option<Effect>, WorkerError> {
-    scheduler::lifecycle_transaction(store, |tx| {
+    scheduler::lifecycle_transaction_with(store, |tx| {
         let Some(record) = AgentRepository::get(tx, &AgentId::from(agent))? else {
             return Ok(None);
         };
@@ -537,15 +630,18 @@ pub(super) fn stop(
         let turn = attempt["turnId"]
             .as_str()
             .or_else(|| attempt["observedTurnId"].as_str());
-        Ok(turn
+        let effect = turn
             .zip(agent.extra.get("threadId").unwrap_or(&Value::Null).as_str())
             .map(|(turn, thread)| Effect::Interrupt {
                 agent: agent.id.0.clone(),
                 thread: thread.into(),
                 turn: turn.into(),
-            }))
+            });
+        if let Some(effect) = &effect {
+            persist_effect(tx, account, effect)?;
+        }
+        Ok(effect)
     })
-    .map_err(Into::into)
 }
 pub(super) fn interrupt_intent(
     store: &RuntimeStore,
@@ -598,8 +694,14 @@ pub(super) fn was_submitted(store: &RuntimeStore, operation: &str) -> Result<boo
 pub(super) fn callback_admission(
     store: &RuntimeStore,
     operation: &str,
+    account: &str,
+    generation: u64,
+    cursor: u64,
 ) -> Result<bool, WorkerError> {
     store.transaction_with(|tx| {
+        if cursor <= checkpoint(tx, account, generation)? {
+            return Ok(true);
+        }
         if receipt(tx, operation, "written")? == Some(json!(true)) {
             return Ok(true);
         }
@@ -613,14 +715,268 @@ pub(super) fn callback_admission(
 pub(super) fn callback_written(
     store: &RuntimeStore,
     operation: &str,
-    written: bool,
+    outcome: WriteOutcome,
 ) -> Result<(), WorkerError> {
     store.transaction_with(|tx| {
+        if outcome == WriteOutcome::NotSent {
+            tx.execute(
+                "DELETE FROM runtime_operation_receipts WHERE id=?1",
+                [receipt_id(operation, "submitted")],
+            )?;
+            return Ok(());
+        }
         save(
             tx,
             operation,
-            if written { "written" } else { "unknown" },
+            if outcome == WriteOutcome::Written {
+                "written"
+            } else {
+                "unknown"
+            },
             json!(true),
         )
+    })
+}
+
+// The follow-on effect is part of the transition that owes it. Repeating an
+// effect after a crash is safe: submission checks its durable operation identity.
+pub(super) fn effect_key(account: &str, effect: &Effect) -> Option<String> {
+    if matches!(effect, Effect::Callback(..)) {
+        return None;
+    }
+    let raw = serde_json::to_vec(effect).ok()?;
+    Some(format!(
+        "effect:{account}:{}",
+        studio_runtime_store::sha256_hex(&raw)
+    ))
+}
+fn persist_effect(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    effect: &Effect,
+) -> Result<(), WorkerError> {
+    if let Some(key) = effect_key(account, effect) {
+        save(
+            tx,
+            &key,
+            "pending",
+            serde_json::to_value(effect).map_err(|_| invalid(&key))?,
+        )?;
+    }
+    Ok(())
+}
+pub(super) fn complete_effect(store: &RuntimeStore, key: &str) -> Result<(), WorkerError> {
+    store.transaction_with(|tx| {
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [receipt_id(key, "pending")],
+        )?;
+        Ok(())
+    })
+}
+pub(super) fn recover_effects(
+    store: &RuntimeStore,
+    account: &str,
+) -> Result<VecDeque<Effect>, WorkerError> {
+    let connection = store.read()?;
+    let prefix = format!("account-worker:effect:{account}:");
+    let mut stmt = connection.prepare(
+        "SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY id LIMIT 33",
+    )?;
+    let rows = stmt
+        .query_map(params![prefix, format!("{prefix}~")], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if rows.len() > MAX_PENDING_RESPONSES {
+        return Err(WorkerError::Capacity);
+    }
+    rows.into_iter()
+        .map(|raw| serde_json::from_str(&raw).map_err(|_| invalid(account)))
+        .collect()
+}
+
+fn forget_request(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+) -> Result<(), WorkerError> {
+    for phase in ["submitted", "written", "resolved"] {
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [receipt_id(operation, phase)],
+        )?;
+    }
+    Ok(())
+}
+
+fn replace(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    phase: &str,
+    value: Value,
+) -> Result<(), WorkerError> {
+    tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![receipt_id(operation, phase),phase,value.to_string()])?;
+    Ok(())
+}
+fn checkpoint(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+) -> Result<u64, WorkerError> {
+    Ok(
+        receipt(tx, &format!("cursor:{account}:{generation}"), "ack")?
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    )
+}
+fn compact(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+) -> Result<(), WorkerError> {
+    let prefix = format!("account-worker:journal:{account}:{generation}:");
+    let mut stmt = tx.prepare("SELECT result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.cursor') LIMIT 65")?;
+    let rows = stmt
+        .query_map(params![prefix, format!("{prefix}~")], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut cursor = checkpoint(tx, account, generation)?;
+    for raw in rows {
+        let row: Value = serde_json::from_str(&raw).map_err(|_| invalid(account))?;
+        let next = row["cursor"].as_u64().ok_or_else(|| invalid(account))?;
+        // A missing earlier row may still be deferred before its dispatch.
+        if row["ready"] != true {
+            break;
+        }
+        cursor = next;
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [receipt_id(
+                &format!("journal:{account}:{generation}:{cursor}"),
+                "settled",
+            )],
+        )?;
+        for phase in ["submitted", "written", "unknown"] {
+            tx.execute(
+                "DELETE FROM runtime_operation_receipts WHERE id=?1",
+                [receipt_id(
+                    &format!("callback:{account}:{generation}:{cursor}"),
+                    phase,
+                )],
+            )?;
+        }
+        let identity = json!({"providerHandle":ProviderHandle::for_account(account).as_str(),"generation":generation,"cursor":cursor});
+        let signature = studio_runtime_store::sha256_hex(identity.to_string().as_bytes());
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [format!("provider-notification:{signature}")],
+        )?;
+    }
+    replace(
+        tx,
+        &format!("cursor:{account}:{generation}"),
+        "ack",
+        json!(cursor),
+    )
+}
+pub(super) fn callback_settled(
+    store: &RuntimeStore,
+    account: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<(), WorkerError> {
+    store.transaction_with(|tx| {
+        let operation = format!("journal:{account}:{generation}:{cursor}");
+        if let Some(mut row) = receipt(tx, &operation, "settled")? {
+            row["ready"] = json!(true);
+            replace(tx, &operation, "settled", row)?;
+        }
+        compact(tx, account, generation)
+    })
+}
+
+// Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
+// bounds a durable batch when producers outpace that timer; answers are uncut.
+pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
+fn persist_streams(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    streams: &NotificationStreamBuffer,
+) -> Result<(), WorkerError> {
+    let mut metadata = serde_json::to_value(streams).map_err(|_| invalid(account))?;
+    let mut pending = Vec::new();
+    for entry in metadata["entries"]
+        .as_array_mut()
+        .ok_or_else(|| invalid(account))?
+    {
+        if entry["count"].as_u64().unwrap_or(0) > 0 {
+            pending.push(entry.clone());
+        }
+        entry["pending"] = json!("");
+        entry["count"] = json!(0);
+        entry["params"] = Value::Null;
+    }
+    let key = format!("streams:{account}");
+    replace(tx, &key, "metadata", metadata)?;
+    if pending.is_empty() {
+        tx.execute(
+            "DELETE FROM runtime_operation_receipts WHERE id=?1",
+            [receipt_id(&key, "pending")],
+        )?;
+        Ok(())
+    } else {
+        replace(tx, &key, "pending", json!(pending))
+    }
+}
+pub(super) fn restore_streams(
+    store: &RuntimeStore,
+    account: &str,
+) -> Result<NotificationStreamBuffer, WorkerError> {
+    store.transaction_with(|tx| {
+        let key = format!("streams:{account}");
+        let mut metadata =
+            receipt(tx, &key, "metadata")?.unwrap_or_else(|| json!({"entries":[],"closed":[]}));
+        if let Some(pending) = receipt(tx, &key, "pending")? {
+            for entry in pending.as_array().ok_or_else(|| invalid(account))? {
+                let target = metadata["entries"]
+                    .as_array_mut()
+                    .ok_or_else(|| invalid(account))?
+                    .iter_mut()
+                    .find(|stored| stored["key"] == entry["key"])
+                    .ok_or_else(|| invalid(account))?;
+                *target = entry.clone();
+            }
+        }
+        let mut streams = serde_json::from_value(metadata).map_err(|_| invalid(account))?;
+        crate::notification_dispatch::prune_inactive_streams(tx, &mut streams)?;
+        persist_streams(tx, account, &streams)?;
+        Ok(streams)
+    })
+}
+pub(super) fn flush_streams(
+    store: &RuntimeStore,
+    account: &str,
+    mut streams: NotificationStreamBuffer,
+) -> Result<NotificationStreamBuffer, WorkerError> {
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        for (owner, generation, thread) in streams.threads() {
+            let (_, identity) = SchedulerRepository::find_attempt_for_thread(
+                tx, &owner, generation, &thread, None,
+            )?;
+            if let Some((identity, _)) = identity
+                && let Some(next) = flush_notification_streams(
+                    tx,
+                    &identity.agent_id,
+                    &store.root().to_string_lossy(),
+                    &streams,
+                    now(),
+                )?
+            {
+                streams = next;
+            }
+        }
+        persist_streams(tx, account, &streams)?;
+        Ok(streams)
     })
 }

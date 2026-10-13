@@ -42,14 +42,14 @@ async fn panic_after_take_after_mutation_and_with_outstanding_receipt_retains_ev
         let task = tokio::spawn(async move {
             let _status = status;
             for index in 0.. {
-                let command = tokio::select! { _ = cancelled(&mut stopped) => break, command = inbox.recv() => command.unwrap() };
+                let command = tokio::select! { _ = Shutdown::cancelled(&mut stopped) => break, command = inbox.recv() => command.unwrap() };
                 if let AdapterCommand::Write {
                     reply, observed, ..
                 } = command
                 {
                     if index == 2 {
                         let _ignored = blocked.send(());
-                        cancelled(&mut stopped).await;
+                        Shutdown::cancelled(&mut stopped).await;
                         let _ignored = reply.send(CommandReceipt::Unknown);
                         break;
                     }
@@ -176,7 +176,7 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
             observed.await.unwrap();
         }
         sent.send(()).unwrap();
-        cancelled(&mut stopped).await;
+        Shutdown::cancelled(&mut stopped).await;
         TaskExit {
             result: Ok(()),
             recovery_needed: None,

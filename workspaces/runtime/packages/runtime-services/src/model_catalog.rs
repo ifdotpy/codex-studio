@@ -12,11 +12,14 @@ use std::time::Duration;
 use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
 use studio_runtime_process::{
     Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{InitializationStatus, OpenOptions, ProviderTaskFactory, SessionClock},
+    provider_seam::{
+        InitializationStatus, OpenOptions, ProviderTaskFactory, SessionClock, Shutdown,
+    },
 };
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
 
+const MAX_REFRESHES: usize = 4;
 const CATALOG_TTL: Duration = Duration::from_secs(300);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CATALOG_PAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -44,6 +47,9 @@ struct CatalogInner {
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
+    slots: Arc<tokio::sync::Semaphore>,
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    stop: Shutdown,
 }
 
 /// A single HTTP-state-owned cache and its provider process configuration.
@@ -64,6 +70,9 @@ impl ModelCatalogService {
             cache: Mutex::new(HashMap::new()),
             next_generation: Mutex::new(0),
             on_change,
+            slots: Arc::new(tokio::sync::Semaphore::new(MAX_REFRESHES)),
+            tasks: Mutex::new(Vec::new()),
+            stop: Shutdown::default(),
         }))
     }
 
@@ -75,13 +84,13 @@ impl ModelCatalogService {
         provider: &str,
         retry: bool,
     ) -> CatalogRead {
-        if provider != "codex" {
+        if provider != "codex" || *self.0.stop.subscribe().borrow() {
             return CatalogRead::Unavailable;
         }
 
         let now = Instant::now();
         let cache_key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        let (generation, stale) = {
+        let (generation, stale, permit) = {
             let Ok(mut cache) = self.0.cache.lock() else {
                 return CatalogRead::Unavailable;
             };
@@ -103,6 +112,11 @@ impl ModelCatalogService {
                 }
             }
             let stale = cache.get(&cache_key).and_then(|entry| entry.value.clone());
+            let Ok(permit) = self.0.slots.clone().try_acquire_owned() else {
+                return stale.map_or(CatalogRead::Pending, CatalogRead::Ready);
+            };
+            // A changed home/provider replaces the same account's former entry.
+            cache.retain(|key, _| key.0 != account_key || *key == cache_key);
             let Ok(mut next) = self.0.next_generation.lock() else {
                 return CatalogRead::Unavailable;
             };
@@ -118,20 +132,62 @@ impl ModelCatalogService {
                     pending: true,
                 },
             );
-            (generation, stale)
+            (generation, stale, permit)
         };
 
-        let service = self.clone();
+        let service = Arc::downgrade(&self.0);
+        let executable = self.0.executable.clone();
+        let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         let home = home.to_owned();
-        let worker_cache_key = cache_key.clone();
-        let _refresh = tokio::spawn(async move {
+        let mut tasks = self.0.tasks.lock().expect("catalog task registry");
+        if *self.0.stop.subscribe().borrow() {
+            return CatalogRead::Unavailable;
+        }
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(async move {
+            let _permit = permit;
             let result =
-                read_provider_catalog(service.0.executable.as_deref(), &home, account != "default")
+                read_provider_catalog(executable.as_deref(), &home, account != "default", stop)
                     .await;
-            let _stored = store_result(&service.0, &worker_cache_key, generation, result);
-        });
+            if let Some(inner) = service.upgrade() {
+                store_result(&inner, &cache_key, generation, result);
+            }
+        }));
         stale.map_or(CatalogRead::Pending, CatalogRead::Ready)
+    }
+    pub fn retain_accounts(&self, accounts: &[Value]) {
+        self.0
+            .cache
+            .lock()
+            .expect("catalog cache")
+            .retain(|key, _| {
+                accounts.iter().any(|account| {
+                    account["id"].as_str() == Some(key.0.as_str())
+                        && account["home"].as_str().unwrap_or("") == key.1
+                        && account["provider"].as_str().unwrap_or("codex") == key.2
+                })
+            });
+    }
+    pub async fn shutdown(&self) -> std::io::Result<()> {
+        let tasks = {
+            let mut tasks = self.0.tasks.lock().expect("catalog tasks");
+            self.0.stop.cancel();
+            std::mem::take(&mut *tasks)
+        };
+        let mut result = Ok(());
+        for task in tasks {
+            if let Err(error) = task.await {
+                result = Err(std::io::Error::other(error));
+            }
+        }
+        result
+    }
+}
+
+impl Drop for CatalogInner {
+    fn drop(&mut self) {
+        self.stop.cancel();
     }
 }
 
@@ -169,6 +225,7 @@ async fn read_provider_catalog(
     executable: Option<&std::path::Path>,
     home: &str,
     isolated: bool,
+    stop: Shutdown,
 ) -> Result<Value, ()> {
     let started = Instant::now();
     let executable = executable.unwrap_or_else(|| std::path::Path::new("codex"));
@@ -198,7 +255,7 @@ async fn read_provider_catalog(
     });
     #[cfg(unix)]
     {
-        read_session(factory, launch, started).await
+        read_session_with_shutdown(factory, launch, started, stop).await
     }
     #[cfg(not(unix))]
     {
@@ -207,11 +264,24 @@ async fn read_provider_catalog(
     }
 }
 
+#[cfg(test)]
 async fn read_session(
     factory: Arc<dyn ProviderTaskFactory>,
     launch: ProviderLaunchSpec,
     started: Instant,
 ) -> Result<Value, ()> {
+    read_session_with_shutdown(factory, launch, started, Shutdown::default()).await
+}
+async fn read_session_with_shutdown(
+    factory: Arc<dyn ProviderTaskFactory>,
+    launch: ProviderLaunchSpec,
+    started: Instant,
+    shutdown: Shutdown,
+) -> Result<Value, ()> {
+    let mut stop = shutdown.subscribe();
+    if *stop.borrow() {
+        return Err(());
+    }
     let mut session = SessionHandle::open(
         factory,
         ProviderHandle::for_account("model-catalog"),
@@ -235,7 +305,10 @@ async fn read_session(
     )
     .await
     .map_err(|_| ())?;
-    let result = read_pages(&mut session, started).await;
+    let result = tokio::select! { biased;
+        _ = Shutdown::cancelled(&mut stop) => Err(()),
+        result = read_pages(&mut session, started) => result,
+    };
     let closed = session.shutdown().await;
     // Cancellation also closes the adapter lanes; the session may observe that
     // closure before its stop signal. A complete catalog still requires reaping.
@@ -262,6 +335,26 @@ async fn next_event(
     Ok(event)
 }
 
+async fn catalog_drive<T>(
+    session: &mut SessionHandle,
+    future: impl std::future::Future<Output = Result<T, SessionTaskError>>,
+    pending: &mut std::collections::VecDeque<crate::provider_session_task::SessionEvent>,
+) -> Result<T, ()> {
+    tokio::pin!(future);
+    loop {
+        tokio::select! { biased;
+            result = &mut future => return result.map_err(|_|()),
+            event = next_event(session) => {
+                let event = event?;
+                if !event.outcomes.is_empty() {
+                    if pending.len() == crate::provider_session_task::MAX_UNSETTLED { return Err(()); }
+                    pending.push_back(event);
+                }
+            }
+        }
+    }
+}
+
 async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Value, ()> {
     while session.status.borrow().initialization != InitializationStatus::Ready {
         tokio::select! {
@@ -273,6 +366,7 @@ async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Val
             }
         }
     }
+    let mut pending = std::collections::VecDeque::new();
     let mut rows = Vec::new();
     let mut first_page = None;
     let mut cursor: Option<String> = None;
@@ -290,9 +384,10 @@ async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Val
             Some(cursor) => json!({"limit": 100, "includeHidden": true, "cursor": cursor}),
             None => json!({"limit": 100, "includeHidden": true}),
         };
-        let prepared = session
-            .control
-            .prepare(RequestSpec {
+        let control = session.control.clone();
+        let prepared = catalog_drive(
+            session,
+            control.prepare(RequestSpec {
                 id: RequestId::String(format!("catalog-page-{}", seen_cursors.len())),
                 operation_id: OperationId(format!("catalog-page-{}", seen_cursors.len())),
                 method: Method::ModelList,
@@ -300,12 +395,17 @@ async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Val
                 thread_id: None,
                 lightweight: true,
                 timeout_ms,
-            })
-            .await
-            .map_err(|_| ())?;
-        let ticket = session.control.submit(prepared).await.map_err(|_| ())?;
+            }),
+            &mut pending,
+        )
+        .await?;
+        let ticket = catalog_drive(session, control.submit(prepared), &mut pending).await?;
         let page = 'response: loop {
-            for outcome in next_event(session).await?.outcomes {
+            let event = match pending.pop_front() {
+                Some(event) => event,
+                None => next_event(session).await?,
+            };
+            for outcome in event.outcomes {
                 match outcome {
                     SessionOutcome::Resolved {
                         ticket: received,
@@ -384,7 +484,7 @@ mod tests {
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
 
-    struct Script(Vec<Value>);
+    struct Script(Vec<Value>, usize);
     impl ProviderTaskFactory for Script {
         fn open(
             &self,
@@ -393,6 +493,7 @@ mod tests {
             shutdown: Shutdown,
         ) -> OpenFuture<'_> {
             let pages = self.0.clone();
+            let flood = self.1;
             Box::pin(async move {
                 let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(LANE_CAPACITY);
                 let (entries, journal) = mpsc::channel(LANE_CAPACITY);
@@ -411,6 +512,34 @@ mod tests {
                                 AdapterCommand::Write {
                                     reply, observed, ..
                                 } => {
+                                    if write_index == 2 {
+                                        let burst = async {
+                                            for cursor in 1..=flood {
+                                                entries
+                                                    .send(JournalEntry {
+                                                        cursor: EventCursor(cursor as u64),
+                                                        generation: Generation(1),
+                                                        received_at_ms: options.clock.now_ms(),
+                                                        payload: JournalPayload::Other {
+                                                            kind: "catalog notice".into(),
+                                                            payload: json!({}),
+                                                        },
+                                                    })
+                                                    .await
+                                                    .expect("burst journal");
+                                            }
+                                        };
+                                        tokio::pin!(burst);
+                                        loop {
+                                            tokio::select! {
+                                                _ = &mut burst => break,
+                                                command = inbox.recv() => match command.expect("burst acknowledgement") {
+                                                    AdapterCommand::Ack {cursor,reply} => { reply.send(CommandReceipt::Acknowledged(cursor)).ok().expect("burst ACK"); },
+                                                    _ => panic!("catalog must wait for the first write receipt"),
+                                                }
+                                            }
+                                        }
+                                    }
                                     let receipt = if write_index == 0 {
                                         CommandReceipt::CachedInitialize(json!({}))
                                     } else {
@@ -426,7 +555,9 @@ mod tests {
                                         if let Some(page) = pages.get(index) {
                                             entries
                                                 .send(JournalEntry {
-                                                    cursor: EventCursor(index as u64 + 1),
+                                                    cursor: EventCursor(
+                                                        flood as u64 + index as u64 + 1,
+                                                    ),
                                                     generation: Generation(1),
                                                     received_at_ms: options.clock.now_ms(),
                                                     payload: JournalPayload::Frame(
@@ -471,7 +602,7 @@ mod tests {
     }
     async fn scripted(pages: Vec<Value>) -> Result<Value, ()> {
         read_session(
-            Arc::new(Script(pages)),
+            Arc::new(Script(pages, 0)),
             ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
             Instant::now(),
         )
@@ -567,6 +698,103 @@ mod tests {
         assert_eq!(
             service.read("account", "/home", "codex", false).await,
             CatalogRead::Ready(value)
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn refresh_budget_cache_pruning_and_shutdown_are_bounded() {
+        let service = ModelCatalogService::new(Some(
+            "/var/tmp/cs-rust-account-worker/missing-provider".into(),
+        ));
+        let permits = service
+            .0
+            .slots
+            .clone()
+            .acquire_many_owned(MAX_REFRESHES as u32)
+            .await
+            .expect("catalog resource check");
+        for account in 0..100 {
+            assert_eq!(
+                service
+                    .read(&account.to_string(), "/var/tmp", "codex", false)
+                    .await,
+                CatalogRead::Pending
+            );
+        }
+        assert!(
+            service
+                .0
+                .cache
+                .lock()
+                .expect("catalog resource check")
+                .is_empty()
+        );
+        assert!(
+            service
+                .0
+                .tasks
+                .lock()
+                .expect("catalog resource check")
+                .is_empty()
+        );
+        drop(permits);
+        for account in 0..MAX_REFRESHES {
+            assert_eq!(
+                service
+                    .read(&account.to_string(), "/var/tmp", "codex", false)
+                    .await,
+                CatalogRead::Pending
+            );
+        }
+        assert_eq!(service.0.slots.available_permits(), 0);
+        assert_eq!(
+            service
+                .0
+                .tasks
+                .lock()
+                .expect("catalog resource check")
+                .len(),
+            MAX_REFRESHES
+        );
+        service.retain_accounts(&[json!({"id":"0","home":"/var/tmp","provider":"codex"})]);
+        assert_eq!(
+            service
+                .0
+                .cache
+                .lock()
+                .expect("catalog resource check")
+                .len(),
+            1
+        );
+        service.shutdown().await.expect("catalog resource check");
+        assert_eq!(service.0.slots.available_permits(), MAX_REFRESHES);
+        assert!(
+            service
+                .0
+                .tasks
+                .lock()
+                .expect("catalog resource check")
+                .is_empty()
+        );
+        assert_eq!(
+            service.read("new", "/var/tmp", "codex", false).await,
+            CatalogRead::Unavailable
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn catalog_drains_notifications_while_write_receipt_waits() {
+        let page = json!({"data":[],"nextCursor":null});
+        assert_eq!(
+            read_session(
+                Arc::new(Script(vec![page.clone()], LANE_CAPACITY * 4)),
+                ProviderLaunchSpec::new(
+                    vec!["scripted".into()],
+                    BTreeMap::new(),
+                    "/var/tmp".into()
+                ),
+                Instant::now()
+            )
+            .await,
+            Ok(page)
         );
     }
 }

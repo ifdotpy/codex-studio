@@ -60,6 +60,19 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 };
 
 impl NotificationDispatchRepository {
+    /// Temporary base only when item/started replaced a flushed stream's text.
+    pub fn stream_base(tx: &Transaction<'_>, id: &str) -> StoreResult<Option<String>> {
+        Ok(EventWriteRepository::receipt(tx, id)?.map(|row| row.result))
+    }
+    pub fn put_stream_base(tx: &Transaction<'_>, id: &str, text: Option<&str>) -> StoreResult<()> {
+        if let Some(text) = text {
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'stream-base',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", params![id, serde_json::to_string(text).map_err(|_| invalid_record("runtime_operation_receipts", id))?])?;
+        } else {
+            tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [id])?;
+        }
+        Ok(())
+    }
+
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
         TranscriptRepository::agent(transaction, agent)
             .map_err(|error| map_transcript_error(error, "runtime_agents", agent))

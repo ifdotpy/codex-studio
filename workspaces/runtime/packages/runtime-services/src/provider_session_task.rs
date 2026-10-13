@@ -571,7 +571,7 @@ impl SessionTask {
         let mut stop = self.stop.subscribe();
         let opened = tokio::select! {
             biased;
-            _ = cancelled(&mut stop) => return self.finish_without_adapter(Ok(())),
+            _ = Shutdown::cancelled(&mut stop) => return self.finish_without_adapter(Ok(())),
             result = factory.open(self.handle.clone(), options, self.stop.clone()) => result,
         };
         let mut adapter = match opened {
@@ -789,7 +789,7 @@ impl SessionTask {
             // Tokio's randomized selection is fair between non-shutdown lanes.
             // Sticky shutdown is checked above, so a ready lane cannot starve it.
             tokio::select! {
-                _ = cancelled(&mut stop) => return Ok(()),
+                _ = Shutdown::cancelled(&mut stop) => return Ok(()),
                 _ = self.events.closed() => return Err(SessionTaskError::Closed),
                 changed = adapter.status.changed() => {
                     if changed.is_err() { return Err(SessionTaskError::Closed); }
@@ -1319,13 +1319,6 @@ fn send_once(
         };
         (kind, result)
     })
-}
-async fn cancelled(stop: &mut watch::Receiver<bool>) {
-    loop {
-        if *stop.borrow_and_update() || stop.changed().await.is_err() {
-            return;
-        }
-    }
 }
 
 #[cfg(test)]

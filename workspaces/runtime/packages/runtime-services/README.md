@@ -337,8 +337,12 @@ The server must create and share one `StoreBridge` per `RuntimeStore`; its start
 recovery runs before account admission, and its semaphore bounds `spawn_blocking`
 SQLite jobs. Account commands, session requests, effects, and deferred journal
 entries all have explicit capacity limits. Dropping the account handle signals
-sticky cancellation; `shutdown` joins and waits for in-flight database commits.
-It does not abandon a commit or start a replacement database owner.
+sticky cancellation. `shutdown` waits up to `SHUTDOWN_GRACE` for the worker,
+then releases account ownership. An already started blocking job retains the
+bridge permit until it finishes; replacement recovery queues behind that job.
+Other accounts sharing the bridge also wait. Worker reads use the same permit;
+independent store readers do not need it. The account registry mutex is released
+before recovery or session startup awaits.
 
 Work follows claim → typed preparation → session prepare → durable Submitted →
 submit. The submission transaction rechecks obsolete complaints/work notices,
@@ -364,9 +368,54 @@ active turn, interrupt before the start reply, queued cancellation, provider
 exit, generation change, duplicate/stale/out-of-order notifications, deadline
 expiry and late replies, full-queue shutdown, and restart between Submitted and
 Written. `just test-rust-runtime-corpora` compares Python-written pre-states and
-real lifecycle/dispatch transactions. The separately selected
+real lifecycle/dispatch transactions and every before/after bridge boundary in
+the scripted scenarios. The default suite keeps representative crash witnesses;
+full matrix timing separates scenario replay from replacement recovery. The
+separately selected
 `just test-rust-runtime-corpora-mutations` tests the same wiring against seeded
 regressions, including transcript notices and the context exception's boundary.
+
+The bridge rechecks account ownership in claim and submission transactions.
+Lifecycle rejection/NotSent settlement retires transport receipts atomically.
+Stop and notification interrupts are durable pending effects. Each replacement
+recovers proven-unsubmitted claims for its own account, restores the stored
+attempt for journal delivery, and defers callback admission until initialization.
+Only explicit admission refusal proves NotSent; unrelated failures preserve Unknown.
+
+Acknowledged journal prefixes are compacted into one cursor checkpoint. Unresolved
+requests and pending effects remain indexed by account. Journal receipts retain a
+digest, not another copy of the provider payload. Stream deltas commit in the same
+transaction as cursor eligibility. Their pending text is bounded by
+`STREAM_FLUSH_BYTES` in [`store.rs`](src/account_worker/store.rs); canonical
+transcript/search rewriting occurs on completion, that threshold, or Python's
+`codex_streaming.FLUSH_SECONDS` cadence. Assistant text is never truncated. The
+command-output buffer uses Python's character-tail rule; command item dispatch is
+still a named gap of the notification service.
+
+A flushed base normally comes from the canonical item. Only an `item/started`
+that replaces this visible text needs a temporary base receipt. Its hash and the
+base row commit together; the next flush or close deletes the row, and recovery
+prunes streams no longer active. No blob store or schema was added. A flush costs
+O(total item text); per-delta work handles bounded preview and pending text rather
+than copying the accumulated answer. The corpus compares these exceptional bases
+to Python's live buffer before excluding the validated internal receipt rows.
+
+The scheduler split itself moved functions without changing their bodies. Later
+compatibility corrections are proved by named Python-written cases:
+`disconnect_without_start_attempt` covers absent top-level attempts and nested
+disconnect identity; `reattach_running` and `reattach_restart` cover nested
+accepted attempts and generation lookup. Missing optional policy fields use Null
+instead of panicking; the same Python-written cases exercise their absence.
+`claim_deleted` covers ordinary deleted rows; `reconcile_resolved_active`,
+`reconcile_resolved_idle`, and `reconcile_preserves_selected_progress` cover
+retirement metadata and preparation policy. Worker-only rehydration leaves the
+repository's exact `reattach_*` corpus output unchanged.
+
+Catalog refreshes share the semaphore in [`model_catalog.rs`](src/model_catalog.rs).
+Registry reads prune removed accounts and replaced homes. The service retains
+refresh task handles; server shutdown cancels and drains them. Catalog requests
+drain session events while awaiting command receipts, preserving bounded-lane
+progress. The ephemeral adapter also bounds the child reap after sending kill.
 
 ### Known gaps before server wiring
 

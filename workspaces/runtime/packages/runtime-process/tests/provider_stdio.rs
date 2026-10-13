@@ -65,6 +65,8 @@ async fn deadline_stops_and_reaps_child() {
     attachment.journal.recv().await.expect("child ready");
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(30)).await;
+    // Reaping observes an OS process; its grace period uses real time.
+    tokio::time::resume();
     assert!(matches!(
         attachment.completion().await.result,
         Err(AdapterError::Timeout)
@@ -108,7 +110,7 @@ async fn oversized_stdout_stops_and_reaps_child() {
 async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
     use studio_runtime_process::OperationId;
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let mut attachment = child("printf '{\"method\":\"ready\"}\\n'; exec /usr/bin/python3 -c 'import signal; signal.pause()'").await;
+    let mut attachment = child("printf '{\"method\":\"ready\"}\\n'; exec /usr/bin/python3 -c 'import os,signal; os.read(0,1); print(\"{\\\"method\\\":\\\"stdin-progress\\\"}\",flush=True); signal.pause()'").await;
     let pid = pid(&attachment);
     attachment.journal.recv().await.expect("child ready");
     let frame = Frame::Request(RequestFrame {
@@ -125,8 +127,17 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
         .send(command)
         .await
         .expect("command admitted");
+    // One byte has reached the child. It consumes no further input, so the
+    // 512 KiB frame cannot complete in this pipe's bounded kernel buffer.
+    attachment
+        .journal
+        .recv()
+        .await
+        .expect("stdin write reached the child");
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(30)).await;
+    // Reaping observes an OS process; its grace period uses real time.
+    tokio::time::resume();
     assert!(matches!(
         attachment.completion().await.result,
         Err(AdapterError::Timeout)

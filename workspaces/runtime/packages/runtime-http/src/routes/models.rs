@@ -47,6 +47,7 @@ async fn models(
     let snapshot = tokio::task::spawn_blocking(move || account_policy.accounts())
         .await
         .map_err(|_| ApiError::internal())?;
+    catalog.retain_accounts(&snapshot.accounts);
     let result = if workers {
         worker_catalog(&catalog, &snapshot, &account_key, retry).await
     } else {

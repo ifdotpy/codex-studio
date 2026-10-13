@@ -115,7 +115,7 @@ async fn sticky_shutdown_interrupts_connect_future_and_closed_sender() {
     assert!(!polled);
     let (sender, mut receiver) = watch::channel(false);
     drop(sender);
-    cancelled(&mut receiver).await;
+    Shutdown::cancelled(&mut receiver).await;
 }
 
 struct FragmentProbe {

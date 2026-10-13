@@ -584,12 +584,6 @@ fn write_text_notification(
         update,
     } = input;
     let id = format!("{agent_id}:{item_id}");
-    let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
-    let previous = old
-        .as_ref()
-        .map(|(record, _)| saved_text(transaction, &id, record))
-        .transpose()?
-        .unwrap_or_default();
     let thread = params
         .get("threadId")
         .and_then(Value::as_str)
@@ -611,6 +605,30 @@ fn write_text_notification(
         item: item_id.to_owned(),
         method: "item/agentMessage/delta".to_owned(),
     };
+    let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
+    if let TextUpdate::Delta(delta) = update {
+        return match streams.enqueue_delta(key, delta, params) {
+            EnqueueResult::Buffered => Ok(true),
+            EnqueueResult::Closed => Ok(false),
+            EnqueueResult::Full => Err(NotificationDispatchError::StreamCapacity),
+        };
+    }
+    let previous = old
+        .as_ref()
+        .map(|(record, _)| saved_text(transaction, &id, record))
+        .transpose()?
+        .unwrap_or_default();
+    if matches!(update, TextUpdate::Started(..)) {
+        for existing in streams.selected(Some(&key)) {
+            if streams.preserve_base(&existing, sha256_hex(previous.as_bytes())) {
+                NotificationDispatchRepository::put_stream_base(
+                    transaction,
+                    &stream_base_id(&existing),
+                    Some(&previous),
+                )?;
+            }
+        }
+    }
     let (text, streaming, phase, index_search, completed) = match update {
         TextUpdate::Started(snapshot, phase) => (
             snapshot.unwrap_or_default().to_owned(),
@@ -619,13 +637,7 @@ fn write_text_notification(
             true,
             false,
         ),
-        TextUpdate::Delta(delta) => {
-            return match streams.enqueue_delta(key, delta, params) {
-                EnqueueResult::Buffered => Ok(true),
-                EnqueueResult::Closed => Ok(false),
-                EnqueueResult::Full => Err(NotificationDispatchError::StreamCapacity),
-            };
-        }
+        TextUpdate::Delta(_) => unreachable!("delta handled before transcript read"),
         TextUpdate::Completed(snapshot, phase) => {
             flush_selected(
                 transaction,
@@ -712,6 +724,38 @@ pub fn flush_notification_streams(
     })
 }
 
+pub(crate) fn prune_inactive_streams(
+    transaction: &Transaction<'_>,
+    streams: &mut NotificationStreamBuffer,
+) -> Result<(), NotificationDispatchError> {
+    for key in streams.selected(None) {
+        let active: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2 AND (?3 IS NULL OR json_extract(record,'$.turnId')=?3) AND json_extract(record,'$.deletedAt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))",
+            rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
+        ).map_err(StoreError::from)?;
+        if !active {
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(&key),
+                None,
+            )?;
+            streams.close(&key);
+        }
+    }
+    Ok(())
+}
+
+fn stream_base_id(key: &StreamKey) -> String {
+    format!(
+        "account-worker:stream-base:{}",
+        sha256_hex(
+            serde_json::to_string(key)
+                .expect("stream key serialization")
+                .as_bytes()
+        )
+    )
+}
+
 fn flush_selected(
     transaction: &Transaction<'_>,
     agent_id: &str,
@@ -736,6 +780,11 @@ fn flush_selected(
                 .as_deref()
                 .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn))
         {
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(&key),
+                None,
+            )?;
             streams.discard(&key);
             if terminal.is_some() {
                 streams.close(&key);
@@ -749,7 +798,25 @@ fn flush_selected(
             .map(|(record, _)| saved_text(transaction, &id, record))
             .transpose()?
             .unwrap_or_default();
+        let previous = if let Some(hash) = streams.base(&key) {
+            let raw =
+                NotificationDispatchRepository::stream_base(transaction, &stream_base_id(&key))?
+                    .ok_or_else(|| stored("runtime_operation_receipts", &stream_base_id(&key)))?;
+            let text: String = serde_json::from_str(&raw)
+                .map_err(|_| stored("runtime_operation_receipts", &stream_base_id(&key)))?;
+            if sha256_hex(text.as_bytes()) != hash {
+                return Err(stored("runtime_operation_receipts", &stream_base_id(&key)));
+            }
+            text
+        } else {
+            previous
+        };
         if let Some((text, count, params)) = streams.flush(&key, &previous) {
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(&key),
+                None,
+            )?;
             let phase = old
                 .as_ref()
                 .and_then(|(record, _)| record.get("phase"))
@@ -780,6 +847,11 @@ fn flush_selected(
             agent["tail"] = Value::String(suffix(&text, 300));
         }
         if terminal.is_some() {
+            NotificationDispatchRepository::put_stream_base(
+                transaction,
+                &stream_base_id(&key),
+                None,
+            )?;
             streams.close(&key);
         }
     }

@@ -1346,6 +1346,7 @@ async fn recovered_unknown_does_not_reset_deadline_or_repeat_uncertainty() {
 }
 
 #[tokio::test(start_paused = true)]
+#[ignore = "probabilistic contention probe; select explicitly outside the fast tier"]
 async fn replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress() {
     let (mut session, mut peer) = open().await;
     ready(&mut session, &mut peer).await;

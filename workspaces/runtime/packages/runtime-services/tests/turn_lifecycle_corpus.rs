@@ -287,7 +287,9 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
             let name = witness.as_str().expect("worker witness name");
             assert!(
                 include_str!("../src/account_worker/tests.rs")
-                    .contains(&format!("async fn {name}(")),
+                    .contains(&format!("async fn {name}("))
+                    || include_str!("../src/account_worker/tests/crash_matrix.rs")
+                        .contains(&format!("async fn {name}(")),
                 "missing worker witness {name}"
             );
         }

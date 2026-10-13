@@ -406,7 +406,7 @@ impl SchedulerRepository {
                 scope: "runtime_agents".to_owned(),
                 id: rows[0].0.clone(),
             })?;
-        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+        let Some(attempt) = stored_attempt(&agent).and_then(Value::as_object) else {
             return Ok((true, None));
         };
         let Some(attempt_id) = attempt.get("id").and_then(Value::as_str) else {
@@ -453,7 +453,7 @@ impl SchedulerRepository {
             true,
             Some((
                 TurnAttemptIdentity {
-                    agent_id: agent.id.0,
+                    agent_id: agent.id.0.clone(),
                     epoch,
                     attempt_id: attempt_id.to_owned(),
                 },
@@ -619,10 +619,23 @@ impl SchedulerRepository {
 
     /// Return only event reservations whose persisted attempt proves no turn was submitted.
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        let records = select_agents(
+        let mut statement = transaction.prepare("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
+        let accounts = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        accounts.iter().try_fold(0, |count, account| {
+            Ok(count + Self::recover_unsubmitted_for_account(transaction, account)?)
+        })
+    }
+
+    pub fn recover_unsubmitted_for_account(
+        transaction: &Transaction<'_>,
+        account: &str,
+    ) -> StoreResult<usize> {
+        let records = account_agents(
             transaction,
-            "SELECT a.id,a.record FROM runtime_agents a WHERE EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id AND e.status='reserved')",
-            [],
+            account,
+            "EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=runtime_agents.id AND e.status='reserved')",
         )?;
         let mut recovered = 0;
         for mut agent in records {

@@ -105,24 +105,13 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
     }
 }
 
-pub(crate) async fn cancelled(stop: &mut watch::Receiver<bool>) {
-    loop {
-        if *stop.borrow_and_update() {
-            return;
-        }
-        if stop.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
 async fn interruptible<T>(
     stop: &mut watch::Receiver<bool>,
     future: impl Future<Output = Result<T, AdapterError>>,
 ) -> Result<T, AdapterError> {
     tokio::select! {
         biased;
-        _ = cancelled(stop) => Err(AdapterError::Cancelled),
+        _ = Shutdown::cancelled(stop) => Err(AdapterError::Cancelled),
         result = tokio::time::timeout(RPC_TIMEOUT, future) => result.unwrap_or(Err(AdapterError::Timeout)),
     }
 }
@@ -389,7 +378,7 @@ impl AdapterTask {
                 return Err(AdapterError::Cancelled);
             }
             tokio::select! {
-                _ = cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
+                _ = Shutdown::cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
                 _ = self.events.closed() => return Err(AdapterError::ConsumerClosed),
                 command = self.commands.recv() => {
                     let Some(command) = command else { return Ok(()); };
@@ -450,7 +439,7 @@ impl AdapterTask {
                     // or its receive future fences this attachment before more I/O.
                     tokio::select! {
                         biased;
-                        _ = cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
+                        _ = Shutdown::cancelled(&mut self.stop) => return Err(AdapterError::Cancelled),
                         result = observed => if result.is_err() { return Err(SupervisorError::ConnectionLost.into()); },
                     }
                 }
@@ -657,7 +646,7 @@ async fn reap_environment_job<T>(
 ) -> Result<T, AdapterError> {
     tokio::select! {
         biased;
-        _ = cancelled(stop) => {
+        _ = Shutdown::cancelled(stop) => {
             job.abort();
             let _ignored = job.await;
             Err(AdapterError::Cancelled)
