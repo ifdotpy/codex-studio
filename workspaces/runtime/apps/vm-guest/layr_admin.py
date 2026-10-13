@@ -20,7 +20,8 @@ from layr_share import Share
 ROOT = Path("/var/lib/codex-studio/layr")
 STATE = Path("/var/lib/codex-studio/layr-admin")
 SOCKET = Path("/run/codex-studio/layr-admin.sock")
-METHODS = {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health"}
+METHODS = {"project.ensure", "project.import", "project.exec", "project.seed", "share.configure", "share.name",
+           "share.status", "layr.health"}
 READ_METHODS = {"project.ensure", "share.status", "layr.health"}
 
 
@@ -105,6 +106,8 @@ class Broker:
             return await self.projects.dispatch(request_id, method, params)
         if method == "project.exec":
             return await self.projects.exec(request_id, params)
+        if method == "project.seed":
+            return await self.projects.seed(request_id, params)
         if method == "share.configure":
             return await self.share.configure(params)
         if method == "share.name":

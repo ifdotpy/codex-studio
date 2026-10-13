@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import pwd
+import shutil
 import socket
 from pathlib import Path
 import sys
@@ -317,6 +318,80 @@ class ProjectExecTests(unittest.IsolatedAsyncioTestCase):
         broker.projects.exec.assert_awaited_once()
         changed = await broker.request({**request, "params": {"projectId": "app", "argv": ["true"]}}, None)
         self.assertEqual(changed["error"]["code"], "id_conflict")
+
+
+class SeedTests(unittest.IsolatedAsyncioTestCase):
+    """project.seed: a folder from the Mac becomes a warm layer of main."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.main = self.root / "store/projects/app/lines/main"
+        self.main.mkdir(parents=True)
+        self.projects = Projects(self.root / "state", self.root / "store", AsyncMock(), None)
+        (self.root / "state").mkdir()
+        self.projects.UPLOADS = self.root.resolve() / "uploads"
+        self.upload = self.projects.UPLOADS / "seed-1/expanded"
+        (self.upload / "src/.git").mkdir(parents=True)
+        (self.upload / "src/.git/HEAD").write_text("ref: refs/heads/attar/fork\n")
+        (self.upload / "src/BUILD.gn").write_text("group(\"all\") {}\n")
+        self.projects.ensure = AsyncMock(return_value={"projectId": "app", "stateId": "warm"})
+        self.projects.layr = AsyncMock(return_value="")
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    async def seed(self, request="seed-op", **params):
+        async def command(argv, **_options):
+            self.commands.append([str(part) for part in argv[:3]])
+            if argv[:2] == ["rm", "-rf"]:
+                shutil.rmtree(argv[-1], ignore_errors=True)
+            if argv[:3] == ["btrfs", "subvolume", "create"]:
+                os.mkdir(argv[-1])
+            if argv[0] == "cp":
+                self.assertTrue(argv[-2].endswith("/."))
+                shutil.copytree(argv[-2], argv[-1], symlinks=True, dirs_exist_ok=True)
+        self.commands = []
+        with patch("layr_projects.command", side_effect=command):
+            return await self.projects.seed(request, {"projectId": "app", "path": "chromium",
+                                                     "source": str(self.upload), **params})
+
+    async def test_the_folder_becomes_a_layer_of_main_from_reflinks(self):
+        result = await self.seed()
+        self.assertEqual(result, {"projectId": "app", "stateId": "warm", "path": "chromium", "seeded": True})
+        self.assertEqual((self.main / "chromium/src/.git/HEAD").read_text(), "ref: refs/heads/attar/fork\n")
+        self.assertEqual((self.main / "chromium/src/BUILD.gn").stat().st_uid, os.getuid())
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        self.projects.layr.assert_awaited_once_with(["save", "--caches", "-m", "Seed layer chromium"],
+                                                    cwd=self.main, owner=owner)
+        self.assertIn(["cp", "-a", "--reflink=always"], self.commands)
+        self.assertIn(["btrfs", "subvolume", "create"], self.commands)
+        # The guest service removes its upload folder after the receipt.
+        self.assertTrue(self.upload.exists())
+        self.assertEqual([p.name for p in self.main.iterdir()], ["chromium"])
+
+    async def test_an_existing_folder_is_kept_and_its_caches_are_saved(self):
+        (self.main / "chromium").mkdir()
+        (self.main / "chromium/own").write_text("built here")
+        result = await self.seed()
+        self.assertFalse(result["seeded"])
+        self.assertEqual(sorted(p.name for p in (self.main / "chromium").iterdir()), ["own"])
+        self.assertNotIn("cp", [argv[0] for argv in self.commands])
+        self.projects.layr.assert_awaited_once()
+
+    async def test_a_repeated_request_returns_its_result_once(self):
+        first = await self.seed()
+        self.projects.layr.reset_mock()
+        self.assertEqual(await self.seed(), first)
+        self.projects.layr.assert_not_awaited()
+
+    async def test_paths_outside_main_and_other_sources_are_refused(self):
+        for params in ({"path": "../x"}, {"path": "/etc"}, {"path": "a//b"}, {"path": ""},
+                       {"source": "/tmp/other"}, {"source": str(self.upload.parent)},
+                       {"source": str(self.upload.parent.parent / "expanded")}, {"projectId": "../app"}):
+            with self.subTest(params=params), self.assertRaises(GuestError):
+                await self.seed(request="bad-" + str(len(str(params))), **params)
+        self.projects.layr.assert_not_awaited()
 
 
 class ServiceUmaskTests(unittest.TestCase):

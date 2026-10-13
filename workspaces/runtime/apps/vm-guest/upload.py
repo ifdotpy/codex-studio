@@ -151,6 +151,7 @@ def prepare_tree(archive, destination, expected):
         except OSError as exc:
             raise GuestError("busy", "The upload extraction is still in progress") from exc
         with archive.open("rb") as source:
+            os.fsync(source.fileno())
             actual = hashlib.file_digest(source, "sha256").hexdigest()
         require(actual == sha(expected), "The archive checksum differs")
         if destination.is_symlink() or destination.is_file():
@@ -242,12 +243,13 @@ class Uploads:
                 require(row[5] == "receiving" and sequence == row[4], "The upload chunk is out of order")
                 require(row[3] + len(data) <= row[1], "The upload exceeds totalBytes")
                 tree_space(self.path, len(data))
+                # No fsync per chunk: two syncs for each chunk held a large upload near 14 MB/s.
+                # The commit syncs the archive once before it checks the whole archive's
+                # SHA-256, so a chunk that a guest crash lost fails that check; it is never applied.
                 with (self.path / identity / "tree.tar").open("r+b") as output:
                     output.seek(row[3])
                     output.write(data)
                     output.truncate()
-                    output.flush()
-                    os.fsync(output.fileno())
                 with self.db:
                     self.db.execute("INSERT INTO upload_chunks VALUES (?,?,?,?)", (identity, sequence, chunk_digest, len(data)))
                     self.db.execute("UPDATE uploads SET received=received+?,next_seq=next_seq+1 WHERE id=?", (len(data), identity))

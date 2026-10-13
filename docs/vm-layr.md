@@ -93,6 +93,31 @@ every ignored folder, so the attribute changes only what becomes a cache in the 
 
 Studio does not choose the build command or when a build is good enough to save.
 
+### Seeded layers
+
+Some regenerable folders cost hours to make again in the VM, such as a Chromium checkout with
+its Git history and build output. `chromium regenerable seed` in `.layrattributes` makes the
+first import send that folder from the Mac once, as a layer of main:
+
+1. The new import records the plain paths (no patterns) marked `regenerable` and `seed` in
+   `layr-projects/<id>/seeds.json`, before its receipt. Only these paths go: after the import,
+   the VM main is the project, not the Mac folder. To seed a path later, re-import.
+2. `seed_layers` (`codex_linux_vm_share.py`) makes a tar of the folder twice: first for its
+   size and SHA-256, then for the upload, so the Mac keeps no copy. The tar has sorted names,
+   no owners and no hard links; sockets and pipes stay out. An upload that stopped continues
+   after the bytes that the guest has. A folder that changed between the two passes fails the
+   SHA-256 check; the next attempt makes a new upload.
+3. `project.seed` expands the upload once in the private upload folder, without the rsync
+   copy of `upload.commit`; the root broker makes `main/<path>` a btrfs subvolume of reflinks
+   of it, owned by the owner of main, and runs `layr save --caches` in main. A subvolume is
+   already a layr cache, so the save makes no copy. The guest needs about twice the size of the
+   folder on the data disk while the upload folder exists. An existing `main/<path>` is kept.
+4. The sidebar shows the project as importing until the seed ends. A failed seed repeats
+   alone on the next VM chat start. Each line from main then starts with a copy-on-write copy.
+
+The layer needs the Mac folder only for that first send. Patches leave a line through Git
+(the fork's remote or exported patch series), not through the layer.
+
 ### Compression
 
 The data disk mounts with `compress=zstd:3`; provisioning sets the option on an existing disk

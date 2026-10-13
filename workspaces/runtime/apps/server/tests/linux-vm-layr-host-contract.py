@@ -1,6 +1,12 @@
 """Host import contracts use the actual caller with a guest fixture."""
+import base64
+import hashlib
+import io
 import json
+import os
 from pathlib import Path
+import socket
+import tarfile
 import subprocess
 import sys
 import tempfile
@@ -20,6 +26,8 @@ class Fixture(Client):
         self.calls = []
         self.exists = False
         self.fail_upload = False
+        self.received = 0
+        self.chunks = []
 
     def _lock(self, *args):
         return nullcontext()
@@ -33,6 +41,14 @@ class Fixture(Client):
         if method == "project.import":
             self.exists = True
             return {"projectId": params["projectId"], "stateId": "import-state", "share": {}}
+        if method == "upload.begin":
+            return {"state": "receiving", "receivedBytes": self.received}
+        if method == "upload.chunk":
+            if params["uploadId"].startswith("seed-"):
+                self.chunks.append((params["seq"], base64.b64decode(params["data"])))
+            return {}
+        if method == "project.seed":
+            return {"projectId": params["projectId"], "stateId": "import-state", "path": params["path"], "seeded": True}
         if method == "upload.commit" and self.fail_upload:
             raise LinuxVMError("lost", uncertain=True)
         if method in {"share.configure", "share.status"}:
@@ -342,6 +358,112 @@ class ImportReadinessTests(unittest.TestCase):
         (self.directory / "import-error.json").write_text("{")
         self.assertEqual(self.state()["state"], "failed")
         self.assertIn("unreadable", self.state()["error"])
+
+
+class SeedTests(unittest.TestCase):
+    """A folder marked `regenerable seed` goes to the VM main once, as a warm layer."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.client = Fixture(self.root / "state")
+        self.source = self.root / "attar"
+        (self.source / "chromium/src/.git").mkdir(parents=True)
+        (self.source / "chromium/src/.git/HEAD").write_text("ref: refs/heads/attar/fork\n")
+        (self.source / "chromium/src/BUILD.gn").write_bytes(b"group" * 700)
+        (self.source / "chromium/src/link").symlink_to("BUILD.gn")
+        os.link(self.source / "chromium/src/BUILD.gn", self.source / "chromium/src/same.gn")
+        (self.source / ".layrattributes").write_text("node_modules regenerable\nchromium regenerable seed\n")
+        self.mount = patch.object(share, "mount_project", return_value={"state": "mounted", "readOnly": True})
+        self.mount.start()
+        self.addCleanup(self.mount.stop)
+
+    def archive(self, source, path):
+        path.write_bytes(b"code only")
+        return {"totalBytes": 9, "sha256": hashlib.sha256(b"code only").hexdigest(),
+                "mode": "full", "deletePaths": [], "repositories": []}
+
+    def tar(self):
+        data = io.BytesIO()
+        share._layer_tar(self.source / "chromium", data)
+        return data.getvalue()
+
+    def test_only_plain_paths_marked_regenerable_and_seed_are_seeded(self):
+        for name in ("a", "b", "c", "d", "e/f"):
+            (self.source / name).mkdir(parents=True)
+        (self.source / "link").symlink_to(self.source / "chromium")
+        (self.source / ".layrattributes").write_text(
+            "# comment\nchromium regenerable seed\na seed\nb regenerable seed\nb regenerable -seed\n"
+            "c* regenerable seed\n/d/ regenerable seed\ne/f regenerable seed\nlink regenerable seed\n"
+            "missing regenerable seed\n../x regenerable seed\n")
+        self.assertEqual(share.seed_paths(self.source), ["chromium", "d", "e/f"])
+        self.assertEqual(share.seed_paths(self.root / "none"), [])
+
+    def test_the_layer_tar_is_the_same_each_time_and_the_guest_accepts_it(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "vm-guest"))
+        from upload import extract_tree
+        os.chown(self.source / "chromium/src/BUILD.gn", os.getuid(), os.getgid())
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(self.source / "chromium/src/s"))
+        first = self.tar()
+        self.assertEqual(self.tar(), first)
+        with tarfile.open(fileobj=io.BytesIO(first)) as archive:
+            members = {member.name: member for member in archive.getmembers()}
+        self.assertNotIn("src/s", members)
+        self.assertTrue(members["src/same.gn"].isfile())
+        self.assertEqual({(m.uid, m.gid, m.uname, m.gname) for m in members.values()}, {(0, 0, "", "")})
+        (self.root / "archive.tar").write_bytes(first)
+        (self.root / "expanded").mkdir()
+        with patch.dict(os.environ, {"CODEX_WORKSPACE_MIN_FREE_BYTES": "0"}):
+            extract_tree(self.root / "archive.tar", self.root / "expanded")
+        self.assertEqual((self.root / "expanded/src/same.gn").read_bytes(), b"group" * 700)
+        self.assertEqual(os.readlink(self.root / "expanded/src/link"), "BUILD.gn")
+
+    def test_a_new_import_sends_the_layer_once_in_order(self):
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive), \
+                patch.object(share, "CHUNK", 1024):
+            self.client.ensure_layr_project("app", self.source, request_id="first")
+            self.client.ensure_layr_project("app", self.source, request_id="first")
+        expected = self.tar()
+        self.assertEqual(b"".join(data for _, data in self.client.chunks), expected)
+        self.assertEqual([seq for seq, _ in self.client.chunks], list(range(len(self.client.chunks))))
+        begin = next(row[1] for row in self.client.calls if row[0] == "upload.begin" and row[1]["uploadId"].startswith("seed-"))
+        self.assertEqual((begin["totalBytes"], begin["sha256"]), (len(expected), hashlib.sha256(expected).hexdigest()))
+        seeds = [row for row in self.client.calls if row[0] == "project.seed"]
+        self.assertEqual(len(seeds), 1)
+        self.assertEqual(seeds[0][1], {"projectId": "app", "path": "chromium", "uploadId": begin["uploadId"]})
+        self.assertNotIn("upload.commit", [row[0] for row in self.client.calls if "seed" in str(row[1])])
+        record = json.loads((self.root / "state/layr-projects/app/seeds.json").read_text())
+        self.assertEqual(record["chromium"]["seeded"], True)
+
+    def test_an_interrupted_upload_continues_after_the_received_bytes(self):
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive), \
+                patch.object(share, "CHUNK", 1024):
+            self.client.received = 2048
+            self.client.ensure_layr_project("app", self.source, request_id="first")
+        expected = self.tar()
+        self.assertEqual(self.client.chunks[0][0], 2)
+        self.assertEqual(b"".join(data for _, data in self.client.chunks), expected[2048:])
+
+    def test_an_existing_vm_project_without_a_plan_reads_no_layer(self):
+        self.client.exists = True
+        with patch.object(share, "_layer_tar") as tar:
+            self.client.ensure_layr_project("app", self.source)
+        tar.assert_not_called()
+        self.assertNotIn("project.seed", [row[0] for row in self.client.calls])
+
+    def test_a_failed_seed_repeats_alone_on_the_next_ensure(self):
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive), \
+                patch.object(share, "seed_layers", side_effect=LinuxVMError("lost", uncertain=True)):
+            with self.assertRaises(LinuxVMError):
+                self.client.ensure_layr_project("app", self.source, request_id="first")
+        self.assertEqual(json.loads((self.root / "state/layr-projects/app/seeds.json").read_text()), {"chromium": None})
+        self.client.calls.clear()
+        self.client.ensure_layr_project("app", self.source, request_id="first")
+        self.assertNotIn("project.import", [row[0] for row in self.client.calls])
+        self.assertEqual([row[0] for row in self.client.calls].count("project.seed"), 1)
 
 
 if __name__ == "__main__":
