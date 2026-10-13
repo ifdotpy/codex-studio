@@ -4,11 +4,15 @@
 
 The harness owns synthetic active-turn identities, event timing, and benchmark evidence. Production code owns Runtime storage and APIs, AppServer queue and dispatch, browser sync, UI behavior, and the scheduler's worker limit. The harness must not launch provider sessions, change production concurrency limits, or use a user's state. Exact offered event identities and original Runtime inbox IDs must be accounted for; overload or incomplete drain must fail visibly. Workload options are owned by [`run.mjs`](run.mjs). The targeted check is the real App/RxDB path in `--check`, followed by the full multi-tab run.
 
+The opt-in [`message_acceptance.mjs`](message_acceptance.mjs) scenario isolates HTTP ingress with 16 synthetic worker records. It sends eight waves of 16 simultaneous `POST /api/messages` requests (128 unique message IDs), retries the first wave with the exact same IDs, and verifies one Runtime event receipt and one persisted chat row per ID. It reports per-wave client latency, method-specific server latency, HTTP in-flight peak/drain, and fast-dispatch submitted/pending/active/completed counts. Its opt-in fixture seam joins the inert scheduler before enabling the production fast-dispatch identity gate, then replaces only `Runtime.start` with a counting no-op. Synthetic workers stay in-flight and no native session or provider is started. HTTP requests and fast-dispatch work must settle; events may remain pending or reserved before the no-native delivery boundary, which the report states separately.
+
 ## What it measures
 
 The default case creates eight synthetic lead teams with 32 workers each: 256 worker identities and 264 active-turn equivalents total. These records represent already-active native turns. The benchmark does not launch agent workers, change the production scheduler limit in [`codex_runtime.py`](../../../codex_runtime.py), open a provider session, or make a paid model call.
 
 The isolated fixture uses the production Runtime, SQLite, analytics, transcript, chat-message, HTTP, sync, and `AppServer` implementations. A benchmark-only in-memory JSON-lines peer replaces `subprocess.Popen` using the same seam as `workspaces/runtime/apps/server/tests/protocol-reader-contract.py`. The real `AppServer` reader, bounded FIFO callback queue, ordered dispatcher, and callbacks remain active. Synthetic account keys route records through separate fake transport queues, which share one Runtime lock; they do not represent saved accounts or open provider sessions. The UI's provider-dependent model, cost, and limit requests for these synthetic keys are reported as expected unavailable API responses. Worker-to-peer and worker-to-lead chat rows use `Runtime.chat_message`. Their exact runtime-event IDs are consumed by synthetic `userMessage` receipts through `Runtime.notification` and the AppServer queue. Event IDs and delivery counts are reported separately.
+
+For browser runs, the benchmark scheduler publishes committed resource invalidations so the real sync client can refresh transcripts. It does not run dispatch or native starts; those remain outside this synthetic workload.
 
 Four phases offer work to every worker: warmup, steady, burst, and drain. Each worker turn offers a turn start and finish, tool start and completed output, assistant delta and final, and two durable chat messages with receipts. The default sustained phase lasts 30 seconds at 160 offered worker turns per second. Each representative transcript receives one unique final-only witness marker per steady turn. Tool output is synthetic protocol data, not execution. The report separates API-server request lifetime, AppServer receive-to-callback delay, callback duration, browser route timings, and final-offer-to-render delay.
 
@@ -40,6 +44,20 @@ The normal `run.mjs` browser runner explicitly uses `FULL` synchronous mode. For
 To isolate the effect of keeping a fixture database connection open, a direct runtime-only run may set `BENCH_SQLITE_IDLE_CONNECTION=1`. After seeding and before the workload, the fixture opens one connection to the same database, completes a read of `sqlite_master`, fetches and closes its cursor, and verifies that no transaction remains. It then issues no queries and owns no transaction during the workload; it closes only after normal fixture teardown. The read is needed because SQLite opens a file lazily, so a bare connection does not keep its WAL handle active. This diagnostic changes no Runtime connection, per-event commit, PRAGMA, or browser acceptance behavior. The browser runner explicitly sets this option to `0`.
 
 Run the focused outcome-classification checks with `node --test workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs`.
+
+Run the separately selected, bounded HTTP ingress scenario with:
+
+```sh
+just runtime-load-message-acceptance
+```
+
+It sends at most 144 POST requests (128 unique messages and 16 same-ID retries), plus 48 read-only queue, receipt, and history checks. It has a 10-second per-request timeout and a 120-second hard deadline, then shuts down only its own isolated fixture. The report includes both the Git revision and a digest of measured source files, because local runs may use an uncommitted source change. This is a performance measurement, so run it only as an announced isolated run, never alongside ordinary checks or another load run.
+
+To measure a single burst of all 128 unique posts across the same 16 workers, use `just runtime-load-message-acceptance --parallel-waves --output /tmp/p37-message-acceptance-burst.json`. The mode keeps the same-ID retries and exact durable-effect checks, and reports the HTTP latency, executor peak/drain, and acceptance status for the burst. Without `--parallel-waves`, the existing eight sequential waves remain the default for comparable measurements.
+
+After a scheduler change, `just runtime-load-browser-16 --output /tmp/runtime-load-browser-16.json` runs a separate one-team, one-tab profile with 16 synthetic workers. It uses fake AppServer callbacks and no provider or native sessions; the workload has one round, a short steady phase, one fake transport, and the serial producer. Use it as an announced isolated run to inspect callback queue growth and drain alongside browser responsiveness. The runner has a 240-second hard deadline and records resource peaks but does not enforce a CPU or memory cap. A prior one-tab quick check initialized successfully but failed to render its transcript witness, so a renderer witness failure remains meaningful evidence. See [`run.mjs`](run.mjs) for the enforced profile options and acceptance checks.
+
+Pass `--output /tmp/report.json` through the recipe to choose an external report path. The equivalent direct runner command is available for source-root comparisons, but the `just` recipe is the designated load entry point.
 
 ```sh
 node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/run.mjs --teams 5 --offered-rate 80 --steady-seconds 30 --transports 2

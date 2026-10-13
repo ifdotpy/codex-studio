@@ -868,4 +868,56 @@ pub(crate) mod tests {
             Ok(page)
         );
     }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn model_catalog_probe_preserves_inherited_priority() {
+        use std::process::Command;
+        use studio_runtime_process::provider_seam::{OpenOptions, SessionClock};
+        use studio_runtime_process::provider_stdio::StdioProviderTaskFactory;
+        // Catalog probes now use the temporary async stdio adapter. Keep the
+        // priority assertion on that actual spawn path while the child waits.
+        let mut child = StdioProviderTaskFactory {
+            deadline: Instant::now() + CATALOG_TIMEOUT,
+            max_frame_bytes: MAX_CATALOG_PAGE_BYTES,
+            max_output_bytes: MAX_CATALOG_RESPONSE_BYTES,
+        }
+        .open(
+            ProviderHandle::for_account("catalog-priority"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: Some(Generation(1)),
+                launch: ProviderLaunchSpec::new(
+                    vec!["/bin/sh".into(), "-c".into(), "read -r ready".into()],
+                    BTreeMap::new(),
+                    "/var/tmp".into(),
+                ),
+            },
+            Shutdown::default(),
+        )
+        .await
+        .expect("catalog caller");
+        let pid = child.status.borrow().info.as_ref().expect("child info").pid;
+        let nice = Command::new("ps")
+            .args(["-o", "ni=", "-p", &pid.to_string()])
+            .output()
+            .expect("catalog priority");
+        assert!(nice.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&nice.stdout).trim(),
+            rustix::process::getpriority_process(None)
+                .expect("parent nice")
+                .to_string()
+        );
+        let io_priority = |pid: u32| {
+            let output = Command::new("ionice")
+                .args(["-p", &pid.to_string()])
+                .output()
+                .expect("I/O priority");
+            assert!(output.status.success());
+            output.stdout
+        };
+        assert_eq!(io_priority(pid), io_priority(std::process::id()));
+        assert!(child.shutdown().await.result.is_ok());
+    }
 }

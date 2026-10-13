@@ -246,20 +246,20 @@ covered by this checker.
 The supervisor v1 action inventory comes from
 `codex_process_supervisor.py:Supervisor.handle`:
 
-| Action             | Fixture coverage | Reason                                                                                             |
-| ------------------ | ---------------- | -------------------------------------------------------------------------------------------------- |
-| `health`           | Covered          | Health snapshot and durability are compared.                                                       |
-| `open`             | Covered          | Starts a disposable Python child and checks its open receipt.                                      |
-| `next`             | Covered          | Replays recorded stdout, stderr, and exit events.                                                  |
-| `finishFallback`   | Not covered      | Requires the recovery fallback state transition.                                                   |
-| `adminCloseHandle` | Not covered      | Privileged operator-only action; no operator process is started.                                   |
-| `retireCommand`    | Not covered      | Requires the separate completed `server-command:` retirement lifecycle.                            |
-| `write`            | Not covered      | Provider RPC writes are exercised by provider replay, not hand-built socket calls.                 |
-| `operationStatus`  | Not covered      | Requires a persisted monitor operation and native RPC identity.                                    |
-| `ack`              | Not covered      | Destructive journal cursor mutation is covered by Python implementation tests.                     |
-| `replay`           | Not covered      | Durable journal replay internals remain covered by Python implementation tests.                    |
-| `status`           | Not covered      | The fixture checks open receipt, health snapshot, and event stream instead.                        |
-| `detach`           | Not covered      | Connection close is exercised by backend restart; standalone detach has no observable HTTP result. |
+| Action             | Fixture coverage | Reason                                                                                                               |
+| ------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `health`           | Covered          | Health snapshot and durability are compared.                                                                         |
+| `open`             | Covered          | Starts a disposable Python child and checks its open receipt.                                                        |
+| `next`             | Covered          | Replays recorded stdout, stderr, and exit events.                                                                    |
+| `finishFallback`   | Not covered      | Requires the recovery fallback state transition.                                                                     |
+| `adminCloseHandle` | Not covered      | Privileged operator-only action; no operator process is started.                                                     |
+| `retireCommand`    | Not covered      | Requires the separate completed `server-command:` retirement lifecycle.                                              |
+| `write`            | Not covered      | Provider RPC writes are exercised by provider replay, not hand-built socket calls.                                   |
+| `operationStatus`  | Not covered      | Requires a persisted monitor operation and native RPC identity.                                                      |
+| `ack`              | Covered          | The disposable child acknowledges its three recorded events; a following status frame verifies the persisted cursor. |
+| `replay`           | Not covered      | Durable journal replay internals remain covered by Python implementation tests.                                      |
+| `status`           | Covered          | Reads the final sequence, acknowledged cursor, backpressure state, and child exit code after replay.                 |
+| `detach`           | Not covered      | Connection close is exercised by backend restart; standalone detach has no observable HTTP result.                   |
 
 The recorded frame kinds are handshake (`ok`), successful request response
 (`result`), rejected handshake (`error`), and child event kinds `stdout`,
@@ -537,7 +537,7 @@ stay under the runner temporary directory. The facade job downloads the Just
 version before invoking it.
 
 Current hosted checks run on pull requests and pushes to `main`. The server
-workflow runs the 26 audited automated suites, the bridge suite, and one focused
+workflow runs the 27 audited automated suites, the bridge suite, and one focused
 Python suite; it does not run the whole default server run. Heavy and load-class
 suites are excluded from hosted CI. The audited automation step was restored
 after its timing-sensitive suites were made deterministic in PR #80.

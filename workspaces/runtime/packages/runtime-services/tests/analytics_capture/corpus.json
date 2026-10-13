@@ -1,0 +1,2084 @@
+{
+  "agent": {
+    "id": "a",
+    "name": "Agent",
+    "rootId": "a",
+    "parentId": null,
+    "accountKey": "default",
+    "accountHistory": [],
+    "provider": "codex",
+    "threadId": "thread",
+    "turnId": "turn",
+    "model": "gpt-5",
+    "effort": "high",
+    "fastMode": false,
+    "daybreakEnabled": false,
+    "cyberAccessProgram": false,
+    "cwd": "/disposable",
+    "deletedAt": null,
+    "epoch": 0,
+    "status": "running"
+  },
+  "captures": [
+    {
+      "name": "turn-live-failure-authority",
+      "steps": [
+        {
+          "method": "turn/started",
+          "params": {},
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "delta": "hello"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "turn/completed",
+          "params": {
+            "turn": {
+              "status": "completed",
+              "error": {
+                "message": "native failure"
+              }
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "turn/completed",
+          "params": {
+            "turn": {
+              "status": "completed"
+            }
+          },
+          "at": 13,
+          "source": "rollout"
+        },
+        {
+          "method": "turn/started",
+          "params": {},
+          "at": 9,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "turn-history-then-live",
+      "steps": [
+        {
+          "method": "turn/completed",
+          "params": {
+            "turn": {
+              "status": "failed",
+              "error": {
+                "message": "old"
+              }
+            }
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "method": "turn/completed",
+          "params": {
+            "turn": {
+              "status": "failed",
+              "error": {
+                "message": "new"
+              }
+            }
+          },
+          "at": 13,
+          "source": "live"
+        },
+        {
+          "method": "turn/completed",
+          "params": {
+            "turn": {
+              "status": "completed"
+            },
+            "durationMs": 1,
+            "timeToFirstTokenMs": 0
+          },
+          "at": 14,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-commandExecution",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "commandExecution",
+              "command": "ls",
+              "aggregatedOutput": "a\nb\n",
+              "exitCode": 0
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "commandExecution",
+              "command": "ls",
+              "aggregatedOutput": "a\nb\n",
+              "exitCode": 0
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "commandExecution"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "commandExecution"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-mcpToolCall",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "mcpToolCall",
+              "tool": "read",
+              "arguments": {
+                "path": "x"
+              },
+              "result": "text"
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "mcpToolCall",
+              "tool": "read",
+              "arguments": {
+                "path": "x"
+              },
+              "result": "text"
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "mcpToolCall"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "mcpToolCall"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-agentMessage",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "agentMessage",
+              "text": "Zażółć 🦀\n"
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "agentMessage",
+              "text": "Zażółć 🦀\n"
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "agentMessage"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "agentMessage"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-userMessage",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "userMessage",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "hello"
+                },
+                {
+                  "type": "input_image",
+                  "image_url": "data:image/png;base64,aGVsbG8="
+                }
+              ]
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "userMessage",
+              "content": [
+                {
+                  "type": "input_text",
+                  "text": "hello"
+                },
+                {
+                  "type": "input_image",
+                  "image_url": "data:image/png;base64,aGVsbG8="
+                }
+              ]
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "userMessage"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "userMessage"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-reasoning",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "reasoning",
+              "summary": ["short"],
+              "content": "secret"
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "reasoning",
+              "summary": ["short"],
+              "content": "secret"
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "reasoning"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "reasoning"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-fileChange",
+      "steps": [
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "fileChange",
+              "changes": [
+                {
+                  "path": "a",
+                  "diff": "x"
+                }
+              ]
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "itemId": "item",
+            "delta": "🦀\n"
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "fileChange",
+              "changes": [
+                {
+                  "path": "a",
+                  "diff": "x"
+                }
+              ]
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "fileChange"
+            },
+            "startedAt": 9,
+            "completedAt": 13
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "item",
+              "type": "fileChange"
+            }
+          },
+          "at": 15,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "item-failures",
+      "steps": [
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "a",
+              "type": "commandExecution",
+              "exitCode": 2,
+              "error": "bad",
+              "durationMs": 30
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "id": "b",
+              "type": "mcpToolCall"
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "b",
+              "type": "mcpToolCall",
+              "success": false
+            }
+          },
+          "at": 11,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "limits-changes",
+      "steps": [
+        {
+          "method": "analytics/rateLimits",
+          "params": {
+            "rateLimits": {
+              "remaining": 4
+            },
+            "at": 1
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "analytics/rateLimits",
+          "params": {
+            "rateLimits": {
+              "remaining": 4
+            },
+            "at": 2
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "analytics/rateLimits",
+          "params": {
+            "rateLimits": {
+              "remaining": 3
+            }
+          },
+          "at": 12,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "usage-counter-reset",
+      "steps": [
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 20,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 20,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 40
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            }
+          },
+          "at": 11,
+          "source": "live"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "last": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "modelContextWindow": 100
+            }
+          },
+          "at": 12,
+          "source": "live"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "last": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "modelContextWindow": 100
+            }
+          },
+          "at": 13,
+          "source": "live"
+        }
+      ]
+    },
+    {
+      "name": "usage-response-enrichment",
+      "steps": [
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            }
+          },
+          "at": 10,
+          "source": "live"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r1",
+            "rawTokenUsageRecord": {
+              "response_id": "r1"
+            },
+            "requestUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            },
+            "turnUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            }
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "last": {
+                "inputTokens": 2,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 4
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r1"
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r1",
+            "rawTokenUsageRecord": {
+              "response_id": "r1"
+            },
+            "requestUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            },
+            "turnUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            }
+          },
+          "at": 13,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "usage-equal-responses",
+      "steps": [
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r1",
+            "rawTokenUsageRecord": {
+              "response_id": "r1"
+            },
+            "requestUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            },
+            "turnUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            }
+          },
+          "at": 10,
+          "source": "rollout"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r2",
+            "rawTokenUsageRecord": {
+              "response_id": "r2"
+            },
+            "requestUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            },
+            "turnUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            }
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "responseId": "r2",
+            "rawTokenUsageRecord": {
+              "response_id": "r2"
+            },
+            "requestUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            },
+            "turnUsage": {
+              "inputTokens": 10,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 10,
+              "reasoningOutputTokens": 0,
+              "totalTokens": 20
+            }
+          },
+          "at": 12,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "claude-response",
+      "steps": [
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "usageSource": "claudeResponse",
+            "requestUsage": {
+              "inputTokens": 10,
+              "outputTokens": 4,
+              "cachedInputTokens": 2,
+              "cacheWriteInputTokens": 1
+            },
+            "responseId": "r1"
+          },
+          "at": 10,
+          "source": "live",
+          "agent": {
+            "provider": "claude"
+          }
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "params": {
+            "tokenUsage": {
+              "total": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "last": {
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "cacheWriteInputTokens": 0,
+                "outputTokens": 10,
+                "reasoningOutputTokens": 0,
+                "totalTokens": 20
+              },
+              "modelContextWindow": 100
+            },
+            "usageSource": "claudeResponse",
+            "requestUsage": {
+              "inputTokens": 10,
+              "outputTokens": 4,
+              "cachedInputTokens": 2,
+              "cacheWriteInputTokens": 1
+            },
+            "responseId": "r1"
+          },
+          "at": 11,
+          "source": "live",
+          "agent": {
+            "provider": "claude"
+          }
+        }
+      ]
+    },
+    {
+      "name": "model-call",
+      "steps": [
+        {
+          "method": "",
+          "params": {
+            "type": "function_call",
+            "call_id": "call",
+            "name": "read",
+            "namespace": "functions",
+            "arguments": "{\"p\":\"x\"}",
+            "_analyticsTurnId": "turn"
+          },
+          "at": 10,
+          "source": "rollout",
+          "model": true
+        },
+        {
+          "method": "",
+          "params": {
+            "type": "function_call_output",
+            "call_id": "call",
+            "output": "answer",
+            "_analyticsTurnId": "turn"
+          },
+          "at": 12,
+          "source": "rollout",
+          "model": true
+        }
+      ]
+    },
+    {
+      "name": "model-reasoning",
+      "steps": [
+        {
+          "method": "",
+          "params": {
+            "type": "reasoning",
+            "id": "reason",
+            "content": "secret",
+            "_analyticsTurnId": "turn"
+          },
+          "at": 10,
+          "source": "rollout",
+          "model": true
+        }
+      ]
+    },
+    {
+      "name": "compaction",
+      "steps": [
+        {
+          "method": "analytics/compaction",
+          "params": {
+            "id": "compact",
+            "window_number": 3
+          },
+          "at": 10,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "legacy-missing-total",
+      "steps": [
+        {
+          "method": "thread/tokenUsage/updated",
+          "at": 10,
+          "params": {
+            "threadId": "thread",
+            "turnId": "turn",
+            "tokenUsage": {
+              "total": {
+                "outputTokens": 3,
+                "inputTokens": 2
+              },
+              "last": {
+                "outputTokens": 3,
+                "inputTokens": 2
+              }
+            }
+          },
+          "seedOnly": true
+        },
+        {
+          "method": "thread/tokenUsage/updated",
+          "at": 11,
+          "params": {
+            "threadId": "thread",
+            "turnId": "turn",
+            "tokenUsage": {
+              "total": {
+                "outputTokens": 3,
+                "inputTokens": 2
+              },
+              "last": {
+                "outputTokens": 3,
+                "inputTokens": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "model-custom_tool_call",
+      "steps": [
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-0",
+            "_analyticsId": "snapshot-0",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 10,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-1",
+            "_analyticsId": "snapshot-1",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-2",
+            "_analyticsId": "snapshot-2",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-3",
+            "_analyticsId": "snapshot-3",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 13,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-4",
+            "_analyticsId": "snapshot-4",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-5",
+            "_analyticsId": "snapshot-5",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 15,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-6",
+            "_analyticsId": "snapshot-6",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 16,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call",
+            "callId": "call-custom_tool_call-7",
+            "_analyticsId": "snapshot-7",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 17,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "model-tool_call",
+      "steps": [
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-0",
+            "_analyticsId": "snapshot-0",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 10,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-1",
+            "_analyticsId": "snapshot-1",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-2",
+            "_analyticsId": "snapshot-2",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-3",
+            "_analyticsId": "snapshot-3",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 13,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-4",
+            "_analyticsId": "snapshot-4",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-5",
+            "_analyticsId": "snapshot-5",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 15,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-6",
+            "_analyticsId": "snapshot-6",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "arguments": "Unicode λ\nargument"
+          },
+          "at": 16,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_call",
+            "callId": "call-tool_call-7",
+            "_analyticsId": "snapshot-7",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "input": "Unicode λ\nargument"
+          },
+          "at": 17,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "model-custom_tool_call_output",
+      "steps": [
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-0",
+            "_analyticsId": "snapshot-0",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 10,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-1",
+            "_analyticsId": "snapshot-1",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-2",
+            "_analyticsId": "snapshot-2",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-3",
+            "_analyticsId": "snapshot-3",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 13,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-4",
+            "_analyticsId": "snapshot-4",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-5",
+            "_analyticsId": "snapshot-5",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 15,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-6",
+            "_analyticsId": "snapshot-6",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 16,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "custom_tool_call_output",
+            "callId": "call-custom_tool_call_output-7",
+            "_analyticsId": "snapshot-7",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 17,
+          "source": "rollout"
+        }
+      ]
+    },
+    {
+      "name": "model-tool_result",
+      "steps": [
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-0",
+            "_analyticsId": "snapshot-0",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 10,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-1",
+            "_analyticsId": "snapshot-1",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "tool",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 11,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-2",
+            "_analyticsId": "snapshot-2",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 12,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-3",
+            "_analyticsId": "snapshot-3",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "message",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 13,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-4",
+            "_analyticsId": "snapshot-4",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 14,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-5",
+            "_analyticsId": "snapshot-5",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionReplacement",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 15,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-6",
+            "_analyticsId": "snapshot-6",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": false,
+            "role": "assistant",
+            "output": "tool succeeded"
+          },
+          "at": 16,
+          "source": "rollout"
+        },
+        {
+          "model": true,
+          "params": {
+            "type": "tool_result",
+            "callId": "call-tool_result-7",
+            "_analyticsId": "snapshot-7",
+            "_analyticsTurnId": "turn",
+            "_analyticsCategory": "compactionGuardian",
+            "name": "test_tool",
+            "namespace": "fixture",
+            "is_error": true,
+            "role": "assistant",
+            "content": "tool failed"
+          },
+          "at": 17,
+          "source": "rollout"
+        }
+      ]
+    }
+  ],
+  "rollouts": [
+    {
+      "name": "native-events",
+      "records": [
+        {
+          "type": "session_meta",
+          "payload": {
+            "id": "thread",
+            "context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "turn_context",
+          "payload": {
+            "turn_id": "turn",
+            "model": "gpt-5",
+            "effort": "low"
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "turn",
+            "model_context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "item_started",
+            "item": {
+              "id": "i",
+              "type": "AgentMessage",
+              "content": [
+                {
+                  "text": "a"
+                },
+                {
+                  "text": "b"
+                }
+              ],
+              "duration": {
+                "secs": 1,
+                "nanos": 500000
+              }
+            }
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_complete",
+            "turn_id": "turn",
+            "status": "completed",
+            "duration_ms": 10
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "turn_aborted"
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "response_item",
+          "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "text": "hi"
+              }
+            ],
+            "internal_chat_message_metadata_passthrough": {
+              "create_time": "2026-01-01T00:00:00Z"
+            }
+          },
+          "timestamp": 10
+        }
+      ]
+    },
+    {
+      "name": "native-usage",
+      "records": [
+        {
+          "type": "session_meta",
+          "payload": {
+            "id": "thread",
+            "context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "turn_context",
+          "payload": {
+            "turn_id": "turn",
+            "model": "gpt-5",
+            "effort": "low"
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "turn",
+            "model_context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "token_usage_record",
+          "payload": {
+            "thread_id": "thread",
+            "turn_id": "turn",
+            "response_id": "r1",
+            "usage": {
+              "input_tokens": 1,
+              "cached_input_tokens": 0,
+              "output_tokens": 1,
+              "reasoning_output_tokens": 0,
+              "total_tokens": 2
+            },
+            "thread_token_usage": {
+              "input_tokens": 1,
+              "cached_input_tokens": 0,
+              "output_tokens": 1,
+              "reasoning_output_tokens": 0,
+              "total_tokens": 2
+            }
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "token_count",
+            "info": {
+              "last_token_usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2
+              },
+              "total_token_usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2
+              }
+            },
+            "rate_limits": {
+              "remaining": 1
+            }
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "token_count",
+            "info": {
+              "last_token_usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2
+              },
+              "total_token_usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2
+              }
+            }
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "token_usage_record",
+          "payload": {
+            "thread_id": "foreign",
+            "response_id": "r2",
+            "usage": {
+              "input_tokens": 1,
+              "cached_input_tokens": 0,
+              "output_tokens": 1,
+              "reasoning_output_tokens": 0,
+              "total_tokens": 2
+            }
+          },
+          "timestamp": 10
+        }
+      ]
+    },
+    {
+      "name": "native-compaction",
+      "records": [
+        {
+          "type": "session_meta",
+          "payload": {
+            "id": "thread",
+            "context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "turn_context",
+          "payload": {
+            "turn_id": "turn",
+            "model": "gpt-5",
+            "effort": "low"
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "turn",
+            "model_context_window": 100
+          },
+          "timestamp": 10
+        },
+        {
+          "type": "compacted",
+          "payload": {
+            "window_id": "w",
+            "replacement_history": [
+              {
+                "type": "message",
+                "role": "user",
+                "content": "x"
+              }
+            ],
+            "guardian_history": [
+              {
+                "type": "reasoning",
+                "summary": "y"
+              }
+            ],
+            "latest_token_usage_record": {
+              "thread_id": "thread",
+              "response_id": "r3",
+              "usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2
+              }
+            }
+          },
+          "timestamp": 10
+        }
+      ]
+    },
+    {
+      "name": "timestamps-and-ignored",
+      "records": [
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "t"
+          },
+          "timestamp": null
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "t"
+          },
+          "timestamp": "2026-01-01T00:00:00Z"
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "t"
+          },
+          "timestamp": "2026-01-01T00:00:00+02:00"
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "t"
+          },
+          "timestamp": "bad"
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "task_started",
+            "turn_id": "t"
+          },
+          "timestamp": 0
+        },
+        {},
+        {
+          "type": "unknown",
+          "payload": {},
+          "timestamp": 10
+        },
+        {
+          "type": "event_msg",
+          "payload": {
+            "type": "unknown"
+          },
+          "timestamp": 10
+        }
+      ]
+    }
+  ]
+}

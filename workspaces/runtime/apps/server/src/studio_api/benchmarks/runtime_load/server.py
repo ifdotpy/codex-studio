@@ -138,12 +138,18 @@ class BenchmarkRuntimeMixin:
     def schedule(self):
         # Workload identities stand in for already-running native turns. Never
         # launch native sessions or consume provider capacity in this fixture.
+        if os.environ.get("BENCH_PUBLISH_RESOURCE_INVALIDATIONS") == "1":
+            while not self.closed:
+                self.changed.wait()
+                self.changed.clear()
+                if not self.closed:
+                    self._publish_committed_resource_changes()
         return
 
     @contextmanager
-    def db(self, *, busy_timeout=None):
+    def db(self, *, busy_timeout=None, analytics=False):
         mode = diagnostic_synchronous_mode()
-        with super().db(busy_timeout=busy_timeout) as db:
+        with super().db(busy_timeout=busy_timeout, analytics=analytics) as db:
             configure_diagnostic_synchronous(db, mode)
             yield db
 
@@ -195,9 +201,13 @@ def invoke_with_duration(callback, record_duration):
 
 
 @contextmanager
-def measured_runtime_db_context(original_runtime_db, sampled, record=None, *, busy_timeout=None):
+def measured_runtime_db_context(
+    original_runtime_db, sampled, record=None, *, busy_timeout=None, analytics=False
+):
     """Optionally time, but always delegate, the original Runtime.db context."""
     options = {} if busy_timeout is None else {"busy_timeout": busy_timeout}
+    if analytics:
+        options["analytics"] = True
     if not sampled:
         with original_runtime_db(**options) as db:
             yield db
@@ -553,6 +563,11 @@ def main():
     class BenchRuntime(BenchmarkRuntimeMixin, Runtime):
         pass
 
+    bench_schedule_method = BenchRuntime.schedule
+    fast_dispatch_enabled = False
+    fake_start_calls = [0]
+    fake_start_lock = threading.Lock()
+
     evidence = Path(sys.argv[1]).resolve()
     state = evidence / "state"
     profile = evidence / "profile"
@@ -578,6 +593,52 @@ def main():
     })
     runtime_lock = MeasuredRLock(runtime.lock)
     runtime.lock = runtime_lock
+    dispatch_queue_metrics = {
+        "submitted": 0, "pending": 0, "active": 0, "peakPending": 0,
+        "completed": 0,
+    }
+    dispatch_queue_lock = threading.Lock()
+    original_dispatch_executor = runtime.dispatch_executor
+    dispatch_executor_instrumented = [False]
+
+    def measured_dispatch_executor():
+        executor = original_dispatch_executor()
+        with dispatch_queue_lock:
+            if not dispatch_executor_instrumented[0]:
+                dispatch_executor_instrumented[0] = True
+                original_submit = executor.submit
+
+                def measured_submit(function, /, *args, **kwargs):
+                    with dispatch_queue_lock:
+                        dispatch_queue_metrics["submitted"] += 1
+                        dispatch_queue_metrics["pending"] += 1
+                        dispatch_queue_metrics["peakPending"] = max(
+                            dispatch_queue_metrics["peakPending"],
+                            dispatch_queue_metrics["pending"],
+                        )
+
+                    def measured_call():
+                        with dispatch_queue_lock:
+                            dispatch_queue_metrics["pending"] -= 1
+                            dispatch_queue_metrics["active"] += 1
+                        try:
+                            return function(*args, **kwargs)
+                        finally:
+                            with dispatch_queue_lock:
+                                dispatch_queue_metrics["active"] -= 1
+                                dispatch_queue_metrics["completed"] += 1
+
+                    try:
+                        return original_submit(measured_call)
+                    except BaseException:
+                        with dispatch_queue_lock:
+                            dispatch_queue_metrics["pending"] -= 1
+                        raise
+
+                executor.submit = measured_submit
+        return executor
+
+    runtime.dispatch_executor = measured_dispatch_executor
     start_lock = MeasuredLock(runtime.start_lock)
     runtime.start_lock = start_lock
     snapshot_lock_failures = {"startLock": 0, "runtimeLock": 0, "unattributed": 0}
@@ -600,8 +661,12 @@ def main():
     accounting_schema_retries = []
     http_diag_lock = threading.Lock()
     http_active_routes = {}
+    http_peak_active_routes = {}
+    http_active_methods = {}
+    http_peak_active_methods = {}
     http_request_counts = {}
     http_response_statuses = {}
+    http_method_latencies = {}
     production_app = server.app
 
     async def measured_app(scope, receive, send):
@@ -609,10 +674,18 @@ def main():
             await production_app(scope, receive, send)
             return
         route = scope.get("path", "")
+        method_route = f"{scope.get('method', 'GET')} {route}"
         started = time.monotonic()
         with http_diag_lock:
             http_request_counts[route] = http_request_counts.get(route, 0) + 1
             http_active_routes[route] = http_active_routes.get(route, 0) + 1
+            http_peak_active_routes[route] = max(
+                http_peak_active_routes.get(route, 0), http_active_routes[route])
+            http_active_methods[method_route] = http_active_methods.get(method_route, 0) + 1
+            http_peak_active_methods[method_route] = max(
+                http_peak_active_methods.get(method_route, 0),
+                http_active_methods[method_route],
+            )
 
         async def measured_send(message):
             if message.get("type") == "http.response.start":
@@ -624,11 +697,28 @@ def main():
 
         try:
             if route == "/__bench/diagnostics":
+                with dispatch_queue_lock:
+                    dispatch_queue = dict(dispatch_queue_metrics)
+                with fake_start_lock:
+                    start_stub_calls = fake_start_calls[0]
                 with http_diag_lock:
                     snapshot = {
                         "activeRoutes": dict(http_active_routes),
+                        "peakActiveRoutes": dict(http_peak_active_routes),
+                        "activeMethods": dict(http_active_methods),
+                        "peakActiveMethods": dict(http_peak_active_methods),
                         "requestCounts": dict(http_request_counts),
                         "responseStatuses": dict(http_response_statuses),
+                        "dispatchQueue": dispatch_queue,
+                        "fakeStartStubCalls": start_stub_calls,
+                        "httpServerLatencyMs": {
+                            route_name: stats(values)
+                            for route_name, values in http_latencies.items()
+                        },
+                        "httpMethodLatencyMs": {
+                            route_name: stats(values)
+                            for route_name, values in http_method_latencies.items()
+                        },
                     }
                 body = json.dumps(snapshot).encode("utf-8")
                 await measured_send({
@@ -649,7 +739,12 @@ def main():
                 http_active_routes[route] -= 1
                 if http_active_routes[route] == 0:
                     del http_active_routes[route]
+                http_active_methods[method_route] -= 1
+                if http_active_methods[method_route] == 0:
+                    del http_active_methods[method_route]
                 http_latencies.setdefault(route, []).append((time.monotonic() - started) * 1000)
+                http_method_latencies.setdefault(method_route, []).append(
+                    (time.monotonic() - started) * 1000)
 
     server.app = measured_app
     server.server.config.app = measured_app
@@ -730,7 +825,7 @@ def main():
     original_runtime_db = runtime.db
 
     @contextmanager
-    def measured_runtime_db(*, busy_timeout=None):
+    def measured_runtime_db(*, busy_timeout=None, analytics=False):
         context = MeasuredRLock._context()
         calls_by_context = getattr(transaction_sample_local, "calls", None)
         if calls_by_context is None:
@@ -749,7 +844,11 @@ def main():
         # Sampling changes only recording. Every entry, yielded connection,
         # exception path and exit still belongs to the bound original Runtime.db.
         with measured_runtime_db_context(
-            original_runtime_db, sampled, record, busy_timeout=busy_timeout
+            original_runtime_db,
+            sampled,
+            record,
+            busy_timeout=busy_timeout,
+            analytics=analytics,
         ) as db:
             yield db
 
@@ -960,6 +1059,8 @@ def main():
         if cleanup_finished:
             return
         cleanup_finished = True
+        if fast_dispatch_enabled:
+            BenchRuntime.schedule = bench_schedule_method
         for appserver in appservers:
             appserver.close()
         for appserver in appservers:
@@ -1013,6 +1114,23 @@ def main():
                 runtime.put(db, "agents", agent)
                 workers.append(agent)
     seeded_agents_by_thread.update((record["threadId"], record) for record in [template, *leads, *workers])
+    if os.environ.get("BENCH_ENABLE_FAST_DISPATCH") == "1":
+        if not all(runtime.agent(agent["id"]).get("inFlight") for agent in workers):
+            raise RuntimeError("fast-dispatch fixture requires every synthetic worker to remain in-flight")
+        runtime.scheduler.join(timeout=1)
+        if runtime.scheduler.is_alive():
+            raise RuntimeError("inert Runtime scheduler did not stop before fast-dispatch measurement")
+
+        def fake_start(_agent, _rows):
+            with fake_start_lock:
+                fake_start_calls[0] += 1
+
+        # Runtime.__init__ captured the inert mixin method as its scheduler
+        # target. Replacing the class method now enables only enqueue's exact
+        # fast-dispatch identity gate; delivery stops at this no-native stub.
+        BenchRuntime.schedule = Runtime.schedule
+        runtime.start = fake_start
+        fast_dispatch_enabled = True
     if idle_connection_diagnostic:
         idle_connection[0] = open_idle_connection(runtime.db_path)
 
@@ -1031,6 +1149,11 @@ def main():
                           "transactionDuringWorkload": False},
                       "teams": team_count,
                       "workersPerTeam": workers_per_team,
+                      "workers": [agent["id"] for agent in workers],
+                      "fastDispatchEnabled": fast_dispatch_enabled,
+                      "inertSchedulerStopped": not runtime.scheduler.is_alive(),
+                      "workersInFlight": all(runtime.agent(agent["id"]).get("inFlight")
+                                              for agent in workers),
                       "witnesses": [{"agentId": team[0]["id"]}
                                     for team in [workers[i:i + workers_per_team] for i in range(0, len(workers), workers_per_team)]]}), flush=True)
 

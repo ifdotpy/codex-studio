@@ -50,6 +50,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
         check_table::<crate::repositories::claude_records::ClaudeAttemptRecord>(&connection)?,
         check_table::<crate::budget::BudgetRecord>(&connection)?,
         crate::budget::check_usage_readonly(&connection)?,
+        check_table::<crate::repositories::continuation::CapacityContinuationRecord>(&connection)?,
         check_table::<TaskRecord>(&connection)?,
         check_table::<PlanRecord>(&connection)?,
         check_table::<AnnotationRecord>(&connection)?,
@@ -71,12 +72,11 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
         check_table::<crate::ProjectLocationRecord>(&connection)?,
     ];
     tables.extend(check_system_tables(&connection)?);
-    tables.push(crate::repositories::project_locations::check_outbox(
-        &connection,
-    )?);
     tables.extend(crate::repositories::federation_messaging::check_state(
         &connection,
     )?);
+    tables.extend(crate::analytics_capture::check_state_readonly(state_dir)?);
+    tables.extend(crate::multi_server_state_check::check(&connection)?);
     Ok(StateCheckReport { tables })
 }
 
@@ -181,8 +181,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
     use crate::system_reads;
     let mut reports = Vec::new();
     for (table, column) in [
-        ("runtime_access_clients", "record"),
-        ("runtime_access_discovered", "record"),
         ("runtime_chat_messages", "deliveries"),
         ("runtime_events", "status"),
         ("runtime_execution_effects", "record"),
@@ -215,8 +213,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         } else if table == "runtime_events" {
             "SELECT id,json_object('id',id,'status',status,'error',error) FROM runtime_events"
                 .to_owned()
-        } else if table == "runtime_server_outbox" {
-            "SELECT id,json_object('id',id) FROM runtime_server_outbox".to_owned()
         } else if table == "runtime_tool_request_aliases" {
             "SELECT alias,json_object('agent',agent,'alias',alias,'request',request) FROM runtime_tool_request_aliases".to_owned()
         } else {

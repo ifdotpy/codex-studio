@@ -1162,7 +1162,12 @@ export async function execute(
             ...process.env,
             CARGO_TARGET_DIR: cargoTarget(root),
             ...(args[0] === "nextest"
-              ? { NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1" }
+              ? {
+                  NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
+                  // Rust Python-oracle tests must not resolve Node through a
+                  // developer PATH that may traverse protected agent homes.
+                  CODEX_NODE: process.execPath,
+                }
               : {}),
           }
         : process.env;
@@ -1836,7 +1841,10 @@ export async function main(argv = process.argv.slice(2)) {
               ...process.env,
               CARGO_TARGET_DIR: cargoTarget(root),
               ...(args[0] === "nextest"
-                ? { NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1" }
+                ? {
+                    NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
+                    CODEX_NODE: process.execPath,
+                  }
                 : {}),
             }
           : process.env;

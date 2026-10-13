@@ -1,0 +1,150 @@
+{
+  "$defs": {
+    "AnalyticsSize": {
+      "additionalProperties": true,
+      "properties": {
+        "bytes": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Bytes",
+          "type": "integer"
+        },
+        "chars": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Chars",
+          "type": "integer"
+        },
+        "deltas": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deltas"
+        },
+        "lines": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Lines",
+          "type": "integer"
+        }
+      },
+      "required": ["bytes", "chars", "lines"],
+      "title": "AnalyticsSize",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "agentId": {
+      "title": "Agentid",
+      "type": "string"
+    },
+    "at": {
+      "minimum": 0,
+      "title": "At",
+      "type": "number"
+    },
+    "durationSource": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Durationsource"
+    },
+    "finishedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finishedat"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "input": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsSize"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "isTool": {
+      "title": "Istool",
+      "type": "boolean"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsSize"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source"
+    },
+    "startedAt": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Startedat"
+    },
+    "stream": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsSize"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "type": {
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": ["id", "agentId", "at", "type", "name", "isTool"],
+  "title": "AnalyticsItem",
+  "type": "object"
+}

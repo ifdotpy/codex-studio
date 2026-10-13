@@ -768,6 +768,31 @@ class BackendProcess:
     def release_provider_gate(self) -> None:
         (self.root / "provider-gate-release").touch()
 
+    def wait_for_agent_preparation(self, agent_id: str) -> None:
+        """Settle Python dispatch at a held thread/start before taking snapshots.
+
+        The replay gate blocks replies for the shared provider. Each recipient
+        must also have committed prepareAttempt: observing only the first RPC
+        does not prove that later recipients have finished their setup writes.
+        Rust's contract backend does not dispatch these fixture agents.
+        """
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            return
+        if self._provider_hold_method != "thread/start":
+            raise RuntimeError("Agent preparation needs a held thread/start provider gate")
+
+        def prepared() -> bool:
+            if not self.provider_gate_started():
+                return False
+            with closing(sqlite3.connect(f"file:{self.state / 'canvas.sqlite3'}?mode=ro", uri=True)) as database:
+                row = database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+                ).fetchone()
+            agent = json.loads(row[0]) if row else {}
+            return bool(agent.get("prepareAttempt"))
+
+        self.wait_until(prepared, f"agent {agent_id} held at provider thread/start")
+
     def wait_until(self, condition: Callable[[], Any], description: str) -> Any:
         """Wait for an observable fixture condition with one shared hang guard."""
         return wait_for_condition(

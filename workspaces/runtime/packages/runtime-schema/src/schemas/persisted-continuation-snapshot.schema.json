@@ -1,0 +1,1570 @@
+{
+  "$defs": {
+    "AuthWaitReceipt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "accountKey": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "accountPin": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Accountpin",
+          "type": "object"
+        },
+        "agent": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "attempt": {
+          "$ref": "#/$defs/ContinuationAttempt"
+        },
+        "cause": {
+          "const": "claude_auth_probe",
+          "title": "Cause",
+          "type": "string"
+        },
+        "createdAt": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "title": "Createdat",
+          "type": "number"
+        },
+        "dueAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dueat"
+        },
+        "error": {
+          "const": "Cannot read Claude Code sign-in status",
+          "title": "Error",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "inputs": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "maxItems": 64,
+          "title": "Inputs",
+          "type": "array"
+        },
+        "source": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Source",
+          "type": "object"
+        },
+        "status": {
+          "enum": ["auth_probe_wait", "completed", "cancelled"],
+          "title": "Status",
+          "type": "string"
+        },
+        "taskClaims": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "title": "Taskclaims",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "agent",
+        "accountKey",
+        "status",
+        "cause",
+        "error",
+        "createdAt",
+        "dueAt",
+        "source",
+        "attempt",
+        "inputs",
+        "accountPin",
+        "taskClaims"
+      ],
+      "title": "AuthWaitReceipt",
+      "type": "object"
+    },
+    "CapacityContinuation": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "acceptedTurnId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Acceptedturnid"
+        },
+        "accountKey": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "cause": {
+          "enum": [
+            "serverOverloaded",
+            "internalServerError",
+            "httpConnectionFailed",
+            "responseStreamConnectionFailed",
+            "responseStreamDisconnected",
+            "responseTooManyFailedAttempts"
+          ],
+          "title": "Cause",
+          "type": "string"
+        },
+        "claimedAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Claimedat"
+        },
+        "cwd": {
+          "maxLength": 1048576,
+          "title": "Cwd",
+          "type": "string"
+        },
+        "dueAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dueat"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "maxAttempts": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Maxattempts",
+          "type": "integer"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 1048576,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Settings",
+          "type": "object"
+        },
+        "status": {
+          "enum": [
+            "scheduled",
+            "starting",
+            "finished",
+            "cancelled",
+            "unknown",
+            "exhausted",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "taskClaims": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "title": "Taskclaims",
+          "type": "array"
+        },
+        "threadId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        },
+        "turnId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Turnid",
+          "type": "string"
+        },
+        "waits": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Waits",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "accountKey",
+        "threadId",
+        "epoch",
+        "turnId",
+        "status",
+        "cause",
+        "cwd",
+        "settings",
+        "attempt",
+        "maxAttempts"
+      ],
+      "title": "CapacityContinuation",
+      "type": "object"
+    },
+    "ComplaintResponse": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "author": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Author",
+          "type": "string"
+        }
+      },
+      "required": ["author"],
+      "title": "ComplaintResponse",
+      "type": "object"
+    },
+    "ContinuationAgent": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "accountKey": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "authResumeAttempt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Authresumeattempt",
+          "type": "integer"
+        },
+        "autoWake": {
+          "title": "Autowake",
+          "type": "boolean"
+        },
+        "capacityRetry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapacityContinuation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capacityRetryCount": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Capacityretrycount",
+          "type": "integer"
+        },
+        "cwd": {
+          "maxLength": 1048576,
+          "title": "Cwd",
+          "type": "string"
+        },
+        "deletedAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deletedat"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "excludedAccountKeys": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "title": "Excludedaccountkeys",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "inFlight": {
+          "title": "Inflight",
+          "type": "boolean"
+        },
+        "isLead": {
+          "title": "Islead",
+          "type": "boolean"
+        },
+        "lastCompletedTurn": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lastcompletedturn"
+        },
+        "lastCompletedTurnStatus": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lastcompletedturnstatus"
+        },
+        "nativeFailureHold": {
+          "title": "Nativefailurehold",
+          "type": "boolean"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Parentid"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "enum": ["codex", "claude"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "rootId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Rootid",
+          "type": "string"
+        },
+        "startAttempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContinuationAttempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Threadid"
+        },
+        "turnEpoch": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnepoch"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnid"
+        },
+        "usageResume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageContinuation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usageResumeEnabled": {
+          "title": "Usageresumeenabled",
+          "type": "boolean"
+        }
+      },
+      "required": ["id", "rootId", "epoch", "status"],
+      "title": "ContinuationAgent",
+      "type": "object"
+    },
+    "ContinuationAttempt": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Action"
+        },
+        "activeAtReservation": {
+          "title": "Activeatreservation",
+          "type": "boolean"
+        },
+        "capacityRetryId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Capacityretryid"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "events": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "title": "Events",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "observedTurnId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observedturnid"
+        },
+        "submitted": {
+          "title": "Submitted",
+          "type": "boolean"
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnid"
+        }
+      },
+      "required": ["id", "epoch", "submitted"],
+      "title": "ContinuationAttempt",
+      "type": "object"
+    },
+    "ContinuationEvent": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "agent": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "created": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Created",
+          "type": "number"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 1048576,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "reserved",
+            "dispatching",
+            "uncertain",
+            "delivered",
+            "stored_only",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 1048576,
+          "title": "Text",
+          "type": "string"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turn Id"
+        }
+      },
+      "required": ["id", "agent", "epoch", "kind", "text", "status", "created"],
+      "title": "ContinuationEvent",
+      "type": "object"
+    },
+    "ContinuationLimitsObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "_syncEntities": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SyncEntity"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Syncentities"
+        },
+        "_syncEntitiesAfter": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Syncentitiesafter"
+        },
+        "accountKey": {
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "At"
+        },
+        "checkedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Checkedat"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageLimitsData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "processedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Processedat"
+        },
+        "readAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Readat"
+        },
+        "stale": {
+          "title": "Stale",
+          "type": "boolean"
+        }
+      },
+      "required": ["accountKey"],
+      "title": "ContinuationLimitsObservation",
+      "type": "object"
+    },
+    "ContinuationMetadata": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "assets": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Assets",
+          "type": "array"
+        },
+        "earlierProgressUpdates": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Earlierprogressupdates",
+          "type": "integer"
+        },
+        "preserveProgress": {
+          "title": "Preserveprogress",
+          "type": "boolean"
+        }
+      },
+      "title": "ContinuationMetadata",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "RateLimitBucket": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Known rate-limit fields plus provider-owned fields passed through unchanged.",
+      "properties": {
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitIndividualLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limitId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Limitid"
+        },
+        "limitName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Limitname"
+        },
+        "primary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitReachedType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ratelimitreachedtype"
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendControlReached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Spendcontrolreached"
+        }
+      },
+      "title": "RateLimitBucket",
+      "type": "object"
+    },
+    "RateLimitIndividualLimit": {
+      "additionalProperties": false,
+      "properties": {
+        "remainingPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Remainingpercent"
+        }
+      },
+      "title": "RateLimitIndividualLimit",
+      "type": "object"
+    },
+    "RateLimitResetCredit": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "A provider reset-credit record; native service fields remain extensible.",
+      "properties": {
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expiresat"
+        },
+        "grantedAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Grantedat"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "resetType": {
+          "title": "Resettype",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["id", "status", "resetType"],
+      "title": "RateLimitResetCredit",
+      "type": "object"
+    },
+    "RateLimitResetCredits": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Provider-owned reset-credit summary with the known count and credit fields.",
+      "properties": {
+        "availableCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Availablecount"
+        },
+        "credits": {
+          "items": {
+            "$ref": "#/$defs/RateLimitResetCredit"
+          },
+          "title": "Credits",
+          "type": "array"
+        }
+      },
+      "title": "RateLimitResetCredits",
+      "type": "object"
+    },
+    "RateLimitWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "resetsAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resetsat"
+        },
+        "usedPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Usedpercent"
+        },
+        "windowDurationMins": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Windowdurationmins"
+        }
+      },
+      "title": "RateLimitWindow",
+      "type": "object"
+    },
+    "SyncEntity": {
+      "additionalProperties": false,
+      "description": "One durable sync entity change attached to a successful response.",
+      "properties": {
+        "_deleted": {
+          "title": "Deleted",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "payload": {
+          "title": "Payload",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer",
+          "x-safe-integer": "unsigned"
+        }
+      },
+      "required": ["id", "seq", "payload", "_deleted"],
+      "title": "SyncEntity",
+      "type": "object"
+    },
+    "UsageContinuation": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "accountKey": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "authAttempt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Authattempt",
+          "type": "integer"
+        },
+        "authRefreshMarker": {
+          "anyOf": [
+            {
+              "maxLength": 1048576,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Authrefreshmarker"
+        },
+        "cause": {
+          "enum": ["usage_limit", "rate_limit", "auth"],
+          "title": "Cause",
+          "type": "string"
+        },
+        "dueAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Dueat"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "failedAt": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Failedat",
+          "type": "number"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "plannedAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Plannedat"
+        },
+        "proofAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Proofat"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 1048576,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "resetAt": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resetat"
+        },
+        "status": {
+          "enum": ["scheduled", "started", "cancelled", "unknown"],
+          "title": "Status",
+          "type": "string"
+        },
+        "taskClaims": {
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4096,
+          "title": "Taskclaims",
+          "type": "array"
+        },
+        "threadId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Threadid",
+          "type": "string"
+        },
+        "turnId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Turnid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "accountKey",
+        "threadId",
+        "epoch",
+        "turnId",
+        "status",
+        "failedAt"
+      ],
+      "title": "UsageContinuation",
+      "type": "object"
+    },
+    "UsageLimitsData": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Known usage projection plus account-service fields passed through unchanged.",
+      "properties": {
+        "accountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountid"
+        },
+        "ordinaryUsageAllowed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ordinaryusageallowed"
+        },
+        "rateLimitResetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitResetCredits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitBucket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitsByLimitId": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RateLimitBucket"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ratelimitsbylimitid"
+        },
+        "signedIn": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Signedin"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        }
+      },
+      "title": "UsageLimitsData",
+      "type": "object"
+    },
+    "WakeComplaint": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "leadId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Leadid",
+          "type": "string"
+        },
+        "recipient": {
+          "title": "Recipient",
+          "type": "string"
+        },
+        "responses": {
+          "items": {
+            "$ref": "#/$defs/ComplaintResponse"
+          },
+          "maxItems": 4096,
+          "title": "Responses",
+          "type": "array"
+        },
+        "sourceType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sourcetype"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["id", "leadId", "recipient", "status"],
+      "title": "WakeComplaint",
+      "type": "object"
+    },
+    "WakeWork": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/WorkDecision"
+          },
+          "maxItems": 4096,
+          "title": "Decisions",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/WorkResult"
+          },
+          "maxItems": 4096,
+          "title": "Results",
+          "type": "array"
+        },
+        "rootId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Rootid",
+          "type": "string"
+        }
+      },
+      "required": ["id", "rootId"],
+      "title": "WakeWork",
+      "type": "object"
+    },
+    "WorkDecision": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "resultId": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Resultid",
+          "type": "string"
+        }
+      },
+      "required": ["resultId"],
+      "title": "WorkDecision",
+      "type": "object"
+    },
+    "WorkResult": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": ["id"],
+      "title": "WorkResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "$ref": "#/$defs/ContinuationAgent"
+    },
+    "ancestors": {
+      "items": {
+        "$ref": "#/$defs/ContinuationAgent"
+      },
+      "maxItems": 64,
+      "title": "Ancestors",
+      "type": "array"
+    },
+    "assets": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Assets",
+      "type": "object"
+    },
+    "claims": {
+      "items": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "title": "Claims",
+      "type": "array"
+    },
+    "complaints": {
+      "additionalProperties": {
+        "$ref": "#/$defs/WakeComplaint"
+      },
+      "title": "Complaints",
+      "type": "object"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/ContinuationEvent"
+      },
+      "maxItems": 4096,
+      "title": "Events",
+      "type": "array"
+    },
+    "limits": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContinuationLimitsObservation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metadata": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ContinuationMetadata"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Metadata",
+      "type": "object"
+    },
+    "record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageContinuation"
+        },
+        {
+          "$ref": "#/$defs/CapacityContinuation"
+        },
+        {
+          "$ref": "#/$defs/AuthWaitReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Record"
+    },
+    "work": {
+      "additionalProperties": {
+        "$ref": "#/$defs/WakeWork"
+      },
+      "title": "Work",
+      "type": "object"
+    }
+  },
+  "required": ["agent"],
+  "title": "ContinuationSnapshotRecord",
+  "type": "object"
+}

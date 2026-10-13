@@ -168,9 +168,18 @@ const packageRequire = createRequire(
   join(sourceRoot, "workspaces/client/apps/web/package.json"),
 );
 const { chromium } = packageRequire("playwright-core");
+const managedPython = execFileSync(
+  "python3",
+  [join(sourceRoot, "workspaces/runtime/apps/server/src/codex_python.py")],
+  { encoding: "utf8" },
+).trim();
+assert(
+  managedPython,
+  "codex_python.py must return the managed interpreter path",
+);
 const state = await mkdtemp(join(evidenceRoot, ".runtime-load-case-"));
 const fixture = spawn(
-  "python3",
+  managedPython,
   ["-B", join(harness, "server.py"), state, sourceRoot, frontendDist],
   {
     cwd: sourceRoot,
@@ -183,6 +192,7 @@ const fixture = spawn(
       BENCH_WORKERS_PER_TEAM: String(workersPerTeam),
       BENCH_STEADY_SECONDS: String(steadySeconds),
       BENCH_PRODUCER_POOL_SIZE: String(producerPoolSize),
+      BENCH_PUBLISH_RESOURCE_INVALIDATIONS: "1",
       // Browser acceptance always uses production-default durability. NORMAL
       // is available only to the direct, runtime-only fixture diagnostic.
       BENCH_SQLITE_SYNCHRONOUS: "FULL",

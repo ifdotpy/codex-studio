@@ -107,6 +107,23 @@ def validate_missing_service_exclusions(
 # override query/header values and top-level body fields. A value prefixed with
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
+    ("GET", "/api/costs"): {
+        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
+    },
+    ("POST", "/api/agents/account"): {
+        "primary": {"body": {"id": "$agent", "account_key": "default"}, "replace_body": True,
+                    "expected": "2xx", "assert_no_write": True},
+    },
+    ("POST", "/api/agents/account-transfer"): {
+        "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
+                             "request_id": "88888888-8888-4888-8888-888888888889"}, "replace_body": True,
+                    "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
+                    "assert_no_write": True},
+    },
+    ("POST", "/api/connection-recovery"): {
+        "primary": {"body": {"id": "$agent"}, "expected": "501",
+                    "expected_error": "Not implemented: requires account-worker/recovery-history", "assert_no_write": True},
+    },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
@@ -117,7 +134,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
-        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
+        "primary": {"query": {"agent": "$agent"}, "expected": "501",
+                    "expected_error": "Not implemented: requires thread-preparation/tool-catalog", "assert_no_write": True},
     },
     ("GET", "/api/changes"): {
         "primary": {
@@ -202,6 +220,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/directories"): {
         "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
     },
+    ("GET", "/api/import"): {
+        "primary": {
+            "query": {"account_key": "default"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
+    ("POST", "/api/import"): {
+        "primary": {
+            "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
+            "expected": "501",
+            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "assert_no_write": True,
+        },
+    },
     ("GET", "/api/messages"): {
         "primary": {"query": {"room": "$room"}},
     },
@@ -218,14 +252,17 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "2xx"},
+        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "501",
+                    "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
+                    "reason": "The Python cache lacks the merged registry provider signature and no pricing artifact is seeded.",
+                    "assert_no_write": True},
         "additional": [{
             "name": "stale cost cache requires refresh",
             "query": {"agent": "$analyticsAgent"},
             "fixture_mutations": {"stale_session_cost_cache": True},
             "restore": ["session_cost_cache"],
             "expected": "501",
-            "expected_error": "Not implemented: requires costs/pricing-refresh",
+            "expected_error": "Not implemented: requires store-bootstrap/analytics-usage-schema, costs/pricing-refresh, costs/claude-local-usage",
             "assert_no_write": True,
         }],
     },
@@ -252,7 +289,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
     ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
     ("GET", "/api/search/item"): {
-        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
         "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
@@ -323,9 +360,6 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/work"): {
         "primary": {"query": {"agent": "$agent"}},
-    },
-    ("GET", "/api/costs"): {
-        "primary": {"query": {"account_key": "default"}},
     },
     ("GET", "/api/desktop"): {
         "primary": {"query": {"account_key": "default"}},
@@ -530,8 +564,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
-    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
+    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
     ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "501", "assert_no_write": True}},
@@ -579,7 +613,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/checkpoint"): {
         "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"}],
+        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True, "clear_workspace_commands": True}, "restore": ["workspace_monitors", "workspace_commands"], "expected": "2xx"}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
@@ -1188,6 +1222,8 @@ def probe_fixture_state(
         raise ValueError("session cost cache mutations must declare cache restoration")
     if ("clear_workspace_monitors" in mutations) != ("workspace_monitors" in restore):
         raise ValueError("workspace monitor mutations must declare restoration")
+    if ("clear_workspace_commands" in mutations) != ("workspace_commands" in restore):
+        raise ValueError("workspace command mutations must declare restoration")
     if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
         raise ValueError("active rule-check mutations must declare restoration")
 
@@ -1195,6 +1231,7 @@ def probe_fixture_state(
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
     workspace_monitors: dict[str, str] | None = None
+    workspace_commands: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
@@ -1227,6 +1264,16 @@ def probe_fixture_state(
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1
             path.write_text(json.dumps(cache), encoding="utf-8")
+        if mutations.get("clear_workspace_commands"):
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                workspace_commands = dict(connection.execute(
+                    "SELECT id,record FROM runtime_tasks WHERE "
+                    "json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
+                ))
+                for task_id, raw in workspace_commands.items():
+                    changed = json.loads(raw)
+                    changed["status"] = "completed"
+                    connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (json.dumps(changed), task_id))
         if mutations.get("clear_workspace_monitors") or mutations.get("activate_rule_check"):
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                 if mutations.get("clear_workspace_monitors"):
@@ -1278,6 +1325,10 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
+                if workspace_commands is not None:
+                    with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                        for task_id, raw in workspace_commands.items():
+                            connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (raw, task_id))
                 if workspace_monitors is not None or rule_monitor is not None:
                     with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                         if workspace_monitors is not None:
@@ -1303,7 +1354,7 @@ def probe_operations(
     from http_backend_harness import BackendProcess, HttpResult
 
     with tempfile.TemporaryDirectory(
-        prefix="rust-http-ledger-", dir=DEFAULT_CACHE
+        prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
         backend = BackendProcess(scratch, claude_bin=None)
@@ -1588,20 +1639,25 @@ store._save()
 
 def case_results(log_text: str) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    current: str | None = None
+    current: dict[str, str] | None = None
     for line in log_text.splitlines():
         start = re.match(r"^(test_[\w]+)\s+\(([^)]*)\)\s+\.\.\.\s*(.*)$", line)
         if start:
-            current = start.group(1)
-            full_id = start.group(2)
+            if current is not None:
+                # unittest writes test output and warnings to separate streams;
+                # a warning can put the next test heading before this test's status.
+                cases.append({**current, "status": "unreported"})
+            current = {"test": start.group(1), "testId": start.group(2)}
             tail = start.group(3).strip()
             if tail in {"ok", "FAIL", "ERROR"} or tail.startswith("skipped"):
-                cases.append({"test": current, "testId": full_id, "status": tail.split()[0].lower()})
+                cases.append({**current, "status": tail.split()[0].lower()})
                 current = None
             continue
         if current is not None and line.strip() in {"ok", "FAIL", "ERROR"}:
-            cases.append({"test": current, "testId": full_id, "status": line.strip().lower()})
+            cases.append({**current, "status": line.strip().lower()})
             current = None
+    if current is not None:
+        cases.append({**current, "status": "unreported"})
     return cases
 
 
@@ -1752,14 +1808,48 @@ def run_suite(
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
     if not ran_summaries or suite_summary is None:
         raise RuntimeError(f"consumer result summary missing in {relative}")
-    expected_reported_counts = {
-        "passed": observed_counts["passed"] + int(suite_summary.group(1)),
-        "failed": observed_counts["failed"] + max(
-            0, int(suite_summary.group(2)) - structured_failed_suites
-        ),
-        "skipped": observed_counts["skipped"] + int(suite_summary.group(3)) + int(suite_summary.group(4)),
+    suite_counts = {
+        "passed": int(suite_summary.group(1)),
+        "failed": max(0, int(suite_summary.group(2)) - structured_failed_suites),
+        "skipped": int(suite_summary.group(3)) + int(suite_summary.group(4)),
     }
-    reported_counts = {name: result.get(name, 0) or 0 for name in expected_reported_counts}
+    reported_counts = {name: result.get(name, 0) or 0 for name in suite_counts}
+    expected_test_counts = {
+        name: reported_counts[name] - suite_counts[name] for name in suite_counts
+    }
+    unreported = [case for case in cases if case["status"] == "unreported"]
+    observed_test_counts = {
+        "passed": observed_counts["passed"],
+        "failed": observed_counts["failed"],
+        "skipped": observed_counts["skipped"],
+    }
+    missing_counts = {
+        name: expected_test_counts[name] - observed_test_counts[name]
+        for name in expected_test_counts
+    }
+    if (
+        any(count < 0 for count in missing_counts.values())
+        or sum(missing_counts.values()) != len(unreported)
+        or sum(count > 0 for count in missing_counts.values()) > 1
+    ):
+        raise RuntimeError(
+            f"consumer result-count mismatch in {relative}: "
+            f"unreported test statuses cannot be reconciled: missing={missing_counts}, "
+            f"unreported={[case['testId'] for case in unreported]}"
+        )
+    for status, count in missing_counts.items():
+        if count:
+            for case in unreported:
+                case["status"] = {"passed": "ok", "failed": "fail", "skipped": "skipped"}[status]
+            break
+    observed_counts = {
+        "passed": sum(case["status"] == "ok" for case in cases),
+        "failed": sum(case["status"] in {"fail", "error"} for case in cases),
+        "skipped": sum(case["status"] == "skipped" for case in cases),
+    }
+    expected_reported_counts = {
+        name: observed_counts[name] + suite_counts[name] for name in suite_counts
+    }
     if (
         sum(observed_counts.values()) != ran_count
         or expected_reported_counts != reported_counts

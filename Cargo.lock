@@ -1980,8 +1980,16 @@ dependencies = [
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "studio-runtime-priority-sys"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -1995,6 +2003,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "studio-runtime-priority-sys",
  "studio-runtime-providers",
  "studio-runtime-store",
  "tempfile",
@@ -2028,6 +2037,7 @@ dependencies = [
  "getrandom 0.3.4",
  "serde_json",
  "studio-runtime-http",
+ "studio-runtime-process",
  "studio-runtime-services",
  "studio-runtime-store",
  "tokio",
@@ -2039,6 +2049,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
+ "data-encoding",
  "futures-util",
  "getrandom 0.3.4",
  "jsonschema",
@@ -2063,10 +2074,12 @@ dependencies = [
  "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-store",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",
  "ureq",
+ "url",
  "uuid",
 ]
 

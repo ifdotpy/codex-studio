@@ -2,23 +2,31 @@
 
 ## Change Contract
 
-- **Responsibility:** Process boundary ports, bounded Tokio provider attachments, and the typed client
-  for the existing supervisor v1 protocol. This crate does not start the
+- **Responsibility:** Process boundary ports, bounded Tokio provider attachments,
+  owned asynchronous pipe children, advisory owned-child priorities, and the typed
+  client for the existing supervisor v1 protocol. This crate does not start the
   production supervisor, make HTTP requests, or access SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
-  models for each v1 action; `provider_seam::ProviderTaskFactory` and
-  `provider_task::SupervisorProviderTaskFactory`; the Unix temporary-child adapter
-  `provider_stdio::StdioProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports.
+  models for each v1 action; `provider_seam::ProviderTaskFactory`,
+  `provider_task::SupervisorProviderTaskFactory`, and the Unix temporary-child adapter
+  `provider_stdio::StdioProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports;
+  [`stream_child`](src/stream_child.rs) for bounded local commands and sign-in;
+  `child_priority::ChildPriority` for command wrappers and
+  `child_priority::priority_diagnostics()` for nonblocking failure snapshots.
 - **Forbidden dependencies:** HTTP frameworks, SQLite, Python runtime
-  bindings, and OS-specific code outside transport adapters.
-- **Invariants:** The supervisor owns retained provider and command children. Temporary
-  stdio children belong to their adapter task until their process group is stopped
-  and reaped, including cancellation, deadline expiry, and caller drop. Handshake identity is `(backendId, stateDir)`; each child receipt
+  bindings, and unsafe code. Platform scheduling calls stay in the priority adapter.
+- **Invariants:** The supervisor owns retained provider and command children.
+  Temporary stdio children belong to their adapter task; local pipe children belong
+  to the retained stream actor. Both kill their own process group and reap on
+  cancellation, deadline expiry, or handle drop. Handshake identity is
+  `(backendId, stateDir)`; each child receipt
   and journal event also carries a process `generation`. A sent action whose
   response is lost is `UnknownOutcome`; callers resolve it by operation receipt
   or journal replay instead of issuing a fresh operation identity.
 - **Configuration owner:** The server app supplies the supervisor endpoint,
-  backend identity, state directory, and child launch data.
+  backend identity, state directory, and child launch data. Child priority is
+  read once from `CODEX_AGENT_CHILD_PRIORITY` at server startup; see the
+  [design note](../../../../docs/plans/rust-child-priority.md).
 - **Focused check:** `cargo nextest run -p studio-runtime-process`.
 
 ## Supervisor v1 contract
@@ -252,7 +260,9 @@ cancellation, deadline, caller-drop, and process-group cleanup checks.
 ## Owned local pipe children
 
 [`StreamChild`](src/stream_child.rs) uses Tokio and process-wrap process groups;
-process-wrap's kill-on-drop feature stays disabled. Each child has an owner thread
+process-wrap's kill-on-drop feature stays disabled. Its final command wrapper
+applies the configured child priority inside the owner thread before returning
+the child; see the [priority design note](../../../../docs/plans/rust-child-priority.md). Each child has an owner thread
 with a private Tokio runtime. The owner awaits process-group termination, reaping,
 and pipe closure before destroying that runtime; handle drop signals and joins it.
 `close()` exposes cleanup errors. Cleanup therefore survives application runtime

@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "expires": {
+      "minimum": 0,
+      "title": "Expires",
+      "type": "number"
+    },
+    "inviteId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Inviteid",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["open", "used"],
+      "title": "Status",
+      "type": "string"
+    },
+    "tailscaleUser": {
+      "maxLength": 254,
+      "minLength": 1,
+      "title": "Tailscaleuser",
+      "type": "string"
+    },
+    "tokenHash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Tokenhash",
+      "type": "string"
+    }
+  },
+  "required": ["inviteId", "status", "expires", "tokenHash", "tailscaleUser"],
+  "title": "PersistedAccessInvite",
+  "type": "object"
+}

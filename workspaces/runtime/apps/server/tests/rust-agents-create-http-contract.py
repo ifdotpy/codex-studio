@@ -296,7 +296,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 501, response.body[:1000])
         self.assertEqual(
             response.json(),
-            {"error": "Not implemented: requires agent-management/conversation-termination"},
+            {"error": "Not implemented: requires work-driver/deletion-release"},
         )
         reuse = self.backend.request(
             "POST",

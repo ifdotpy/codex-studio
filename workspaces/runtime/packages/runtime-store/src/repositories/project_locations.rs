@@ -57,22 +57,24 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub struct ProjectLocationsRepository;
 impl ProjectLocationsRepository {
     pub fn outbox(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        let row = db
-            .query_row(
-                "SELECT server,body,state,result FROM runtime_server_outbox WHERE id=?1",
-                [id],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            )
-            .optional()?;
-        row.map(|(server,body,state,result)| Ok(json!({"id":id,"server":server,"body":decode("runtime_server_outbox",id,&body)?,"state":state,"result":result.map(|s|decode("runtime_server_outbox",id,&s)).transpose()?}))).transpose()
+        let raw: Option<String> = db.query_row(
+            "SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",
+            [id], |row| row.get(0),
+        ).optional()?;
+        raw.map(|raw| {
+            // Validate the complete shared delivery row before the location
+            // consumer decodes its action-specific body and receipt.
+            let mut row = crate::system_reads::decode("runtime_server_outbox", id, &raw)?;
+            for field in ["body", "result"] {
+                if let Some(encoded) = row[field].as_str() {
+                    row[field] = decode("runtime_server_outbox", id, encoded)?;
+                }
+            }
+            Ok(row)
+        })
+        .transpose()
     }
+
     pub fn complete(tx: &Transaction<'_>, id: &str, receipt: &Value, now: f64) -> StoreResult<()> {
         tx.execute("UPDATE runtime_server_outbox SET state='complete',result=?1,error=NULL,completed_at=?2 WHERE id=?3 AND state='queued'",params![receipt.to_string(),now,id])?;
         Ok(())
@@ -163,60 +165,4 @@ impl crate::JsonRecord for ProjectLocationRecord {
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
     }
-}
-
-pub(crate) fn check_outbox(db: &Connection) -> StoreResult<crate::StateCheckTable> {
-    let mut report = crate::StateCheckTable {
-        table: "runtime_server_outbox",
-        row_count: 0,
-        rejected_count: 0,
-        failures: vec![],
-    };
-    let exists: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_server_outbox')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Ok(report);
-    }
-    let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
-    let mut statement = db.prepare("SELECT id,body FROM runtime_server_outbox")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        report.row_count += 1;
-        let id: String = row.get(0)?;
-        let body: Result<Value, _> = serde_json::from_str(&row.get::<_, String>(1)?);
-        let failure = match body {
-            Err(_) => Some(("/body".to_owned(), "json".to_owned())),
-            Ok(body)
-                if matches!(
-                    body["action"].as_str(),
-                    Some("add_location" | "remove_location")
-                ) =>
-            {
-                match ProjectLocationsRepository::outbox(db, &id)? {
-                    Some(value) => {
-                        studio_runtime_schema::first_error("relocation/LocationOutbox", &value)
-                            .map_err(StoreError::SchemaValidation)?
-                    }
-                    None => Some(("/id".to_owned(), "rowKey".to_owned())),
-                }
-            }
-            Ok(_) => None,
-        };
-        if let Some(key) = failure {
-            report.rejected_count += 1;
-            *failures.entry(key).or_default() += 1;
-        }
-    }
-    report.failures = failures
-        .into_iter()
-        .map(|((pointer, keyword), count)| crate::StateCheckFailure {
-            pointer,
-            keyword,
-            count,
-        })
-        .collect();
-    Ok(report)
 }
