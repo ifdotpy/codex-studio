@@ -5,8 +5,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
     "edits": [
       {
-        "before": ".filter(|m| m.epoch == s.actor.epoch)",
-        "after": ".filter(|_m| true)"
+        "before": "let mut known = old\n        .filter(|m| m.epoch == s.actor.epoch)",
+        "after": "let mut known = old\n        .filter(|_m| true)"
       }
     ],
     "witnesses": ["compaction"],
@@ -31,8 +31,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
     "edits": [
       {
-        "before": "if unique.len() == group.len() {",
-        "after": "if !unique.is_empty() {"
+        "before": "&& seen.len() == *count",
+        "after": "&& !seen.is_empty()"
       }
     ],
     "witnesses": ["progress-conflict"],
@@ -153,6 +153,281 @@
       }
     ],
     "witnesses": ["complaint-unchanged"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP13",
+    "description": "collapse-distinct-version-tokens",
+    "file": "workspaces/runtime/packages/runtime-services/tests/turn_prepare/oracle.py",
+    "edits": [
+      {
+        "before": "TOKENS.get(v,v) for k,v in manifest[\"versions\"].items()",
+        "after": "\"<version>\" for k,v in manifest[\"versions\"].items()"
+      }
+    ],
+    "witnesses": ["oracle_keeps_token_and_literal_identity"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP14",
+    "description": "hide-changed-literal-provider-text",
+    "file": "workspaces/runtime/packages/runtime-services/tests/turn_prepare/oracle.py",
+    "edits": [
+      {
+        "before": "actual=text[at:at+len(expected)]",
+        "after": "actual=expected"
+      }
+    ],
+    "witnesses": ["oracle_keeps_token_and_literal_identity"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP15",
+    "description": "ignore-changed-guidance",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if known.get(key) != Some(&version) {",
+        "after": "if !known.contains_key(key) {"
+      }
+    ],
+    "witnesses": ["role-changed"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP16",
+    "description": "accept-competing-base-sequence",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "m.sequence > prepared.base_sequence",
+        "after": "m.sequence > prepared.manifest.sequence"
+      }
+    ],
+    "witnesses": [
+      "competing_preparations_cannot_roll_back_either_receipt_order"
+    ],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP17",
+    "description": "silently-empty-nonstring-checks",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "result.get(\"checks\").is_some_and(|v| !v.is_string())",
+        "after": "result.get(\"checks\").is_some_and(|_v| false)"
+      }
+    ],
+    "witnesses": ["refuse-checks-number"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP18",
+    "description": "silently-empty-nonstring-files",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "files.iter().any(|v| !v.is_string())",
+        "after": "files.iter().any(|_v| false)"
+      }
+    ],
+    "witnesses": ["refuse-files-number"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP19",
+    "description": "coalesce-negative-zero-revision",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "value[\"progress_version\"].as_u64()?",
+        "after": "value[\"progress_version\"].as_u64().or_else(|| (value[\"progress_version\"].as_f64() == Some(-0.0)).then_some(0))?"
+      }
+    ],
+    "witnesses": ["progress-deviation--0"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP20",
+    "description": "coalesce-oversized-revision",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "value[\"progress_version\"].as_u64()?",
+        "after": "value[\"progress_version\"].as_u64().or_else(|| value[\"progress_version\"].as_f64().filter(|v| *v >= u64::MAX as f64).map(|_| u64::MAX))?"
+      }
+    ],
+    "witnesses": ["progress-deviation-18446744073709551616"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP21",
+    "description": "empty-null-child-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "Value::Null => \"None\".into(),",
+        "after": "Value::Null => \"\".into(),"
+      }
+    ],
+    "witnesses": ["child-agent_id-null"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP22",
+    "description": "treat-numeric-child-id-as-safe-string",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "let child = if raw.is_some_and(Value::is_string)",
+        "after": "let child = if raw.is_some()"
+      }
+    ],
+    "witnesses": ["child-agent_id-number"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP23",
+    "description": "trust-unchecked-asset-view",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "assets.push(view);",
+        "after": "assets.push(a.view.clone());"
+      }
+    ],
+    "witnesses": ["attachment-view-conflict"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP24",
+    "description": "round-clock-ties-away-from-zero",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "(at.fract() * 1_000_000.0).round_ties_even()",
+        "after": "(at.fract() * 1_000_000.0).round()"
+      }
+    ],
+    "witnesses": ["clock-rounding--5e-07"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP25",
+    "description": "lose-clock-fraction-before-rounding",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "(at.fract() * 1_000_000.0).round_ties_even()",
+        "after": "(at * 1_000_000.0).round_ties_even() - seconds * 1_000_000.0"
+      }
+    ],
+    "witnesses": ["clock-rounding-1790000000.0009995"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP26",
+    "description": "deliver-foreign-plan",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "s.plan.as_ref().filter(|p| p.id == s.actor.root_id)",
+        "after": "s.plan.as_ref()"
+      }
+    ],
+    "witnesses": ["plan-foreign-id"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP27",
+    "description": "patch-empty-event-id",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if !row.id.is_empty() {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": ["empty-event-id"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP28",
+    "description": "sort-rewritten-clipped-evidence",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {",
+        "after": "fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {\n    if value.get(\"resultTruncated\") == Some(&json!(true)) && packed(value).len() > EVENT_BYTES { return packed(value); }"
+      }
+    ],
+    "witnesses": ["producer-order-summary-evidence"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP29",
+    "description": "accept-container-child-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "v.is_array() || v.is_object()",
+        "after": "false && (v.is_array() || v.is_object())"
+      }
+    ],
+    "witnesses": ["child-agent_id-array"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP30",
+    "description": "reuse-current-guidance-as-prior",
+    "file": "workspaces/runtime/packages/runtime-services/tests/turn_prepare/oracle.py",
+    "edits": [
+      {
+        "before": "prior=merge(copy.deepcopy(s),case.get(\"prior\",{}))",
+        "after": "prior=merge(copy.deepcopy(s),case.get(\"prior\",{}))\n    prior[\"guidance\"]=copy.deepcopy(s[\"guidance\"])"
+      }
+    ],
+    "witnesses": ["role-changed"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP31",
+    "description": "discard-reference-to-fit-soft-budget",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "summary[\"resultFile\"] = path.clone();",
+        "after": "summary[\"resultFile\"] = json!(\"\");"
+      }
+    ],
+    "witnesses": ["reference_floor_is_soft_but_transcript_ceiling_is_hard"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP32",
+    "description": "lose-python-exponent-spelling",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "RawValue::from_string(python_float_json(value))",
+        "after": "RawValue::from_string(value.to_string())"
+      }
+    ],
+    "witnesses": ["nested-order-summary-evidence"],
+    "suite": "turn_prepare"
+  },
+  {
+    "id": "TP33",
+    "description": "retain-overwritten-read-object-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare.rs",
+    "edits": [
+      {
+        "before": "if replace_read && let Some",
+        "after": "if false && replace_read && let Some"
+      }
+    ],
+    "witnesses": ["child-existing-read-order"],
     "suite": "turn_prepare"
   }
 ]

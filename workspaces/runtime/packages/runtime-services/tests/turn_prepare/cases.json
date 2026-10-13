@@ -604,34 +604,49 @@
         "role": "Changed role block"
       }
     },
-    "prior": {}
+    "prior": {
+      "guidance": {
+        "role": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "role"
   },
   {
     "id": "role-empty",
     "family": "role",
-    "fast": false,
+    "fast": true,
     "snapshot": {
       "guidance": {
         "role": ""
       }
     },
-    "prior": {}
+    "prior": {
+      "guidance": {
+        "role": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "role"
   },
   {
     "id": "role-unicode",
     "family": "role",
-    "fast": false,
+    "fast": true,
     "snapshot": {
       "guidance": {
         "role": "役割\nPlease act carefully."
       }
     },
-    "prior": {}
+    "prior": {
+      "guidance": {
+        "role": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "role"
   },
   {
     "id": "role-large",
     "family": "role",
-    "fast": false,
+    "fast": true,
     "snapshot": {
       "guidance": {
         "role": {
@@ -640,18 +655,28 @@
         }
       }
     },
-    "prior": {}
+    "prior": {
+      "guidance": {
+        "role": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "role"
   },
   {
     "id": "progress-changed",
     "family": "role",
-    "fast": false,
+    "fast": true,
     "snapshot": {
       "guidance": {
         "progress": "New progress path"
       }
     },
-    "prior": {}
+    "prior": {
+      "guidance": {
+        "progress": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "progress"
   },
   {
     "id": "progress-empty",
@@ -6065,6 +6090,1096 @@
       {
         "metadata": {
           "accepted_at": 1e30
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-checks-number",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": 123,
+              "files": ["a"],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-checks-object",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": {
+                "important": "keep me"
+              },
+              "files": ["a"],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-checks-null",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": null,
+              "files": ["a"],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-checks-bool",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": true,
+              "files": ["a"],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-checks-array",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": [],
+              "files": ["a"],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-files-number",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [123],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-files-object",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [
+                {
+                  "important": "keep me"
+                }
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-files-null",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [null],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-files-bool",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [true],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "refuse-files-array",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [[]],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-agent_id-number",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": 123,
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-agent_id-null",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": null,
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-agent_id-bool",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": true,
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-agent_id-array",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": [],
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-agent_id-object",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": {
+              "child": "nested"
+            },
+            "name": "Worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-name-number",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": 123,
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-name-null",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": null,
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-name-bool",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": true,
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-name-array",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": [],
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-name-object",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "worker",
+            "name": {
+              "child": "nested"
+            },
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "progress-deviation--0",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": "{\"sender\":\"worker\",\"room\":\"room\",\"importance\":\"progress\",\"progress_key\":\"topic\",\"progress_version\":-0}",
+        "id": "z-first"
+      },
+      {
+        "kind": "agent_message",
+        "text": "{\"sender\":\"worker\",\"room\":\"room\",\"importance\":\"progress\",\"progress_key\":\"topic\",\"progress_version\":1}",
+        "id": "a-last"
+      }
+    ],
+    "revisionDeviation": true
+  },
+  {
+    "id": "progress-deviation-18446744073709551616",
+    "family": "progress",
+    "fast": true,
+    "events": [
+      {
+        "kind": "agent_message",
+        "text": "{\"sender\":\"worker\",\"room\":\"room\",\"importance\":\"progress\",\"progress_key\":\"topic\",\"progress_version\":18446744073709551616}",
+        "id": "z-first"
+      },
+      {
+        "kind": "agent_message",
+        "text": "{\"sender\":\"worker\",\"room\":\"room\",\"importance\":\"progress\",\"progress_key\":\"topic\",\"progress_version\":1}",
+        "id": "a-last"
+      }
+    ],
+    "revisionDeviation": true
+  },
+  {
+    "id": "attachment-view-empty",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {}
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "attachment-view-conflict",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "wrong",
+            "agent": "wrong",
+            "name": "wrong",
+            "image": false,
+            "size": 0,
+            "path": "/wrong"
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "metadata": {
+          "assets": ["asset-0"]
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-rounding--5e-07",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": -5e-7
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-rounding-1790000000.0009995",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": 1790000000.0009995
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-rounding-0.9999995",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": 0.9999995
+        }
+      }
+    ]
+  },
+  {
+    "id": "clock-rounding--0.9999995",
+    "family": "clocks",
+    "fast": true,
+    "events": [
+      {
+        "metadata": {
+          "accepted_at": -0.9999995
+        }
+      }
+    ]
+  },
+  {
+    "id": "plan-foreign-id",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "plan": {
+        "id": "other",
+        "rootId": "lead",
+        "steps": [
+          {
+            "step": "Investigate",
+            "status": "in_progress"
+          }
+        ],
+        "explanation": ""
+      }
+    }
+  },
+  {
+    "id": "plan-invalid-native-NoneType",
+    "family": "dynamic",
+    "fast": true,
+    "rawNativePlan": null
+  },
+  {
+    "id": "plan-invalid-native-list",
+    "family": "dynamic",
+    "fast": true,
+    "rawNativePlan": []
+  },
+  {
+    "id": "plan-invalid-native-int",
+    "family": "dynamic",
+    "fast": true,
+    "rawNativePlan": 12
+  },
+  {
+    "id": "plan-invalid-native-str",
+    "family": "dynamic",
+    "fast": true,
+    "rawNativePlan": "invalid"
+  },
+  {
+    "id": "empty-event-id",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "id": ""
+      }
+    ]
+  },
+  {
+    "id": "literal-user-json",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "text": "User text\n{\"z\": 1, \"a\": \"{\\\"order\\\": 2, \\\"keep\\\": 1}\"}\n[Agent plan version 000000000000000000000000]\n{\"k\":1}"
+      }
+    ]
+  },
+  {
+    "id": "literal-followup-json",
+    "family": "events",
+    "fast": true,
+    "events": [
+      {
+        "kind": "followup",
+        "text": "{\"z\": 2, \"a\": 1}"
+      }
+    ]
+  },
+  {
+    "id": "duplicate-json-key",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": "{\"name\":\"first\",\"agent_id\":\"worker\",\"name\":\"last\",\"result\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}"
+      }
+    ]
+  },
+  {
+    "id": "mixed-attachments-clocks-events",
+    "family": "attachments",
+    "fast": true,
+    "snapshot": {
+      "assets": [
+        {
+          "id": "asset-0",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": true,
+          "path": "/fixture/file-0",
+          "name": "file-0",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": true,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        },
+        {
+          "id": "asset-b",
+          "owner_id": "lead",
+          "owner_root_id": "lead",
+          "owner_deleted": false,
+          "image": false,
+          "path": "/fixture/text",
+          "name": "text",
+          "size": 1024,
+          "view": {
+            "id": "asset-0",
+            "agent": "lead",
+            "image": true,
+            "name": "file-0",
+            "size": 1024,
+            "mime": "image/png",
+            "hash": "fixture-hash",
+            "created": 2.5
+          }
+        }
+      ]
+    },
+    "events": [
+      {
+        "id": "z-first",
+        "kind": "user",
+        "text": "{\"z\": 2, \"a\": 1}",
+        "metadata": {
+          "assets": ["asset-0"],
+          "accepted_at": -5e-7
+        }
+      },
+      {
+        "kind": "monitor_exit",
+        "text": {
+          "json": {
+            "z": "first",
+            "a": "last"
+          }
+        },
+        "id": "m-middle",
+        "metadata": {
+          "assets": ["asset-b"]
+        }
+      },
+      {
+        "id": "a-last",
+        "kind": "followup",
+        "text": "{\"z\": 3, \"a\": 2}",
+        "metadata": {
+          "accepted_at": 1790000000.0009995
+        }
+      }
+    ]
+  },
+  {
+    "id": "multiple-child-artifacts",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "name": "Z",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            },
+            "agent_id": "z-worker"
+          }
+        },
+        "id": "z-result"
+      },
+      {
+        "id": "m-user",
+        "text": "Read both results."
+      },
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": "a-worker",
+            "name": null,
+            "result": {
+              "repeat": "界",
+              "count": 20002
+            }
+          }
+        },
+        "id": "a-result"
+      }
+    ]
+  },
+  {
+    "id": "complaints-mixed-changed-unchanged",
+    "family": "dynamic",
+    "fast": true,
+    "snapshot": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "Changed complaint",
+          "version": 1,
+          "created": 2.5
+        },
+        {
+          "id": "complaint-other",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "Unchanged complaint",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    },
+    "prior": {
+      "complaints": [
+        {
+          "id": "complaint",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "A response is required.",
+          "version": 1,
+          "created": 2.5
+        },
+        {
+          "id": "complaint-other",
+          "lead_id": "lead",
+          "recipient": "lead",
+          "status": "open",
+          "legacy_user_task": false,
+          "response_authors": [],
+          "author": "worker",
+          "author_name": "Worker",
+          "text": "Unchanged complaint",
+          "version": 1,
+          "created": 2.5
+        }
+      ]
+    }
+  },
+  {
+    "id": "long-result-files-clipped",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "result": {
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "checks": "ok",
+              "files": [
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                },
+                {
+                  "repeat": "x",
+                  "count": 170
+                }
+              ],
+              "resultFile": "/fixture/result.md"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "summary-result-file-soft-limit",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "other",
+        "text": {
+          "json": {
+            "resultFile": {
+              "repeat": "p",
+              "count": 23000
+            },
+            "payload": {
+              "repeat": "x",
+              "count": 25000
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "producer-order-summary-evidence",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "z_evidence": "retain first",
+            "agent_id": "worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            },
+            "middle": {
+              "repeat": "m",
+              "count": 25000
+            },
+            "a_evidence": "retain last",
+            "resultFile": "/fixture/result.md"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "competing-delivered-manifests",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "delivered_manifests": [
+        {
+          "epoch": ["old", 0],
+          "sequence": 11,
+          "versions": {
+            "roleSkill": "unrecognized-old"
+          }
+        },
+        {
+          "epoch": ["thread", 0],
+          "sequence": 4,
+          "versions": {
+            "roleSkill": "unrecognized-current"
+          }
+        }
+      ]
+    },
+    "prior": {}
+  },
+  {
+    "id": "tied-latest-manifests",
+    "family": "context",
+    "fast": true,
+    "snapshot": {
+      "delivered_manifests": [
+        {
+          "epoch": ["a", 0],
+          "sequence": 10,
+          "versions": {}
+        },
+        {
+          "epoch": ["thread", 0],
+          "sequence": 10,
+          "versions": {
+            "plan": "prior-plan"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "id": "child-numeric-float",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "agent_id": 1e-6,
+            "name": 1e20,
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "nested-order-summary-evidence",
+    "family": "sizes",
+    "fast": true,
+    "events": [
+      {
+        "kind": "work_review",
+        "text": {
+          "json": {
+            "z_first": {
+              "z": 2,
+              "a": 1,
+              "exponent": 1e-6
+            },
+            "result": {
+              "z_nested": "first",
+              "checks": "ok",
+              "text": {
+                "repeat": "x",
+                "count": 20001
+              },
+              "files": ["keep"],
+              "resultFile": "/fixture/result.md"
+            },
+            "middle": {
+              "repeat": "m",
+              "count": 25000
+            },
+            "a_last": "last"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "id": "child-existing-read-order",
+    "family": "evidence",
+    "fast": true,
+    "events": [
+      {
+        "kind": "child_result",
+        "text": {
+          "json": {
+            "read": {
+              "output_ref": "old",
+              "tool": "old"
+            },
+            "name": "Worker",
+            "agent_id": "worker",
+            "result": {
+              "repeat": "x",
+              "count": 20001
+            },
+            "resultFile": "/fixture/result.md"
+          }
         }
       }
     ]

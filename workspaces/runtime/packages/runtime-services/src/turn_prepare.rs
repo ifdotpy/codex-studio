@@ -1,11 +1,15 @@
 //! Pure submission compiler. The account worker gathers and revalidates the snapshot,
 //! materializes artifact intents, persists the result, and submits exactly once.
 //! No preparation result is evidence of delivery; only `accept` promotes knowledge.
+//! Synthetic byte budgets are soft: reference-only summaries can exceed their share.
+//! There is no finite total ceiling with unbounded IDs/paths, context, or bypass events.
+//! The transcript and its input excerpts each have a hard 20,000-character ceiling.
 use chrono::{DateTime, Datelike, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
-use studio_runtime_store::sha256_hex;
+use studio_runtime_store::{python_float_json, sha256_hex};
 use thiserror::Error;
 
 const TRANSCRIPT_CHARS: usize = 20_000;
@@ -131,7 +135,7 @@ pub struct Asset {
     pub path: String,
     pub name: String,
     pub size: u64,
-    /// Complete public asset descriptor, including optional metadata, excluding path.
+    /// Additional public metadata; typed identity fields override conflicting entries.
     pub view: Map<String, Value>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -220,6 +224,8 @@ pub struct PreparedSubmission {
     pub metadata_patches: BTreeMap<String, Map<String, Value>>,
     pub agent_patch: AgentPatch,
     pub manifest: ContextManifest,
+    /// Delivered sequence observed in this epoch; acceptance is a compare-and-set.
+    pub base_sequence: u64,
     pub artifact_intents: Vec<ArtifactIntent>,
 }
 #[derive(Error, Serialize)]
@@ -235,6 +241,8 @@ pub enum PrepareError {
     UnknownAttachment,
     #[error("Attachment belongs to another conversation")]
     AttachmentOwnership,
+    #[error("Invalid stored event evidence metadata")]
+    InvalidEvidence,
     #[error("Invalid message receipt time")]
     InvalidClock,
     #[error("Context sequence exhausted")]
@@ -317,7 +325,10 @@ fn outstanding(s: &PreparationSnapshot) -> Vec<&Complaint> {
         .collect()
 }
 fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), PrepareError> {
-    let old = s.delivered_manifests.iter().max_by_key(|m| m.sequence);
+    let old = s
+        .delivered_manifests
+        .iter()
+        .max_by_key(|m| (m.sequence, Reverse(&m.epoch.0), Reverse(m.epoch.1)));
     let mut known = old
         .filter(|m| m.epoch == s.actor.epoch)
         .map(|m| m.versions.clone())
@@ -357,11 +368,12 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
         }
         versions.insert(key.into(), version);
     }
-    if s.plan.is_some() || known.contains_key("plan") {
-        let value = json!(s.plan);
+    let plan = s.plan.as_ref().filter(|p| p.id == s.actor.root_id);
+    if plan.is_some() || known.contains_key("plan") {
+        let value = json!(plan);
         let version = context_version(&value);
         if known.get("plan") != Some(&version) {
-            let content = match &s.plan {
+            let content = match plan {
                 Some(p) if !p.steps.is_empty() || !p.explanation.is_empty() => packed(&value),
                 _ => "The agent plan is empty. Discard the previous agent plan.".into(),
             };
@@ -433,7 +445,155 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
     ))
 }
 
-fn truncate_files(result: &mut Value) {
+// Retain producer order only when rewritten payload bytes become summary evidence.
+// serde owns tokenization and validation; duplicate keys keep their first position.
+struct OrderedJson(Value, Vec<(String, OrderedJson)>, Vec<OrderedJson>);
+impl<'de> Deserialize<'de> for OrderedJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = OrderedJson;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("JSON")
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedJson(Value::Null, vec![], vec![]))
+            }
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(OrderedJson(json!(v), vec![], vec![]))
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(OrderedJson(json!(v), vec![], vec![]))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(OrderedJson(json!(v), vec![], vec![]))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(OrderedJson(json!(v), vec![], vec![]))
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(OrderedJson(json!(v), vec![], vec![]))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(v) = seq.next_element()? {
+                    values.push(v);
+                }
+                Ok(OrderedJson(json!([]), vec![], values))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values: Vec<(String, OrderedJson)> = Vec::new();
+                while let Some((k, v)) = map.next_entry()? {
+                    if let Some(existing) = values.iter_mut().find(|(key, _)| *key == k) {
+                        existing.1 = v;
+                    } else {
+                        values.push((k, v));
+                    }
+                }
+                Ok(OrderedJson(json!({}), values, vec![]))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+impl Serialize for OrderedJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+        if self.0.is_object() {
+            let mut map = serializer.serialize_map(Some(self.1.len()))?;
+            for (key, value) in &self.1 {
+                map.serialize_entry(key, value)?;
+            }
+            map.end()
+        } else if self.0.is_array() {
+            let mut seq = serializer.serialize_seq(Some(self.2.len()))?;
+            for value in &self.2 {
+                seq.serialize_element(value)?;
+            }
+            seq.end()
+        } else if let Some(value) = self.0.as_f64().filter(|_| self.0.is_f64()) {
+            serde_json::value::RawValue::from_string(python_float_json(value))
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
+    }
+}
+impl OrderedJson {
+    fn update(&mut self, value: &Value) {
+        if let Value::Object(map) = value {
+            self.1.retain(|(k, _)| map.contains_key(k));
+            for (k, v) in &mut self.1 {
+                v.update(&map[k]);
+            }
+            // Order of fields appended by Python's three rewriting operations.
+            for key in [
+                "textTruncated",
+                "checks",
+                "checksTruncated",
+                "filesTruncated",
+                "resultFile",
+                "resultTruncated",
+                "read",
+                "earlierProgressUpdates",
+                "history",
+                "tool",
+                "output_ref",
+            ]
+            .into_iter()
+            .chain(map.keys().map(String::as_str))
+            {
+                if let Some(v) = map.get(key)
+                    && !self.1.iter().any(|(k, _)| k == key)
+                {
+                    let mut ordered = Self(Value::Null, vec![], vec![]);
+                    ordered.update(v);
+                    self.1.push((key.into(), ordered));
+                }
+            }
+        } else if let Value::Array(values) = value {
+            self.2.truncate(values.len());
+            for (i, v) in values.iter().enumerate() {
+                if i == self.2.len() {
+                    self.2.push(Self(Value::Null, vec![], vec![]));
+                }
+                self.2[i].update(v);
+            }
+        }
+        self.0 = match value {
+            Value::Object(_) => json!({}),
+            Value::Array(_) => json!([]),
+            v => v.clone(),
+        };
+    }
+}
+fn rewritten(text: &str, value: &Value, replace_read: bool) -> String {
+    // Called only for successfully parsed event JSON.
+    match serde_json::from_str::<OrderedJson>(text) {
+        Ok(mut ordered) => {
+            if replace_read && let Some((_, read)) = ordered.1.iter_mut().find(|(k, _)| k == "read")
+            {
+                *read = OrderedJson(Value::Null, vec![], vec![]);
+            }
+            ordered.update(value);
+            serde_json::to_string(&ordered).unwrap_or_else(|_| packed(value))
+        }
+        Err(_) => packed(value),
+    }
+}
+
+fn truncate_review(result: &mut Value) {
+    let checks = result["checks"].as_str().unwrap_or("");
+    let truncated = checks.chars().count() > CHECKS_CHARS;
+    result["checks"] = json!(chars(checks, CHECKS_CHARS));
+    result["checksTruncated"] = json!(truncated);
     if let Some(files) = result.get("files").and_then(Value::as_array)
         && packed(&json!(files)).len() > FILES_BYTES
     {
@@ -464,16 +624,14 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
         };
         let path = path.as_str().filter(|p| !p.is_empty()).map(str::to_owned);
         if let Some(body) = body.filter(|b| b.len() > RESULT_BYTES) {
+            let replace_read = path.is_some();
             let excerpt = chars(body, RESULT_EXCERPT);
             if let Some(path) = path {
                 if row.kind == "work_review" && result.is_object() {
                     let result = &mut value["result"];
-                    let checks = result["checks"].as_str().unwrap_or("").to_owned();
                     result["text"] = json!(excerpt);
                     result["textTruncated"] = json!(true);
-                    result["checks"] = json!(chars(&checks, CHECKS_CHARS));
-                    result["checksTruncated"] = json!(checks.chars().count() > CHECKS_CHARS);
-                    truncate_files(result);
+                    truncate_review(result);
                 } else {
                     value["result"] = json!(excerpt);
                     value["resultTruncated"] = json!(true);
@@ -482,18 +640,15 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
                 value["read"] =
                     json!({"tool":"orchestration_read","output_ref":format!("event:{}",row.id)});
             }
-            text = packed(&value);
+            text = rewritten(&text, &value, replace_read);
         } else if row.kind == "work_review"
             && result.is_object()
             && path.is_some()
             && packed(&value).len() > limit
         {
             let result = &mut value["result"];
-            let checks = result["checks"].as_str().unwrap_or("").to_owned();
-            result["checks"] = json!(chars(&checks, CHECKS_CHARS));
-            result["checksTruncated"] = json!(checks.chars().count() > CHECKS_CHARS);
-            truncate_files(result);
-            text = packed(&value);
+            truncate_review(result);
+            text = rewritten(&text, &value, false);
         }
     }
     if text.len() <= limit {
@@ -563,27 +718,65 @@ fn bound_event(row: &Event, text: &str, limit: usize) -> String {
 }
 
 type ProgressKey = (String, String, String);
-fn progress(row: &Event) -> Option<(ProgressKey, u64)> {
+type ProgressGroup<'a> = (BTreeSet<u64>, usize, (u64, &'a str));
+fn progress(row: &Event, value: &Value) -> Option<(ProgressKey, u64)> {
     if row.kind != "agent_message" || row.preserve_progress {
         return None;
     }
-    let value: Value = serde_json::from_str(&row.text).ok()?;
     if value["importance"] != "progress" {
         return None;
     }
-    let mut key = Vec::new();
-    for field in ["sender", "room", "progress_key"] {
-        key.push(value[field].as_str().filter(|v| !v.is_empty())?.to_owned());
-    }
+    let field = |key| {
+        value[key]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
     Some((
-        (key[0].clone(), key[1].clone(), key[2].clone()),
+        (field("sender")?, field("room")?, field("progress_key")?),
         value["progress_version"].as_u64()?,
     ))
 }
+
+fn validate_evidence(row: &Event, value: Option<&Value>) -> Result<(), PrepareError> {
+    if row.kind == "work_review"
+        && let Some(result) = value.and_then(|v| v.get("result"))
+        && (result.get("checks").is_some_and(|v| !v.is_string())
+            || result
+                .get("files")
+                .and_then(Value::as_array)
+                .is_some_and(|files| files.iter().any(|v| !v.is_string())))
+    {
+        return Err(PrepareError::InvalidEvidence);
+    }
+    if row.kind == "child_result"
+        && value.is_some_and(|v| {
+            ["agent_id", "name"]
+                .iter()
+                .any(|k| v.get(k).is_some_and(|v| v.is_array() || v.is_object()))
+        })
+    {
+        return Err(PrepareError::InvalidEvidence);
+    }
+    Ok(())
+}
+fn scalar_text(value: &Value) -> String {
+    match value {
+        Value::String(v) => v.clone(),
+        Value::Null => "None".into(),
+        Value::Bool(true) => "True".into(),
+        Value::Bool(false) => "False".into(),
+        Value::Number(v) if v.is_f64() => {
+            v.as_f64().map_or_else(|| v.to_string(), python_float_json)
+        }
+        _ => value.to_string(),
+    }
+}
 fn artifact(row: &Event, value: &Value, body: &str) -> ArtifactIntent {
-    let raw = value.get("agent_id").cloned().unwrap_or(json!(""));
-    let child = raw.as_str().unwrap_or("");
-    let child = if !child.is_empty()
+    let raw = value.get("agent_id");
+    let child = raw.map(scalar_text).unwrap_or_default();
+    let child = if raw.is_some_and(Value::is_string)
+        && !child.is_empty()
         && child.len() <= 200
         && child
             .bytes()
@@ -593,7 +786,10 @@ fn artifact(row: &Event, value: &Value, body: &str) -> ArtifactIntent {
     } else {
         sha256_hex(child.as_bytes())
     };
-    let name = value["name"].as_str().unwrap_or(&child);
+    let name = value
+        .get("name")
+        .map(scalar_text)
+        .unwrap_or_else(|| child.clone());
     ArtifactIntent {
         event_id: row.id.clone(),
         relative_path: format!("results/{child}/{}.md", sha256_hex(row.id.as_bytes())),
@@ -607,10 +803,24 @@ fn event_text(
     s: &PreparationSnapshot,
     rows: &[Event],
 ) -> Result<(String, Vec<ArtifactIntent>), PrepareError> {
-    let mut groups: BTreeMap<ProgressKey, Vec<(u64, &str)>> = BTreeMap::new();
-    for row in rows {
-        if let Some((key, version)) = progress(row) {
-            groups.entry(key).or_default().push((version, &row.id));
+    let parsed: Vec<_> = rows
+        .iter()
+        .map(|r| serde_json::from_str::<Value>(&r.text).ok())
+        .collect();
+    let progress: Vec<_> = rows
+        .iter()
+        .zip(&parsed)
+        .map(|(r, v)| v.as_ref().and_then(|v| progress(r, v)))
+        .collect();
+    let mut groups: BTreeMap<&ProgressKey, ProgressGroup<'_>> = BTreeMap::new();
+    for (row, update) in rows.iter().zip(&progress) {
+        if let Some((key, version)) = update {
+            let group = groups.entry(key).or_default();
+            group.0.insert(*version);
+            group.1 += 1;
+            if *version >= group.2.0 {
+                group.2 = (*version, &row.id);
+            }
         }
     }
     let synthetic = rows
@@ -621,9 +831,9 @@ fn event_text(
     let mut parts = Vec::new();
     let mut artifacts = Vec::new();
     let mut missing = Vec::new();
-    for row in rows {
+    for ((row, parsed), update) in rows.iter().zip(parsed).zip(progress.iter()) {
         let mut text = row.text.clone();
-        let parsed = serde_json::from_str::<Value>(&text).ok();
+        validate_evidence(row, parsed.as_ref())?;
         if row.kind == "complaint"
             && !row.preserve_complaint
             && parsed
@@ -641,34 +851,28 @@ fn event_text(
             && !value["resultFile"].as_str().is_some_and(|p| !p.is_empty())
         {
             let intent = artifact(row, &value, body);
-            if let Some(path) = s.artifact_paths.get(&row.id) {
+            if let Some(path) = s.artifact_paths.get(&row.id).filter(|p| !p.is_empty()) {
                 value["resultFile"] = json!(path);
-                text = packed(&value);
+                text = rewritten(&text, &value, false);
             } else {
                 missing.push(intent.clone());
             }
             artifacts.push(intent);
         }
-        if let Some((key, _)) = progress(row)
-            && let Some(group) = groups.get(&key)
+        if let Some((key, _)) = update
+            && let Some((seen, count, latest)) = groups.get(key)
+            && seen.len() == *count
         {
-            let unique: BTreeSet<_> = group.iter().map(|g| g.0).collect();
-            if unique.len() == group.len() {
-                if group
-                    .iter()
-                    .max_by_key(|g| g.0)
-                    .is_some_and(|g| g.1 != row.id)
-                {
-                    continue;
-                }
-                if group.len() > 1
-                    && let Some(mut value) = parsed
-                {
-                    value["earlierProgressUpdates"] = json!(group.len() - 1);
-                    value["history"] =
-                        json!("Read earlier progress with orchestration_chat_read in this room.");
-                    text = packed(&value);
-                }
+            if latest.1 != row.id {
+                continue;
+            }
+            if *count > 1
+                && let Some(mut value) = parsed
+            {
+                value["earlierProgressUpdates"] = json!(count - 1);
+                value["history"] =
+                    json!("Read earlier progress with orchestration_chat_read in this room.");
+                text = rewritten(&text, &value, false);
             }
         }
         if !matches!(
@@ -734,6 +938,13 @@ pub fn compile(
             });
             let mut view = a.view.clone();
             view.remove("path");
+            view.extend(Map::from_iter([
+                ("id".into(), json!(a.id)),
+                ("agent".into(), json!(a.owner_id)),
+                ("image".into(), json!(a.image)),
+                ("name".into(), json!(a.name)),
+                ("size".into(), json!(a.size)),
+            ]));
             assets.push(view);
         }
         all_assets.extend(assets.clone());
@@ -754,12 +965,14 @@ pub fn compile(
             if !at.is_finite() {
                 return Err(PrepareError::InvalidClock);
             }
-            let micros = (at * 1_000_000.0).round();
-            if micros < i64::MIN as f64 || micros > i64::MAX as f64 {
+            // Split before scaling: multiplying the full epoch loses fractional bits.
+            let seconds = at.trunc();
+            let micros = (at.fract() * 1_000_000.0).round_ties_even();
+            if seconds < -62_135_596_801.0 || seconds > 253_402_300_800.0 {
                 return Err(PrepareError::InvalidClock);
             }
-            let time =
-                DateTime::from_timestamp_micros(micros as i64).ok_or(PrepareError::InvalidClock)?;
+            let time = DateTime::from_timestamp_micros(seconds as i64 * 1_000_000 + micros as i64)
+                .ok_or(PrepareError::InvalidClock)?;
             if !(1..=9999).contains(&time.year()) {
                 return Err(PrepareError::InvalidClock);
             }
@@ -798,10 +1011,10 @@ pub fn compile(
     provider_inputs.extend(provider_assets);
     let mut metadata_patches = BTreeMap::new();
     for row in rows {
-        let mut patch = Map::from_iter([
-            ("modelEventProjection".into(), json!(1)),
-            ("transcriptItemId".into(), json!(item_id)),
-        ]);
+        let mut patch = Map::from_iter([("modelEventProjection".into(), json!(1))]);
+        if !row.id.is_empty() {
+            patch.insert("transcriptItemId".into(), json!(item_id));
+        }
         if row.id == first.id {
             patch.insert("contextManifest".into(), json!(manifest));
         }
@@ -819,6 +1032,13 @@ pub fn compile(
         agent_patch: AgentPatch {
             complaints_presented: outstanding(s).iter().map(|c| c.id.clone()).collect(),
         },
+        base_sequence: s
+            .delivered_manifests
+            .iter()
+            .filter(|m| m.epoch == s.actor.epoch)
+            .map(|m| m.sequence)
+            .max()
+            .unwrap_or(0),
         manifest,
         artifact_intents,
     })
@@ -840,13 +1060,23 @@ pub struct NativeReceipt {
     pub outcome: ReceiptOutcome,
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryStatus {
+    #[default]
+    Unconfirmed,
+    Stale,
+    Accepted,
+}
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DeliveryTransition {
+    pub status: DeliveryStatus,
     pub manifest_upsert: Option<ContextManifest>,
     pub reminder_insert: Option<String>,
     pub transcript_turn_id: Option<String>,
 }
 /// `current` is the delivered manifest for this exact epoch, read in the same
-/// transaction that applies this transition. Equal sequences may replace, like Python.
+/// transaction that applies this transition. A receipt compiled from an older base
+/// is stale, including equal-sequence competing preparations and settled replays.
 /// The worker owns native receipt validation; this additionally checks compilation identity.
 pub fn accept(
     prepared: &PreparedSubmission,
@@ -864,10 +1094,15 @@ pub fn accept(
     {
         return DeliveryTransition::default();
     }
+    if current.is_some_and(|m| m.epoch == prepared.epoch && m.sequence > prepared.base_sequence) {
+        return DeliveryTransition {
+            status: DeliveryStatus::Stale,
+            ..Default::default()
+        };
+    }
     DeliveryTransition {
-        manifest_upsert: (!current
-            .is_some_and(|m| m.epoch == prepared.epoch && m.sequence > prepared.manifest.sequence))
-        .then(|| prepared.manifest.clone()),
+        status: DeliveryStatus::Accepted,
+        manifest_upsert: Some(prepared.manifest.clone()),
         reminder_insert: prepared.manifest.versions.get("worktreeReminder").cloned(),
         transcript_turn_id: Some(turn_id.clone()),
     }
