@@ -31,12 +31,12 @@ from .models import (
 class AgentRequestModelTests(unittest.TestCase):
     def test_lead_retry_preserves_supplied_identity_and_omitted_fields(self) -> None:
         body = CreateLeadRequest.model_validate_json(
-            '{"id":"stable-id","previous":"prior","reuse_empty":false}'
+            '{"id":"12345678-1234-4234-8234-123456789abc","previous":"prior","reuse_empty":false}'
         )
 
         self.assertEqual(
             body.model_dump(mode="json", exclude_unset=True),
-            {"id": "stable-id", "previous": "prior", "reuse_empty": False},
+            {"id": "12345678-1234-4234-8234-123456789abc", "previous": "prior", "reuse_empty": False},
         )
 
     def test_conversation_settings_preserve_explicit_null(self) -> None:

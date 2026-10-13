@@ -96,7 +96,14 @@ pub fn mode_fields(record: &mut Value) {
 fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
     let mut record = record.clone();
     mode_fields(&mut record);
-    let context = crate::sync_entity_context::agent_view_context(transaction, &record)?;
+    let server_id = transaction
+        .path()
+        .and_then(|path| std::path::Path::new(path).parent()?.to_str())
+        .map(crate::sync_entity_context::local_server_id)
+        .transpose()?
+        .flatten();
+    let context =
+        crate::sync_entity_context::agent_view_context(transaction, &record, server_id.as_deref())?;
     crate::sync_views::agent_entity_view(&record, &context)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))
 }

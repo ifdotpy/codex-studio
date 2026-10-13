@@ -798,8 +798,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
                 self.assertEqual(self.write_snapshot(), before)
 
-    @unittest.skipIf(bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")), "Pending sync-pull owner: local project_server_id context; must pass after integration")
-    def test_shared_projection_local_server_identity_pending_context_fix(self):
+    def test_shared_projection_local_server_identity(self):
         body = self.draft()
         self.assertIsInstance(self.projection(body["id"])["serverId"], str)
 
