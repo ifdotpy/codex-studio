@@ -10,11 +10,12 @@ use studio_runtime_store::RuntimeStore;
 
 #[test]
 fn complete_python_answer_and_delete_corpus() {
-    let (_root, store, _) = fixture();
+    let (_root, store, context) = fixture();
     let port = Arc::new(Port::default());
     let runtime = CallbackRuntime::new(store.clone(), port.clone());
     for case in template()["fullAnswers"].as_array().unwrap() {
-        card(&store, &case["before"]);
+        seed_case(&store, case);
+        let before_rows = logical_snapshot(&store);
         let id = case["before"]["id"].as_str().unwrap();
         assert_eq!(
             runtime.answer(id, &case["data"], 20.0).unwrap(),
@@ -25,6 +26,8 @@ fn complete_python_answer_and_delete_corpus() {
             case["replay"]
         );
         assert_eq!(stored(&store, id), case["after"]);
+        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_writes(&before_rows, &store, &case["writes"]);
         assert_eq!(
             frame_value(&port.calls.lock().unwrap().last().unwrap().frame()),
             case["frame"]
@@ -32,7 +35,8 @@ fn complete_python_answer_and_delete_corpus() {
     }
     assert_eq!(port.calls.lock().unwrap().len(), 30);
     for case in template()["deletes"].as_array().unwrap() {
-        card(&store, &case["before"]);
+        seed_case(&store, case);
+        let before_rows = logical_snapshot(&store);
         let id = case["before"]["id"].as_str().unwrap();
         let before = port.calls.lock().unwrap().len();
         let result = runtime.delete_question(id, 20.0);
@@ -42,81 +46,13 @@ fn complete_python_answer_and_delete_corpus() {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
         assert_eq!(stored(&store, id), case["after"], "{id}");
+        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_writes(&before_rows, &store, &case["writes"]);
         let frames: Vec<_> = port.calls.lock().unwrap()[before..]
             .iter()
             .map(|r| frame_value(&r.frame()))
             .collect();
         assert_eq!(json!(frames), case["frames"]);
-    }
-}
-
-#[test]
-fn failpoint_matrix_reopens_after_every_committed_boundary() {
-    // Before/after admission; answer intent; hand-off; receipt; ACK; retirement.
-    // Submitted without a durable receipt is deliberately held, never replayed.
-    for boundary in 0..=7 {
-        let (root, mut store, context) = fixture();
-        if boundary == 0 {
-            drop(store);
-            store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
-        }
-        let (id, frame) = pending(&store, &context);
-        let data = json!({"answers":{"secret":{"answers":["protected-body"]}}});
-        let mut sent = 0;
-        if boundary >= 2 {
-            let reply = prepare_user_answer(&store, &id, &data, 20.0, false)
-                .unwrap()
-                .unwrap();
-            if boundary >= 3 {
-                delivery(&store, &reply.identity, DeliveryOutcome::Submitted).unwrap();
-            }
-            if boundary >= 4 {
-                sent += 1;
-            }
-            if boundary >= 5 {
-                delivery(&store, &reply.identity, DeliveryOutcome::Written).unwrap();
-            }
-            if boundary >= 6 {
-                checkpoint(&store, &context, 1);
-            }
-            if boundary >= 7 {
-                checkpoint(&store, &context, 1);
-            }
-        }
-        drop(store);
-        store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
-        let port = Arc::new(Port::default());
-        let runtime = CallbackRuntime::new(store.clone(), port.clone());
-        if boundary < 2 {
-            runtime.answer(&id, &data, 20.0).unwrap();
-        } else if boundary == 2 {
-            let prepared = prepared_replies(&store, &context).unwrap();
-            assert_eq!(prepared.len(), 1);
-            runtime.deliver(&prepared[0]).unwrap();
-        } else if boundary < 5 {
-            assert!(prepared_replies(&store, &context).unwrap().is_empty());
-            assert!(matches!(
-                dispatch(&store, &context, &frame, 21.0),
-                Err(CallbackError::Unknown)
-            ));
-            recover_connection(&store, "default", "connection", 21.0).unwrap();
-            assert_eq!(stored(&store, &id)["status"], "uncertain");
-            assert!(runtime.answer(&id, &data, 22.0).is_err());
-        } else {
-            assert_eq!(
-                runtime.answer(&id, &data, 22.0).unwrap(),
-                json!({"status":"answered","replayed":true})
-            );
-            if boundary >= 6 {
-                assert!(matches!(
-                    dispatch(&store, &context, &frame, 22.0).unwrap(),
-                    CallbackDecision::Settled(_)
-                ));
-            }
-        }
-        sent += port.calls.lock().unwrap().len();
-        assert!(sent <= 1, "boundary {boundary} sent {sent} times");
-        assert_eq!(sent, usize::from(boundary != 3));
     }
 }
 

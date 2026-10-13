@@ -49,6 +49,22 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
         .ok_or(CallbackError::Invalid("Invalid callback card identity"))?;
     records::validate("runtime_requests", id, card.clone())?;
     QuestionsWriteRepository::put_request(tx, id, &card.to_string())?;
+    let actor = card["agent"]
+        .as_str()
+        .map(|id| records::get(tx, "runtime_agents", id))
+        .transpose()?
+        .flatten();
+    if let Some(actor) = actor {
+        crate::tool_requests::reconcile_effect(tx, "requests", card, &actor)?;
+    }
+    let deleted = card["status"] != "pending";
+    let value = if deleted {
+        json!({})
+    } else {
+        crate::sync_views::project_persisted_record("request", card)
+            .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{id}")))?
+    };
+    studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", id, value, deleted)?;
     Ok(())
 }
 pub(super) fn admit(
@@ -118,10 +134,11 @@ pub fn answer_value(
     data: &Value,
 ) -> Result<(Value, Value), CallbackError> {
     let choice = || -> Result<&str, CallbackError> {
-        let decision = data
-            .get("decision")
-            .and_then(Value::as_str)
-            .unwrap_or("decline");
+        let decision = match data.get("decision") {
+            None => "decline",
+            Some(Value::String(value)) => value.as_str(),
+            Some(_) => return Err(CallbackError::Invalid("Choose accept, decline or cancel")),
+        };
         if matches!(decision, "accept" | "decline" | "cancel") {
             Ok(decision)
         } else {
@@ -265,10 +282,14 @@ fn answer_in(
     let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
     outbox["card"] = json!(id);
     outbox["unanswered"] = unanswered;
-    if let Some(admission) = storage::read(tx, &format!("{key}:card"))?
-        && let Some(cursor) = admission.get("journalCursor")
-    {
-        outbox["journalCursor"] = cursor.clone();
+    if let Some(admission) = storage::read(tx, &format!("{key}:card"))? {
+        if let Some(cursor) = admission.get("journalCursor") {
+            outbox["journalCursor"] = cursor.clone();
+        }
+    } else {
+        // Python already admitted this card without the Rust worker journal.
+        // Keep a replay tombstone, but its Written payload needs no Rust ACK.
+        outbox["legacyAdmission"] = json!(true);
     }
     storage::update(tx, &key, &outbox)?;
     save(tx, &card)?;
@@ -310,6 +331,20 @@ pub fn resolve(
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
     store.transaction_with(|tx| {
+        let identity = ReplyIdentity::new(context, rpc_id);
+        let resolution_key = format!("{}:resolved", identity.key());
+        if let Some(previous) = storage::read(tx, &resolution_key)? {
+            if previous["identity"] != serde_json::to_value(&identity)? {
+                return Err(CallbackError::Stale);
+            }
+        } else {
+            let mut proof = json!({"identity":identity,"resolvedAt":now});
+            if let Some(saved) = storage::read(tx, &identity.key())?
+                .or(storage::read(tx, &format!("{}:card", identity.key()))?) {
+                proof["signature"] = saved["signature"].clone();
+            }
+            storage::save(tx, &resolution_key, &proof)?;
+        }
         let mut count = 0;
         for mut card in records::all(tx, "runtime_requests")? {
             if card["agent"] == context.agent

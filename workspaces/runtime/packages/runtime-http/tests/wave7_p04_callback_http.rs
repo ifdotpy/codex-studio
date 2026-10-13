@@ -1,7 +1,6 @@
 //! Actual HTTP middleware and generated DTOs with an injected retained reply port.
 #![allow(clippy::unwrap_used)]
 #[path = "../../runtime-services/tests/wave7_p04_callback/fixture.rs"]
-#[allow(dead_code)]
 mod fixture;
 use axum::{
     body::{Body, to_bytes},
@@ -129,4 +128,97 @@ async fn pending_native_delete_sends_only_cancellation_and_unknown_is_held() {
         );
         assert_eq!(port.calls.lock().unwrap().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn enabled_native_backend_serves_success_and_null_refusal_over_tcp() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (root, store, _) = fixture();
+    let port = Arc::new(Port::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    assert_ne!(address.port(), 4620);
+    let state = HttpState::new(
+        "token".into(),
+        "fixture".into(),
+        None,
+        root.path().to_string_lossy().into(),
+        address.port(),
+        None,
+        Some(store.clone()),
+        None,
+    )
+    .with_callback_runtime(Arc::new(CallbackRuntime::new(store.clone(), port.clone())));
+    let app = router(state).unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            stopped.await.unwrap();
+        })
+        .await
+        .unwrap();
+    });
+    for (index, method) in [
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "mcpServer/elicitation/request",
+        "item/tool/requestUserInput",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut value = template()["legacyCard"].clone();
+        let id = format!("tcp-native-{index}");
+        value["id"] = json!(id);
+        value["rpcId"] = json!(id);
+        value["method"] = json!(method);
+        card(&store, &value);
+        let before = physical_snapshot(&store);
+        for (decision, expected) in [(Value::Null, 400), (json!("accept"), 200)] {
+            let body = if method == "item/tool/requestUserInput" {
+                json!({"id":id,"answers":if expected==400 {Value::Null} else {json!({})}})
+            } else {
+                json!({"id":id,"decision":decision})
+            }
+            .to_string();
+            let request = format!(
+                "POST /api/answer HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Canvas-Token: token\r\nX-Studio-API-Schema: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                studio_runtime_http::schema::api_schema_hash(),
+                body.len()
+            );
+            let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).await.unwrap();
+            let response = String::from_utf8(bytes).unwrap();
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {expected}")),
+                "{response}"
+            );
+            let body: Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            if expected == 400 {
+                assert_eq!(
+                    body["error"],
+                    if method == "item/tool/requestUserInput" {
+                        "Supply question answers"
+                    } else {
+                        "Choose accept, decline or cancel"
+                    }
+                );
+                assert_eq!(physical_snapshot(&store), before);
+                assert_eq!(stored(&store, &id), value);
+                assert_eq!(port.calls.lock().unwrap().len(), index);
+            } else {
+                assert_eq!(body["status"], "answered");
+                assert_eq!(port.calls.lock().unwrap().len(), index + 1);
+            }
+        }
+    }
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }

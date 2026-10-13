@@ -15,7 +15,10 @@ pub use model::{
 pub use projection::project_tool_result;
 pub use recovery::recover_connection;
 use serde_json::{Value, json};
-pub use storage::{DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed};
+pub use storage::{
+    DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,
+    submission_ready,
+};
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
 

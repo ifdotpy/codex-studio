@@ -1,7 +1,10 @@
 //! Retained-session adapter for native cards. All methods run on a blocking
 //! store bridge. A port receives only committed replies and must enforce the
 //! supplied deadline; losing its receipt leaves the exact attempt Unknown.
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use serde_json::{Value, json};
 use studio_runtime_providers::{Frame, RequestId};
@@ -38,10 +41,44 @@ pub trait CallbackReplyPort: Send + Sync {
 pub struct CallbackRuntime {
     store: Arc<RuntimeStore>,
     port: Arc<dyn CallbackReplyPort>,
+    lifecycle: Mutex<()>,
 }
 impl CallbackRuntime {
     pub fn new(store: Arc<RuntimeStore>, port: Arc<dyn CallbackReplyPort>) -> Self {
-        Self { store, port }
+        Self {
+            store,
+            port,
+            lifecycle: Mutex::new(()),
+        }
+    }
+
+    /// Shared by the retained owner for resolution, stop, delete, completion
+    /// and transport acceptance. Run on the blocking bridge; never await the
+    /// HTTP mailbox receipt or final write receipt here. Bound acceptance by
+    /// REPLY_DEADLINE; the closure must return before the owner handles events.
+    pub fn with_lifecycle<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, CallbackError>,
+    ) -> Result<T, CallbackError> {
+        let _guard = self.lifecycle.lock().map_err(|_| CallbackError::Unknown)?;
+        action()
+    }
+
+    /// Run on the retained owner immediately before bounded submit_frame admission.
+    /// The submit closure checks the exact live connection/generation under the gate.
+    /// The read transaction ends BEFORE submit; the lifecycle gate spans both.
+    /// None means a resolution/completion proof cancelled this queued reply.
+    pub fn submit_committed<T>(
+        &self,
+        reply: &Reply,
+        submit: impl FnOnce() -> Result<T, CallbackError>,
+    ) -> Result<Option<T>, CallbackError> {
+        self.with_lifecycle(|| {
+            if !callbacks::submission_ready(&self.store, reply)? {
+                return Ok(None);
+            }
+            submit().map(Some)
+        })
     }
 
     pub fn dispatch(
@@ -102,7 +139,9 @@ impl CallbackRuntime {
     }
 
     pub fn delete_question(&self, id: &str, now: f64) -> Result<Value, CallbackError> {
-        if let Some(reply) = callbacks::prepare_delete(&self.store, id, now)? {
+        if let Some(reply) =
+            self.with_lifecycle(|| callbacks::prepare_delete(&self.store, id, now))?
+        {
             self.deliver(&reply)?;
         }
         Ok(json!({"id":id,"status":"deleted"}))
@@ -114,7 +153,7 @@ impl CallbackRuntime {
         rpc: &RequestId,
         now: f64,
     ) -> Result<usize, CallbackError> {
-        callbacks::resolve(&self.store, context, rpc, now)
+        self.with_lifecycle(|| callbacks::resolve(&self.store, context, rpc, now))
     }
 
     pub fn recover_connection(
@@ -123,7 +162,7 @@ impl CallbackRuntime {
         connection: &str,
         now: f64,
     ) -> Result<usize, CallbackError> {
-        callbacks::recover_connection(&self.store, account, connection, now)
+        self.with_lifecycle(|| callbacks::recover_connection(&self.store, account, connection, now))
     }
 }
 
