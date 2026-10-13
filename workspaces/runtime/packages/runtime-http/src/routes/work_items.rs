@@ -1,7 +1,7 @@
 //! HTTP handlers for persisted work-item, plan and queue reads.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -15,9 +15,6 @@ use studio_runtime_store::{
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::validation::Registry;
-
-const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
-    [Dependency::new("workspace-state/organization-effects")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -33,7 +30,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/annotation", OperationStatus::Implemented, annotation),
         post(
             "/api/organization",
-            OperationStatus::partial(&ORGANIZATION_DEPENDENCY),
+            OperationStatus::Implemented,
             organization,
         ),
     ])
@@ -260,16 +257,20 @@ pub(crate) async fn annotation(
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
 }
-pub(crate) async fn organization(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "POST",
-        "/api/organization",
-        &ORGANIZATION_DEPENDENCY,
-    ))
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
+pub(crate) async fn organization(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let result = tokio::task::spawn_blocking(move || {
+        store.transaction_with_error(|tx| {
+            studio_runtime_services::organization_effects::apply(tx, &body)
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(write_error)?;
+    Ok(Json(result))
 }
 
 fn optional_string<'a>(body: &'a Value, field: &str) -> Option<&'a str> {
@@ -329,6 +330,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "work_items",
         routes: Some(routes),
-        dependencies: &["event-driver/work-items", "workspace-state/organization-effects"],
+        dependencies: &["event-driver/work-items"],
     }
 }
