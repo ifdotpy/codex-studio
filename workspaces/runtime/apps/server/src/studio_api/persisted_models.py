@@ -97,16 +97,11 @@ class PersistedAgentRecord(ContractModel):
     autoWake: StrictBool | None = None
     cleanedImageWorkspace: dict[StrictStr, JsonValue] | None = None
     cleanedWorktree: dict[StrictStr, JsonValue] | None = None
-    deletedAt: StrictBool | float | None = None
     executionMode: StrictStr | None = None
     imageWorkspace: StrictBool | None = None
     imageWorkspaceReady: StrictBool | None = None
     inFlight: StrictBool | None = None
-    isLead: StrictBool | None = None
-    parentId: StrictStr | None = None
     parkedEvent: StrictStr | None = None
-    threadId: StrictStr | None = None
-    turnId: StrictStr | None = None
     worktreeCleanup: dict[StrictStr, JsonValue] | None = None
     worktreeReady: StrictBool | None = None
 
