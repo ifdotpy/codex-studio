@@ -2049,8 +2049,8 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "chrono",
- "futures-util",
  "data-encoding",
+ "futures-util",
  "getrandom 0.3.4",
  "jsonschema",
  "mime_guess",
