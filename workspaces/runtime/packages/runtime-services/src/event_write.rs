@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{Number, Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, RulesRepository, Transaction,
@@ -15,7 +15,8 @@ static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 /// Match Python's default JSON string escaping for durable operation signatures.
 pub fn python_json(value: &Value) -> String {
     match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::Null | Value::Bool(_) => value.to_string(),
+        Value::Number(number) => python_number(number),
         Value::String(value) => python_quote(value),
         Value::Array(values) => format!(
             "[{}]",
@@ -36,6 +37,79 @@ pub fn python_json(value: &Value) -> String {
                     .join(", ")
             )
         }
+    }
+}
+
+fn python_number(number: &Number) -> String {
+    if !number.is_f64() {
+        return number.to_string();
+    }
+
+    let rendered = number.to_string();
+    let (sign, rendered) = rendered
+        .strip_prefix('-')
+        .map_or(("", rendered.as_str()), |value| ("-", value));
+    let (mantissa, exponent) = rendered
+        .split_once(['e', 'E'])
+        .map_or((rendered, 0_i32), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().unwrap_or(0))
+        });
+    let decimal_position = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+    let digits = mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(char::from)
+        .collect::<String>();
+    let Some(first_nonzero) = digits.find(|digit| digit != '0') else {
+        return format!("{sign}0.0");
+    };
+    let significant = digits[first_nonzero..].trim_end_matches('0');
+    let significant = if significant.is_empty() {
+        "0"
+    } else {
+        significant
+    };
+    let power = decimal_position - first_nonzero as i32 - 1 + exponent;
+
+    if (-4..16).contains(&power) {
+        let point = power + 1;
+        let fixed = if point <= 0 {
+            format!("0.{}{significant}", "0".repeat((-point) as usize))
+        } else if point as usize >= significant.len() {
+            format!(
+                "{}{zeros}.0",
+                significant,
+                zeros = "0".repeat(point as usize - significant.len())
+            )
+        } else {
+            format!(
+                "{}.{}",
+                &significant[..point as usize],
+                &significant[point as usize..]
+            )
+        };
+        return format!("{sign}{fixed}");
+    }
+
+    let tail = &significant[1..];
+    let exponent_sign = if power < 0 { '-' } else { '+' };
+    let exponent_digits = power.unsigned_abs().to_string();
+    let exponent_digits = if exponent_digits.len() == 1 {
+        format!("0{exponent_digits}")
+    } else {
+        exponent_digits
+    };
+    if tail.is_empty() {
+        format!(
+            "{sign}{}e{exponent_sign}{exponent_digits}",
+            &significant[..1]
+        )
+    } else {
+        format!(
+            "{sign}{}.{}e{exponent_sign}{exponent_digits}",
+            &significant[..1],
+            tail
+        )
     }
 }
 
@@ -589,8 +663,23 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnnotationWrite, EventWriteError, PlanWrite, annotate, save_plan};
+    use super::{AnnotationWrite, EventWriteError, PlanWrite, annotate, python_json, save_plan};
     use serde_json::json;
+
+    #[test]
+    fn python_json_uses_python_exponent_spelling_for_floats() {
+        assert_eq!(python_json(&serde_json::from_str("1e-6").unwrap()), "1e-06");
+        assert_eq!(python_json(&serde_json::from_str("1e16").unwrap()), "1e+16");
+        assert_eq!(
+            python_json(&serde_json::from_str("1e-4").unwrap()),
+            "0.0001"
+        );
+        assert_eq!(
+            python_json(&serde_json::from_str("1e15").unwrap()),
+            "1000000000000000.0"
+        );
+        assert_eq!(python_json(&serde_json::from_str("-0.0").unwrap()), "-0.0");
+    }
     use std::collections::BTreeMap;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, Transaction,
