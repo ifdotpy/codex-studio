@@ -958,6 +958,9 @@ fn event_write_error(error: crate::event_write::EventWriteError) -> Coordination
         EventWriteError::InvalidStoredObject { object, id } => {
             CoordinationError::InvalidStored { object, id }
         }
+        EventWriteError::Store(StoreError::InvalidStoredRecord { object, id }) => {
+            CoordinationError::InvalidStored { object, id }
+        }
         EventWriteError::Store(error) => CoordinationError::Store(error),
         EventWriteError::Clock => {
             CoordinationError::InvalidRequest("system clock is before the Unix epoch")
