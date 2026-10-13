@@ -51,7 +51,6 @@ class FixtureStore:
     def db(self):
         with closing(sqlite3.connect(root / "canvas.sqlite3")) as db:
             db.row_factory = sqlite3.Row
-            db.execute("PRAGMA synchronous=OFF")
             with db:
                 yield db
     read_db = db

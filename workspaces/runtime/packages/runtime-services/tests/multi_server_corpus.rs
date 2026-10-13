@@ -225,6 +225,7 @@ fn multi_server_corpus_witness() {
     pairing_is_atomic_at_every_write_and_replays_after_restart();
     orchestration_claims_survive_lost_receipts_and_reject_changed_content();
     python_receipt_states_preserve_completed_results_and_uncertainty();
+    nonce_capacity_is_rate_limited_without_committing_access_writes();
 }
 
 fn orchestration_claims_survive_lost_receipts_and_reject_changed_content() {
@@ -443,5 +444,39 @@ fn python_receipt_states_preserve_completed_results_and_uncertainty() {
             );
             assert_eq!(rows(&store), before, "refusal is atomic");
         }
+    }
+}
+
+fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
+    let data = &fixture().data;
+    let now = data["now"].as_i64().expect("now");
+    for (case_name, client, count) in [
+        ("status-server", "peer-server", 10_000),
+        ("pair-ui", "unpaired-fixture", 1_280),
+    ] {
+        let (_root, store) = store();
+        store.transaction(|tx| {
+            tx.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1) INSERT INTO runtime_access_nonces(client,nonce,created) SELECT ?2,printf('%032d',x),?3 FROM n",rusqlite::params![count,client,now])?;
+            Ok(())
+        }).expect("nonce capacity fixture");
+        let before = rows(&store);
+        let case = data["auth"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|v| v["name"] == case_name)
+            .expect("case");
+        let error = boundary()
+            .handle(
+                &store,
+                &request(case).expect("request"),
+                &owner(),
+                None,
+                now,
+            )
+            .err()
+            .expect("capacity refusal");
+        assert_eq!(error.status(), 429);
+        assert_eq!(rows(&store), before, "rate refusal must not commit writes");
     }
 }
