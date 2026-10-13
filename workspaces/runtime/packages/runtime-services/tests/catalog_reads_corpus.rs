@@ -134,13 +134,18 @@ fn python_written_history_and_scripted_provider_match_catalog_projections() {
         assert!(
             !python_result["skills"]["errors"]
                 .as_array()
-                .unwrap()
+                .expect("Python errors list")
                 .is_empty()
         );
         let rust_result = skills_for_cwd("/repo", &malformed)
             .unwrap_or_else(|message| json!({"skills":[],"errors":[message]}));
         assert_eq!(rust_result["skills"], python_result["skills"]["skills"]);
-        assert!(!rust_result["errors"].as_array().unwrap().is_empty());
+        assert!(
+            !rust_result["errors"]
+                .as_array()
+                .expect("Rust errors list")
+                .is_empty()
+        );
     }
 
     let connection = Connection::open(&database).expect("Python-written DB opens read only");

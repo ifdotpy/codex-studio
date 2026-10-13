@@ -402,6 +402,12 @@ async fn read_requests(
 #[derive(Default)]
 pub struct CapabilitiesCache(Mutex<HashMap<String, std::sync::Arc<CapabilityEntry>>>);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilitiesCacheError {
+    LockPoisoned,
+    Capacity,
+}
+
 #[derive(Default)]
 struct CapabilityEntry {
     value: tokio::sync::OnceCell<Value>,
@@ -424,7 +430,11 @@ impl CapabilitiesCache {
     }
 
     /// Cache one consumer's discovery and share an in-flight miss with concurrent requests.
-    pub async fn get_or_fetch<F, Fut>(&self, agent: &str, fetch: F) -> Result<Value, ()>
+    pub async fn get_or_fetch<F, Fut>(
+        &self,
+        agent: &str,
+        fetch: F,
+    ) -> Result<Value, CapabilitiesCacheError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Value>,
@@ -432,12 +442,15 @@ impl CapabilitiesCache {
         let now = Instant::now();
         let expires_at = now + CACHE_TTL;
         let entry = {
-            let mut cache = self.0.lock().map_err(|_| ())?;
+            let mut cache = self
+                .0
+                .lock()
+                .map_err(|_| CapabilitiesCacheError::LockPoisoned)?;
             cache.retain(|_, entry| {
                 entry
                     .expires_at
                     .lock()
-                    .map_or(false, |expires| expires.is_none_or(|expires| expires > now))
+                    .is_ok_and(|expires| expires.is_none_or(|expires| expires > now))
             });
             if let Some(entry) = cache.get(agent) {
                 entry.clone()
@@ -456,7 +469,7 @@ impl CapabilitiesCache {
                     if let Some(oldest) = oldest {
                         cache.remove(&oldest);
                     } else {
-                        return Err(());
+                        return Err(CapabilitiesCacheError::Capacity);
                     }
                 }
                 let entry = std::sync::Arc::new(CapabilityEntry::default());
@@ -465,7 +478,10 @@ impl CapabilitiesCache {
             }
         };
         let value = entry.value.get_or_init(fetch).await.clone();
-        let mut expiry = entry.expires_at.lock().map_err(|_| ())?;
+        let mut expiry = entry
+            .expires_at
+            .lock()
+            .map_err(|_| CapabilitiesCacheError::LockPoisoned)?;
         if expiry.is_none() {
             *expiry = Some(expires_at);
         }
