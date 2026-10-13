@@ -186,6 +186,11 @@ class PersistedFederationRoomRecord(_OpenPersistedRecord):
     name: StrictStr
 
 
+class PersistedMessageEvent(_OpenPersistedRecord):
+    status: StrictStr
+    error: StrictStr | None = None
+
+
 class PersistedChatMessage(_OpenPersistedRecord):
     seq: Annotated[StrictInt, Field(ge=1, le=MAX_SAFE_INTEGER)]
     room: StrictStr
@@ -474,6 +479,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
     "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
+    "persisted-message-event.schema.json": PersistedMessageEvent,
     "persisted-monitor-record.schema.json": PersistedMonitorRecord,
     "persisted-operation-result.schema.json": PersistedOperationResult,
     "persisted-plan-record.schema.json": PersistedPlanRecord,
