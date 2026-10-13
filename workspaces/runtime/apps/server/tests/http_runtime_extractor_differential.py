@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import os
 from pathlib import Path
@@ -60,48 +59,11 @@ for (_operation, _label, _direction), _cause in _EXPECTED_DIRECTIONS.items():
     _EXPECTED_STATUS_DIFFERENCES[(_operation, _label)] = (
         _rust_status, _python_status, _cause
     )
-OPAQUE_JSON_INTEGER_CAUSE = "permanent: integer outside i64/u64 inside opaque JsonValue is carried as f64"
+OPAQUE_JSON_INTEGER_CAUSE = "schema: integer outside exact precision inside opaque JsonValue is refused"
 REQUIRED_PREDICTED_DIFFERENCE_CAUSES = frozenset({OPAQUE_JSON_INTEGER_CAUSE})
 
 
 _MISSING = object()
-
-
-def opaque_integer_difference(
-    case: dict[str, Any], rust_row: dict[str, Any], python_row: dict[str, Any],
-    operation: dict[str, Any], document: dict[str, Any],
-) -> str | None:
-    label = case.get("label", "")
-    if (
-        not rust_row.get("accepted") or not python_row.get("accepted")
-        or rust_row.get("status") != 200 or python_row.get("status") != 200
-        or ":lax:" not in label
-        or body_schema_pointer(document, operation, case) != "#/components/schemas/JsonValue"
-    ):
-        return None
-    try:
-        integer = int(label.rsplit(":lax:", 1)[1])
-    except ValueError:
-        return None
-    if -(1 << 63) <= integer <= (1 << 64) - 1:
-        return None
-    rust_value = rust_row.get("value", {}).get("body")
-    python_value = python_row.get("value", {}).get("body")
-    for segment in label.split(":lax:", 1)[0].split("/"):
-        if isinstance(rust_value, dict) and isinstance(python_value, dict):
-            rust_value = rust_value.get(segment, _MISSING)
-            python_value = python_value.get(segment, _MISSING)
-        elif isinstance(rust_value, list) and isinstance(python_value, list) and segment.isdecimal():
-            index = int(segment)
-            if index >= len(rust_value) or index >= len(python_value):
-                return None
-            rust_value = rust_value[index]
-            python_value = python_value[index]
-        else:
-            return None
-    if type(rust_value) is float and type(python_value) is int and python_value == integer and rust_value == float(integer):
-        return OPAQUE_JSON_INTEGER_CAUSE
-    return None
 
 
 def rust_observations(corpus_path: Path) -> list[dict[str, Any]]:
@@ -433,59 +395,13 @@ def _schema_at_pointer(document: dict[str, Any], pointer: str) -> Any:
 def _predicted_difference(
     case: dict[str, Any], operation: dict[str, Any], document: dict[str, Any]
 ) -> tuple[int, int, str] | None:
-    """Predict the one permanent JsonValue numeric representation difference."""
+    """Predict refusal of an unsafe integer in a schema-defined opaque value."""
     integer = _case_integer(case)
-    if integer is None or -(1 << 63) <= integer <= (1 << 64) - 1:
+    if integer is None or -(1 << 53) < integer < (1 << 53):
         return None
     if body_schema_pointer(document, operation, case) == "#/components/schemas/JsonValue":
-        return (200, 200, OPAQUE_JSON_INTEGER_CAUSE)
+        return (400, 200, OPAQUE_JSON_INTEGER_CAUSE)
     return None
-
-
-def _normalize_allowed_integer_leaf(
-    case: dict[str, Any], operation: dict[str, Any], document: dict[str, Any],
-    rust_value: Any, python_value: Any, cause: str,
-) -> Any | None:
-    """Normalize only the documented opaque JsonValue integer precision leaf."""
-    if cause != OPAQUE_JSON_INTEGER_CAUSE or body_schema_pointer(document, operation, case) != "#/components/schemas/JsonValue":
-        return None
-    integer = _case_integer(case)
-    if integer is None or -(1 << 63) <= integer <= (1 << 64) - 1:
-        return None
-    if type(python_value) is not dict or type(rust_value) is not dict:
-        return None
-    path = case["label"].split(":lax:", 1)[0].split("/")
-    py_node: Any = python_value
-    rust_node: Any = rust_value
-    for part in path[:-1]:
-        if type(py_node) is dict and type(rust_node) is dict:
-            py_node = py_node.get(part, _MISSING)
-            rust_node = rust_node.get(part, _MISSING)
-        elif type(py_node) is list and type(rust_node) is list and part.isdecimal() and int(part) < len(py_node) and int(part) < len(rust_node):
-            py_node = py_node[int(part)]
-            rust_node = rust_node[int(part)]
-        else:
-            return None
-    leaf = path[-1]
-    if type(py_node) is dict and type(rust_node) is dict:
-        python_leaf = py_node.get(leaf, _MISSING)
-        rust_leaf = rust_node.get(leaf, _MISSING)
-    elif type(py_node) is list and type(rust_node) is list and leaf.isdecimal() and int(leaf) < len(py_node) and int(leaf) < len(rust_node):
-        python_leaf = py_node[int(leaf)]
-        rust_leaf = rust_node[int(leaf)]
-    else:
-        return None
-    if not (type(python_leaf) is int and python_leaf == integer and type(rust_leaf) is float and rust_leaf == float(integer)):
-        return None
-    normalized = copy.deepcopy(python_value)
-    node: Any = normalized
-    for part in path[:-1]:
-        node = node[int(part)] if type(node) is list else node[part]
-    if type(node) is list:
-        node[int(leaf)] = rust_leaf
-    else:
-        node[leaf] = rust_leaf
-    return normalized
 
 
 def located_envelope(row: dict[str, Any]) -> bool:
@@ -559,6 +475,8 @@ def body_schema_pointer(document: dict[str, Any], operation: dict[str, Any], cas
                 for index, branch in enumerate(branches):
                     resolved, _ = resolve(branch)
                     if segment in resolved.get("properties", {}) or (
+                    segment == "key" and isinstance(resolved.get("additionalProperties"), dict)
+                ) or (
                         segment.isdecimal() and resolved.get("type") == "array"
                     ):
                         found = (keyword, index, branch)
@@ -578,6 +496,9 @@ def body_schema_pointer(document: dict[str, Any], operation: dict[str, Any], cas
             elif schema.get("type") == "array" and segment.isdecimal():
                 schema = schema.get("items", {})
                 pointer += "/items"
+            elif segment == "key" and isinstance(schema.get("additionalProperties"), dict):
+                schema = schema["additionalProperties"]
+                pointer += "/additionalProperties"
         schema, referenced = resolve(schema)
         if referenced is not None:
             pointer = referenced
@@ -599,7 +520,7 @@ def classify(
         "mismatches_by_cause": {}, "mismatch_direction": {},
         "predicted_cases_by_cause": {OPAQUE_JSON_INTEGER_CAUSE: 0},
         "agreement_on_refusal_by_cause": {OPAQUE_JSON_INTEGER_CAUSE: 0},
-        "agreement_on_refusal_cases": [], "opaque_json_precision_fields": [],
+        "agreement_on_refusal_cases": [],
         "expected_difference_cases": [], "handler_validation_cases": [],
         "handler_validation_cases_by_cause": {},
     }
@@ -657,24 +578,12 @@ def classify(
                 continue
             if statuses != predicted[:2]:
                 raise AssertionError(f"expected class {cause!r} predicts statuses {predicted[:2]} or agreement-on-refusal (400, 400), operation={operation_id} case={case['label']!r}, observed {statuses}")
-            normalized_body = _normalize_allowed_integer_leaf(
-                case, operation, document, rust_row.get("value", {}).get("body"),
-                python_row.get("value", {}).get("body"), cause,
-            )
-            if normalized_body is None:
-                raise AssertionError(f"opaque JsonValue precision predicate did not match the exact leaf: {operation_id} {case['label']}")
-            normalized_python = copy.deepcopy(python_row.get("value"))
-            normalized_python["body"] = normalized_body
-            if not strict_equal(rust_row.get("value"), normalized_python):
-                raise AssertionError(f"opaque JsonValue allowance has an unrelated value mismatch after normalization: {operation_id} {case['label']}: Rust={rust_row.get('value')!r}, Python={python_row.get('value')!r}")
+            if rust_row["accepted"] or not python_row["accepted"]:
+                raise AssertionError(f"opaque JsonValue precision rule must refuse only in Rust for this differential case: {operation_id} {case['label']}")
             exact_predicted_differences[cause] += 1
-            totals["opaque_json_precision_fields"].append({
-                "operation": operation_id, "pointer": body_schema_pointer(document, operation, case),
-                "case": case["label"], "cause": cause,
-            })
             totals["mismatches"] += 1
             totals["mismatches_by_cause"][cause] = totals["mismatches_by_cause"].get(cause, 0) + 1
-            totals["mismatch_direction"]["accepted_value_mismatch"] = totals["mismatch_direction"].get("accepted_value_mismatch", 0) + 1
+            totals["mismatch_direction"]["rust_reject_python_accept"] = totals["mismatch_direction"].get("rust_reject_python_accept", 0) + 1
             totals["expected_difference_cases"].append({
                 "operation": operation_id, "pointer": body_schema_pointer(document, operation, case),
                 "case": case["label"], "rust_status": statuses[0],
