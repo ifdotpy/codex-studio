@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Terminal HTTP reads and explicit session-dependent operation status."""
+"""Terminal HTTP persisted history and local PTY live actions."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import unittest
+import importlib.util
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -15,9 +16,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 from codex_terminals import TerminalManager
 from http_backend_harness import BackendProcess, start_contract_backend
+
+_fixture_spec = importlib.util.spec_from_file_location(
+    "terminal_runtime_fixture", Path(__file__).with_name("runtime-contract.py")
+)
+_fixture = importlib.util.module_from_spec(_fixture_spec)
+assert _fixture_spec.loader is not None
+_fixture_spec.loader.exec_module(_fixture)
 
 
 def terminal_tables(connection: sqlite3.Connection) -> list[tuple[object, ...]]:
@@ -60,6 +70,30 @@ class TerminalsHTTPContract(unittest.TestCase):
             cls.manager = TerminalManager(cls.backend.state)
             cls.seed_python_state(cls.manager, cls.backend)
             cls.addClassCleanup(cls.manager.close)
+
+        # Live terminal creation validates its owner through the Python
+        # runtime's normal agent writer before exercising either HTTP backend.
+        cls.backend.stop()
+
+        class QuietRuntime(_fixture.Runtime):
+            def schedule(self) -> None:
+                pass
+
+        runtime = make_runtime(QuietRuntime, cls.backend, _fixture.FakeServer)
+        try:
+            agent = runtime.create(
+                {
+                    "name": "Terminal HTTP fixture",
+                    "cwd": str(cls.backend.cwd),
+                    "prompt": "Seed a harmless terminal contract agent.",
+                    "autoWake": False,
+                },
+                defer=True,
+            )
+            cls.agent_id = agent["id"]
+        finally:
+            runtime.close()
+        cls.backend.start()
 
     @classmethod
     def seed_python_state(cls, manager: TerminalManager, backend: BackendProcess) -> None:
@@ -119,17 +153,19 @@ class TerminalsHTTPContract(unittest.TestCase):
         })
 
     def test_invalid_bodies_are_refused_before_terminal_mutation(self) -> None:
-        bodies = {
-            "/api/terminals/create": {"id": "create", "agent": "fixture-agent", "cols": 1},
-            "/api/terminals/input": {"id": self.terminal_id, "text": "x", "request_id": 12},
-            "/api/terminals/resize": {"id": self.terminal_id, "cols": 1001},
-            "/api/terminals/rename": {"id": self.terminal_id, "title": ""},
-            "/api/terminals/close": {},
-        }
+        bodies = [
+            ("/api/terminals/create", {"id": "create", "agent": "fixture-agent", "cols": 1}),
+            ("/api/terminals/create", {"id": "create-bool-size", "agent": "fixture-agent", "cols": True}),
+            ("/api/terminals/create", {"id": "create-unknown-owner", "agent": "not-owned-agent", "cols": 100, "rows": 28}),
+            ("/api/terminals/input", {"id": self.terminal_id, "text": "x", "request_id": 12}),
+            ("/api/terminals/resize", {"id": self.terminal_id, "cols": 1001}),
+            ("/api/terminals/rename", {"id": self.terminal_id, "title": ""}),
+            ("/api/terminals/close", {}),
+        ]
         database_path = self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(database_path) as database:
             before = terminal_tables(database)
-        for path, body in bodies.items():
+        for path, body in bodies:
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 400, (path, response.body[:1000]))
             with sqlite3.connect(database_path) as database:
@@ -143,23 +179,53 @@ class TerminalsHTTPContract(unittest.TestCase):
                 self.assertEqual(terminal_tables(database), before, query)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_live_operations_name_the_missing_provider_session(self) -> None:
-        bodies = {
-            "/api/terminals/create": {"id": "create", "agent": "fixture-agent"},
-            "/api/terminals/input": {"id": self.terminal_id, "text": "x", "request_id": "input"},
-            "/api/terminals/resize": {"id": self.terminal_id},
-            "/api/terminals/rename": {"id": self.terminal_id, "title": "renamed"},
-            "/api/terminals/close": {"id": self.terminal_id},
-        }
-        database_path = self.backend.state / "canvas.sqlite3"
-        with sqlite3.connect(database_path) as database:
-            before = terminal_tables(database)
-        for path, body in bodies.items():
-            response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, (path, response.body[:1000]))
-            self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/app-server")
-            with sqlite3.connect(database_path) as database:
-                self.assertEqual(terminal_tables(database), before, path)
+    def test_live_operations_create_input_resize_rename_and_close_local_session(self) -> None:
+        created = self.backend.request(
+            "POST", "/api/terminals/create",
+            body={"id": "contract-create", "agent": self.agent_id, "cols": 90, "rows": 25},
+            headers=self.headers(),
+        )
+        self.assertEqual(created.status, 200, created.body[:1000])
+        record = created.json()
+        self.assertEqual(record["status"], "running")
+        terminal_id = record["id"]
+
+        duplicate = self.backend.request(
+            "POST", "/api/terminals/create",
+            body={"id": "contract-create", "agent": self.agent_id, "cols": 90, "rows": 25},
+            headers=self.headers(),
+        )
+        self.assertEqual(duplicate.status, 200, duplicate.body[:1000])
+        self.assertEqual(duplicate.json(), record)
+
+        sent = self.backend.request(
+            "POST", "/api/terminals/input",
+            body={"id": terminal_id, "text": "printf 'terminal action\\n'\n", "request_id": "contract-input"},
+            headers=self.headers(),
+        )
+        self.assertEqual(sent.status, 200, sent.body[:1000])
+        self.assertEqual(sent.json(), {"ok": True, "delivery": "sent"})
+
+        resized = self.backend.request(
+            "POST", "/api/terminals/resize",
+            body={"id": terminal_id, "cols": 88, "rows": 27},
+            headers=self.headers(),
+        )
+        self.assertEqual(resized.status, 200, resized.body[:1000])
+
+        renamed = self.backend.request(
+            "POST", "/api/terminals/rename",
+            body={"id": terminal_id, "title": "Contract terminal"},
+            headers=self.headers(),
+        )
+        self.assertEqual(renamed.status, 200, renamed.body[:1000])
+        self.assertEqual(renamed.json()["title"], "Contract terminal")
+
+        closed = self.backend.request(
+            "POST", "/api/terminals/close", body={"id": terminal_id}, headers=self.headers(),
+        )
+        self.assertEqual(closed.status, 200, closed.body[:1000])
+        self.assertEqual(closed.json()["status"], "closed")
 
 
 if __name__ == "__main__":

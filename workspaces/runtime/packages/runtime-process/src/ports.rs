@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{ffi::OsString, path::Path};
 
 /// User terminal port. Implementations belong in a later platform adapter.
 pub trait PtyHost: Send + Sync {
@@ -8,7 +8,7 @@ pub trait PtyHost: Send + Sync {
         &self,
         command: &[String],
         cwd: &Path,
-        env: &[(String, String)],
+        env: &[(OsString, OsString)],
     ) -> Result<Self::Session, Self::Error>;
     fn resize(
         &self,

@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_path_to_error = { workspace = true }
 sha2 = { workspace = true }
+studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-services = { path = "../runtime-services" }
 studio-runtime-schema = { path = "../runtime-schema" }
 studio-runtime-store = { path = "../runtime-store" }

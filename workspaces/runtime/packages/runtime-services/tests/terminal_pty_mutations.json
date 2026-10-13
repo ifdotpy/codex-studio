@@ -1,0 +1,88 @@
+[
+  {
+    "id": "discard-pty-output",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_pty.rs",
+    "edits": [
+      {
+        "before": "event: TerminalEvent::Output(buffer[..count].to_vec()),",
+        "after": "event: TerminalEvent::Output(Vec::new()),"
+      }
+    ]
+  },
+  {
+    "id": "discard-pty-input-bytes",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_pty.rs",
+    "edits": [
+      {
+        "before": ".write(session, &bytes)",
+        "after": ".write(session, &[])",
+        "note": "cat input echo contract"
+      }
+    ]
+  },
+  {
+    "id": "ignore-pty-resize",
+    "file": "workspaces/runtime/packages/runtime-process/src/pty_host.rs",
+    "edits": [
+      {
+        "before": "session.0.master.resize(Size::new(rows, columns))?;",
+        "after": "let _ = (rows, columns);"
+      }
+    ]
+  },
+  {
+    "id": "leave-background-process-group",
+    "file": "workspaces/runtime/packages/runtime-process/src/pty_host.rs",
+    "edits": [
+      {
+        "before": "for group in session_groups(session)\n        .into_iter()",
+        "after": "for group in [session as i32]\n        .into_iter()"
+      }
+    ]
+  },
+  {
+    "id": "inherit-server-environment",
+    "file": "workspaces/runtime/packages/runtime-process/src/pty_host.rs",
+    "edits": [{ "before": "            .env_clear()\n", "after": "" }]
+  },
+  {
+    "id": "reduce-output-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_driver.rs",
+    "edits": [
+      {
+        "before": "pub const OUTPUT_LIMIT: usize = 1_048_576;",
+        "after": "pub const OUTPUT_LIMIT: usize = 1_048_575;"
+      }
+    ]
+  },
+  {
+    "id": "change-create-replay-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_driver.rs",
+    "edits": [
+      {
+        "before": "let signature = receipt_signature(submitted_request);",
+        "after": "let signature = receipt_signature(&json!({\"id\": id, \"agent\": agent, \"cols\": columns, \"rows\": rows}));"
+      }
+    ]
+  },
+  {
+    "id": "truncate-history-page",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_driver.rs",
+    "edits": [
+      {
+        "before": "let end = (cursor + limit).min(available);",
+        "after": "let end = (cursor + limit - 1).min(available);"
+      }
+    ]
+  },
+  {
+    "id": "skip-restart-process-cleanup",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_driver.rs",
+    "edits": [
+      {
+        "before": "                self.session.cleanup_orphan(identity)?;",
+        "after": "                let _ = identity;"
+      }
+    ]
+  }
+]

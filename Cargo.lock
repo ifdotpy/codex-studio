@@ -1321,6 +1321,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pty-process"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71cec9e2670207c5ebb9e477763c74436af3b9091dd550b9fb3c1bec7f3ea266"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
 name = "pyo3"
 version = "0.29.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1976,6 +1985,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-process",
  "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
@@ -1999,6 +2009,7 @@ dependencies = [
  "chrono",
  "command-fds",
  "process-wrap",
+ "pty-process",
  "rustix",
  "serde",
  "serde_json",

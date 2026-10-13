@@ -104,19 +104,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;
     let sync_changes = state.sync_changes_handle();
+    let shutdown_state = state.clone();
     let app = router(state.clone())?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    let result = axum::serve(
+    let serve_result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        sync_changes.close();
-    })
+    .with_graceful_shutdown(shutdown_signal())
     .await;
-    state.shutdown_services().await?;
-    result?;
+    let terminal_state = shutdown_state.clone();
+    let terminal_cleanup =
+        tokio::task::spawn_blocking(move || terminal_state.close_terminal_sessions())
+            .await
+            .map_err(|error| format!("terminal shutdown worker failed: {error}"))?;
+    sync_changes.close();
+    terminal_cleanup?;
+    shutdown_state.shutdown_services().await?;
+    serve_result?;
     Ok(())
 }
 
