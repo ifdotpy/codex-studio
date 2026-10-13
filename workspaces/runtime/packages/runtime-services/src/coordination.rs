@@ -170,57 +170,38 @@ fn post_managed_message(
     transaction: &Transaction<'_>,
     input: PostManagedMessage<'_>,
 ) -> Result<PostMessageResult, CoordinationError> {
-    if input.text.chars().count() > 32_000
-        || (input.text.trim().is_empty() && input.assets.is_empty())
-    {
+    let text = crate::event_write::python_strip(input.text);
+    if input.text.chars().count() > 32_000 || (text.is_empty() && input.assets.is_empty()) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
         ));
     }
-    if !input.assets.is_empty() {
-        return Err(CoordinationError::RequiresDependency(
-            "payload-store/uploads",
-        ));
-    }
-    if !matches!(
-        input.delivery,
-        "queue" | "steer" | "after_tool" | "after_turn"
-    ) {
-        return Err(CoordinationError::InvalidRequest(
-            "Choose queue, steer, after_tool or after_turn",
-        ));
-    }
-
     let mut agent =
         crate::event_write::checked_agent(transaction, input.room).map_err(event_write_error)?;
     crate::event_write::refuse_remote(&agent).map_err(event_write_error)?;
-    if agent.root_id != agent.id {
-        let root = crate::event_write::checked_agent(transaction, &agent.root_id.0)
-            .map_err(event_write_error)?;
-        crate::event_write::assert_delegation(&root).map_err(event_write_error)?;
+    if safety_retry_active(&agent) {
+        return Err(CoordinationError::InvalidRequest(
+            "Wait for the model change before sending another message",
+        ));
     }
-    let text = input.text.trim();
     let signature = crate::event_write::python_json(&json!({
         "agent": input.room,
         "text": text,
         "assets": input.assets,
     }));
     let receipt_id = input.id.to_owned();
-    if crate::event_write::read_receipt(
+    if let Some(result) = crate::event_write::read_receipt(
         transaction,
         Some(&receipt_id),
         &signature,
         "runtime_events",
         input.id,
-        |value| value.get("id").and_then(Value::as_str) == Some(input.id),
+        |value| valid_message_receipt(value, input.id),
     )
     .map_err(event_write_error)?
-    .is_some()
     {
-        let event = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))?
-            .ok_or_else(|| invalid_stored("runtime_events", input.id))?;
         return Ok(PostMessageResult {
-            receipt: json!({"id": input.id, "status": event.status, "error": event.error}),
+            receipt: result,
             event_inserted: false,
         });
     }
@@ -253,12 +234,42 @@ fn post_managed_message(
         });
     }
 
+    if !input.assets.is_empty() {
+        return Err(CoordinationError::RequiresDependency(
+            "payload-store/uploads",
+        ));
+    }
+
+    let root = if agent.root_id == agent.id {
+        agent.clone()
+    } else {
+        crate::event_write::checked_agent(transaction, &agent.root_id.0)
+            .map_err(event_write_error)?
+    };
+    require_not_excluded(&root, &agent)?;
+    if agent.root_id != agent.id {
+        crate::event_write::assert_delegation(&root).map_err(event_write_error)?;
+    }
+    assert_native_thread_open(&agent)?;
+    refuse_if_workspace_blocked(transaction, &agent)?;
+    if root
+        .extra
+        .get("tokenBudget")
+        .is_some_and(|budget| !budget.is_null())
+    {
+        return Err(CoordinationError::RequiresDependency(
+            "budget-policy/message-admission",
+        ));
+    }
+
     // A manual send wakes a stopped agent in the same transaction as the event.
     agent.extra.insert("autoWake".to_owned(), Value::Bool(true));
     agent.extra.insert("error".to_owned(), Value::Null);
     agent.extra.insert("complaintMisses".to_owned(), json!(0));
     agent.extra.remove("nativeFailureHold");
+    capacity_reset(transaction, &mut agent)?;
     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
+    studio_runtime_store::EventWriteRepository::set_agent_sync_manual_input(transaction, &agent)?;
 
     let created = crate::event_write::unix_time().map_err(event_write_error)?;
     QueueWriteRepository::put_metadata(
@@ -296,6 +307,216 @@ fn post_managed_message(
         receipt: result,
         event_inserted: inserted,
     })
+}
+
+fn valid_message_receipt(value: &Value, id: &str) -> bool {
+    value.get("id").and_then(Value::as_str) == Some(id)
+        && value.get("status").and_then(Value::as_str).is_some()
+        && value
+            .get("error")
+            .is_none_or(|error| error.is_null() || error.is_string())
+}
+
+fn safety_retry_active(agent: &studio_runtime_store::AgentRecord) -> bool {
+    const ACTIVE: &[&str] = &[
+        "turns",
+        "items",
+        "interrupt",
+        "verify_turns",
+        "verify_items",
+        "fork",
+        "start",
+        "unknown",
+    ];
+    agent
+        .extra
+        .get("nativeSafetyRetry")
+        .and_then(Value::as_object)
+        .is_some_and(|retry| {
+            retry
+                .get("stage")
+                .and_then(Value::as_str)
+                .is_some_and(|stage| ACTIVE.contains(&stage))
+                && retry.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
+                && retry.get("accountKey").and_then(Value::as_str)
+                    == Some(
+                        agent
+                            .extra
+                            .get("accountKey")
+                            .and_then(Value::as_str)
+                            .unwrap_or("default"),
+                    )
+        })
+}
+
+fn require_not_excluded(
+    root: &studio_runtime_store::AgentRecord,
+    agent: &studio_runtime_store::AgentRecord,
+) -> Result<(), CoordinationError> {
+    let account = agent
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if root
+        .extra
+        .get("excludedAccountKeys")
+        .and_then(Value::as_array)
+        .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(account)))
+    {
+        return Err(CoordinationError::InvalidRequest(
+            "This account is disabled for this chat",
+        ));
+    }
+    Ok(())
+}
+
+fn assert_native_thread_open(
+    agent: &studio_runtime_store::AgentRecord,
+) -> Result<(), CoordinationError> {
+    let thread = agent.extra.get("threadId").and_then(Value::as_str);
+    let block = agent
+        .extra
+        .get("nativeThreadBlock")
+        .and_then(Value::as_object);
+    let blocked = block
+        .filter(|block| {
+            block
+                .get("threadId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| Some(id) == thread)
+        })
+        .is_some()
+        || (thread.is_some()
+            && agent
+                .extra
+                .get("error")
+                .and_then(Value::as_object)
+                .is_some_and(|error| {
+                    error.get("codexErrorInfo").and_then(Value::as_str)
+                        == Some("misalignmentPolicyViolation")
+                }))
+        || (thread.is_some()
+            && agent
+                .extra
+                .get("nativeTurnError")
+                .and_then(Value::as_object)
+                .is_some_and(|previous| {
+                    previous.get("turnId") == agent.extra.get("turnId")
+                        && previous
+                            .get("error")
+                            .and_then(Value::as_object)
+                            .is_some_and(|error| {
+                                error.get("codexErrorInfo").and_then(Value::as_str)
+                                    == Some("misalignmentPolicyViolation")
+                            })
+                }));
+    if blocked {
+        return Err(CoordinationError::InvalidRequest(
+            "This chat is stopped as a precaution. Start or resume another chat.",
+        ));
+    }
+    Ok(())
+}
+
+fn refuse_if_workspace_blocked(
+    transaction: &Transaction<'_>,
+    agent: &studio_runtime_store::AgentRecord,
+) -> Result<(), CoordinationError> {
+    let cwd = agent.extra.get("cwd").and_then(Value::as_str);
+    let Some(cwd) = cwd else {
+        return Err(invalid_stored("runtime_agents", &agent.id.0));
+    };
+    let cwd = std::path::Path::new(cwd)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(cwd));
+    let mut statement = transaction
+        .prepare(
+            "SELECT id FROM runtime_agents WHERE id != ?1 \
+         AND json_extract(record,'$.workspaceOperation') IS NOT NULL",
+        )
+        .map_err(StoreError::from)?;
+    let rows = statement
+        .query_map([&agent.id.0], |row| row.get::<_, String>(0))
+        .map_err(StoreError::from)?;
+    for row in rows {
+        let id = row.map_err(StoreError::from)?;
+        let other_agent =
+            crate::event_write::checked_agent(transaction, &id).map_err(event_write_error)?;
+        let Some(operation) = other_agent
+            .extra
+            .get("workspaceOperation")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let other_cwd = other_agent.extra.get("cwd").and_then(Value::as_str);
+        if other_cwd.is_some_and(|other_cwd| {
+            std::path::Path::new(other_cwd)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(other_cwd))
+                == cwd
+        }) && !matches!(operation, "checkpoint" | "capture")
+        {
+            return Err(CoordinationError::RequiresDependency(
+                "workspace-policy/message-admission",
+            ));
+        }
+    }
+    if agent
+        .extra
+        .get("workspaceOperation")
+        .and_then(Value::as_str)
+        .is_some_and(|operation| !matches!(operation, "checkpoint" | "capture"))
+    {
+        return Err(CoordinationError::RequiresDependency(
+            "workspace-policy/message-admission",
+        ));
+    }
+    Ok(())
+}
+
+fn capacity_reset(
+    transaction: &Transaction<'_>,
+    agent: &mut studio_runtime_store::AgentRecord,
+) -> Result<(), CoordinationError> {
+    let retry = agent.extra.get("capacityRetry").cloned();
+    if let Some(retry) = retry {
+        let id = retry
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))?
+            .to_owned();
+        match studio_runtime_store::EventWriteRepository::finish_capacity_retry(
+            transaction,
+            &agent.id.0,
+            &id,
+        )? {
+            Some(true) => {}
+            Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
+            None => {
+                return Err(CoordinationError::RequiresDependency(
+                    "capacity-retry/store",
+                ));
+            }
+        }
+        if agent
+            .extra
+            .get("startAttempt")
+            .and_then(Value::as_object)
+            .is_some_and(|attempt| {
+                attempt.get("capacityRetryId").and_then(Value::as_str) == Some(&id)
+                    && attempt.get("submitted") == Some(&Value::Bool(false))
+            })
+        {
+            agent.extra.remove("startAttempt");
+            agent.extra.insert("inFlight".into(), Value::Bool(false));
+            agent.status = studio_runtime_store::AgentStatus::Failed;
+        }
+    }
+    agent.extra.remove("capacityRetry");
+    agent.extra.remove("capacityRetryCount");
+    Ok(())
 }
 
 pub fn post_message(

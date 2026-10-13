@@ -1,10 +1,10 @@
 use rusqlite::Connection;
 
-use crate::StoreResult;
-use crate::records::{AgentId, AgentRecord, AgentRepository, get_json_record, put_json_record};
+use crate::records::{AgentId, AgentRecord, AgentRepository, get_raw_record, put_json_record};
 use crate::schema::{
     ConditionalTriggerRequirement, SchemaRequirements, TableRequirement, TriggerRequirement,
 };
+use crate::{StoreError, StoreResult};
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -69,7 +69,15 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 impl AgentRepository {
     pub fn get(connection: &Connection, id: &AgentId) -> StoreResult<Option<AgentRecord>> {
-        get_json_record(connection, "runtime_agents", &id.0)
+        let Some(record) = get_raw_record(connection, "runtime_agents", &id.0)? else {
+            return Ok(None);
+        };
+        serde_json::from_str(&record)
+            .map(Some)
+            .map_err(|_| StoreError::InvalidStoredRecord {
+                object: "runtime_agents",
+                id: id.0.clone(),
+            })
     }
 
     pub fn put(connection: &Connection, record: &AgentRecord) -> StoreResult<()> {

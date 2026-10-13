@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, Transaction,
+    QueueEventId, RulesRepository, StoreError, Transaction,
 };
 use thiserror::Error;
 
@@ -414,7 +414,13 @@ pub fn checked_agent(
     connection: &Transaction<'_>,
     id: &str,
 ) -> Result<AgentRecord, EventWriteError> {
-    let agent = AgentRepository::get(connection, &AgentId::from(id))?
+    let agent = AgentRepository::get(connection, &AgentId::from(id))
+        .map_err(|error| match error {
+            StoreError::InvalidStoredRecord { object, id } => {
+                EventWriteError::InvalidStoredObject { object, id }
+            }
+            other => EventWriteError::Store(other),
+        })?
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
     if truthy(agent.extra.get("deletedAt")) {
         return Err(EventWriteError::InvalidRequest("This agent was deleted"));

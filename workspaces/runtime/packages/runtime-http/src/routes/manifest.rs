@@ -10,6 +10,8 @@ pub(crate) struct Dependency(&'static str);
 
 /// Names use `<slice>/<capability>` and are removed when the slice that provides them merges.
 const KNOWN_DEPENDENCIES: &[&str] = &[
+    "budget-policy/message-admission",
+    "capacity-retry/store",
     "coordination-policy/inbox",
     "cross-server/remote-events",
     "event-driver/annotations",
@@ -17,6 +19,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/queue-mutations",
     "event-driver/work-items",
     "monitor-driver/active-checks",
+    "payload-store/uploads",
     "payload-store/voice-audio",
     "provider-session/account-rate-limits",
     "provider-session/model-list",
@@ -36,6 +39,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript/search-index",
     "transcript/workspace-state",
     "work-policy/views",
+    "workspace-policy/message-admission",
     "workspace-state/git-changes",
     "workspace-state/image-execution",
     "workspace-state/organization-effects",
