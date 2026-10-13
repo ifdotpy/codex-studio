@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -252,8 +252,7 @@ fn located(field: &str) -> ApiError {
 }
 
 fn active_check_error() -> ApiError {
-    dependency_unavailable("POST", "/api/rules", &ACTIVE_CHECK_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
+    dependency_error("POST", "/api/rules", &ACTIVE_CHECK_DEPENDENCIES)
 }
 
 fn store_api_error(_error: impl std::fmt::Debug) -> ApiError {

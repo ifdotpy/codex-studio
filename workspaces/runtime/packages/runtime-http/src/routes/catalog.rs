@@ -9,7 +9,7 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::routes::extractors::QueryParams;
 use crate::routes::manifest::{
-    Dependency, OperationStatus, RouteGroup, dependency_unavailable, get as register_get,
+    Dependency, OperationStatus, RouteGroup, dependency_error, get as register_get,
 };
 
 static LIMITS_DEPENDENCIES: [Dependency; 1] =
@@ -98,7 +98,7 @@ async fn limits(
     // Python returns an existing snapshot while scheduling a background
     // refresh before checking whether the account is currently registered.
     if snapshot.get("data").is_some_and(|data| !data.is_null()) {
-        return Err(dependency_error()?);
+        return Err(dependency_error("GET", "/api/limits", &LIMITS_DEPENDENCIES));
     }
     if !account_policy.has_account(account_key) {
         return Err(ApiError::new(
@@ -106,10 +106,5 @@ async fn limits(
             "Unknown Codex account",
         ));
     }
-    Err(dependency_error()?)
-}
-
-fn dependency_error() -> Result<ApiError, ApiError> {
-    dependency_unavailable("GET", "/api/limits", &LIMITS_DEPENDENCIES)
-        .map_err(|_| ApiError::internal())
+    Err(dependency_error("GET", "/api/limits", &LIMITS_DEPENDENCIES))
 }

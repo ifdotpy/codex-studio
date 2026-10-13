@@ -2,8 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
-use studio_runtime_store::{CoordinationRepository, StoreError, Transaction};
+use studio_runtime_store::{
+    CoordinationRepository, StoreError, SyncDocumentsRepository, Transaction,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,6 +23,18 @@ pub enum CoordinationError {
     Store(#[from] StoreError),
 }
 
+impl From<rusqlite::Error> for CoordinationError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Store(StoreError::from(error))
+    }
+}
+
+impl From<serde_json::Error> for CoordinationError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Store(StoreError::from(error))
+    }
+}
+
 pub fn history(
     connection: &studio_runtime_store::Connection,
     room: &str,
@@ -29,6 +44,603 @@ pub fn history(
         .map(|row| validated_message(row).map(message_json))
         .collect::<Result<Vec<_>, _>>()
         .map(Value::Array)
+}
+
+pub fn delete_room(transaction: &Transaction<'_>, id: &str) -> Result<Value, CoordinationError> {
+    let raw: String = transaction
+        .query_row(
+            "SELECT record FROM runtime_rooms WHERE id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoordinationError::InvalidRequest("Unknown agent chat")
+            }
+            other => CoordinationError::Store(other.into()),
+        })?;
+    let mut room: Value =
+        serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+            object: "runtime_rooms",
+            id: id.to_owned(),
+        })?;
+    if room.get("id").and_then(Value::as_str) != Some(id) {
+        return Err(CoordinationError::InvalidStored {
+            object: "runtime_rooms",
+            id: id.to_owned(),
+        });
+    }
+    let object = room
+        .as_object_mut()
+        .ok_or_else(|| CoordinationError::InvalidStored {
+            object: "runtime_rooms",
+            id: id.to_owned(),
+        })?;
+    object.insert("userHidden".to_owned(), Value::Bool(true));
+    let updated = serde_json::to_string(&room)?;
+    transaction.execute(
+        "UPDATE runtime_rooms SET record=?1 WHERE id=?2",
+        rusqlite::params![updated, id],
+    )?;
+    let mut projection = readable_room(transaction, id)?
+        .ok_or_else(|| CoordinationError::InvalidRequest("Unknown agent chat"))?;
+    let last = transaction
+        .query_row(
+            "SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",
+            [id],
+            |row| Ok(json!({
+                "seq":row.get::<_,i64>(0)?,
+                "text":row.get::<_,String>(1)?,
+                "created":row.get::<_,f64>(2)?,
+                "sender":row.get::<_,String>(3)?,
+            })),
+        )
+        .optional()?;
+    projection["lastMessage"] = last.map_or(Value::Null, |mut message| {
+        if let Some(text) = message.get("text").and_then(Value::as_str) {
+            message["text"] = Value::String(text.chars().take(180).collect());
+        }
+        message
+    });
+    SyncDocumentsRepository::put_entity(transaction, "room", id, projection, false)?;
+    Ok(json!({"deleted":[id]}))
+}
+
+pub fn delivery_receipts(
+    connection: &rusqlite::Connection,
+    agent: &str,
+    ids: &[String],
+) -> Result<Value, CoordinationError> {
+    if ids.len() > 100 || ids.iter().any(|id| id.is_empty() || id.len() > 200) {
+        return Err(CoordinationError::InvalidRequest(
+            "Supply at most 100 message IDs of 1 to 200 characters",
+        ));
+    }
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent],
+            |row| row.get(0),
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoordinationError::InvalidRequest("Invalid request")
+            }
+            other => CoordinationError::Store(other.into()),
+        })?;
+    let actor: Value =
+        serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+            object: "runtime_agents",
+            id: agent.to_owned(),
+        })?;
+    if actor
+        .get("deletedAt")
+        .is_some_and(|value| !value.is_null() && value != false && value != 0 && value != "")
+    {
+        return Err(CoordinationError::InvalidRequest("This agent was deleted"));
+    }
+    let unique = ids.iter().collect::<BTreeSet<_>>();
+    let mut items = Vec::new();
+    if !unique.is_empty() {
+        let placeholders = std::iter::repeat_n("?", unique.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT e.id,e.status,e.error,EXISTS (SELECT 1 FROM runtime_items i \
+             WHERE i.agent=e.agent AND i.id=COALESCE(json_extract(m.record,'$.transcriptItemId'),e.agent||':'||e.id) \
+             AND ((i.id=e.agent||':'||e.id AND json_extract(i.record,'$.role')='user' \
+             AND json_type(i.record,'$.inputs') IS NULL) OR EXISTS (SELECT 1 FROM json_each(i.record,'$.inputs') input \
+             WHERE json_extract(input.value,'$.id')=e.id AND json_extract(input.value,'$.kind')='user'))) AS materialized \
+             FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=? AND e.kind='user' AND e.id IN ({placeholders})"
+        );
+        let mut parameters = vec![agent.to_owned()];
+        parameters.extend(unique.iter().map(|id| (*id).clone()));
+        let mut statement = connection.prepare(&sql)?;
+        let rows=statement.query_map(rusqlite::params_from_iter(parameters.iter()),|row|Ok(json!({
+            "id":row.get::<_,String>(0)?,"status":row.get::<_,String>(1)?,"error":row.get::<_,Option<String>>(2)?,
+            "materialized":row.get::<_,bool>(3)?
+        })))?;
+        for row in rows {
+            items.push(row?);
+        }
+    }
+    Ok(json!({"agent":agent,"items":items}))
+}
+
+pub fn chat_read(
+    connection: &rusqlite::Connection,
+    room_id: &str,
+    before: Option<i64>,
+    after: Option<i64>,
+    requested_limit: i64,
+) -> Result<Value, CoordinationError> {
+    if before.is_some_and(|cursor| cursor < 1) || after.is_some_and(|cursor| cursor < 1) {
+        return Err(CoordinationError::InvalidRequest("Invalid message cursor"));
+    }
+    if before.is_some() && after.is_some() {
+        return Err(CoordinationError::InvalidRequest("Use one message cursor"));
+    }
+    let limit = requested_limit.clamp(1, 100) as usize;
+    let (room, room_ids) = if let Some(root_id) = room_id.strip_prefix("feed:") {
+        let root = agent_record(connection, root_id)?
+            .filter(|agent| {
+                agent.get("isLead").and_then(Value::as_bool) == Some(true)
+                    && !json_truthy(agent.get("deletedAt"))
+            })
+            .ok_or(CoordinationError::InvalidRequest("Team is unavailable"))?;
+        let root_name = root.get("name").and_then(Value::as_str).unwrap_or(root_id);
+        let mut members = BTreeSet::new();
+        for (id, agent) in agent_records(connection)? {
+            if agent.get("rootId").and_then(Value::as_str) == Some(root_id)
+                && !json_truthy(agent.get("deletedAt"))
+            {
+                members.insert(id);
+            }
+        }
+        let mut visible = Vec::new();
+        let mut statement =
+            connection.prepare("SELECT id,record FROM runtime_rooms ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, raw) = row?;
+            let value: Value =
+                serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+                    object: "runtime_rooms",
+                    id: id.clone(),
+                })?;
+            let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+            let root_matches =
+                kind == "broadcast" && value.get("rootId").and_then(Value::as_str) == Some(root_id);
+            let all_members = value
+                .get("members")
+                .and_then(Value::as_array)
+                .is_some_and(|list| {
+                    kind != "broadcast"
+                        && !list.is_empty()
+                        && list
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .all(|member| members.contains(member))
+                });
+            let peer_private = peer_room(connection, &value, &members)?;
+            if root_matches || all_members || peer_private {
+                visible.push(id);
+            }
+        }
+        let room = json!({"id":room_id,"name":root_name,"members":members});
+        (room, visible)
+    } else {
+        let room = readable_room(connection, room_id)?.ok_or(CoordinationError::InvalidRequest(
+            "Chat is unavailable or you are not a participant",
+        ))?;
+        (room, vec![room_id.to_owned()])
+    };
+    let mut messages = Vec::new();
+    if !room_ids.is_empty() {
+        let placeholders = std::iter::repeat_n("?", room_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let cursor_clause = if after.is_some() {
+            "AND seq>?"
+        } else {
+            "AND (? IS NULL OR seq<?)"
+        };
+        let sql = format!(
+            "SELECT seq,id,room,sender,text,created,deliveries FROM runtime_chat_messages WHERE room IN ({placeholders}) {cursor_clause} ORDER BY seq {} LIMIT ?",
+            if after.is_some() { "ASC" } else { "DESC" }
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut params = room_ids
+            .iter()
+            .map(|id| rusqlite::types::Value::Text(id.clone()))
+            .collect::<Vec<_>>();
+        if let Some(cursor) = after {
+            params.push(rusqlite::types::Value::Integer(cursor));
+        } else {
+            params.push(before.map_or(
+                rusqlite::types::Value::Null,
+                rusqlite::types::Value::Integer,
+            ));
+            params.push(before.map_or(
+                rusqlite::types::Value::Null,
+                rusqlite::types::Value::Integer,
+            ));
+        }
+        params.push(rusqlite::types::Value::Integer((limit + 1) as i64));
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        let mut page_bytes = 0usize;
+        let mut more = false;
+        for row in rows {
+            let (seq, id, room, sender, text, created, deliveries) = row?;
+            if messages.len() == limit {
+                more = true;
+                break;
+            }
+            page_bytes += text.len() + deliveries.len() + 256;
+            if !messages.is_empty() && page_bytes > 1_000_000 {
+                more = true;
+                break;
+            }
+            let mut deliveries: Value = serde_json::from_str(&deliveries).map_err(|_| {
+                CoordinationError::InvalidStored {
+                    object: "runtime_chat_messages",
+                    id: id.clone(),
+                }
+            })?;
+            if let Some(states) = deliveries.as_object_mut() {
+                for (recipient, status) in states.iter_mut() {
+                    if status.as_str() != Some("queued") {
+                        continue;
+                    }
+                    if let Ok(event) = connection.query_row(
+                        "SELECT status FROM runtime_events WHERE id=?1",
+                        [format!("chat:{id}:{recipient}")],
+                        |row| row.get::<_, String>(0),
+                    ) && matches!(
+                        event.as_str(),
+                        "delivered" | "failed" | "cancelled" | "stored_only"
+                    ) {
+                        *status = Value::String(event);
+                    }
+                }
+            }
+            let sender_name = agent_record(connection, &sender)?
+                .and_then(|agent| agent.get("name").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_else(|| sender.clone());
+            messages.push(json!({"seq":seq,"id":id,"room":room,"sender":sender,"senderName":sender_name,"text":text,"created":created,"deliveries":deliveries}));
+        }
+        if after.is_none() {
+            messages.reverse();
+        }
+        let next_before = if !messages.is_empty() && after.is_none() && more {
+            messages
+                .first()
+                .and_then(|m| m.get("seq"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        let next_after = if after.is_some() {
+            if more {
+                messages
+                    .last()
+                    .and_then(|m| m.get("seq"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        } else if before.is_some() {
+            messages
+                .last()
+                .and_then(|m| m.get("seq"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        return Ok(
+            json!({"room":room,"messages":messages,"nextBefore":next_before,"nextAfter":next_after}),
+        );
+    }
+    Ok(json!({"room":room,"messages":[],"nextBefore":null,"nextAfter":null}))
+}
+
+fn peer_room(
+    connection: &rusqlite::Connection,
+    room: &Value,
+    members: &BTreeSet<String>,
+) -> Result<bool, CoordinationError> {
+    if room.get("kind").and_then(Value::as_str) != Some("private") {
+        return Ok(false);
+    }
+    let room_members = room
+        .get("members")
+        .and_then(Value::as_array)
+        .filter(|members| members.len() == 2)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>()
+        });
+    let Some(room_members) = room_members else {
+        return Ok(false);
+    };
+    let mut statement = connection.prepare("SELECT record FROM runtime_projects")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for raw in rows {
+        let raw = raw?;
+        let project: Value =
+            serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+                object: "runtime_projects",
+                id: "peerTeams".to_owned(),
+            })?;
+        let teams = project.get("peerTeams").and_then(Value::as_array);
+        if teams.is_some_and(|teams| {
+            teams.iter().any(|team| {
+                let team_members = team.get("members").and_then(Value::as_array);
+                team_members.is_some_and(|team_members| {
+                    team_members
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|member| members.contains(member))
+                        && room_members.iter().all(|member| {
+                            team_members
+                                .iter()
+                                .any(|candidate| candidate.as_str() == Some(member))
+                        })
+                })
+            })
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn agent_records(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<(String, Value)>, CoordinationError> {
+    let mut statement = connection.prepare("SELECT id,record FROM runtime_agents")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (id, raw) = row?;
+        let value = serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+            object: "runtime_agents",
+            id: id.clone(),
+        })?;
+        Ok((id, value))
+    })
+    .collect()
+}
+
+fn agent_record(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    let raw = connection.query_row(
+        "SELECT record FROM runtime_agents WHERE id=?1",
+        [id],
+        |row| row.get::<_, String>(0),
+    );
+    match raw {
+        Ok(raw) => {
+            serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|_| CoordinationError::InvalidStored {
+                    object: "runtime_agents",
+                    id: id.to_owned(),
+                })
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn readable_room(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<Value>, CoordinationError> {
+    let raw = match connection.query_row(
+        "SELECT record FROM runtime_rooms WHERE id=?1",
+        [id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(raw) => raw,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut room: Value =
+        serde_json::from_str(&raw).map_err(|_| CoordinationError::InvalidStored {
+            object: "runtime_rooms",
+            id: id.to_owned(),
+        })?;
+    if room.get("id").and_then(Value::as_str) != Some(id) {
+        return Err(CoordinationError::InvalidStored {
+            object: "runtime_rooms",
+            id: id.to_owned(),
+        });
+    }
+    let kind = room
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let agents = agent_records(connection)?
+        .into_iter()
+        .filter(|(_, agent)| !json_truthy(agent.get("deletedAt")))
+        .collect::<BTreeMap<_, _>>();
+    let members = if kind == "broadcast" {
+        let root = room.get("rootId").and_then(Value::as_str).unwrap_or("");
+        if root != "all" && !agents.contains_key(root) {
+            return Ok(None);
+        }
+        agents
+            .iter()
+            .filter(|(_, agent)| {
+                root == "all" || agent.get("rootId").and_then(Value::as_str) == Some(root)
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>()
+    } else if kind == "federated" {
+        let federation = match connection.query_row(
+            "SELECT record FROM runtime_federation_rooms WHERE id=?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(raw) => serde_json::from_str::<Value>(&raw).map_err(|_| {
+                CoordinationError::InvalidStored {
+                    object: "runtime_federation_rooms",
+                    id: id.to_owned(),
+                }
+            })?,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if federation.get("status").and_then(Value::as_str) != Some("approved")
+            || federation.get("localApproved").and_then(Value::as_bool) != Some(true)
+            || federation.get("remoteApproved").and_then(Value::as_bool) != Some(true)
+        {
+            return Ok(None);
+        }
+        let members = federation
+            .get("localMembers")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if members.is_empty()
+            || members
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|member| !agents.contains_key(member))
+        {
+            return Ok(None);
+        }
+        room["members"] = Value::Array(members.clone());
+        room["localMembers"] = Value::Array(members.clone());
+        room["remoteMembers"] = federation
+            .get("remoteMembers")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        room["localParticipants"] = federation
+            .get("localParticipants")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        room["peerId"] = federation.get("peerId").cloned().unwrap_or(Value::Null);
+        room["peerLabel"] = federation.get("peerLabel").cloned().unwrap_or(Value::Null);
+        room["federated"] = Value::Bool(true);
+        room["name"] = room
+            .get("customName")
+            .filter(|name| !name.is_null())
+            .cloned()
+            .or_else(|| federation.get("name").cloned())
+            .unwrap_or(Value::Null);
+        members
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    } else {
+        let mut members = room
+            .get("members")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        members.sort_by_key(|member| member.as_str().unwrap_or("").to_owned());
+        members.dedup();
+        if members.is_empty()
+            || members
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|member| !agents.contains_key(member))
+        {
+            return Ok(None);
+        }
+        members
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    if kind != "federated" {
+        let names = members
+            .iter()
+            .map(|member| {
+                agents
+                    .get(member)
+                    .and_then(|agent| agent.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(member)
+            })
+            .collect::<Vec<_>>();
+        let name = if kind == "broadcast" {
+            if room.get("rootId").and_then(Value::as_str) == Some("all") {
+                "All agents".to_owned()
+            } else {
+                format!("{} · Broadcast", names.first().copied().unwrap_or(""))
+            }
+        } else {
+            names.join(" ↔ ")
+        };
+        room["name"] = room
+            .get("customName")
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or(Value::String(name));
+        room["members"] = json!(members);
+    }
+    for key in [
+        "id",
+        "name",
+        "kind",
+        "members",
+        "localMembers",
+        "remoteMembers",
+        "localParticipants",
+        "peerId",
+        "peerLabel",
+        "federated",
+        "customName",
+        "projectPath",
+        "rootId",
+        "updated",
+        "userHidden",
+        "radio",
+        "peerTeamId",
+        "peerTeamName",
+    ] {
+        if !room.get(key).is_some() {
+            room[key] = Value::Null;
+        }
+    }
+    Ok(Some(room))
+}
+
+fn json_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Bool(true)) => true,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|value| value != 0.0),
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Object(values)) => !values.is_empty(),
+    }
 }
 
 pub fn create_chat(

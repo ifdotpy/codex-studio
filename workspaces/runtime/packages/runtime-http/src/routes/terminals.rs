@@ -1,7 +1,7 @@
 //! Persisted terminal reads and session-dependent terminal operations.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -91,10 +91,11 @@ async fn refuse(
     path: axum::extract::MatchedPath,
     ApiJson(_body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(
-        super::manifest::dependency_unavailable("POST", path.as_str(), &SESSION_DEPENDENCIES)
-            .unwrap_or_else(|_| ApiError::internal()),
-    )
+    Err(dependency_error(
+        "POST",
+        path.as_str(),
+        &SESSION_DEPENDENCIES,
+    ))
 }
 
 fn terminal_error(error: TerminalError) -> ApiError {

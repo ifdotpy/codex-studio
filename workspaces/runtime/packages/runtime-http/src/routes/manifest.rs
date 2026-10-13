@@ -26,12 +26,21 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "resource-policy/read-progress-panel",
     "resource-policy/windows-file-identity",
     "resource-policy/write-progress-layout",
-    "runtime-process/diagnostics",
+    "runtime-process/host-resources",
+    "runtime-process/live-queues",
+    "runtime-process/lock-samples",
+    "runtime-process/process-tree",
+    "runtime-process/resource-attribution",
+    "runtime-process/studio-loaded-threads",
+    "runtime-process/supervisor-status",
+    "runtime-process/analytics-capture",
+    "runtime-http/request-metrics",
+    "runtime-store/sqlite-contention",
+    "provider-session/native-accounts",
     "rule-driver/event-rules",
     "sync-policy/entity-seeding",
     "sync-policy/entity-window-maintenance",
     "sync-policy/runtime-capabilities",
-    "system-reads/ui-summary",
     "tool-driver/request-lifecycle",
     "transcript-service/pull",
     "transcript/event-driver",
@@ -39,14 +48,10 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript/search-index",
     "transcript/workspace-state",
     "work-policy/views",
-    "worker-driver/connection-state",
     "workspace-state/git-changes",
     "workspace-state/image-execution",
     "workspace-state/organization-effects",
     "workspace-state/snapshot",
-    "coordination-policy/chat-history",
-    "coordination-policy/room-visibility",
-    "event-driver/message-receipts",
     "event-driver/message-send",
     "federation-driver/rooms",
     "agent-discovery/launcher-status",
@@ -136,17 +141,32 @@ pub(crate) fn dependency_unavailable(
                 .unwrap_or("<empty>"),
         ));
     }
+    let mut detail = format!(
+        "Not implemented: requires {}",
+        dependencies
+            .iter()
+            .map(|dependency| dependency.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if path == "/api/diagnostics" {
+        detail.push_str(
+            "; required diagnostics fields unavailable: processTree, hostResources, resourceAttribution, nativeAccounts, studioLoadedThreads, queues, runtimeLockSamples, sqliteContention, httpRequestMetrics, analyticsCapture, supervisor",
+        );
+    }
     Ok(crate::error::ApiError::new(
         axum::http::StatusCode::NOT_IMPLEMENTED,
-        format!(
-            "Not implemented: requires {}",
-            dependencies
-                .iter()
-                .map(|dependency| dependency.name())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        detail,
     ))
+}
+
+pub(crate) fn dependency_error(
+    method: &str,
+    path: &str,
+    dependencies: &[Dependency],
+) -> crate::error::ApiError {
+    dependency_unavailable(method, path, dependencies)
+        .unwrap_or_else(|_| crate::error::ApiError::internal())
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]

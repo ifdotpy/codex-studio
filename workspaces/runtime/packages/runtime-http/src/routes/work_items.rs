@@ -1,7 +1,7 @@
 //! HTTP handlers for persisted work-item, plan and queue reads.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -274,10 +274,6 @@ pub(crate) async fn organization(ApiJson(_body): ApiJson<Value>) -> Result<Json<
         "/api/organization",
         &ORGANIZATION_DEPENDENCY,
     ))
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
 
 fn optional_string<'a>(body: &'a Value, field: &str) -> Option<&'a str> {

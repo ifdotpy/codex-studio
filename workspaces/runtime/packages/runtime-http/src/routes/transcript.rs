@@ -7,7 +7,7 @@ use serde_json::Value;
 use studio_runtime_services::transcript::{self, TranscriptError};
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
@@ -135,10 +135,6 @@ async fn canvas_transcript() -> Result<Json<Value>, ApiError> {
         "/api/transcript",
         &CANVAS_TRANSCRIPT_DEPENDENCIES,
     ))
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
 
 fn map_transcript_error(error: TranscriptError) -> ApiError {

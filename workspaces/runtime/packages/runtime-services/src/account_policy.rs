@@ -299,7 +299,7 @@ impl AccountPolicyState {
         registry_bytes: Option<&[u8]>,
         limits_snapshots: impl IntoIterator<Item = (String, Value)>,
     ) -> Result<Self, AccountPolicyError> {
-        let accounts = project_registry(registry_bytes)?;
+        let accounts = Self::accounts_snapshot(registry_bytes)?;
         let mut limits = BTreeMap::new();
         let mut diagnostics = Vec::new();
         for (key, candidate) in limits_snapshots {
@@ -348,6 +348,13 @@ impl AccountPolicyState {
 
     pub fn accounts(&self) -> AccountsSnapshot {
         self.accounts.clone()
+    }
+
+    /// Project a validated account-driver registry without refreshing credentials.
+    pub fn accounts_snapshot(
+        registry_bytes: Option<&[u8]>,
+    ) -> Result<AccountsSnapshot, AccountPolicyError> {
+        project_registry(registry_bytes)
     }
 
     pub fn has_account(&self, account_key: &str) -> bool {

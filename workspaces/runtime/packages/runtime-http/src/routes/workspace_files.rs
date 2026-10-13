@@ -1,7 +1,7 @@
 //! File metadata and bounded content reads for local workspaces.
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -204,10 +204,7 @@ fn ensure_local_workspace(
     path: &str,
 ) -> Result<(), ApiError> {
     if context.execution_backed {
-        Err(
-            dependency_unavailable(method, path, &EXECUTION_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal()),
-        )
+        Err(dependency_error(method, path, &EXECUTION_DEPENDENCIES))
     } else {
         Ok(())
     }

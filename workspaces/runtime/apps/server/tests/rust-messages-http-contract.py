@@ -56,7 +56,8 @@ def coordination_snapshot(path: Path):
         result = {}
         for table in (
             "groups", "graph_edges", "messages", "sync_entities", "sync_documents",
-            "sync_versions", "sync_entity_meta",
+            "sync_versions", "sync_entity_meta", "runtime_rooms", "runtime_chat_messages",
+            "runtime_events", "runtime_event_meta", "runtime_items",
         ):
             exists = database.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -125,7 +126,39 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
         cls.agent_id = seed_agent(cls.backend)
+        cls.room_id = "31313131-3131-3131-3131-313131313131"
+        cls.seed_persisted_chat()
         cls.backend.start()
+
+    @classmethod
+    def seed_persisted_chat(cls):
+        class QuietRuntime(_fixture.Runtime):
+            def schedule(self):
+                pass
+
+        runtime = QuietRuntime(cls.backend.state, _fixture.FakeServer)
+        try:
+            room = {"id": cls.room_id, "kind": "broadcast", "rootId": cls.agent_id,
+                    "updated": 0.5, "userHidden": False}
+            with runtime.db() as database:
+                runtime.put(database, "rooms", room)
+                database.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
+                                 ("41414141-4141-4141-4141-414141414141", cls.room_id,
+                                  cls.agent_id, "first", 1.0, "{}"))
+                database.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
+                                 ("42424242-4242-4242-4242-424242424242", cls.room_id,
+                                  cls.agent_id, "second", 2.0, json.dumps({cls.agent_id: "queued"})))
+                database.execute("INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)",
+                                 ("chat:42424242-4242-4242-4242-424242424242:" + cls.agent_id,
+                                  cls.agent_id, "agent_message", "{}", "delivered", 2.0, 0, None, None))
+                database.execute("INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)",
+                                 ("receipt-1", cls.agent_id, "user", "hello", "delivered", 3.0, 0, None, None))
+                database.execute("INSERT INTO runtime_event_meta VALUES(?,?)", ("receipt-1", "{}"))
+                database.execute("INSERT INTO runtime_items VALUES(?,?,?,?)",
+                                 (cls.agent_id + ":receipt-1", cls.agent_id,
+                                  json.dumps({"id": cls.agent_id + ":receipt-1", "role": "user"}), 3.0))
+        finally:
+            runtime.close()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -422,16 +455,76 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=headers)
         self.assertEqual(replay.status, 200, replay.body[:1000])
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_deferred_message_operations_name_their_dependencies(self):
-        for method, path, body, dependency in (
-            ("GET", "/api/agent-chat?room=missing", None, "coordination-policy/chat-history"),
-            ("GET", "/api/messages/receipts", None, "event-driver/message-receipts"),
-            ("POST", "/api/room/delete", {"id": "missing"}, "coordination-policy/room-visibility"),
-        ):
-            response = self.backend.request(method, path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn(dependency, response.json()["error"])
+    def test_persisted_agent_chat_pagination_names_overlay_and_visibility(self):
+        response = self.backend.request("GET", f"/api/agent-chat?room={self.room_id}&limit=1",
+                                        headers=self.headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["messages"][0]["text"], "second")
+        message = response.json()["messages"][0]
+        self.assertEqual(message["senderName"], "Coordination contract agent")
+        self.assertEqual(message["deliveries"][self.agent_id], "delivered")
+        self.assertIsNotNone(response.json()["nextBefore"])
+        feed = self.backend.request(
+            "GET", f"/api/agent-chat?room=feed:{self.agent_id}&limit=1",
+            headers=self.headers(),
+        )
+        self.assertEqual(feed.status, 200, feed.body[:1000])
+        self.assertEqual(feed.json()["messages"][0]["text"], "second")
+        older = self.backend.request("GET", f"/api/agent-chat?room={self.room_id}&before={message['seq']}&limit=1",
+                                     headers=self.headers())
+        self.assertEqual(older.status, 200, older.body[:1000])
+        self.assertEqual(older.json()["messages"][0]["text"], "first")
+        refused = self.backend.request("GET", "/api/agent-chat?room=not-a-room", headers=self.headers())
+        self.assertEqual(refused.status, 400, refused.body[:1000])
+
+    def test_receipts_read_python_written_event_and_room_delete_projects_atomically(self):
+        receipt = self.backend.request("GET", "/api/messages/receipts?agent=" + self.agent_id + "&ids=[%22receipt-1%22]",
+                                       headers=self.headers())
+        self.assertEqual(receipt.status, 200, receipt.body[:1000])
+        self.assertEqual(receipt.json()["items"], [{"id": "receipt-1", "status": "delivered",
+                                                   "error": None, "materialized": True}])
+        path = self.backend.state / "canvas.sqlite3"
+        before = coordination_snapshot(path)
+        deleted = self.backend.request("POST", "/api/room/delete", body={"id": self.room_id}, headers=self.headers())
+        self.assertEqual(deleted.status, 200, deleted.body[:1000])
+        after = coordination_snapshot(path)
+        self.assertNotEqual(before["runtime_rooms"], after["runtime_rooms"])
+        self.assertNotEqual(before["sync_entities"], after["sync_entities"])
+        with sqlite3.connect(path) as database:
+            projected = json.loads(database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
+                (self.room_id,),
+            ).fetchone()[0])["value"]
+        self.assertTrue(projected["userHidden"])
+        self.assertEqual(projected["id"], self.room_id)
+        for table in ("runtime_chat_messages", "runtime_events", "runtime_event_meta", "runtime_items"):
+            self.assertEqual(before[table], after[table], table)
+        replay_conflict = self.backend.request("POST", "/api/room/delete", body={"id": "missing"}, headers=self.headers())
+        self.assertEqual(replay_conflict.status, 400, replay_conflict.body[:1000])
+        self.assertEqual(after, coordination_snapshot(path))
+
+    def test_deleted_actor_cannot_read_receipts_and_refusal_writes_nothing(self):
+        self.backend.stop()
+        runtime = _fixture.Runtime(self.backend.state, _fixture.FakeServer)
+        try:
+            actor = runtime.create({
+                "name": "Deleted receipts actor", "cwd": str(self.backend.cwd),
+                "prompt": "Seed deleted actor receipt refusal.", "autoWake": False,
+            }, defer=True)
+            actor["deletedAt"] = 123.0
+            with runtime.db() as database:
+                runtime.put(database, "agents", actor)
+            deleted_id = actor["id"]
+        finally:
+            runtime.close()
+        self.backend.start()
+        before = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        response = self.backend.request(
+            "GET", f"/api/messages/receipts?agent={deleted_id}&ids=%5B%22receipt-1%22%5D",
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
 
 if __name__ == "__main__":

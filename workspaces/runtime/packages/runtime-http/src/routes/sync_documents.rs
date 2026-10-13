@@ -1,7 +1,7 @@
 //! HTTP adapter for the durable sync document operations.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_error, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -273,10 +273,6 @@ fn draft_validation_error(index: usize, document: &str) -> ApiError {
         Value::String(index.to_string()),
         Value::String(document.to_owned()),
     ])
-}
-
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
 
 fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, ApiError> {

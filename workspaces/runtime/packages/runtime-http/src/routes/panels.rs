@@ -13,7 +13,7 @@ use studio_runtime_store::{
 
 use super::extractors::{ApiJson, QueryParams};
 #[cfg(windows)]
-use super::manifest::{Dependency, dependency_unavailable};
+use super::manifest::{Dependency, dependency_error};
 use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -52,10 +52,7 @@ async fn panel(
     #[cfg(windows)]
     {
         let _ = (state, query);
-        return Err(
-            dependency_unavailable("GET", "/api/panel", WINDOWS_FILE_IDENTITY)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
+        return Err(dependency_error("GET", "/api/panel", WINDOWS_FILE_IDENTITY));
     }
     #[cfg(not(windows))]
     {
@@ -85,10 +82,11 @@ async fn save_panel_layout(
     #[cfg(windows)]
     {
         let _ = (state, body);
-        return Err(
-            dependency_unavailable("POST", "/api/panel/layout", WINDOWS_FILE_IDENTITY)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
+        return Err(dependency_error(
+            "POST",
+            "/api/panel/layout",
+            WINDOWS_FILE_IDENTITY,
+        ));
     }
     #[cfg(not(windows))]
     {

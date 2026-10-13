@@ -515,6 +515,15 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         })
     }
 
+    /// Return the validated current registry projection without refreshing auth metadata.
+    pub fn registry_snapshot_bytes(&self) -> Result<Vec<u8>, AccountDriverError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        encode_registry(&state.value, &state.order).map_err(|_| AccountDriverError::InvalidRegistry)
+    }
+
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
