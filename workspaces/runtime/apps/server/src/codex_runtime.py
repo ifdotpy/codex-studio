@@ -5029,6 +5029,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             except Exception as error:
                 self._log_runtime_diagnostic({"event": "deleted_conversation_settle_failed",
                     "at": time.time(), "agentIds": sorted(ids), "error": str(error)})
+        if any(by_id[agent_id].get("executionMode") == "vm" for agent_id in ids if agent_id in by_id):
+            # The last layr chat of a project takes its LAYR chip with it.
+            from codex_vm_agents import refresh_readiness
+            refresh_readiness(self)
         cleanup_failures = {}
         if image_ids:
             try:

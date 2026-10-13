@@ -242,12 +242,20 @@ mod tests {
 
         let root = tempfile::tempdir().expect("temporary fixture");
         let marker = root.path().join("helper-pid");
+        let ready = root.path().join("helper-ready");
+        let parent_exited = root.path().join("parent-exited");
+        let ready_fifo = root.path().join("helper-handshake");
+        let fifo_status = std::process::Command::new("/usr/bin/mkfifo")
+            .arg(&ready_fifo)
+            .status()
+            .expect("create helper handshake FIFO");
+        assert!(fifo_status.success(), "helper handshake FIFO created");
         let program = root.path().join("child");
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\nsetsid /bin/sh -c 'echo $$ > \"$1\"; exec sleep 60' _ '{}' &\nexit 0\n",
-                marker.display()
+                "#!/bin/sh\nsetsid /bin/sh -c 'echo $$ > \"$1\"; echo ready > \"$3\"; printf ready > \"$2\"; exec sleep 60' _ '{}' '{}' '{}' &\nIFS= read -r _ < '{}'\necho ready > '{}'\nexit 0\n",
+                marker.display(), ready_fifo.display(), ready.display(), ready_fifo.display(), parent_exited.display()
             ),
         )
         .expect("child script written");
@@ -266,7 +274,7 @@ mod tests {
             input: None,
             stdout_limit: 16,
             stderr_limit: 16,
-            timeout: Duration::from_millis(150),
+            timeout: Duration::from_secs(2),
         });
         if let Ok(pid) = std::fs::read_to_string(&marker) {
             let group = format!("-{}", pid.trim());
@@ -276,7 +284,15 @@ mod tests {
                     .status(),
             );
         }
+        assert!(
+            ready.exists(),
+            "helper completed its inherited-pipe handshake"
+        );
+        assert!(
+            parent_exited.exists(),
+            "direct child exited before pipe timeout"
+        );
         assert!(matches!(result, Err(ChildError::TimedOut)));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }

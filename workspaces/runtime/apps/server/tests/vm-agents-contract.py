@@ -218,6 +218,15 @@ class VmAgents(unittest.TestCase):
         key = project_layr_id({'id': str(self.project), 'path': str(self.project)})
         self.assertEqual(self.sidebar_readiness(), {'state': 'ready', 'projectId': key})
 
+    def test_the_chip_shows_only_while_the_project_has_a_layr_chat(self):
+        from codex_vm_agents import project_layr_id
+        lead = prepare(self.runtime, self.lead())
+        key = project_layr_id({'id': str(self.project), 'path': str(self.project)})
+        self.assertEqual(self.sidebar_readiness(), {'state': 'ready', 'projectId': key})
+        # An imported project without a layr chat here shows no LAYR chip.
+        self.runtime.delete_conversation(lead['id'])
+        self.assertIsNone(self.sidebar_readiness())
+
     def test_restart_replaces_the_importing_state_of_the_previous_process(self):
         from codex_vm_agents import project_layr_id, refresh_readiness
         self.lead()

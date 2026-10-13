@@ -66,11 +66,10 @@
       "title": "Updated"
     },
     "version": {
-      "ge": 0,
+      "maximum": 9007199254740991,
       "minimum": 0,
       "title": "Version",
-      "type": "integer",
-      "x-safe-integer": "unsigned"
+      "type": "integer"
     }
   },
   "required": ["id", "rootId", "text", "version", "updated"],

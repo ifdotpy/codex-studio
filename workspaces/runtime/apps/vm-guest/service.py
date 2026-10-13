@@ -21,7 +21,7 @@ from common import (GuestError, MAX_LINE, PORT, PROTOCOL, atomic_bytes,
                     atomic_json, bounded_lock, connect_db, decode, digest, identifier, integer,
                     number, private_dir, process_identity, receipt, require, save_receipt)
 from native import Native
-from upload import Uploads, sha, tree_space
+from upload import Uploads, sha, tree_space, upload_id
 
 READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
@@ -35,7 +35,7 @@ READ_METHODS |= LAYR_READ_METHODS
 METHODS |= LAYR_METHODS
 METHODS |= {"vault.configure", "vault.push"}
 METHODS |= {"secrets.set", "secrets.remove"}
-METHODS |= {"project.import", "project.exec", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
+METHODS |= {"project.import", "project.exec", "project.seed", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
             "sync.mac.worktree"}
 METHODS |= {"host.exec", "host.configure"}
 # The VM browser bridge (browser_bridge.py, docs/vm-browser-bridge.md). The long poll keeps no
@@ -346,12 +346,44 @@ class Service:
             await self.remove_temporary(archive.parent)
             return result
 
-    async def remove_temporary(self, path):
-        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")), "60", "rm", "-rf", "--", str(path),
+    async def seed_layer(self, request_id, params, admin_request):
+        """A seeded layer (docs/vm-layr.md, "Seeded layers") skips upload.commit: the archive
+        expands once in the private upload folder and the broker makes main/<path> from
+        reflinks of it. The rsync copy of upload.commit would need the size of the folder
+        two more times on the data disk and more time than its deadline for a large folder."""
+        identity = upload_id(params.get("uploadId"))
+        async with bounded_lock(self.uploads.locks, identity):
+            row = self.uploads.row(identity)
+            if row[5] == "applied":
+                return json.loads(row[6])
+            require(row[7] == "full" and row[3] == row[1], "The seed upload is incomplete")
+            archive = self.uploads.path / identity / "tree.tar"
+            staging = archive.parent / "expanded"
+            if row[5] == "receiving":
+                code, output = await self.worker("upload.py", {}, 3600, arguments=(str(archive), str(staging), row[2]))
+                result = json.loads(output)
+                if code or "error" in result:
+                    if "error" in result:
+                        raise GuestError(result["error"]["code"], result["error"]["message"])
+                    raise GuestError("invalid_params", "The upload extraction failed")
+                self.db.execute("UPDATE uploads SET state='seeding' WHERE id=?", (identity,))
+                self.db.commit()
+            else:
+                if row[5] != "seeding" or not staging.is_dir():
+                    raise GuestError("outcome_unknown", "The seed upload has no proven state")
+            result = await admin_request(request_id, "project.seed", {"projectId": params.get("projectId"),
+                                         "path": params.get("path"), "source": str(staging)})
+            self.db.execute("UPDATE uploads SET state='applied',result=? WHERE id=?", (json.dumps(result), identity))
+            self.db.commit()
+            await self.remove_temporary(archive.parent, 1800)
+            return result
+
+    async def remove_temporary(self, path, deadline=60):
+        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")), str(deadline), "rm", "-rf", "--", str(path),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         try:
-            await asyncio.wait_for(process.wait(), 66)
+            await asyncio.wait_for(process.wait(), deadline + 6)
         except asyncio.TimeoutError:
             process.kill()
             await asyncio.wait_for(process.wait(), 5)
@@ -402,6 +434,8 @@ class Service:
             return await admin_request(request_id, "layr.exec", params, emit=emit)
         if method in {"file.stat", "file.read"} and layr_agent:
             return await admin_request(request_id, "layr." + method, params, emit=emit)
+        if method == "project.seed":
+            return await self.seed_layer(request_id, params, admin_request)
         if method in {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health",
                       "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
                       "sync.mac.handoff", "sync.mac.worktree", "vault.configure", "vault.push", "vault.status",

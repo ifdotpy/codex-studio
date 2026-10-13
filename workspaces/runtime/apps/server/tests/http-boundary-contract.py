@@ -290,6 +290,7 @@ class RestartContractTests(TimedBoundaryTest):
 
     def test_restart_serves_sync_receipt_and_provider_facts(self) -> None:
         backend = self.backend
+        rust_backend_configured = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         headers = {"Origin": backend.origin or "", "X-Canvas-Token": backend.session["token"],
                    "X-Studio-API-Schema": backend.schema_hash}
         identity = backend.request("GET", "/api/sync/identity",

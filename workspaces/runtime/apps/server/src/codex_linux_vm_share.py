@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
+import tarfile
 import time
-from typing import Any, Callable, Iterator, TYPE_CHECKING, cast
+from typing import IO, Any, Callable, Iterator, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from codex_linux_vm import Client
@@ -286,12 +288,167 @@ def _mount_or_report(client: Client, project: dict[str, Any], password: str, hin
     return mounted
 
 
+# The guest accepts at most 1 MiB of decoded data in one request (vm-guest/common.py MAX_INPUT).
+CHUNK = 1024 * 1024
+
+
+def seed_paths(source: str | Path) -> list[str]:
+    """The folders that `.layrattributes` at the project root marks `regenerable seed`: a seeded
+    layer comes from this folder once instead of a fetch or build in the VM (docs/vm-layr.md,
+    "Seeded layers"). The last line for a path wins; only plain paths are seeded."""
+    root = Path(source).expanduser().resolve()
+    try:
+        lines = (root / '.layrattributes').read_text(encoding='utf-8').splitlines()
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    marks: dict[str, dict[str, bool]] = {}
+    for line in lines:
+        words = line.split()
+        if not words or words[0].startswith('#'):
+            continue
+        path = words[0].strip('/')
+        attributes = marks.setdefault(path, {})
+        for word in words[1:]:
+            name = word.lstrip('-')
+            if name in {'regenerable', 'seed'}:
+                attributes[name] = not word.startswith('-')
+    folders = []
+    for path, attributes in marks.items():
+        parts = path.split('/')
+        if (not attributes.get('regenerable') or not attributes.get('seed') or not path
+                or any(part in {'', '.', '..'} for part in parts) or any(sign in path for sign in '*?[!\\')):
+            continue
+        folder = root / path
+        if folder.is_dir() and not folder.is_symlink() and not any(
+                (root / '/'.join(parts[:index])).is_symlink() for index in range(1, len(parts))):
+            folders.append(path)
+    return folders
+
+
+def _layer_tar(folder: Path, output: IO[bytes]) -> None:
+    """A tar of the folder that is the same in every pass over unchanged files: sorted names, no
+    owners, whole-second times, no hard links. Files that are not regular files, folders or
+    symbolic links (sockets, pipes) stay out; the guest accepts no other entry."""
+    # Reads and writes of 1 MiB: tarfile copies in 16 KiB blocks, and reads of that size gave
+    # about 50 MB/s from the Mac disk; the file buffer makes each disk read 1 MiB.
+    with tarfile.open(fileobj=output, mode='w|', format=tarfile.PAX_FORMAT, bufsize=CHUNK) as archive:
+        def add(path: Path, name: str) -> None:
+            meta = path.lstat()
+            info = tarfile.TarInfo(name)
+            info.mode = stat.S_IMODE(meta.st_mode)
+            info.mtime = int(meta.st_mtime)
+            if stat.S_ISDIR(meta.st_mode):
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            elif stat.S_ISLNK(meta.st_mode):
+                info.type, info.linkname = tarfile.SYMTYPE, os.readlink(path)
+                archive.addfile(info)
+            elif stat.S_ISREG(meta.st_mode):
+                info.size = meta.st_size
+                with path.open('rb', buffering=CHUNK) as stream:
+                    archive.addfile(info, stream)
+        add(folder, '.')
+        for directory, folders, files in os.walk(folder):
+            folders.sort()
+            base = Path(directory)
+            for entry in sorted(folders + files):
+                add(base / entry, (base / entry).relative_to(folder).as_posix())
+
+
+class _Measure:
+    def __init__(self) -> None:
+        self.size, self.digest = 0, hashlib.sha256()
+
+    def write(self, data: bytes) -> int:
+        self.size += len(data)
+        self.digest.update(data)
+        return len(data)
+
+
+class _Chunks:
+    """Send the tar stream in chunks; skip what an earlier attempt already delivered."""
+
+    def __init__(self, client: Client, upload_id: str, operation: str, received: int) -> None:
+        self.client, self.upload_id, self.operation = client, upload_id, operation
+        self.skip, self.sequence, self.buffer = received, received // CHUNK, bytearray()
+
+    def write(self, data: bytes) -> int:
+        size = len(data)
+        if self.skip:
+            dropped = min(self.skip, size)
+            self.skip -= dropped
+            data = data[dropped:]
+        self.buffer.extend(data)
+        while len(self.buffer) >= CHUNK:
+            self.send(bytes(self.buffer[:CHUNK]))
+            del self.buffer[:CHUNK]
+        return size
+
+    def send(self, data: bytes) -> None:
+        self.client.call('upload.chunk', {'uploadId': self.upload_id, 'seq': self.sequence,
+            'data': base64.b64encode(data).decode()},
+            request_id=self.operation + ':chunk:' + str(self.sequence), timeout=60)
+        self.sequence += 1
+
+    def close(self) -> None:
+        if self.buffer:
+            self.send(bytes(self.buffer))
+            self.buffer.clear()
+
+
+def plan_seeds(client: Client, project_id: str, source: str | Path) -> None:
+    """Record the seeded layers of a new import before its receipt. Only these are sent: after
+    the import the VM main, not the Mac folder, is the project."""
+    record = client.state_dir / 'layr-projects' / _id(project_id) / 'seeds.json'
+    if not record.exists():
+        _save(record, {path: None for path in seed_paths(source)})
+
+
+def seed_layers(client: Client, project_id: str, source: str | Path, identity: str) -> list[dict[str, Any]]:
+    """Give the VM main each planned layer once: send the Mac folder as a tar stream, then the
+    guest expands it and makes it a warm layer of main (project.seed). The tar is made twice,
+    first for its size and SHA-256, so the Mac keeps no copy."""
+    from codex_linux_vm import LinuxVMError
+    project_id = _id(project_id)
+    root = Path(source).expanduser().resolve()
+    record = client.state_dir / 'layr-projects' / project_id / 'seeds.json'
+    if not record.exists():
+        return []
+    done = json.loads(record.read_text())
+    results = []
+    for path in [path for path, value in done.items() if value is None]:
+        folder = root / path
+        if not folder.is_dir() or folder.is_symlink():
+            raise LinuxVMError(f'The layer folder {path} is no longer on the Mac; Studio cannot send it to the VM.',
+                               code='not_found')
+        measure = _Measure()
+        _layer_tar(folder, cast(IO[bytes], measure))
+        digest = measure.digest.hexdigest()
+        # A folder that changed before its upload ended gets a new upload, not an ID conflict.
+        operation = hashlib.sha256((identity + ':seed:' + path + ':' + digest).encode()).hexdigest()
+        upload_id = 'seed-' + operation[:40]
+        begin = {'uploadId': upload_id, 'root': '/var/lib/codex-studio/projects/layr-' + upload_id,
+                 'totalBytes': measure.size, 'sha256': digest, 'mode': 'full', 'deletePaths': []}
+        status = client.call('upload.begin', begin, request_id=operation + ':begin', timeout=30)
+        if status.get('state') == 'receiving' and status.get('receivedBytes') != measure.size:
+            chunks = _Chunks(client, upload_id, operation, int(status.get('receivedBytes') or 0))
+            _layer_tar(folder, cast(IO[bytes], chunks))
+            chunks.close()
+        result = client.call('project.seed', {'projectId': project_id, 'path': path, 'uploadId': upload_id},
+                             request_id=operation + ':seed', timeout=3600)
+        done[path] = {'stateId': result.get('stateId'), 'seeded': result.get('seeded'), 'bytes': measure.size,
+                      'at': time.time()}
+        _save(record, done)
+        results.append(result)
+    return results
+
+
 def upload_archive(client: Client, archive: Path, begin: dict[str, Any], operation: str) -> None:
     """Send a tar archive with the guest tree upload protocol; each call keeps its request ID."""
     client.call('upload.begin', begin, request_id=operation + ':begin', timeout=30)
     with archive.open('rb') as stream:
         sequence = 0
-        while data := stream.read(512 * 1024):
+        while data := stream.read(CHUNK):
             client.call('upload.chunk', {'uploadId': begin['uploadId'], 'seq': sequence,
                 'data': base64.b64encode(data).decode()}, request_id=operation + ':chunk:' + str(sequence), timeout=30)
             sequence += 1
@@ -328,6 +485,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                 password = _credential(client)
                 existing['share'] = client.call('share.status', {}, timeout=30)
                 existing['mount'] = _mount_or_report(client, existing, password, share_hint(source))
+                seed_layers(client, project_id, source, identity)
                 return cast(dict[str, Any], existing)
         state_path = directory / ('import-' + operation + '.json')
         archive = directory / ('source-' + operation + '.tar.gz')
@@ -343,6 +501,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                 password = _credential(client)
                 project['share'] = client.call('share.status', {}, timeout=30)
                 project['mount'] = _mount_or_report(client, project, password, share_hint(source))
+                seed_layers(client, project_id, source, identity)
                 return cast(dict[str, Any], project)
             if not archive.exists():
                 raise LinuxVMError('The pending import archive is unavailable; inspect the guest receipt.', uncertain=True)
@@ -363,9 +522,13 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
         _save(directory / 'project.json', {'projectId': project_id, 'source': source_path,
                                            'importStateId': project.get('stateId')})
         # Keep the small receipt association. Never remove an uncertain archive.
+        plan_seeds(client, project_id, source_path)
         pending['result'] = project
         _save(state_path, pending)
         archive.unlink(missing_ok=True)
+        # After the receipt: a failed seed repeats alone on the next ensure. The seed does not
+        # move the head of main (its folder is a cache), so the import state stays the sync base.
+        seed_layers(client, project_id, source, identity)
         return cast(dict[str, Any], project)
 
 
