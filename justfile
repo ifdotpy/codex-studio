@@ -50,10 +50,8 @@ test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
 [doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
-test-rust-runtime-corpora:
-    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^account_transfer/)'
+test-rust-runtime-corpora *args:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/)' {{args}}
 
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
