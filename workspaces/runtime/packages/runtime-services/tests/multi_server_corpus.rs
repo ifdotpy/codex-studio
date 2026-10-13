@@ -675,6 +675,15 @@ fn queried_status_crosses_service_dispatch() {
         .find(|c| c["name"] == "status-query")
         .expect("queried status");
     let (_root, store) = store();
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_access_clients SET record=?1 WHERE id='peer-server'",
+                [case["client"].as_str().expect("Python precondition")],
+            )?;
+            Ok(())
+        })
+        .expect("install exact Python authentication precondition");
     let lookup = CountingOwner::new(case.clone());
     let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
         data["identity"].clone(),
