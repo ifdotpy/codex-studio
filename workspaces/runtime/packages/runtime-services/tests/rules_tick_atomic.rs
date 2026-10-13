@@ -5,8 +5,9 @@ use std::process::Command;
 use serde_json::{Value, json};
 use studio_runtime_services::rules_engine::{CheckResult, RuleCheck};
 use studio_runtime_services::rules_tick::{
-    CheckSubmission, LocalRuleFiles, RuleFiles, RuleMonitor, RulesTickError, UnavailableMonitor,
-    finish, finish_in_transaction, recover_batch, tick_batch,
+    CheckSubmission, LocalRuleFiles, RuleEvent, RuleFiles, RuleMonitor, RulesTickError,
+    UnavailableMonitor, event_in_transaction, finish, finish_in_transaction, recover_batch,
+    tick_batch,
 };
 use studio_runtime_store::{RuleRecord, RulesRepository, RuntimeStore, StoreError};
 use tempfile::TempDir;
@@ -111,14 +112,25 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
     // Fail before and after each durable table write in the no-command path.
     // Rollback must include canonical views, queue owner and wake; a restart retries
     // a rolled-back tick but never a committed one.
-    for table in [
-        "sync_entities",
-        "runtime_rules",
-        "runtime_events",
-        "runtime_agents",
-        "runtime_event_meta",
-    ] {
-        for timing in ["BEFORE", "AFTER"] {
+    let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
+    let tables: &[&str] = if full {
+        &[
+            "sync_entities",
+            "runtime_rules",
+            "runtime_events",
+            "runtime_agents",
+            "runtime_event_meta",
+        ]
+    } else {
+        &["runtime_events"]
+    };
+    let timings: &[&str] = if full {
+        &["BEFORE", "AFTER"]
+    } else {
+        &["BEFORE"]
+    };
+    for table in tables {
+        for timing in timings {
             let state = template.clone_state();
             let store = RuntimeStore::open(Some(state.path())).expect("Python database opens");
             let initial = rule(&store);
@@ -159,7 +171,7 @@ fn tick_commit_restart_and_callback_failpoint_matrix() {
         }
     }
     // Crash after reservation / native submission but before an acknowledgement.
-    for unknown in [false, true] {
+    for unknown in if full { vec![false, true] } else { vec![true] } {
         let state = template.clone_state();
         let store = RuntimeStore::open(Some(state.path())).expect("open");
         change(&store, json!({"command":"printf fixture"}));
@@ -335,10 +347,33 @@ fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
         .expect("duplicate")
     );
     assert_eq!(events(&store).len(), 1);
+    change(
+        &store,
+        json!({"kind":"event","event":"worker_completed","command":"","status":"active"}),
+    );
+    let event = || RuleEvent {
+        agent_id: "owner",
+        kind: "child_result",
+        text: "child finished",
+        key: "event-1",
+        now: NOW,
+    };
+    // Event delivery consumes its identity in the same transaction as its wake.
+    let result = store
+        .transaction_with::<_, RulesTickError>(|tx| event_in_transaction(tx, event(), 0, false));
+    let (report, checks) = result.expect("event hook");
+    assert_eq!(report.changed, 1);
+    assert!(checks.is_empty());
+    let count = events(&store).len();
+    let (report, _) = store
+        .transaction_with::<_, RulesTickError>(|tx| event_in_transaction(tx, event(), 0, false))
+        .expect("replay");
+    assert_eq!(report.changed, 0);
+    assert_eq!(events(&store).len(), count);
 }
 
 #[test]
-fn local_metadata_matches_real_python_fingerprint_shape() {
+fn local_metadata_reports_size_timestamp_and_missing_file() {
     let root = tempfile::tempdir().expect("file root");
     let path = root.path().join("watch");
     std::fs::write(&path, "abc").expect("file write");

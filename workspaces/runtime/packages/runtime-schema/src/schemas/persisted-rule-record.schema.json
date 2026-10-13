@@ -110,13 +110,17 @@
           "minItems": 3,
           "prefixItems": [
             {
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
               "type": "integer"
             },
             {
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "type": "integer"
             },
             {
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "type": "integer"
             }

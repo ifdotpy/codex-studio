@@ -163,5 +163,27 @@
         "after": "if false {"
       }
     ]
+  },
+  {
+    "id": "R16",
+    "witness": "sampled configuration compare",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": "rule == &self.raw\n            && OWNER_FIELDS",
+        "after": "true\n            && OWNER_FIELDS"
+      }
+    ]
+  },
+  {
+    "id": "R17",
+    "witness": "sampled owner identity compare",
+    "file": "workspaces/runtime/packages/runtime-services/src/rules_engine.rs",
+    "edits": [
+      {
+        "before": ".all(|field| owner.get(field) == self.owner_raw.get(field))",
+        "after": ".all(|field| owner.get(field) == owner.get(field))"
+      }
+    ]
   }
 ]

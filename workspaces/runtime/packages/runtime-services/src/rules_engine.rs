@@ -15,6 +15,7 @@ const STOPPED: &str = "The agent was stopped. Resume this rule explicitly.";
 const RESTARTED: &str = "Server restarted during a check. Outcome unknown; check was not repeated.";
 const OWNER_FIELDS: &[&str] = &[
     "epoch",
+    "status",
     "accountKey",
     "threadId",
     "autoWake",

@@ -170,3 +170,103 @@ fn malformed_stored_fields_are_located_and_never_panic() {
         );
     }
 }
+
+#[test]
+fn sampled_configuration_and_exact_completion_identity_are_checked() {
+    let corpus = oracle();
+    let find = |name| {
+        corpus
+            .iter()
+            .find(|case| case["name"] == name)
+            .expect("named oracle witness")
+    };
+    let due = find("interval-boundary-0");
+    let snapshot = RuleSnapshot::from_records(due["rule"].clone(), due["owner"].clone())
+        .expect("checked Python record");
+    assert!(snapshot.current(&due["rule"], &due["owner"]));
+    assert!(!snapshot.current(&find("interval-boundary-1")["rule"], &due["owner"]));
+    for name in [
+        "interval-stopped-autoWake",
+        "interval-stopped-epoch",
+        "interval-stopped-deletedAt",
+    ] {
+        assert!(
+            !snapshot.current(&due["rule"], &find(name)["owner"]),
+            "stale owner {name}"
+        );
+    }
+    let decision = snapshot
+        .tick(
+            due["now"].as_f64().expect("now"),
+            TickObservation::default(),
+        )
+        .expect("reserve");
+    let check = decision.check.expect("command check");
+    let active = decision.record.expect("in-flight record");
+    let snapshot = RuleSnapshot::from_records(active.clone(), due["owner"].clone())
+        .expect("checked reservation");
+    let mut foreign = check.clone();
+    foreign.monitor_id = "foreign".to_owned();
+    assert!(
+        snapshot
+            .finish_check(
+                &foreign,
+                CheckResult {
+                    code: Some(0),
+                    error: None,
+                    output: "must not wake"
+                },
+                0.0
+            )
+            .expect("foreign refusal")
+            .record
+            .is_none()
+    );
+    let stopped =
+        RuleSnapshot::from_records(active, find("interval-stopped-epoch")["owner"].clone())
+            .expect("new owner epoch");
+    assert!(
+        stopped
+            .finish_check(
+                &check,
+                CheckResult {
+                    code: Some(0),
+                    error: None,
+                    output: "stale"
+                },
+                0.0
+            )
+            .expect("stale refusal")
+            .record
+            .is_none()
+    );
+    let finished = snapshot
+        .finish_check(
+            &check,
+            CheckResult {
+                code: Some(0),
+                error: None,
+                output: "ok",
+            },
+            0.0,
+        )
+        .expect("finish");
+    let snapshot =
+        RuleSnapshot::from_records(finished.record.expect("finished"), due["owner"].clone())
+            .expect("checked finished record");
+    assert!(
+        snapshot
+            .finish_check(
+                &check,
+                CheckResult {
+                    code: Some(0),
+                    error: None,
+                    output: "duplicate"
+                },
+                0.0
+            )
+            .expect("repeat refusal")
+            .record
+            .is_none()
+    );
+}
