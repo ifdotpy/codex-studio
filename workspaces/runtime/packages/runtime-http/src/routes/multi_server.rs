@@ -23,17 +23,29 @@ const SIGNED_ORCHESTRATION_DEPENDENCIES: [Dependency; 2] = [
     Dependency::new("remote-transport/signed-server-requests"),
     Dependency::new("multi-server-runtime/orchestration"),
 ];
-const MANAGEMENT_DEPENDENCIES: [Dependency; 5] = [
+const PLATFORM_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("server-credentials/platform-support")];
+const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("multi-server-runtime/orchestration"),
     Dependency::new("multi-server-runtime/pairing"),
     Dependency::new("remote-transport/owner-lookup"),
     Dependency::new("remote-transport/signed-server-requests"),
     Dependency::new("remote-transport/tailscale-discovery"),
+    #[cfg(not(unix))]
+    Dependency::new("server-credentials/platform-support"),
 ];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get("/api/multi-server", OperationStatus::Implemented, snapshot),
+        get(
+            "/api/multi-server",
+            if cfg!(unix) {
+                OperationStatus::Implemented
+            } else {
+                OperationStatus::partial(&PLATFORM_DEPENDENCIES)
+            },
+            snapshot,
+        ),
         get(
             "/api/multi-server/audit",
             OperationStatus::Implemented,
@@ -41,7 +53,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server",
-            OperationStatus::partial(&MANAGEMENT_DEPENDENCIES),
+            OperationStatus::partial(MANAGEMENT_DEPENDENCIES),
             manage,
         ),
         post(
@@ -83,6 +95,13 @@ pub(crate) fn routes() -> RouteGroup {
 }
 
 async fn snapshot(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+    if !cfg!(unix) {
+        return Err(unavailable_for(
+            "GET",
+            "/api/multi-server",
+            &PLATFORM_DEPENDENCIES,
+        ));
+    }
     let credentials = state.credentials;
     let origin = state.public_origin;
     let store = state.store.ok_or_else(ApiError::internal)?;
@@ -115,6 +134,13 @@ async fn manage(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    if !cfg!(unix) {
+        return Err(unavailable_for(
+            "POST",
+            "/api/multi-server",
+            MANAGEMENT_DEPENDENCIES,
+        ));
+    }
     let action = body
         .get("action")
         .and_then(Value::as_str)
@@ -137,7 +163,7 @@ async fn manage(
                 return Err(unavailable_for(
                     "POST",
                     "/api/multi-server",
-                    &MANAGEMENT_DEPENDENCIES,
+                    MANAGEMENT_DEPENDENCIES,
                 ));
             }
             if action == "name" {
@@ -169,7 +195,7 @@ async fn manage(
     Err(unavailable_for(
         "POST",
         "/api/multi-server",
-        &MANAGEMENT_DEPENDENCIES,
+        MANAGEMENT_DEPENDENCIES,
     ))
 }
 
@@ -231,6 +257,9 @@ fn unavailable_for(method: &str, path: &str, dependencies: &'static [Dependency]
 
 fn map_credential_error(error: CredentialError) -> ApiError {
     match error {
+        CredentialError::UnsupportedPlatform => {
+            ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+        }
         CredentialError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
         CredentialError::Identity(_) => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -240,7 +269,7 @@ fn map_credential_error(error: CredentialError) -> ApiError {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         }
         CredentialError::RemoteRequired => {
-            unavailable_for("POST", "/api/multi-server", &MANAGEMENT_DEPENDENCIES)
+            unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES)
         }
         _ => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -260,8 +289,27 @@ fn map_service_error(error: MultiServerError) -> ApiError {
         MultiServerError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         MultiServerError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
         MultiServerError::NeedsSignedRequest => {
-            unavailable_for("POST", "/api/multi-server", &MANAGEMENT_DEPENDENCIES)
+            unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn unsupported_credentials_have_a_named_501_refusal() {
+        let response = map_credential_error(CredentialError::UnsupportedPlatform).into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("small refusal body");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("error envelope"),
+            serde_json::json!({"error":"Not implemented: requires server-credentials/platform-support"})
+        );
     }
 }
 
