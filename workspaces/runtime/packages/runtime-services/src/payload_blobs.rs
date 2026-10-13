@@ -1,15 +1,181 @@
 //! Content-addressed blobs used by large checkpoint and tool payloads.
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;
 const TASK_PREVIEW_BYTES: usize = 512;
+
+#[derive(Clone, Debug, PartialEq)]
+enum OrderedValue {
+    Null,
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<Self>),
+    Object(Vec<(String, Self)>),
+}
+
+impl OrderedValue {
+    fn from_value(value: &Value) -> Self {
+        match value {
+            Value::Null => Self::Null,
+            Value::Bool(value) => Self::Bool(*value),
+            Value::Number(value) => Self::Number(value.clone()),
+            Value::String(value) => Self::String(value.clone()),
+            Value::Array(values) => Self::Array(values.iter().map(Self::from_value).collect()),
+            Value::Object(values) => Self::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::from_value(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn into_value(self) -> Value {
+        match self {
+            Self::Null => Value::Null,
+            Self::Bool(value) => Value::Bool(value),
+            Self::Number(value) => Value::Number(value),
+            Self::String(value) => Value::String(value),
+            Self::Array(values) => Value::Array(values.into_iter().map(Self::into_value).collect()),
+            Self::Object(values) => Value::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into_value()))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&Self> {
+        match self {
+            Self::Object(values) => values
+                .iter()
+                .find_map(|(key, value)| (key == name).then_some(value)),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for OrderedValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Null => serializer.serialize_unit(),
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Number(value) => value.serialize(serializer),
+            Self::String(value) => serializer.serialize_str(value),
+            Self::Array(values) => {
+                let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+                for value in values {
+                    sequence.serialize_element(value)?;
+                }
+                sequence.end()
+            }
+            Self::Object(values) => {
+                let mut map = serializer.serialize_map(Some(values.len()))?;
+                for (key, value) in values {
+                    map.serialize_entry(key, value)?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OrderedValueVisitor;
+
+        impl<'de> Visitor<'de> for OrderedValueVisitor {
+            type Value = OrderedValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedValue::Null)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(OrderedValue::Null)
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(OrderedValue::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(OrderedValue::Number(value.into()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(OrderedValue::Number(value.into()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                serde_json::Number::from_f64(value)
+                    .map(OrderedValue::Number)
+                    .ok_or_else(|| E::custom("non-finite JSON number"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(OrderedValue::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(OrderedValue::String(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(OrderedValue::Array(values))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut values: Vec<(String, OrderedValue)> = Vec::new();
+                while let Some((key, value)) = map.next_entry::<String, OrderedValue>()? {
+                    if let Some((_, previous)) = values.iter_mut().find(|(name, _)| *name == key) {
+                        *previous = value;
+                    } else {
+                        values.push((key, value));
+                    }
+                }
+                Ok(OrderedValue::Object(values))
+            }
+        }
+
+        deserializer.deserialize_any(OrderedValueVisitor)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum PayloadBlobError {
@@ -76,10 +242,29 @@ pub fn decide_externalize(
     table: &str,
     input: &Value,
 ) -> Result<ExternalizeDecision, PayloadBlobError> {
-    let mut record = input
-        .as_object()
-        .cloned()
-        .ok_or(PayloadBlobError::InvalidRecord)?;
+    decide_externalize_ordered(table, OrderedValue::from_value(input))
+}
+
+/// Preserve source object order when the caller still has the stored JSON text.
+pub fn decide_externalize_json(
+    table: &str,
+    input: &str,
+) -> Result<ExternalizeDecision, PayloadBlobError> {
+    let input = serde_json::from_str::<OrderedValue>(input)?;
+    decide_externalize_ordered(table, input)
+}
+
+fn decide_externalize_ordered(
+    table: &str,
+    input: OrderedValue,
+) -> Result<ExternalizeDecision, PayloadBlobError> {
+    let OrderedValue::Object(entries) = input else {
+        return Err(PayloadBlobError::InvalidRecord);
+    };
+    let mut record: Map<String, Value> = entries
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone().into_value()))
+        .collect();
     let fields: &[&str] = match table {
         "checkpoints" => &["items"],
         "tool_requests" => &["result"],
@@ -88,7 +273,10 @@ pub fn decide_externalize(
     let mut refs = payload_refs(&record)?;
     let mut writes = Vec::new();
     for field in fields {
-        let Some(value) = record.get(*field).cloned() else {
+        let Some(value) = entries
+            .iter()
+            .find_map(|(key, value)| (key == field).then_some(value))
+        else {
             continue;
         };
         let bytes = serde_json::to_vec(&value)?;
@@ -97,23 +285,34 @@ pub fn decide_externalize(
             continue;
         }
         let preview = match &value {
-            Value::Array(items) => {
-                small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)
-            }
-            Value::Object(object) => {
-                let mut selected = Map::new();
+            OrderedValue::Array(items) => OrderedValue::Array(
+                items
+                    .iter()
+                    .take(1)
+                    .map(|item| small_preview(item, 0))
+                    .collect(),
+            )
+            .into_value(),
+            OrderedValue::Object(_) => {
+                let mut selected = Vec::new();
                 for key in ["success", "outcome", "stage"] {
-                    if let Some(value) = object.get(key) {
-                        selected.insert(key.into(), value.clone());
+                    if let Some(value) = value.get(key) {
+                        selected.push((key.to_owned(), value.clone()));
                     }
                 }
-                if let Some(Value::Array(items)) = object.get("contentItems") {
-                    selected.insert(
+                if let Some(OrderedValue::Array(items)) = value.get("contentItems") {
+                    selected.push((
                         "contentItems".into(),
-                        small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0),
-                    );
+                        OrderedValue::Array(
+                            items
+                                .iter()
+                                .take(1)
+                                .map(|item| small_preview(item, 0))
+                                .collect(),
+                        ),
+                    ));
                 }
-                small_preview(&Value::Object(selected), 0)
+                small_preview(&OrderedValue::Object(selected), 0).into_value()
             }
             _ => Value::Null,
         };
@@ -143,11 +342,30 @@ pub fn decide_externalize(
 
 /// Externalize tool-result content independently of the table record shape.
 pub fn decide_externalize_result(input: &Value) -> Result<ExternalizeDecision, PayloadBlobError> {
-    let mut record = input
-        .as_object()
-        .cloned()
-        .ok_or(PayloadBlobError::InvalidRecord)?;
-    let Some(contents) = record.get("contentItems").cloned() else {
+    decide_externalize_result_ordered(OrderedValue::from_value(input))
+}
+
+/// Externalize a result from raw JSON while preserving any nested object order.
+pub fn decide_externalize_result_json(
+    input: &str,
+) -> Result<ExternalizeDecision, PayloadBlobError> {
+    decide_externalize_result_ordered(serde_json::from_str::<OrderedValue>(input)?)
+}
+
+fn decide_externalize_result_ordered(
+    input: OrderedValue,
+) -> Result<ExternalizeDecision, PayloadBlobError> {
+    let OrderedValue::Object(entries) = input else {
+        return Err(PayloadBlobError::InvalidRecord);
+    };
+    let mut record: Map<String, Value> = entries
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone().into_value()))
+        .collect();
+    let Some(contents) = entries
+        .iter()
+        .find_map(|(key, value)| (key == "contentItems").then_some(value))
+    else {
         return Ok(ExternalizeDecision {
             record: Value::Object(record),
             writes: Vec::new(),
@@ -161,9 +379,14 @@ pub fn decide_externalize_result(input: &Value) -> Result<ExternalizeDecision, P
         });
     }
     let preview = match &contents {
-        Value::Array(items) => {
-            small_preview(&Value::Array(items.iter().take(1).cloned().collect()), 0)
-        }
+        OrderedValue::Array(items) => OrderedValue::Array(
+            items
+                .iter()
+                .take(1)
+                .map(|item| small_preview(item, 0))
+                .collect(),
+        )
+        .into_value(),
         _ => Value::Null,
     };
     let hash = hash_hex(&bytes);
@@ -225,11 +448,69 @@ pub fn write_blobs(state_root: &Path, writes: &[BlobWrite]) -> Result<(), Payloa
 
 pub fn load_blob(state_root: &Path, reference: &Value) -> Result<Vec<u8>, PayloadBlobError> {
     let reference = BlobRef::parse(reference)?;
-    let bytes = fs::read(blob_path(&state_root.join("blobs"), &reference))?;
+    let bytes = read_blob_without_symlinks(state_root, &reference)?;
     if bytes.len() as u64 != reference.size || hash_hex(&bytes) != reference.sha256 {
         return Err(PayloadBlobError::Integrity);
     }
     Ok(bytes)
+}
+
+#[cfg(unix)]
+fn read_blob_without_symlinks(
+    state_root: &Path,
+    reference: &BlobRef,
+) -> Result<Vec<u8>, PayloadBlobError> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW;
+    let root = open(state_root, directory_flags, Mode::empty()).map_err(std::io::Error::from)?;
+    let blobs =
+        openat(&root, "blobs", directory_flags, Mode::empty()).map_err(std::io::Error::from)?;
+    let first = openat(
+        &blobs,
+        &reference.sha256[..2],
+        directory_flags,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    let second = openat(
+        &first,
+        &reference.sha256[2..4],
+        directory_flags,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    let descriptor = openat(
+        &second,
+        &reference.sha256,
+        OFlags::RDONLY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    let mut file = File::from(descriptor);
+    if !file.metadata()?.is_file() {
+        return Err(PayloadBlobError::Integrity);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_blob_without_symlinks(
+    state_root: &Path,
+    reference: &BlobRef,
+) -> Result<Vec<u8>, PayloadBlobError> {
+    let root = state_root.join("blobs");
+    let first = root.join(&reference.sha256[..2]);
+    let second = first.join(&reference.sha256[2..4]);
+    let target = second.join(&reference.sha256);
+    for path in [&root, &first, &second, &target] {
+        if fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(PayloadBlobError::Integrity);
+        }
+    }
+    fs::read(target).map_err(Into::into)
 }
 
 pub fn resolve_record(state_root: &Path, input: &Value) -> Result<Value, PayloadBlobError> {
@@ -274,9 +555,9 @@ pub fn task_preview(text: &str) -> String {
     text[start..].to_owned()
 }
 
-fn small_preview(value: &Value, depth: usize) -> Value {
+fn small_preview(value: &OrderedValue, depth: usize) -> OrderedValue {
     match value {
-        Value::String(text) => {
+        OrderedValue::String(text) => {
             let mut end = text.len().min(TASK_PREVIEW_BYTES);
             while !text.is_char_boundary(end) {
                 end -= 1;
@@ -285,17 +566,17 @@ fn small_preview(value: &Value, depth: usize) -> Value {
             if end < text.len() {
                 preview.push('…');
             }
-            Value::String(preview)
+            OrderedValue::String(preview)
         }
-        Value::Array(values) => Value::Array(
+        OrderedValue::Array(values) => OrderedValue::Array(
             values
                 .iter()
                 .take(1)
                 .map(|item| small_preview(item, depth + 1))
                 .collect(),
         ),
-        Value::Object(values) if depth >= 4 => Value::String("[preview omitted]".into()),
-        Value::Object(values) => Value::Object(
+        OrderedValue::Object(_) if depth >= 4 => OrderedValue::String("[preview omitted]".into()),
+        OrderedValue::Object(values) => OrderedValue::Object(
             values
                 .iter()
                 .take(8)
@@ -485,6 +766,49 @@ mod tests {
         std::fs::write(&outside_file, &decision.writes[0].bytes).expect("outside payload");
         symlink(outside_file, &target).expect("target symlink");
         assert!(write_blobs(state.path(), &decision.writes).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blob_reads_refuse_symlinked_parent_and_target_components() {
+        use std::os::unix::fs::symlink;
+
+        let source = json!({"items":["z".repeat(70_000)]});
+        let decision = decide_externalize("checkpoints", &source).expect("decision");
+        let reference = &decision.record["_payloadBlobs"]["items"];
+        let hash = reference["sha256"].as_str().expect("hash");
+
+        let state = tempfile::tempdir().expect("parent-symlink state");
+        let outside = tempfile::tempdir().expect("parent-symlink target");
+        let outside_shard = outside.path().join(&hash[..2]);
+        std::fs::create_dir(&outside_shard).expect("outside shard");
+        let outside_second = outside_shard.join(&hash[2..4]);
+        std::fs::create_dir(&outside_second).expect("outside second shard");
+        std::fs::write(outside_second.join(hash), &decision.writes[0].bytes).expect("outside blob");
+        let blob_root = state.path().join("blobs");
+        std::fs::create_dir(&blob_root).expect("blob root");
+        symlink(&outside_shard, blob_root.join(&hash[..2])).expect("shard symlink");
+        assert!(matches!(
+            load_blob(state.path(), reference),
+            Err(PayloadBlobError::Io(_)) | Err(PayloadBlobError::Integrity)
+        ));
+
+        let state = tempfile::tempdir().expect("target-symlink state");
+        let outside = tempfile::tempdir().expect("target-symlink target");
+        let target = state
+            .path()
+            .join("blobs")
+            .join(&hash[..2])
+            .join(&hash[2..4])
+            .join(hash);
+        std::fs::create_dir_all(target.parent().expect("target parent")).expect("parents");
+        let outside_file = outside.path().join("payload");
+        std::fs::write(&outside_file, &decision.writes[0].bytes).expect("outside payload");
+        symlink(outside_file, &target).expect("target symlink");
+        assert!(matches!(
+            load_blob(state.path(), reference),
+            Err(PayloadBlobError::Io(_)) | Err(PayloadBlobError::Integrity)
+        ));
     }
 
     #[test]
