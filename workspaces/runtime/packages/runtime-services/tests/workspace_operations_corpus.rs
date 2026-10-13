@@ -9,23 +9,28 @@ use studio_runtime_store::{
     AgentRecord, AgentRepository, CaptureKind, CheckpointsRepository, RuntimeStore,
 };
 
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+
 fn temporary() -> tempfile::TempDir {
-    let parent = Path::new("/var/tmp/cs-rust-workspace-operations/fixtures");
-    std::fs::create_dir_all(parent).expect("fixture parent");
+    let parent = std::env::temp_dir().join("cs-rust-workspace-operations/fixtures");
+    std::fs::create_dir_all(&parent).expect("fixture parent");
     tempfile::Builder::new()
         .prefix("operations-")
         .tempdir_in(parent)
         .expect("isolated root")
 }
 fn oracle(root: &Path, request: Value) -> Value {
-    let python = std::env::var("CODEX_AGENTS_PYTHON")
-        .expect("CODEX_AGENTS_PYTHON must name the prepared isolated interpreter");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let python = prepared_python::prepared_python(&source);
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/workspace_operations/oracle.py");
     for name in ["home", "codex", "claude"] {
         std::fs::create_dir_all(root.join(name)).expect("isolated home");
     }
     let mut child = Command::new("/usr/bin/timeout")
-        .args(["120", &python, "-B"])
+        .arg("120")
+        .arg(&python)
+        .arg("-B")
         .arg(script)
         .current_dir(root)
         .env("HOME", root.join("home"))
@@ -281,7 +286,7 @@ impl Fixture {
     }
 }
 fn git(cwd: &Path, args: &[&str]) -> String {
-    assert!(cwd.starts_with("/var/tmp/cs-rust-workspace-operations/"));
+    assert!(cwd.starts_with(std::env::temp_dir().join("cs-rust-workspace-operations")));
     let out = Command::new("git")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
