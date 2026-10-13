@@ -178,5 +178,41 @@
       }
     ],
     "witnesses": ["estimated-timestamp"]
+  },
+  {
+    "id": "B16",
+    "description": "capture_rejects_stale_durable_identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "if agent.get(name).is_some_and(|value| *value != expected)",
+        "after": "if false && agent.get(name).is_some_and(|value| *value != expected)"
+      }
+    ],
+    "witnesses": ["capture_rejects_stale_durable_identity"]
+  },
+  {
+    "id": "B17",
+    "description": "legacy-missing-created",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "    #[serde(default)]\n    created: f64,",
+        "after": "    created: f64,"
+      }
+    ],
+    "witnesses": ["legacy-missing-created"]
+  },
+  {
+    "id": "B18",
+    "description": "capture_partial_copy_uses_durable_identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/budget.rs",
+    "edits": [
+      {
+        "before": "            agent: durable,",
+        "after": "            agent: supplied,"
+      }
+    ],
+    "witnesses": ["capture_partial_copy_uses_durable_identity"]
   }
 ]

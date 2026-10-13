@@ -52,6 +52,10 @@ fn save_state(
 }
 /// Live notification and historical capture share the same durable response key.
 /// `now` is collection time (initial cutoff); `at` is the usage record timestamp.
+/// The transaction's durable agent owns identity. The supplied copy needs only
+/// `id`; any supplied root/account/thread/turn/epoch must still match that row.
+/// Observation fields in `params` belong to the usage record, including historical
+/// response/turn IDs. They never replace the supplied copy's ownership assertions.
 /// Only budget fields in the supplied copy are changed, after all writes succeed.
 pub fn capture(
     tx: &Transaction<'_>,
