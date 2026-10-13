@@ -291,25 +291,11 @@ fn workspace_view(
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
             .map_err(|_| invalid_stored("runtime_rules", "unknown"))?,
     )?;
-    let tasks = parse_records(
+    let tasks = project_task_records(
         validators,
-        "TaskDetailResponse",
-        "runtime_tasks",
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
             .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?,
-    )?
-    .into_iter()
-    .map(|task| {
-        let id = task["id"].as_str().unwrap_or("unknown");
-        let projection = validators
-            .project_entity("TaskEntityDto", &task)
-            .ok_or_else(|| invalid_stored("runtime_tasks", id))?;
-        if !validators.validate_stored("TaskEntityDto", &projection) {
-            return Err(invalid_stored("runtime_tasks", id));
-        }
-        Ok(projection)
-    })
-    .collect::<Result<Vec<_>, ApiError>>()?;
+    )?;
     let monitors = parse_records(
         validators,
         "MonitorRecordResponse",
@@ -454,6 +440,33 @@ fn parse_records(
             let value: Value =
                 serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
             checked_stored(validators, schema, table, &row.id, value)
+        })
+        .collect()
+}
+
+fn project_task_records(
+    validators: &Registry,
+    records: Vec<StoredRecord>,
+) -> Result<Vec<Value>, ApiError> {
+    records
+        .into_iter()
+        .map(|row| {
+            let id = row.id;
+            let raw = row
+                .record
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
+            let task: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_tasks", &id))?;
+            if task.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                return Err(invalid_stored("runtime_tasks", &id));
+            }
+            let projection = validators
+                .project_entity("TaskEntityDto", &task)
+                .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
+            if !validators.validate_stored("TaskEntityDto", &projection) {
+                return Err(invalid_stored("runtime_tasks", &id));
+            }
+            Ok(projection)
         })
         .collect()
 }

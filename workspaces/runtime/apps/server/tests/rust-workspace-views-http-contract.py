@@ -87,6 +87,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             "command": "c" * 2500 if number == 104 else "fixture command",
                             "arguments": "private arguments",
                             "error": "private error",
+                            **({"pythonOnlyMetadata": {"dispatchOwned": True}} if number == 104 else {}),
                         })
                     runtime.put(db, "tasks", {
                         "id": "workspace-views-other-task",
@@ -395,6 +396,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         task = next(task for task in snapshot["tasks"] if task["id"] == "workspace-task-104")
         self.assertNotIn("itemId", task)
         self.assertNotIn("type", task)
+        self.assertNotIn("pythonOnlyMetadata", task)
         self.assertLessEqual(len(task["command"]), 2000)
         self.assertIn("workspace-view-complaint", {item["id"] for item in snapshot["inbox"]})
         self.assertNotIn("workspace-view-other-review", {item["id"] for item in snapshot["inbox"]})
