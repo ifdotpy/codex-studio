@@ -32,6 +32,7 @@ class Fixture(Client):
         self.fail_upload = False
         self.received = 0
         self.chunks = []
+        self.seed_failures = 0
 
     def _lock(self, *args):
         return nullcontext()
@@ -52,6 +53,9 @@ class Fixture(Client):
                 self.chunks.append((params["seq"], base64.b64decode(params["data"])))
             return {}
         if method == "project.seed":
+            if self.seed_failures:
+                self.seed_failures -= 1
+                raise LinuxVMError("The layr admin channel is unavailable", uncertain=True, code="outcome_unknown")
             return {"projectId": params["projectId"], "stateId": "import-state", "path": params["path"], "seeded": True}
         if method == "upload.commit" and self.fail_upload:
             raise LinuxVMError("lost", uncertain=True)
@@ -468,6 +472,23 @@ class SeedTests(unittest.TestCase):
         self.client.ensure_layr_project("app", self.source, request_id="first")
         self.assertNotIn("project.import", [row[0] for row in self.client.calls])
         self.assertEqual([row[0] for row in self.client.calls].count("project.seed"), 1)
+
+
+class SeedRetryTests(SeedTests):
+    def test_a_seed_that_failed_uncertainly_repeats_with_new_request_ids(self):
+        # The guest answers a request ID with its saved answer, so the same ID would fail forever.
+        self.client.seed_failures = 1
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive), \
+                patch.object(share, "CHUNK", 1024):
+            with self.assertRaises(LinuxVMError):
+                self.client.ensure_layr_project("app", self.source, request_id="first")
+            record = self.root / "state/layr-projects/app/seeds.json"
+            self.assertEqual(json.loads(record.read_text())["chromium"], {"pending": True, "attempts": 1})
+            self.client.ensure_layr_project("app", self.source, request_id="first")
+        seeds = [row[2] for row in self.client.calls if row[0] == "project.seed"]
+        self.assertEqual(len(seeds), 2)
+        self.assertNotEqual(seeds[0], seeds[1])
+        self.assertTrue(json.loads(record.read_text())["chromium"]["seeded"])
 
 
 if __name__ == "__main__":

@@ -51,6 +51,13 @@ class LinuxVMError(RuntimeError):
         self.detail = detail
 
 
+def memory_limit(host_memory: int) -> int:
+    """The largest VM memory: macOS keeps a quarter of the host memory, and 8 GiB where half of
+    the host stays for the VM. On an 18 GB Mac a 13.5 GiB guest ran with 4 GB of host swap, and
+    under a large file import the guest had a kernel panic and an ext4 checksum error."""
+    return min(host_memory * 3 // 4, max(host_memory // 2, host_memory - 8 * _GIB))
+
+
 @dataclass(frozen=True)
 class Settings:
     cpus: int = 4
@@ -68,8 +75,9 @@ class Settings:
             raise LinuxVMError('VM memory must be between 1 and 64 GiB.')
         if platform.system() == 'Darwin':
             host_memory = int(_run(['sysctl', '-n', 'hw.memsize'], timeout=5).strip())
-            if self.memoryBytes > host_memory * 3 // 4:
-                raise LinuxVMError('VM memory exceeds 75 percent of host memory.')
+            limit = memory_limit(host_memory)
+            if self.memoryBytes > limit:
+                raise LinuxVMError(f'VM memory must leave macOS enough memory: at most {limit / _GIB:.1f} GiB on this Mac.')
         if not 8 * _GIB <= self.systemDiskBytes <= 128 * _GIB:
             raise LinuxVMError('VM system disk must be between 8 and 128 GiB.')
         if not 8 * _GIB <= self.dataDiskBytes <= 1024 * _GIB:
