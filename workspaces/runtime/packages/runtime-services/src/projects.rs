@@ -1,9 +1,8 @@
 //! Decisions for local project records and sidebar state.
 
 use crate::event_write::{EventWriteError, python_json, python_strip, read_receipt, save_receipt};
+use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
@@ -12,7 +11,7 @@ use studio_runtime_store::{
 use thiserror::Error;
 use uuid::Uuid;
 
-mod operations;
+pub(crate) mod operations;
 pub use operations::peer_team_write;
 use operations::reorder;
 
@@ -114,7 +113,9 @@ pub fn write(
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
+    let prepared = PreparedHost::load(store)?;
     store.transaction_with(|tx| {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() {
             return Err(ProjectsError::Invalid("select an existing project"));
@@ -171,11 +172,19 @@ pub fn write(
         }
         if project.is_none() {
             let name = project_name(body.get("name"), &path)?;
-            let chosen =
-                account
-                    .map(str::to_owned)
-                    .unwrap_or(project_account(tx, &path, default_account)?);
-            project = Some(new_project(store, &path, &name, &chosen, known_accounts)?);
+            let chosen = account.map(str::to_owned).unwrap_or(project_account(
+                &prepared,
+                tx,
+                &path,
+                default_account,
+            )?);
+            project = Some(new_project(
+                &prepared,
+                &path,
+                &name,
+                &chosen,
+                known_accounts,
+            )?);
         }
         let project = project
             .as_mut()
@@ -184,7 +193,10 @@ pub fn write(
             project["workerBaseRef"] = base.map_or(Value::Null, |value| json!(value));
             project["workerBaseRevision"] = json!(base_revision + 1);
         } else {
-            let selected = account.unwrap_or(default_account);
+            let selected = account
+                .or_else(|| project["accountKey"].as_str())
+                .unwrap_or(default_account)
+                .to_owned();
             project["accountKey"] = json!(selected);
             project["accountRevision"] = json!(account_revision + 1);
             if let Some(keys) = project
@@ -197,7 +209,7 @@ pub fn write(
                     .filter_map(Value::as_str)
                     .map(str::to_owned)
                     .collect::<Vec<_>>();
-                if !keys.iter().any(|key| key == selected) {
+                if !keys.iter().any(|key| key == &selected) {
                     keys.push(selected.to_owned());
                     keys.sort();
                 }
@@ -265,36 +277,8 @@ fn project_name(value: Option<&Value>, path: &str) -> Result<String, ProjectsErr
     Ok(name.to_owned())
 }
 
-fn local_server_id(store: &RuntimeStore) -> Result<String, ProjectsError> {
-    let identity = store.root().join("multi-server/identity.json");
-    let metadata = std::fs::symlink_metadata(&identity)
-        .map_err(|_| ProjectsError::Requires("cross-server-driver/local-identity"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(ProjectsError::Requires(
-            "cross-server-driver/local-identity",
-        ));
-    }
-    #[cfg(unix)]
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(ProjectsError::Requires(
-            "cross-server-driver/local-identity",
-        ));
-    }
-    let raw = std::fs::read_to_string(identity)
-        .map_err(|_| ProjectsError::Requires("cross-server-driver/local-identity"))?;
-    let id = serde_json::from_str::<Value>(&raw).ok().and_then(|value| {
-        value
-            .get("serverId")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    });
-    id.ok_or(ProjectsError::Requires(
-        "cross-server-driver/local-identity",
-    ))
-}
-
 fn new_project(
-    store: &RuntimeStore,
+    prepared: &PreparedHost,
     path: &str,
     name: &str,
     account: &str,
@@ -306,7 +290,7 @@ fn new_project(
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
-    let server = local_server_id(store)?;
+    let server = prepared.server()?;
     Ok(
         json!({"id":path,"path":path,"name":name,"created":now_seconds(),"accountKey":account,"accountRevision":1,
         "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0}),
@@ -314,6 +298,7 @@ fn new_project(
 }
 
 fn project_account(
+    prepared: &PreparedHost,
     tx: &studio_runtime_store::Transaction<'_>,
     path: &str,
     fallback: &str,
@@ -338,8 +323,8 @@ fn project_account(
         else {
             continue;
         };
-        let candidate = project_key(Some(&json!(candidate)), false)?;
-        if target.starts_with(&candidate) {
+        let candidate = prepared.resolve(candidate)?;
+        if target.starts_with(candidate) {
             let depth = Path::new(&candidate).components().count();
             if best.as_ref().is_none_or(|(current, _)| depth > *current)
                 && let Some(account) = project.get("accountKey").and_then(Value::as_str)
@@ -407,7 +392,9 @@ fn set_accounts(
         .ok_or(ProjectsError::Invalid(
             "project account revision is invalid",
         ))?;
+    let prepared = PreparedHost::load(store)?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() { return Err(ProjectsError::Invalid("select an existing project")); }
         let current = revision_of(project.as_ref(), "accountRevision", &path)?;
@@ -426,7 +413,7 @@ fn set_accounts(
         if expected != current { return Err(ProjectsError::Conflict("Project accounts changed. Reload before saving")); }
         if project.is_none() {
             let name = project_name(None, &path)?;
-            project = Some(new_project(store, &path, &name, default, known_accounts)?);
+            project = Some(new_project(&prepared, &path, &name, default, known_accounts)?);
         }
         let project = project.as_mut().ok_or(ProjectsError::Invalid("project is unavailable"))?;
         project["accountKey"] = json!(default);
@@ -460,7 +447,9 @@ fn set_worker_environment(
         .ok_or(ProjectsError::Invalid(
             "worker environment revision is invalid",
         ))?;
+    let prepared = PreparedHost::load(store)?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
+        prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
         if path.starts_with("project:") && project.is_none() {
             return Err(ProjectsError::Invalid("select an existing project"));
@@ -481,9 +470,9 @@ fn set_worker_environment(
             ));
         }
         if project.is_none() {
-            let account = project_account(tx, &path, default_account)?;
+            let account = project_account(&prepared, tx, &path, default_account)?;
             project = Some(new_project(
-                store,
+                &prepared,
                 &path,
                 &project_name(None, &path)?,
                 &account,
@@ -537,13 +526,15 @@ fn organize(
                 .to_string(),
         )
     };
+    let prepared = PreparedHost::load(store)?;
     store.transaction_with(|tx| {
+        prepared.recheck(tx)?;
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
             None => {
-                let account = project_account(tx, &path, default_account)?;
-                let project = new_project(store, &path, &project_name(None, &path)?, &account, accounts)?;
+                let account = project_account(&prepared, tx, &path, default_account)?;
+                let project = new_project(&prepared, &path, &project_name(None, &path)?, &account, accounts)?;
                 ProjectsRepository::put_project(tx, &project)?;
                 project
             }
@@ -600,7 +591,10 @@ fn organize(
     })
 }
 
-fn project_key(value: Option<&Value>, require_directory: bool) -> Result<String, ProjectsError> {
+pub(crate) fn project_key(
+    value: Option<&Value>,
+    require_directory: bool,
+) -> Result<String, ProjectsError> {
     let value = value
         .and_then(Value::as_str)
         .ok_or(ProjectsError::Invalid("project path is required"))?;
@@ -685,7 +679,7 @@ pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
     }
 }
 
-fn now_seconds() -> f64 {
+pub(crate) fn now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())

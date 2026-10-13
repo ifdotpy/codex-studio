@@ -11,12 +11,10 @@ pub fn peer_team_write(
         .and_then(Value::as_str)
         .unwrap_or_default();
     if action == "radio" {
-        return Err(ProjectsError::Requires("workspace-state/peer-radio"));
+        return crate::radio_runtime::manage_http(store, body);
     }
     if action == "convert" {
-        return Err(ProjectsError::Requires(
-            "cross-server-driver/peer-team-transport",
-        ));
+        return crate::peer_conversion::convert(store, body);
     }
     if !matches!(action, "save" | "delete" | "move") {
         return Err(ProjectsError::Invalid("unknown peer team action"));
@@ -84,12 +82,14 @@ pub fn peer_team_write(
     let signature =
         sha256_hex(python_json(&json!({"operation":"peer-team","body":body})).as_bytes());
     let key = format!("peer-team:{request_id}");
+    let prepared = PreparedHost::load(store)?;
     store.transaction_with(|tx| {
+        prepared.recheck(tx)?;
         if let Some(result) = replay(tx, &key, &signature, "peer team")? { return Ok(result); }
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
             None if path.starts_with("project:") => return Err(ProjectsError::Invalid("select an existing project")),
-            None => { let account = project_account(tx, &path, default_account)?; new_project(store, &path, &project_name(None, &path)?, &account, known_accounts)? }
+            None => { let account = project_account(&prepared, tx, &path, default_account)?; new_project(&prepared, &path, &project_name(None, &path)?, &account, known_accounts)? }
         };
         let current = revision_of(Some(&project), "peerTeamsRevision", &path)?;
         if revision != current { return Err(ProjectsError::Conflict("Peer teams changed. Reload before saving")); }
@@ -101,7 +101,7 @@ pub fn peer_team_write(
                 .map_err(|_| ProjectsError::InvalidStored { table: "runtime_projects", id: path.clone() })
         }).collect::<Result<std::collections::HashSet<_>,_>>()?;
         let agents = project_agents(tx)?;
-        let mut teams = live_teams(&raw_teams, &agents, &path)?;
+        let mut teams = live_teams(&raw_teams, &agents, &path, &prepared)?;
         let mut statement = tx.prepare("SELECT id FROM sync_entities WHERE collection='peerTeam' AND json_extract(payload,'$.value.projectPath')=?1")?;
         previous_ids.extend(statement.query_map([&path], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?);
         drop(statement);
@@ -110,7 +110,7 @@ pub fn peer_team_write(
                 let team_id = team_id.as_deref().ok_or(ProjectsError::Invalid("peer team ID is invalid"))?;
                 for member in &members {
                     let id = member.as_str().unwrap_or_default();
-                    if !agents.get(id).is_some_and(|agent| is_project_lead(agent, &path)) { return Err(ProjectsError::Invalid("select live lead chats from this project only")); }
+                    if !agents.get(id).is_some_and(|agent| is_project_lead(agent, &path, &prepared)) { return Err(ProjectsError::Invalid("select live lead chats from this project only")); }
                 }
                 if teams.iter().any(|team| team.get("id").and_then(Value::as_str) != Some(team_id)
                     && team.get("members").and_then(Value::as_array).is_some_and(|existing| existing.iter().any(|member| members.contains(member)))) {
@@ -122,7 +122,7 @@ pub fn peer_team_write(
             "delete" => teams.retain(|team| team.get("id").and_then(Value::as_str) != team_id.as_deref()),
             "move" => {
                 let member = python_strip(body.get("member").and_then(Value::as_str).ok_or(ProjectsError::Invalid("peer team member is required"))?);
-                if member.is_empty() || member.chars().count() > 255 || !agents.get(member).is_some_and(|agent| is_project_lead(agent, &path)) { return Err(ProjectsError::Invalid("select a live lead chat from this project only")); }
+                if member.is_empty() || member.chars().count() > 255 || !agents.get(member).is_some_and(|agent| is_project_lead(agent, &path, &prepared)) { return Err(ProjectsError::Invalid("select a live lead chat from this project only")); }
                 let source = teams.iter().position(|team| team.get("members").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.as_str() == Some(member))));
                 let target = team_id.as_deref().and_then(|id| teams.iter().position(|team| team.get("id").and_then(Value::as_str) == Some(id)));
                 if team_id.is_some() && target.is_none() { return Err(ProjectsError::Invalid("the destination team is no longer available")); }
@@ -142,7 +142,7 @@ pub fn peer_team_write(
         project["updated"] = json!(now_seconds());
         ProjectsRepository::put_project(tx, &project)?;
         let team_values = project.get("peerTeams").and_then(Value::as_array).cloned().unwrap_or_default();
-        let live = live_teams(&team_values, &agents, &path)?;
+        let live = live_teams(&team_values, &agents, &path, &prepared)?;
         let mut live_ids = std::collections::HashSet::new();
         for team in &live {
             let id = team.get("id").and_then(Value::as_str).ok_or(ProjectsError::InvalidStored { table: "runtime_projects", id: path.clone() })?;
@@ -156,7 +156,7 @@ pub fn peer_team_write(
     })
 }
 
-fn replay(
+pub(crate) fn replay(
     tx: &studio_runtime_store::Transaction<'_>,
     key: &str,
     signature: &str,
@@ -177,7 +177,7 @@ fn replay(
     })
 }
 
-fn save_operation_receipt(
+pub(crate) fn save_operation_receipt(
     tx: &studio_runtime_store::Transaction<'_>,
     key: &str,
     signature: &str,
@@ -192,7 +192,7 @@ fn save_operation_receipt(
     })
 }
 
-fn project_agents(
+pub(crate) fn project_agents(
     tx: &studio_runtime_store::Transaction<'_>,
 ) -> Result<std::collections::HashMap<String, Value>, ProjectsError> {
     ProjectsRepository::agents(tx)?
@@ -204,20 +204,22 @@ fn project_agents(
         .collect()
 }
 
-fn is_project_lead(agent: &Value, path: &str) -> bool {
+pub(crate) fn is_project_lead(agent: &Value, path: &str, prepared: &PreparedHost) -> bool {
     agent.get("isLead").and_then(Value::as_bool) == Some(true)
         && agent.get("deletedAt").is_none_or(Value::is_null)
         && agent.get("parentId").is_none_or(Value::is_null)
         && agent.get("rootId").and_then(Value::as_str) == agent.get("id").and_then(Value::as_str)
-        && agent.get("cwd").and_then(Value::as_str).is_some_and(|cwd| {
-            project_key(Some(&json!(cwd)), false).is_ok_and(|resolved| resolved == path)
-        })
+        && agent
+            .get("cwd")
+            .and_then(Value::as_str)
+            .is_some_and(|cwd| prepared.resolve(cwd).is_ok_and(|resolved| resolved == path))
 }
 
-fn live_teams(
+pub(crate) fn live_teams(
     raw: &[Value],
     agents: &std::collections::HashMap<String, Value>,
     path: &str,
+    prepared: &PreparedHost,
 ) -> Result<Vec<Value>, ProjectsError> {
     raw.iter()
         .map(|team| {
@@ -241,7 +243,7 @@ fn live_teams(
                 .filter(|member| {
                     agents
                         .get(*member)
-                        .is_some_and(|agent| is_project_lead(agent, path))
+                        .is_some_and(|agent| is_project_lead(agent, path, prepared))
                 })
                 .collect::<Vec<_>>();
             Ok((members.len() >= 2).then(|| json!({"id":id,"name":name,"members":members})))
@@ -254,7 +256,11 @@ fn live_teams(
         .collect()
 }
 
-fn peer_team_projection(team: &Value, path: &str, revision: u64) -> Result<Value, ProjectsError> {
+pub(crate) fn peer_team_projection(
+    team: &Value,
+    path: &str,
+    revision: u64,
+) -> Result<Value, ProjectsError> {
     Ok(
         json!({"id":team.get("id").and_then(Value::as_str).ok_or(ProjectsError::Invalid("stored peer team is invalid"))?,
         "name":team.get("name").and_then(Value::as_str).ok_or(ProjectsError::Invalid("stored peer team is invalid"))?,
@@ -262,7 +268,7 @@ fn peer_team_projection(team: &Value, path: &str, revision: u64) -> Result<Value
     )
 }
 
-fn refresh_project_rooms(
+pub(crate) fn refresh_project_rooms(
     tx: &studio_runtime_store::Transaction<'_>,
     path: &str,
 ) -> Result<(), ProjectsError> {

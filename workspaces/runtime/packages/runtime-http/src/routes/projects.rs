@@ -19,8 +19,9 @@ const PROJECT_WRITE_DEPENDENCIES: [Dependency; 4] = [
 ];
 const LOCATION_READ_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("cross-server-driver/project-location-read")];
-const PEER_TEAM_DEPENDENCIES: [Dependency; 2] = [
+const PEER_TEAM_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("cross-server-driver/peer-team-transport"),
+    Dependency::new("host-project/radio-create"),
     Dependency::new("workspace-state/peer-radio"),
 ];
 
@@ -124,7 +125,13 @@ async fn peer_teams(
     let result = tokio::task::spawn_blocking(move || {
         let value = projects::peer_team_write(&store, &body, &default_account, &known)
             .map_err(projects_error)?;
-        super::generated_json::<crate::generated::PeerProjectResponse>(value)
+        match body["action"].as_str() {
+            Some("radio") => super::generated_json::<crate::generated::PeerRadioResponse>(value),
+            Some("convert") => {
+                super::generated_json::<crate::generated::PeerConversionResponse>(value)
+            }
+            _ => super::generated_json::<crate::generated::PeerProjectResponse>(value),
+        }
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -165,6 +172,7 @@ inventory::submit! {
             "cross-server-driver/project-location-read",
             "cross-server-driver/project-location-write",
             "cross-server-driver/project-registration",
+            "host-project/radio-create",
             "workspace-state/peer-radio",
             "workspace-state/worker-environment",
         ],
