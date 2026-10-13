@@ -3,8 +3,9 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
+use crate::records::{decode_json_record, get_json_record};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult};
+use crate::{EventWriteRepository, StoreError, StoreResult};
 
 const CHECKPOINTS: &[TableRequirement] = &[TableRequirement {
     name: "runtime_checkpoints",
@@ -235,9 +236,14 @@ impl CheckpointsRepository {
             "workspaceReservationId".to_owned(),
             Value::String(operation_id.to_owned()),
         );
-        transaction.execute(
-            "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&record)?, expected.agent.id],
+        update_agent(
+            transaction,
+            &expected.agent.id,
+            &record,
+            &[
+                ("workspaceOperation", json!("capture")),
+                ("workspaceReservationId", json!(operation_id)),
+            ],
         )?;
         Ok(true)
     }
@@ -293,9 +299,11 @@ impl CheckpointsRepository {
             Value::String("capture_running".to_owned()),
         );
         object.insert("updated".to_owned(), json!(now));
-        transaction.execute(
-            "UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&operation.record)?, operation_id],
+        update_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation.record,
         )?;
         Ok(true)
     }
@@ -350,10 +358,7 @@ impl CheckpointsRepository {
         {
             return Ok(false);
         }
-        transaction.execute(
-            "INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)",
-            params![id, serde_json::to_string(checkpoint)?],
-        )?;
+        insert_object(transaction, "runtime_checkpoints", id, checkpoint)?;
         let object = agent
             .record
             .as_object_mut()
@@ -365,9 +370,16 @@ impl CheckpointsRepository {
         object.insert("workspaceOperation".to_owned(), Value::Null);
         object.insert("checkpointError".to_owned(), Value::Null);
         object.remove("workspaceReservationId");
-        transaction.execute(
-            "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&agent.record)?, agent_id],
+        update_agent(
+            transaction,
+            agent_id,
+            &agent.record,
+            &[
+                ("checkpointHistoryHead", json!(id)),
+                ("workspaceOperation", Value::Null),
+                ("workspaceReservationId", Value::Null),
+                ("checkpointError", Value::Null),
+            ],
         )?;
         let object = operation.record.as_object_mut().ok_or_else(|| {
             StoreError::SchemaMismatch("invalid stored workspace operation".to_owned())
@@ -375,9 +387,11 @@ impl CheckpointsRepository {
         object.insert("phase".to_owned(), Value::String("completed".to_owned()));
         object.insert("updated".to_owned(), json!(now));
         object.insert("error".to_owned(), Value::Null);
-        transaction.execute(
-            "UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&operation.record)?, operation_id],
+        update_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation.record,
         )?;
         Ok(true)
     }
@@ -445,9 +459,11 @@ impl CheckpointsRepository {
             "error".to_owned(),
             error.map_or(Value::Null, |message| Value::String(message.to_owned())),
         );
-        transaction.execute(
-            "UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2",
-            params![serde_json::to_string(&operation.record)?, operation_id],
+        update_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation.record,
         )?;
         let agent_id = operation
             .record
@@ -476,19 +492,22 @@ impl CheckpointsRepository {
                 error.map_or(Value::Null, |message| Value::String(message.to_owned())),
             );
             object.remove("workspaceReservationId");
-            transaction.execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                params![serde_json::to_string(&agent.record)?, agent_id],
+            let checkpoint_error = error.map_or(Value::Null, |message| json!(message));
+            update_agent(
+                transaction,
+                agent_id,
+                &agent.record,
+                &[
+                    ("workspaceOperation", Value::Null),
+                    ("workspaceReservationId", Value::Null),
+                    ("checkpointError", checkpoint_error),
+                ],
             )?;
         }
         Ok(())
     }
 
     pub fn recover_captures(transaction: &Transaction<'_>, now: f64) -> StoreResult<()> {
-        if !table_exists(transaction, "runtime_workspace_operations")? {
-            return Ok(());
-        }
-        let checkpoints_available = table_exists(transaction, "runtime_checkpoints")?;
         let active_phases = [
             "provider_pending",
             "provider_ready",
@@ -498,99 +517,160 @@ impl CheckpointsRepository {
             "capture_running",
         ];
         let mut operations = read_all(transaction, "runtime_workspace_operations")?;
+        for operation in &operations {
+            let kind = operation.record.get("kind").and_then(Value::as_str);
+            if let Some(kind @ ("capture" | "checkpoint")) = kind {
+                validate_active_record(
+                    "runtime_workspace_operations",
+                    operation,
+                    &["kind", "agent", "phase"],
+                )?;
+                if !operation.id.starts_with(&format!("{kind}:")) {
+                    return Err(invalid_record(
+                        "runtime_workspace_operations",
+                        &operation.id,
+                    ));
+                }
+            }
+            let Some(phase) = operation.record.get("phase").and_then(Value::as_str) else {
+                if matches!(kind, Some("capture" | "checkpoint")) {
+                    return Err(invalid_record(
+                        "runtime_workspace_operations",
+                        &operation.id,
+                    ));
+                }
+                continue;
+            };
+            if active_phases.contains(&phase) {
+                validate_active_record(
+                    "runtime_workspace_operations",
+                    operation,
+                    &["kind", "agent", "phase"],
+                )?;
+            }
+        }
         operations.retain(|operation| {
-            matches!(
-                operation.record.get("kind").and_then(Value::as_str),
-                Some("capture" | "checkpoint")
-            ) && operation
+            operation
                 .record
                 .get("phase")
                 .and_then(Value::as_str)
                 .is_some_and(|phase| active_phases.contains(&phase))
+                && matches!(
+                    operation.record.get("kind").and_then(Value::as_str),
+                    Some("capture" | "checkpoint")
+                )
         });
         for mut operation in operations {
             let operation_id = operation.id.clone();
-            let agent_id = operation
+            let Some(agent_id) = operation
                 .record
                 .get("agent")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            let kind = operation.record.get("kind").and_then(Value::as_str);
-            let checkpoint_id = match kind {
-                Some("capture") => operation_id.strip_prefix("capture:"),
-                Some("checkpoint") => operation_id.strip_prefix("checkpoint:"),
-                _ => None,
+                .map(str::to_owned)
+            else {
+                return Err(invalid_record(
+                    "runtime_workspace_operations",
+                    &operation_id,
+                ));
             };
-            let checkpoint_persisted = if checkpoints_available {
-                checkpoint_id
-                    .map(|id| read_object(transaction, "runtime_checkpoints", id))
-                    .transpose()?
-                    .flatten()
-                    .is_some_and(|checkpoint| {
-                        checkpoint.record.get("id").and_then(Value::as_str)
-                            == Some(checkpoint.id.as_str())
-                            && checkpoint.record.get("agent").and_then(Value::as_str)
-                                == Some(agent_id.as_str())
-                    })
-            } else {
-                false
-            };
-            let object = operation.record.as_object_mut().ok_or_else(|| {
-                StoreError::SchemaMismatch("invalid stored workspace operation".to_owned())
-            })?;
-            object.insert(
-                "phase".to_owned(),
-                Value::String(
-                    if checkpoint_persisted {
-                        "completed"
-                    } else {
-                        "failed"
-                    }
-                    .to_owned(),
-                ),
-            );
+            let object = operation
+                .record
+                .as_object_mut()
+                .ok_or_else(|| invalid_record("runtime_workspace_operations", &operation_id))?;
+            object.insert("phase".to_owned(), Value::String("failed".to_owned()));
             object.insert("updated".to_owned(), json!(now));
             object.insert(
                 "error".to_owned(),
-                if checkpoint_persisted {
-                    Value::Null
-                } else {
-                    Value::String("Server restarted before checkpoint capture finished".to_owned())
-                },
+                Value::String("Server restarted before checkpoint capture finished".to_owned()),
             );
-            transaction.execute(
-                "UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2",
-                params![serde_json::to_string(&operation.record)?, operation_id],
+            update_object(
+                transaction,
+                "runtime_workspace_operations",
+                &operation_id,
+                &operation.record,
             )?;
-            if let Some(mut agent) = read_object(transaction, "runtime_agents", &agent_id)?
-                && agent
+            let Some(mut agent) = read_object(transaction, "runtime_agents", &agent_id)? else {
+                return Err(invalid_record(
+                    "runtime_workspace_operations",
+                    &operation_id,
+                ));
+            };
+            let expected_kind = operation.record["kind"].as_str().unwrap_or_default();
+            if agent
+                .record
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                != Some(operation_id.as_str())
+                || agent
                     .record
-                    .get("workspaceReservationId")
+                    .get("workspaceOperation")
                     .and_then(Value::as_str)
-                    == Some(operation_id.as_str())
+                    != Some(expected_kind)
             {
-                let object = agent
-                    .record
-                    .as_object_mut()
-                    .ok_or_else(|| StoreError::SchemaMismatch("invalid stored agent".to_owned()))?;
-                object.insert("workspaceOperation".to_owned(), Value::Null);
-                object.insert(
-                    "checkpointError".to_owned(),
-                    if checkpoint_persisted {
-                        Value::Null
-                    } else {
-                        Value::String(
-                            "Server restarted before checkpoint capture finished".to_owned(),
-                        )
-                    },
-                );
-                object.remove("workspaceReservationId");
-                transaction.execute(
-                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
-                    params![serde_json::to_string(&agent.record)?, agent_id],
-                )?;
+                return Err(invalid_record("runtime_agents", &agent_id));
             }
+            let object = agent
+                .record
+                .as_object_mut()
+                .ok_or_else(|| invalid_record("runtime_agents", &agent_id))?;
+            object.insert("workspaceOperation".to_owned(), Value::Null);
+            object.remove("workspaceReservationId");
+            object.insert(
+                "checkpointError".to_owned(),
+                json!("Server restarted before checkpoint capture finished"),
+            );
+            update_agent(
+                transaction,
+                &agent_id,
+                &agent.record,
+                &[
+                    ("workspaceOperation", Value::Null),
+                    ("workspaceReservationId", Value::Null),
+                    (
+                        "checkpointError",
+                        json!("Server restarted before checkpoint capture finished"),
+                    ),
+                ],
+            )?;
+        }
+        for mut agent in read_all(transaction, "runtime_agents")? {
+            let kind = agent
+                .record
+                .get("workspaceOperation")
+                .and_then(Value::as_str);
+            if !matches!(kind, Some("capture" | "checkpoint")) {
+                continue;
+            }
+            let Some(_operation_id) = agent
+                .record
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+            else {
+                return Err(invalid_record("runtime_agents", &agent.id));
+            };
+            let object = agent
+                .record
+                .as_object_mut()
+                .ok_or_else(|| invalid_record("runtime_agents", &agent.id))?;
+            object.insert("workspaceOperation".to_owned(), Value::Null);
+            object.remove("workspaceReservationId");
+            object.insert(
+                "checkpointError".to_owned(),
+                json!("Server restarted before checkpoint capture finished"),
+            );
+            update_agent(
+                transaction,
+                &agent.id,
+                &agent.record,
+                &[
+                    ("workspaceOperation", Value::Null),
+                    ("workspaceReservationId", Value::Null),
+                    (
+                        "checkpointError",
+                        json!("Server restarted before checkpoint capture finished"),
+                    ),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -682,20 +762,8 @@ fn read_all(connection: &Connection, table: &str) -> StoreResult<Vec<StoredCheck
     }
     let mut statement =
         connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    let rows = statement.query_map([], |row| {
-        let id = row.get::<_, String>(0)?;
-        let raw = row.get::<_, String>(1)?;
-        let record = serde_json::from_str(&raw).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
-        Ok(StoredCheckpointObject { id, record })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+    let rows = statement.query_map([], read_stored_row)?;
+    collect_records(rows, table)
 }
 
 fn read_active(
@@ -713,20 +781,19 @@ fn read_active(
     let mut statement = connection.prepare(&format!(
         "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
     ))?;
-    let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), |row| {
-        let id = row.get::<_, String>(0)?;
-        let raw = row.get::<_, String>(1)?;
-        let record = serde_json::from_str(&raw).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
-        Ok(StoredCheckpointObject { id, record })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+    let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;
+    let records = collect_records(rows, table)?;
+    for record in &records {
+        match table {
+            "runtime_workspace_operations" => {
+                validate_active_record(table, record, &["kind", "agent", "phase"])?
+            }
+            "runtime_tasks" => validate_active_record(table, record, &["agent", "status"])?,
+            "runtime_monitors" => validate_active_record(table, record, &["status", "cwd"])?,
+            _ => {}
+        }
+    }
+    Ok(records)
 }
 
 fn read_object(
@@ -734,27 +801,98 @@ fn read_object(
     table: &str,
     id: &str,
 ) -> StoreResult<Option<StoredCheckpointObject>> {
-    let record = connection
-        .query_row(
-            &format!("SELECT record FROM {table} WHERE id=?1"),
-            [id],
-            |row| {
-                let raw = row.get::<_, String>(0)?;
-                let record = serde_json::from_str(&raw).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })?;
-                Ok(record)
-            },
-        )
-        .optional()?;
-    Ok(record.map(|record| StoredCheckpointObject {
-        id: id.to_owned(),
-        record,
-    }))
+    let record: Option<Value> = get_json_record(connection, table, id)?;
+    record
+        .map(|record| stored_object(table, id.to_owned(), record))
+        .transpose()
+}
+
+fn read_stored_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCheckpointObject> {
+    Ok(StoredCheckpointObject {
+        id: row.get(0)?,
+        record: decode_json_record(row, 1)?,
+    })
+}
+
+fn collect_records(
+    rows: impl Iterator<Item = rusqlite::Result<StoredCheckpointObject>>,
+    table: &str,
+) -> StoreResult<Vec<StoredCheckpointObject>> {
+    rows.map(|row| {
+        let record = row?;
+        stored_object(table, record.id, record.record)
+    })
+    .collect()
+}
+
+fn stored_object(table: &str, id: String, record: Value) -> StoreResult<StoredCheckpointObject> {
+    if record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+        return Err(invalid_record(table, &id));
+    }
+    Ok(StoredCheckpointObject { id, record })
+}
+
+fn validate_active_record(
+    table: &str,
+    record: &StoredCheckpointObject,
+    fields: &[&str],
+) -> StoreResult<()> {
+    if fields.iter().any(|field| {
+        record
+            .record
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    }) {
+        return Err(invalid_record(table, &record.id));
+    }
+    Ok(())
+}
+
+fn invalid_record(table: &str, id: &str) -> StoreError {
+    StoreError::SchemaMismatch(format!("Invalid stored object {table}/{id}"))
+}
+
+fn update_object(
+    transaction: &Transaction<'_>,
+    table: &str,
+    id: &str,
+    record: &Value,
+) -> StoreResult<()> {
+    if record.get("id").and_then(Value::as_str) != Some(id) {
+        return Err(invalid_record(table, id));
+    }
+    transaction.execute(
+        &format!("UPDATE {table} SET record=?1 WHERE id=?2"),
+        params![serde_json::to_string(record)?, id],
+    )?;
+    Ok(())
+}
+
+fn insert_object(
+    transaction: &Transaction<'_>,
+    table: &str,
+    id: &str,
+    record: &Value,
+) -> StoreResult<()> {
+    if record.get("id").and_then(Value::as_str) != Some(id) {
+        return Err(invalid_record(table, id));
+    }
+    transaction.execute(
+        &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),
+        params![id, serde_json::to_string(record)?],
+    )?;
+    Ok(())
+}
+
+fn update_agent(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+    sync_fields: &[(&str, Value)],
+) -> StoreResult<()> {
+    update_object(transaction, "runtime_agents", id, record)?;
+    EventWriteRepository::set_agent_sync_values(transaction, id, sync_fields)
 }
 
 fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {
@@ -771,7 +909,10 @@ fn table_exists(connection: &Connection, table: &str) -> StoreResult<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{StoredCheckpointObject, WorkspaceSnapshot, same_workspace_activity};
+    use super::{
+        CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot, same_workspace_activity,
+    };
+    use rusqlite::Connection;
     use serde_json::json;
 
     #[test]
@@ -819,5 +960,34 @@ mod tests {
 
         metadata_update.agent.record["epoch"] = json!(1);
         assert!(!same_workspace_activity(&metadata_update, &snapshot));
+    }
+
+    #[test]
+    fn recovery_refuses_malformed_active_records_with_table_and_row_id() {
+        let mut connection = Connection::open_in_memory().expect("memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 INSERT INTO runtime_workspace_operations VALUES
+                 ('bad-owner','{\"id\":\"bad-owner\",\"kind\":\"capture\",\"phase\":\"capture_running\",\"agent\":17}');",
+            )
+            .expect("malformed active row inserted");
+        let transaction = connection
+            .transaction()
+            .expect("recovery transaction begins");
+        let error = CheckpointsRepository::recover_captures(&transaction, 1.0)
+            .expect_err("invalid active recovery record is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("runtime_workspace_operations/bad-owner")
+        );
+        assert!(transaction
+            .query_row(
+                "SELECT json_extract(record,'$.phase') FROM runtime_workspace_operations WHERE id='bad-owner'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok_and(|phase| phase == "capture_running"));
     }
 }

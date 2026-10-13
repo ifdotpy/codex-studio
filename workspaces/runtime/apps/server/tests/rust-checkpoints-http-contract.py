@@ -11,8 +11,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
@@ -101,13 +103,23 @@ finally:
 
 def database_snapshot(state: Path) -> tuple[object, ...]:
     with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        return tuple(
-            (
-                table,
-                database.execute(f'SELECT id,record FROM "{table}" ORDER BY id').fetchall(),
+        snapshots = []
+        for table in (
+            "runtime_agents",
+            "runtime_checkpoints",
+            "runtime_workspace_operations",
+            "runtime_tasks",
+            "sync_entities",
+        ):
+            columns = (
+                "collection,id,seq,hash,payload,deleted"
+                if table == "sync_entities"
+                else "id,record"
             )
-            for table in ("runtime_agents", "runtime_checkpoints", "runtime_workspace_operations")
-        )
+            snapshots.append(
+                (table, database.execute(f'SELECT {columns} FROM "{table}" ORDER BY id').fetchall())
+            )
+        return tuple(snapshots)
 
 
 def checkpoint_refs(workspace: Path) -> set[str]:
@@ -120,6 +132,26 @@ def checkpoint_refs(workspace: Path) -> set[str]:
         timeout=30,
     )
     return set(completed.stdout.splitlines())
+
+
+def ordinary_git_snapshot(workspace: Path) -> tuple[bytes, str, bytes, str]:
+    def git(*args: str, text: bool = True) -> str | bytes:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=text,
+            timeout=30,
+        )
+        return completed.stdout
+
+    return (
+        (workspace / ".git" / "index").read_bytes(),
+        str(git("rev-parse", "HEAD")).strip(),
+        git("status", "--porcelain=v1", "-z", "--untracked-files=all", text=False),
+        str(git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags")),
+    )
 
 
 class CheckpointsHTTPContract(unittest.TestCase):
@@ -162,9 +194,40 @@ class CheckpointsHTTPContract(unittest.TestCase):
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
 
+    def setUp(self) -> None:
+        subprocess.run(
+            ["git", "reset", "--hard", "HEAD"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=self.workspace,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+
     def test_capture_persists_checkpoint_history_and_git_ref(self) -> None:
         backend = self.backend
+        (self.workspace / "tracked.txt").write_text("staged version\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True, timeout=30)
+        (self.workspace / "tracked.txt").write_text("unstaged version\n", encoding="utf-8")
+        (self.workspace / "untracked.txt").write_text("untracked content\n", encoding="utf-8")
         index = (self.workspace / ".git" / "index").read_bytes()
+        git_state = ordinary_git_snapshot(self.workspace)
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+            parent_head = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
+                ).fetchone()[0]
+            )["checkpointHistoryHead"]
+            sync_before = database.execute(
+                "SELECT seq FROM sync_entities WHERE collection='agent' AND id=?",
+                (AGENT_ID,),
+            ).fetchone()[0]
         response = backend.request(
             "POST",
             "/api/checkpoint",
@@ -185,6 +248,10 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
                 ).fetchone()[0]
             )
+            sync_seq, sync_payload = database.execute(
+                "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (AGENT_ID,),
+            ).fetchone()
             operation = json.loads(
                 database.execute(
                     "SELECT record FROM runtime_workspace_operations WHERE id LIKE ? "
@@ -195,11 +262,19 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertIsNotNone(row)
         record = json.loads(row[0])
         self.assertEqual(record["id"], summary["id"])
-        self.assertEqual(record["historyParent"], self.initial_checkpoint_id)
+        self.assertEqual(record["historyParent"], parent_head)
         self.assertEqual(agent["checkpointHistoryHead"], summary["id"])
+        self.assertIsNone(agent.get("workspaceReservationId"))
+        if is_rust_backend():
+            projection = json.loads(sync_payload)["value"]
+            self.assertGreater(sync_seq, sync_before)
+            self.assertEqual(projection["checkpointHistoryHead"], summary["id"])
+            self.assertIsNone(projection.get("workspaceReservationId"))
+            self.assertIsNone(projection.get("workspaceOperation"))
         self.assertEqual(operation["phase"], "completed")
         self.assertIn(summary["ref"], checkpoint_refs(self.workspace))
         self.assertEqual((self.workspace / ".git" / "index").read_bytes(), index)
+        self.assertEqual(ordinary_git_snapshot(self.workspace), git_state)
 
     def test_preview_reads_python_written_checkpoint_without_database_writes(self) -> None:
         backend = self.backend
@@ -219,6 +294,218 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertEqual(preview["truncated"], False)
         self.assertEqual(preview["canRestore"], not is_rust_backend())
         self.assertEqual(database_snapshot(backend.state), before)
+
+    def test_legacy_reservations_without_operation_rows_recover(self) -> None:
+        backend = self.backend
+        for kind in ("checkpoint", "capture"):
+            operation_id = f"{kind}:legacy-without-row-{uuid.uuid4()}"
+            backend.stop()
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                agent = json.loads(
+                    database.execute(
+                        "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
+                    ).fetchone()[0]
+                )
+                agent["workspaceOperation"] = kind
+                agent["workspaceReservationId"] = operation_id
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (json.dumps(agent), AGENT_ID),
+                )
+                sync_seq, sync_raw = database.execute(
+                    "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                    (AGENT_ID,),
+                ).fetchone()
+                sync_payload = json.loads(sync_raw)
+                sync_payload["value"]["workspaceOperation"] = kind
+                sync_payload["value"]["workspaceReservationId"] = operation_id
+                database.execute(
+                    "UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",
+                    (json.dumps(sync_payload), AGENT_ID),
+                )
+                database.commit()
+
+            backend.start()
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                agent = json.loads(
+                    database.execute(
+                        "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
+                    ).fetchone()[0]
+                )
+                sync_seq_after, sync_raw = database.execute(
+                    "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                    (AGENT_ID,),
+                ).fetchone()
+                self.assertIsNone(
+                    database.execute(
+                        "SELECT 1 FROM runtime_workspace_operations WHERE id=?", (operation_id,)
+                    ).fetchone()
+                )
+            self.assertIsNone(agent.get("workspaceOperation"))
+            self.assertIsNone(agent.get("workspaceReservationId"))
+            self.assertIn("Server restarted before checkpoint capture finished", agent["checkpointError"])
+            if is_rust_backend():
+                projection = json.loads(sync_raw)["value"]
+                self.assertGreater(sync_seq_after, sync_seq)
+                self.assertIsNone(projection.get("workspaceOperation"))
+                self.assertIsNone(projection.get("workspaceReservationId"))
+
+    @unittest.skipUnless(is_rust_backend(), "Strict active-record refusal belongs to Rust")
+    def test_malformed_active_operation_and_task_are_refused_with_row_identity(self) -> None:
+        backend = self.backend
+        cases = (
+            (
+                "runtime_workspace_operations",
+                "invalid-operation-owner",
+                json.dumps(
+                    {
+                        "id": "invalid-operation-owner",
+                        "kind": "restore",
+                        "phase": "local_mutation",
+                        "agent": 17,
+                        "cwd": str(self.workspace),
+                    }
+                ),
+                "INSERT INTO runtime_workspace_operations(id,record) VALUES(?,?)",
+                "Invalid stored object runtime_workspace_operations/invalid-operation-owner",
+            ),
+            (
+                "runtime_tasks",
+                "invalid-task-owner",
+                json.dumps(
+                    {"id": "invalid-task-owner", "status": "running", "agent": 17}
+                ),
+                "INSERT INTO runtime_tasks(id,record) VALUES(?,?)",
+                "Invalid stored object runtime_tasks/invalid-task-owner",
+            ),
+        )
+        for table, row_id, record, insert_sql, expected_error in cases:
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                database.execute(insert_sql, (row_id, record))
+                database.commit()
+            before = (database_snapshot(backend.state), checkpoint_refs(self.workspace))
+            try:
+                response = backend.request(
+                    "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
+                )
+                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertEqual(response.json()["error"], expected_error)
+                self.assertEqual(
+                    (database_snapshot(backend.state), checkpoint_refs(self.workspace)), before
+                )
+            finally:
+                with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                    database.execute(f'DELETE FROM "{table}" WHERE id=?', (row_id,))
+                    database.commit()
+
+    @unittest.skipUnless(is_rust_backend(), "Atomic final capture transaction belongs to Rust")
+    def test_final_transaction_failure_rolls_back_checkpoint_and_releases_reservation(self) -> None:
+        backend = self.backend
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+            before_count = database.execute("SELECT count(*) FROM runtime_checkpoints").fetchone()[0]
+            before_head = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
+                ).fetchone()[0]
+            )["checkpointHistoryHead"]
+            database.execute(
+                "CREATE TRIGGER abort_checkpoint_completion BEFORE UPDATE ON runtime_workspace_operations "
+                "WHEN json_extract(NEW.record,'$.phase')='completed' "
+                "BEGIN SELECT RAISE(ABORT,'abort completion'); END"
+            )
+            database.commit()
+        try:
+            response = backend.request(
+                "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
+            )
+            self.assertEqual(response.status, 500, response.body[:1000])
+        finally:
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                database.execute("DROP TRIGGER abort_checkpoint_completion")
+                database.commit()
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+            self.assertEqual(
+                database.execute("SELECT count(*) FROM runtime_checkpoints").fetchone()[0],
+                before_count,
+            )
+            agent = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
+                ).fetchone()[0]
+            )
+            failed = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_workspace_operations WHERE id LIKE 'capture:%' "
+                    "ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()[0]
+            )
+        self.assertEqual(agent["checkpointHistoryHead"], before_head)
+        self.assertIsNone(agent.get("workspaceReservationId"))
+        self.assertIsNone(agent.get("workspaceOperation"))
+        self.assertEqual(failed["phase"], "failed")
+
+    def test_capture_excludes_a_concurrent_agent_in_the_same_workspace(self) -> None:
+        backend = self.backend
+        marker = self.workspace / ".git" / "capture-entered"
+        release = self.workspace / ".git" / "capture-release"
+        marker.unlink(missing_ok=True)
+        release.unlink(missing_ok=True)
+        hook = self.workspace / ".git" / "hooks" / "reference-transaction"
+        hook.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = prepared ]; then\n'
+            f"  touch {shlex.quote(str(marker))}\n"
+            f"  while [ ! -f {shlex.quote(str(release))} ]; do sleep 0.02; done\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first = executor.submit(
+                backend.request,
+                "POST",
+                "/api/checkpoint",
+                body={"agent": AGENT_ID},
+                headers=self.headers(),
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(marker.exists(), "first capture should reach the ref transaction hook")
+                with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                    before_second = (
+                        database.execute(
+                            "SELECT id,record FROM runtime_checkpoints ORDER BY id"
+                        ).fetchall(),
+                        database.execute(
+                            "SELECT id,record FROM runtime_workspace_operations ORDER BY id"
+                        ).fetchall(),
+                    )
+                refs_before_second = checkpoint_refs(self.workspace)
+                second = backend.request(
+                    "POST",
+                    "/api/checkpoint",
+                    body={"agent": OTHER_AGENT_ID},
+                    headers=self.headers(),
+                )
+                self.assertEqual(second.status, 400, second.body[:1000])
+                self.assertIn("using this workspace", second.json()["error"])
+                with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+                    after_second = (
+                        database.execute(
+                            "SELECT id,record FROM runtime_checkpoints ORDER BY id"
+                        ).fetchall(),
+                        database.execute(
+                            "SELECT id,record FROM runtime_workspace_operations ORDER BY id"
+                        ).fetchall(),
+                    )
+                self.assertEqual(after_second, before_second)
+                self.assertEqual(checkpoint_refs(self.workspace), refs_before_second)
+            finally:
+                release.touch()
+            self.assertEqual(first.result(timeout=5).status, 200)
+        hook.unlink(missing_ok=True)
 
     def test_preview_bounds_large_patch_output(self) -> None:
         backend = self.backend
@@ -460,68 +747,6 @@ class CheckpointsHTTPContract(unittest.TestCase):
             agent["checkpointError"], "Server restarted before checkpoint capture finished"
         )
         self.assertIn(dangling_ref, checkpoint_refs(self.workspace))
-
-    @unittest.skipUnless(is_rust_backend(), "Rust capture recovery belongs to Rust")
-    def test_startup_completes_capture_with_a_persisted_checkpoint(self) -> None:
-        backend = self.backend
-        response = backend.request(
-            "POST",
-            "/api/checkpoint",
-            body={"agent": AGENT_ID, "label": "persisted recovery"},
-            headers=self.headers(),
-        )
-        self.assertEqual(response.status, 200, response.body[:1000])
-        checkpoint_id = response.json()["id"]
-        operation_id = f"capture:{checkpoint_id}"
-        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
-            operation = json.loads(
-                database.execute(
-                    "SELECT record FROM runtime_workspace_operations WHERE id=?",
-                    (operation_id,),
-                ).fetchone()[0]
-            )
-            operation["phase"] = "capture_running"
-            database.execute(
-                "UPDATE runtime_workspace_operations SET record=? WHERE id=?",
-                (json.dumps(operation), operation_id),
-            )
-            agent = json.loads(
-                database.execute(
-                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
-                ).fetchone()[0]
-            )
-            agent["workspaceOperation"] = "capture"
-            agent["workspaceReservationId"] = operation_id
-            database.execute(
-                "UPDATE runtime_agents SET record=? WHERE id=?",
-                (json.dumps(agent), AGENT_ID),
-            )
-            database.commit()
-
-        backend.stop()
-        backend.start()
-        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
-            recovered = json.loads(
-                database.execute(
-                    "SELECT record FROM runtime_workspace_operations WHERE id=?",
-                    (operation_id,),
-                ).fetchone()[0]
-            )
-            agent = json.loads(
-                database.execute(
-                    "SELECT record FROM runtime_agents WHERE id=?", (AGENT_ID,)
-                ).fetchone()[0]
-            )
-            self.assertIsNotNone(
-                database.execute(
-                    "SELECT 1 FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
-                ).fetchone()
-            )
-        self.assertEqual(recovered["phase"], "completed")
-        self.assertIsNone(recovered.get("error"))
-        self.assertEqual(agent["checkpointHistoryHead"], checkpoint_id)
-        self.assertIsNone(agent.get("workspaceReservationId"))
-        self.assertIsNone(agent.get("workspaceOperation"))
 
     @unittest.skipUnless(is_rust_backend(), "Rust startup recovery belongs to Rust")
     def test_startup_recovers_python_automatic_checkpoint_reservation(self) -> None:

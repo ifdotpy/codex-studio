@@ -208,6 +208,68 @@ impl EventWriteRepository {
         lifecycle: Option<(bool, Option<&str>)>,
         name: Option<&str>,
     ) -> StoreResult<()> {
+        Self::update_agent_sync(transaction, agent_id, |value| {
+            let status_changed = status
+                .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
+            let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
+                value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
+                    || value.get("turnId").and_then(Value::as_str) != turn_id
+            });
+            let name_changed = name.is_some_and(|name| {
+                value.get("name").and_then(Value::as_str) != Some(name)
+                    || value.get("manualName").and_then(Value::as_bool) != Some(true)
+            });
+            if !status_changed && !lifecycle_changed && !name_changed {
+                return false;
+            }
+            if let Some(status) = status {
+                value.insert("status".to_owned(), Value::String(status.to_owned()));
+            }
+            if let Some((in_flight, turn_id)) = lifecycle {
+                value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+                value.insert(
+                    "turnId".to_owned(),
+                    turn_id.map_or(Value::Null, |turn_id| Value::String(turn_id.to_owned())),
+                );
+            }
+            if let Some(name) = name {
+                value.insert("name".to_owned(), Value::String(name.to_owned()));
+                value.insert("manualName".to_owned(), Value::Bool(true));
+            }
+            if status == Some("queued")
+                && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+            {
+                overview.insert("result".into(), Value::String(String::new()));
+                overview.insert("resultTruncated".into(), Value::Bool(false));
+                overview.insert("resultTurnId".into(), Value::Null);
+            }
+            true
+        })
+    }
+
+    /// Publish runtime-owned agent fields through the same sequenced projection writer.
+    pub fn set_agent_sync_values(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        fields: &[(&str, Value)],
+    ) -> StoreResult<()> {
+        Self::update_agent_sync(transaction, agent_id, |value| {
+            let mut changed = false;
+            for (field, next) in fields {
+                if value.get(*field) != Some(next) {
+                    value.insert((*field).to_owned(), next.clone());
+                    changed = true;
+                }
+            }
+            changed
+        })
+    }
+
+    fn update_agent_sync(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        update: impl FnOnce(&mut serde_json::Map<String, Value>) -> bool,
+    ) -> StoreResult<()> {
         let old = transaction
             .query_row(
                 "SELECT payload,deleted FROM sync_entities WHERE collection='agent' AND id=?1",
@@ -237,40 +299,8 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        let status_changed = status
-            .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
-        let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
-            value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
-                || value.get("turnId").and_then(Value::as_str) != turn_id
-        });
-        let name_changed = name.is_some_and(|name| {
-            value.get("name").and_then(Value::as_str) != Some(name)
-                || value.get("manualName").and_then(Value::as_bool) != Some(true)
-        });
-        if !status_changed && !lifecycle_changed && !name_changed {
+        if !update(value) {
             return Ok(());
-        }
-        if let Some(status) = status {
-            value.insert("status".to_owned(), Value::String(status.to_owned()));
-        }
-        if let Some((in_flight, turn_id)) = lifecycle {
-            value.insert("inFlight".to_owned(), Value::Bool(in_flight));
-            if let Some(turn_id) = turn_id {
-                value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-            } else {
-                value.insert("turnId".to_owned(), Value::Null);
-            }
-        }
-        if let Some(name) = name {
-            value.insert("name".to_owned(), Value::String(name.to_owned()));
-            value.insert("manualName".to_owned(), Value::Bool(true));
-        }
-        if status == Some("queued")
-            && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
-        {
-            overview.insert("result".into(), Value::String(String::new()));
-            overview.insert("resultTruncated".into(), Value::Bool(false));
-            overview.insert("resultTurnId".into(), Value::Null);
         }
         let payload = serde_json::to_string(&payload)?;
         let hash = hash_payload(&payload);

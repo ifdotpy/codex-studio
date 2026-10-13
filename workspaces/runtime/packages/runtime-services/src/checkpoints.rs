@@ -1,12 +1,10 @@
 //! Git-backed checkpoint capture and preview for local workspaces.
 
-use std::fs::{self, File, FileTimes, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{File, FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::bounded_child::{self, ChildError};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     CheckpointsRepository, RuntimeStore, StoreError, StoredCheckpointObject, WorkspaceSnapshot,
@@ -205,10 +203,11 @@ fn capture_reserved(
             ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
         ],
         Some(b"Codex Agents workspace checkpoint\n"),
+        128,
     )?;
     let commit = String::from_utf8_lossy(&commit_output).trim().to_owned();
     let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{checkpoint_id}");
-    git(cwd, &["update-ref", &reference, &commit], &[], None)?;
+    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
 
     let parent_id = snapshot
         .agent
@@ -439,11 +438,24 @@ fn validate_internal_record(
             id: record.id.clone(),
         });
     };
-    if value
-        .get("id")
-        .and_then(Value::as_str)
-        .is_some_and(|id| id != record.id)
-    {
+    if value.get("id").and_then(Value::as_str) != Some(record.id.as_str()) {
+        return Err(CheckpointsError::InvalidStoredObject {
+            object,
+            id: record.id.clone(),
+        });
+    }
+    let required = match object {
+        "workspace_operations" => &["kind", "agent", "phase"][..],
+        "tasks" => &["agent", "status"][..],
+        "monitors" => &["status"][..],
+        _ => &[][..],
+    };
+    if required.iter().any(|field| {
+        value
+            .get(*field)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    }) {
         return Err(CheckpointsError::InvalidStoredObject {
             object,
             id: record.id.clone(),
@@ -468,11 +480,12 @@ fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsE
 }
 
 fn snapshot_tree_at(cwd: &str, root: &Path) -> Result<String, CheckpointsError> {
-    let directory = root.join(format!("checkpoint-{}", new_uuid()?));
-    fs::create_dir(&directory).map_err(|_| CheckpointsError::WorkspaceUnavailable)?;
-    let index = directory.join("index");
-    let temporary = TemporaryDirectory(directory);
-    let raw_path = git(cwd, &["rev-parse", "--git-path", "index"], &[], None)?;
+    let temporary = tempfile::Builder::new()
+        .prefix("checkpoint-")
+        .tempdir_in(root)
+        .map_err(|_| CheckpointsError::WorkspaceUnavailable)?;
+    let index = temporary.path().join("index");
+    let raw_path = git(cwd, &["rev-parse", "--git-path", "index"], &[], None, 4096)?;
     let git_index = PathBuf::from(String::from_utf8_lossy(&raw_path).trim());
     let source = if git_index.is_absolute() {
         git_index
@@ -510,6 +523,7 @@ fn snapshot_tree_at(cwd: &str, root: &Path) -> Result<String, CheckpointsError> 
             &["read-tree", "HEAD"],
             &[("GIT_INDEX_FILE", index_value.as_str())],
             None,
+            0,
         )?;
     }
     git(
@@ -517,23 +531,16 @@ fn snapshot_tree_at(cwd: &str, root: &Path) -> Result<String, CheckpointsError> 
         &["add", "-A", "--", "."],
         &[("GIT_INDEX_FILE", index_value.as_str())],
         None,
+        0,
     )?;
     let tree = git(
         cwd,
         &["write-tree"],
         &[("GIT_INDEX_FILE", index_value.as_str())],
         None,
+        128,
     )?;
-    drop(temporary);
     Ok(String::from_utf8_lossy(&tree).trim().to_owned())
-}
-
-struct TemporaryDirectory(PathBuf);
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        drop(fs::remove_dir_all(&self.0));
-    }
 }
 
 fn git(
@@ -541,8 +548,13 @@ fn git(
     args: &[&str],
     environment: &[(&str, &str)],
     input: Option<&[u8]>,
+    stdout_limit: usize,
 ) -> Result<Vec<u8>, CheckpointsError> {
-    git_with_output_limit(cwd, args, environment, input, None).map(|(stdout, _)| stdout)
+    let (stdout, truncated) = git_with_output_limit(cwd, args, environment, input, stdout_limit)?;
+    if truncated {
+        return Err(CheckpointsError::GitFailed);
+    }
+    Ok(stdout)
 }
 
 fn git_limited(
@@ -552,7 +564,7 @@ fn git_limited(
     input: Option<&[u8]>,
     max_output_bytes: usize,
 ) -> Result<(Vec<u8>, bool), CheckpointsError> {
-    git_with_output_limit(cwd, args, environment, input, Some(max_output_bytes))
+    git_with_output_limit(cwd, args, environment, input, max_output_bytes)
 }
 
 fn git_with_output_limit(
@@ -560,163 +572,24 @@ fn git_with_output_limit(
     args: &[&str],
     environment: &[(&str, &str)],
     input: Option<&[u8]>,
-    max_output_bytes: Option<usize>,
+    max_output_bytes: usize,
 ) -> Result<(Vec<u8>, bool), CheckpointsError> {
-    git_with_output_limit_and_timeout(
-        "git",
-        cwd,
+    let output = bounded_child::run(bounded_child::Request {
+        program: std::ffi::OsStr::new("git"),
+        cwd: std::ffi::OsStr::new(cwd),
         args,
         environment,
         input,
-        max_output_bytes,
-        GIT_TIMEOUT,
-    )
-}
-
-fn git_with_output_limit_and_timeout(
-    program: &str,
-    cwd: &str,
-    args: &[&str],
-    environment: &[(&str, &str)],
-    input: Option<&[u8]>,
-    max_output_bytes: Option<usize>,
-    timeout: Duration,
-) -> Result<(Vec<u8>, bool), CheckpointsError> {
-    let mut command = Command::new(program);
-    command
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .envs(environment.iter().copied())
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|_| CheckpointsError::GitFailed)?;
-    let stdout = child.stdout.take().ok_or(CheckpointsError::GitFailed)?;
-    let stderr = child.stderr.take().ok_or(CheckpointsError::GitFailed)?;
-    let stdout_reader = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut truncated = false;
-        let mut buffer = [0; 8192];
-        let mut stdout = stdout;
-        loop {
-            let count = stdout.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            let retained = max_output_bytes
-                .map_or(count, |limit| count.min(limit.saturating_sub(bytes.len())));
-            bytes.extend_from_slice(&buffer[..retained]);
-            truncated |= retained < count;
-        }
-        Ok::<_, std::io::Error>((bytes, truncated))
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut buffer = [0; 8192];
-        let mut stderr = stderr;
-        loop {
-            if stderr.read(&mut buffer)? == 0 {
-                break;
-            }
-        }
-        Ok::<_, std::io::Error>(())
-    });
-    if let Some(input) = input
-        && let Some(mut stdin) = child.stdin.take()
-        && stdin.write_all(input).is_err()
-    {
-        terminate_git_process_tree(&mut child);
-        drop(child.wait());
-        join_git_output_readers(stdout_reader, stderr_reader);
-        return Err(CheckpointsError::GitFailed);
-    }
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < timeout => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Ok(None) => {
-                terminate_git_process_tree(&mut child);
-                drop(child.wait());
-                join_git_output_readers(stdout_reader, stderr_reader);
-                return Err(CheckpointsError::GitTimeout);
-            }
-            Err(_) => {
-                terminate_git_process_tree(&mut child);
-                drop(child.wait());
-                join_git_output_readers(stdout_reader, stderr_reader);
-                return Err(CheckpointsError::GitFailed);
-            }
-        }
-    };
-    terminate_git_process_tree(&mut child);
-    let (stdout, truncated) = stdout_reader
-        .join()
-        .map_err(|_| CheckpointsError::GitFailed)?
-        .map_err(|_| CheckpointsError::GitFailed)?;
-    stderr_reader
-        .join()
-        .map_err(|_| CheckpointsError::GitFailed)?
-        .map_err(|_| CheckpointsError::GitFailed)?;
-    if started.elapsed() >= timeout {
-        return Err(CheckpointsError::GitTimeout);
-    }
-    if status.success() {
-        Ok((stdout, truncated))
-    } else {
-        Err(CheckpointsError::GitFailed)
-    }
-}
-
-fn terminate_git_process_tree(child: &mut Child) {
-    #[cfg(any(unix, windows))]
-    let process_id = child.id().to_string();
-    #[cfg(unix)]
-    {
-        let group_id = format!("-{process_id}");
-        drop(
-            Command::new("/bin/kill")
-                .args(["-KILL", group_id.as_str()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(),
-        );
-    }
-    #[cfg(windows)]
-    {
-        if let Some(system_root) = std::env::var_os("SystemRoot") {
-            let taskkill = Path::new(&system_root)
-                .join("System32")
-                .join("taskkill.exe");
-            drop(
-                Command::new(taskkill)
-                    .args(["/PID", process_id.as_str(), "/T", "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status(),
-            );
-        }
-    }
-    drop(child.kill());
-}
-
-fn join_git_output_readers(
-    stdout_reader: thread::JoinHandle<Result<(Vec<u8>, bool), std::io::Error>>,
-    stderr_reader: thread::JoinHandle<Result<(), std::io::Error>>,
-) {
-    drop(stdout_reader.join());
-    drop(stderr_reader.join());
+        stdout_limit: max_output_bytes,
+        stderr_limit: 4800,
+        timeout: GIT_TIMEOUT,
+    })
+    .map_err(|error| match error {
+        ChildError::Failed(_) => CheckpointsError::GitFailed,
+        ChildError::TimedOut => CheckpointsError::GitTimeout,
+        ChildError::Other => CheckpointsError::GitFailed,
+    })?;
+    Ok((output.stdout.bytes, output.stdout.truncated))
 }
 
 fn is_full_object_id(value: &str) -> bool {
@@ -777,27 +650,9 @@ fn truthy(value: Option<&Value>) -> bool {
 fn new_uuid() -> Result<String, CheckpointsError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| CheckpointsError::WorkspaceUnavailable)?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15]
-    ))
+    Ok(uuid::Builder::from_random_bytes(bytes)
+        .into_uuid()
+        .to_string())
 }
 
 fn now_seconds() -> f64 {
@@ -810,19 +665,7 @@ fn now_seconds() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{CheckpointsError, ensure_workspace_idle};
-    #[cfg(unix)]
-    use super::{TemporaryDirectory, git_with_output_limit_and_timeout};
     use serde_json::json;
-    #[cfg(unix)]
-    use std::fs;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
-    use std::process::Command;
-    #[cfg(unix)]
-    use std::thread;
-    #[cfg(unix)]
-    use std::time::{Duration, Instant};
     use studio_runtime_store::{StoredCheckpointObject, WorkspaceSnapshot};
 
     #[test]
@@ -899,95 +742,5 @@ mod tests {
             Err(CheckpointsError::MonitorBusy)
         ));
         Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn git_timeout_kills_descendants_and_drains_pipes() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = std::env::temp_dir().join(format!(
-            "checkpoint-git-timeout-{}-{}",
-            std::process::id(),
-            super::new_uuid()?
-        ));
-        fs::create_dir(&directory)?;
-        let _temporary = TemporaryDirectory(directory.clone());
-        let child_pid_file = directory.join("child-pid");
-        let program = directory.join("git-wrapper");
-        fs::write(
-            &program,
-            "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$CHECKPOINT_TEST_CHILD_PID\"\nwait\n",
-        )?;
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))?;
-
-        let directory_string = directory.to_string_lossy().into_owned();
-        let program_string = program.to_string_lossy().into_owned();
-        let child_pid_path = child_pid_file.to_string_lossy().into_owned();
-        let started = Instant::now();
-        let result = git_with_output_limit_and_timeout(
-            &program_string,
-            &directory_string,
-            &[],
-            &[("CHECKPOINT_TEST_CHILD_PID", &child_pid_path)],
-            None,
-            None,
-            Duration::from_millis(150),
-        );
-        assert!(matches!(result, Err(CheckpointsError::GitTimeout)));
-        assert!(started.elapsed() < Duration::from_secs(3));
-
-        assert_process_exits(&fs::read_to_string(child_pid_file)?)?;
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn git_exit_kills_descendants_holding_output_pipes() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = std::env::temp_dir().join(format!(
-            "checkpoint-git-exit-{}-{}",
-            std::process::id(),
-            super::new_uuid()?
-        ));
-        fs::create_dir(&directory)?;
-        let _temporary = TemporaryDirectory(directory.clone());
-        let child_pid_file = directory.join("child-pid");
-        let program = directory.join("git-wrapper");
-        fs::write(
-            &program,
-            "#!/bin/sh\n/bin/sleep 60 &\necho $! > \"$CHECKPOINT_TEST_CHILD_PID\"\nexit 0\n",
-        )?;
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755))?;
-
-        let directory_string = directory.to_string_lossy().into_owned();
-        let program_string = program.to_string_lossy().into_owned();
-        let child_pid_path = child_pid_file.to_string_lossy().into_owned();
-        let started = Instant::now();
-        let result = git_with_output_limit_and_timeout(
-            &program_string,
-            &directory_string,
-            &[],
-            &[("CHECKPOINT_TEST_CHILD_PID", &child_pid_path)],
-            None,
-            None,
-            Duration::from_secs(2),
-        );
-        assert!(result.is_ok());
-        assert!(started.elapsed() < Duration::from_secs(3));
-        assert_process_exits(&fs::read_to_string(child_pid_file)?)?;
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    fn assert_process_exits(pid: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let status = Command::new("/bin/kill")
-                .args(["-0", pid.trim()])
-                .status()?;
-            if !status.success() {
-                return Ok(());
-            }
-            assert!(Instant::now() < deadline, "Git descendant remained alive");
-            thread::sleep(Duration::from_millis(20));
-        }
     }
 }

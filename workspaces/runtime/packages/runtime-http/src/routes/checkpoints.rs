@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::Value;
 use studio_runtime_services::checkpoints::{self, CheckpointsError};
-use studio_runtime_store::{StoredCheckpointObject, WorkspaceSnapshot};
+use studio_runtime_store::{StoreError, StoredCheckpointObject, WorkspaceSnapshot};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -118,22 +118,14 @@ fn validate_agent(
     agent: &StoredCheckpointObject,
     validators: &crate::validation::Registry,
 ) -> Result<(), ApiError> {
-    validate_stored(agent, validators, "AgentRecordResponse", "agents")?;
-    if agent.record.get("id").and_then(Value::as_str) != Some(agent.id.as_str()) {
-        return Err(invalid_stored("agents", &agent.id));
-    }
-    Ok(())
+    validate_stored(agent, validators, "AgentRecordResponse", "agents")
 }
 
 fn validate_checkpoint(
     checkpoint: &StoredCheckpointObject,
     validators: &crate::validation::Registry,
 ) -> Result<(), ApiError> {
-    validate_stored(checkpoint, validators, "CheckpointSummary", "checkpoints")?;
-    if checkpoint.record.get("id").and_then(Value::as_str) != Some(checkpoint.id.as_str()) {
-        return Err(invalid_stored("checkpoints", &checkpoint.id));
-    }
-    Ok(())
+    validate_stored(checkpoint, validators, "CheckpointSummary", "checkpoints")
 }
 
 fn validate_stored(
@@ -143,17 +135,8 @@ fn validate_stored(
     object: &'static str,
 ) -> Result<(), ApiError> {
     let raw = serde_json::to_string(&record.record).map_err(|_| ApiError::internal())?;
-    if validators.validated_stored(schema, &raw).is_none() {
-        return Err(invalid_stored(object, &record.id));
-    }
+    super::questions_reads::validate_stored_value(validators, &record.id, &raw, schema, object)?;
     Ok(())
-}
-
-fn invalid_stored(object: &'static str, id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}/{id}"),
-    )
 }
 
 fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
@@ -213,6 +196,11 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object {object}/{id}"),
         ),
+        CheckpointsError::Store(StoreError::SchemaMismatch(message))
+            if message.starts_with("Invalid stored object ") =>
+        {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+        }
         CheckpointsError::Store(_) => ApiError::internal(),
     }
 }
