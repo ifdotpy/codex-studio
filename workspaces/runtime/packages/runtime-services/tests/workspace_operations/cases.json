@@ -2519,5 +2519,484 @@
       "model": "model",
       "ignored": "value"
     }
+  },
+  {
+    "name": "claude_settings-capture_pending",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "capture_pending",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-capture_pending",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "capture_pending",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_settings-capture_running",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "capture_running",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-capture_running",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "capture_running",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_settings-provider_pending",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "provider_pending",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-provider_pending",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "provider_pending",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_settings-provider_ready",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "provider_ready",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-provider_ready",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "provider_ready",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_settings-local_mutation",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "local_mutation",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-local_mutation",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "local_mutation",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_settings-recovery_required",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_settings",
+        "agent": "agent",
+        "phase": "recovery_required",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "claude_rollback-recovery_required",
+    "family": "recovery",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false,
+      "workspaceOperation": "branch",
+      "workspaceReservationId": "branch:operation"
+    },
+    "operations": [
+      {
+        "id": "branch:operation",
+        "kind": "claude_rollback",
+        "agent": "agent",
+        "phase": "recovery_required",
+        "source": {
+          "accountKey": "default",
+          "threadId": "thread",
+          "cwd": "/workspace"
+        }
+      }
+    ]
+  },
+  {
+    "name": "source-None",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false
+    },
+    "family": "source"
+  },
+  {
+    "name": "source-default",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "default",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false
+    },
+    "family": "source"
+  },
+  {
+    "name": "source-named-account",
+    "actor": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 1,
+      "cwd": "/workspace",
+      "status": "idle",
+      "accountKey": "named-account",
+      "threadId": "thread",
+      "lastCompletedTurn": "turn",
+      "startAttempt": {
+        "id": "attempt"
+      },
+      "autoWake": true,
+      "worktreeReady": true,
+      "inFlight": false
+    },
+    "family": "source"
   }
 ]

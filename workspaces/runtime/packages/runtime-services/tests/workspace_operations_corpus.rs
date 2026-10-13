@@ -131,6 +131,7 @@ fn complete_python_outputs_match_checked_snapshots() {
                 let writes = snapshot.recover(10.0);
                 json!({"operation":writes.operation,"agent":writes.agent})
             }
+            "source" => CheckpointsRepository::workspace_source(&stored["actor"]),
             "provider" => {
                 accept_provider_result(&ticket(), &ticket(), &case["response"]).expect("receipt")
             }
@@ -577,6 +578,21 @@ fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_exact_
             Ok(())
         })
         .expect("prepared ticket");
+    let before = CheckpointsRepository::workspace_snapshot(&f.store.read().expect("read"), f.id())
+        .expect("snapshot")
+        .expect("actor");
+    assert!(
+        f.store
+            .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .expect("unchanged")
+    );
+    f.patch("epoch", json!(2));
+    assert!(
+        !f.store
+            .transaction(|tx| CheckpointsRepository::workspace_unchanged(tx, &before))
+            .expect("changed")
+    );
+    f.patch("epoch", json!(1));
     let response = json!({"thread":{"id":"fork"},"approvalPolicy":"never"});
     let mut foreign = expected.clone();
     foreign.request = "other-request".into();

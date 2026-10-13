@@ -41,7 +41,7 @@ class WorkspaceCheckpointHistoryRecord(WorkspaceOpenRecord):
 
 
 class PersistedWorkspaceOperationRecord(WorkspaceOpenRecord):
-    kind: Literal["capture", "checkpoint", "restore", "branch", "provision"]
+    kind: Literal["capture", "checkpoint", "restore", "branch", "provision", "claude_settings", "claude_rollback"]
     agent: StrictStr
     phase: Literal["capture_pending", "capture_running", "provider_pending", "provider_ready",
                    "local_mutation", "recovery_required", "completed", "failed"]
