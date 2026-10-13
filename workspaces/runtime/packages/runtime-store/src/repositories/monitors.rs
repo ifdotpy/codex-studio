@@ -58,3 +58,9 @@ impl MonitorsRepository {
             .map_err(StoreError::from)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "monitors",
+        requirements: &REQUIREMENTS,
+    }
+}

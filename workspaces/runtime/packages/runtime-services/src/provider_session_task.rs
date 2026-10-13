@@ -1329,5 +1329,5 @@ async fn cancelled(stop: &mut watch::Receiver<bool>) {
 }
 
 #[cfg(test)]
-#[path = "provider_session_task_tests.rs"]
+#[path = "provider_session_task/tests.rs"]
 mod tests;

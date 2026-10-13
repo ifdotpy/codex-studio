@@ -3431,3 +3431,9 @@ mod tests {
 #[cfg(test)]
 #[path = "../../tests/support/scheduler_repository.rs"]
 mod policy_tests;
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "scheduler",
+        requirements: &REQUIREMENTS,
+    }
+}

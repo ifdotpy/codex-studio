@@ -108,6 +108,13 @@ def update_rule(backend, key: str, **fields) -> None:
         database.execute("UPDATE runtime_rules SET record=? WHERE id=?", (json.dumps(record), key))
 
 
+def stored_low_rule(database: sqlite3.Connection) -> dict[str, object]:
+    """Return the stored rule without the worker count the rules tick owns."""
+    record = json.loads(database.execute("SELECT record FROM runtime_rules WHERE id='low-rule'").fetchone()[0])
+    record.pop("activeWorkers", None)
+    return record
+
+
 class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -310,11 +317,11 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(saved.status, 200, saved.body[:1000])
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             update_rule(backend, "low-rule", lowSince=123.5, alerted=True)
-            before = database.execute("SELECT record FROM runtime_rules WHERE id='low-rule'").fetchone()[0]
+            before = stored_low_rule(database)
         repeated = backend.request("POST", "/api/rules", headers=self.headers(), body=low)
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            self.assertEqual(database.execute("SELECT record FROM runtime_rules WHERE id='low-rule'").fetchone()[0], before)
+            self.assertEqual(stored_low_rule(database), before)
             database.execute("UPDATE runtime_rules SET record=json_set(record,'$.restartCheck',true,'$.error','old','$.previousOutcome','old','$.lowSince',123,'$.alerted',true,'$.minimumWorkers',4) WHERE id='low-rule'")
         interval = {
             "action": "save", "id": "low-rule", "agent": "monitor-contract-agent",

@@ -29,6 +29,12 @@ declared in the module, with an in-memory fake for tests. A route module in
 service inside `tokio::task::spawn_blocking`, and converts the result or error
 to the response DTO.
 
+Add each service with an explicit `pub mod` line in alphabetical order; a
+directory parity test checks that module declarations match the source files.
+
+- No build-script scanner: explicit declarations keep modules visible to Rust tooling.
+- No `automod`: its upstream is archived, and rustfmt skips macro-declared modules.
+
 Event writes persist durable pending or cancelled rows and signal the shared HTTP wake handle after commit.
 Event consumption (scheduler) is a separate service and a cutover gate.
 Active event-rule delivery (`rule-driver/event-rules`) is also a separate service and cutover gate.
@@ -68,6 +74,9 @@ compatibility decision. The service pins it in
 
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
+
+Git changes use `std::process::Command` to preserve the Python runtime's system-Git status and patch output without a Git-library dependency.
+`gix 0.89.0` (MIT/Apache-2.0; 199 normal dependency-tree entries; 9.8s clean check) and `git2 0.21.0` (MIT/Apache-2.0; 7 entries; 8.5s including libgit2 build) can inspect status and diffs but require custom rendering and can change CLI output.
 
 ## Account registry and limits read contract
 

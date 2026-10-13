@@ -72,6 +72,41 @@ pub struct EventWriteReceipt {
 pub struct EventWriteRepository;
 
 impl EventWriteRepository {
+    /// Finish the active capacity retry when a manual input replaces it.
+    pub fn finish_capacity_retry(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        retry_id: &str,
+    ) -> StoreResult<Option<bool>> {
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_capacity_retries')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let raw = transaction
+            .query_row(
+                "SELECT record FROM runtime_capacity_retries WHERE id=?1 AND agent=?2",
+                params![retry_id, agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(Some(false));
+        };
+        let mut record: Value = serde_json::from_str(&raw)?;
+        record["status"] = Value::String("finished".to_owned());
+        record["dueAt"] = Value::Null;
+        record["reason"] = Value::String("A new instruction replaces this retry.".to_owned());
+        transaction.execute(
+            "UPDATE runtime_capacity_retries SET record=?1 WHERE id=?2 AND agent=?3",
+            params![record.to_string(), retry_id, agent_id],
+        )?;
+        Ok(Some(true))
+    }
+
     pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
         Ok(connection
             .query_row(
@@ -181,7 +216,7 @@ impl EventWriteRepository {
         agent_id: &str,
         status: &str,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, Some(status), None, None)
+        Self::set_agent_sync_fields(transaction, agent_id, Some(status), None, None, None)
     }
 
     /// Keep renderer-visible lifecycle fields in step with a scheduler transition.
@@ -198,6 +233,29 @@ impl EventWriteRepository {
             Some(status),
             Some((in_flight, turn_id)),
             None,
+            None,
+        )
+    }
+
+    /// Project the public fields changed when a manual message wakes an agent.
+    pub fn set_agent_sync_manual_input(
+        transaction: &Transaction<'_>,
+        agent: &crate::AgentRecord,
+    ) -> StoreResult<()> {
+        Self::set_agent_sync_fields(
+            transaction,
+            &agent.id.0,
+            Some(agent.status.as_str()),
+            Some((
+                agent
+                    .extra
+                    .get("inFlight")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                agent.extra.get("turnId").and_then(Value::as_str),
+            )),
+            None,
+            Some(agent),
         )
     }
 
@@ -207,6 +265,7 @@ impl EventWriteRepository {
         status: Option<&str>,
         lifecycle: Option<(bool, Option<&str>)>,
         name: Option<&str>,
+        manual_input: Option<&crate::AgentRecord>,
     ) -> StoreResult<()> {
         let old = transaction
             .query_row(
@@ -274,6 +333,7 @@ impl EventWriteRepository {
                     "turnId",
                     "inFlight",
                     "autoWake",
+                    "capacityRetry",
                     "lastCompletedTurn",
                     "lastCompletedTurnStatus",
                     "lastCompletedTurnError",
@@ -316,6 +376,21 @@ impl EventWriteRepository {
                 overview.insert("resultTurnId".into(), Value::Null);
             }
         }
+        if let Some(agent) = manual_input {
+            let value = payload
+                .get_mut("value")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch("agent sync projection is invalid".into())
+                })?;
+            for field in ["autoWake", "error", "capacityRetry", "startAttempt"] {
+                if let Some(v) = agent.extra.get(field) {
+                    value.insert(field.into(), v.clone());
+                } else {
+                    value.remove(field);
+                }
+            }
+        }
         if payload == before {
             return Ok(());
         }
@@ -336,7 +411,7 @@ impl EventWriteRepository {
         agent_id: &str,
         name: &str,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, None, None, Some(name))
+        Self::set_agent_sync_fields(transaction, agent_id, None, None, Some(name), None)
     }
 }
 
@@ -499,5 +574,11 @@ mod tests {
                 ["enqueuedAt"],
             42
         );
+    }
+}
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "event_write",
+        requirements: &REQUIREMENTS,
     }
 }

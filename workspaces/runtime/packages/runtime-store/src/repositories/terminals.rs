@@ -305,3 +305,9 @@ mod tests {
         assert_eq!((start, end, text.as_str()), (0, 4, "abcd"));
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "terminals",
+        requirements: &REQUIREMENTS,
+    }
+}

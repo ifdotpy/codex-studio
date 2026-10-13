@@ -52,3 +52,9 @@ impl MessageRepository {
         Ok(())
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "messages",
+        requirements: &REQUIREMENTS,
+    }
+}

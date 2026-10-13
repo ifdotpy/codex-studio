@@ -364,3 +364,5 @@ fn decode(table: &str, id: &str, raw: &str) -> StoreResult<Value> {
     }
     Ok(record)
 }
+
+inventory::submit! { crate::repositories::SchemaRegistration { repository: "execution_history", requirements: &REQUIREMENTS } }

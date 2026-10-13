@@ -95,6 +95,7 @@ def handle(line):
     if method in {"initialize", "config/read", "skills/extraRoots/set", "model/list",
               "account/rateLimits/read", "thread/loaded/list", "thread/resume", "thread/read",
                   "thread/turns/list"} or method in fixture.get("rpcReplies", {}):
+        hold_configured_rpc(method)
         send(recorded_reply(method, request, thread))
         return
     if method == "thread/start":

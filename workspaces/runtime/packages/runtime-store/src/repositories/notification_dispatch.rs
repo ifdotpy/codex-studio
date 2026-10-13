@@ -1,5 +1,6 @@
 //! Persistence for provider notification dispatch.
 
+use crate::schema::SchemaRequirements;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 
@@ -18,46 +19,45 @@ const RECEIPT_TABLE: &[crate::schema::TableRequirement] = &[crate::schema::Table
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NotificationDispatchRepository;
 
-pub(crate) const REQUIREMENTS: crate::schema::SchemaRequirements =
-    crate::schema::SchemaRequirements {
-        tables: &[
-            crate::schema::TableRequirement {
-                name: "runtime_agents",
-                columns: &["id", "record"],
-            },
-            crate::schema::TableRequirement {
-                name: "runtime_events",
-                columns: &["id", "agent", "kind", "text", "created"],
-            },
-            crate::schema::TableRequirement {
-                name: "runtime_items",
-                columns: &["id", "agent", "record", "created"],
-            },
-        ],
-        conditional_tables: &[
-            crate::schema::ConditionalTableRequirement {
-                table_exists: "runtime_event_meta",
-                tables: EVENT_META_TABLE,
-            },
-            crate::schema::ConditionalTableRequirement {
-                table_exists: "runtime_operation_receipts",
-                tables: RECEIPT_TABLE,
-            },
-            crate::schema::ConditionalTableRequirement {
-                table_exists: "runtime_item_fulltext",
-                tables: &[crate::schema::TableRequirement {
-                    name: "runtime_item_fulltext",
-                    columns: &["id", "body"],
-                }],
-            },
-        ],
-        triggers: &[],
-        conditional_triggers: &[],
-        connection_functions: &[],
-        bootstrap_tables: &[],
-        bootstrap_triggers: &[],
-        bootstrap_connection_functions: &[],
-    };
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+    tables: &[
+        crate::schema::TableRequirement {
+            name: "runtime_agents",
+            columns: &["id", "record"],
+        },
+        crate::schema::TableRequirement {
+            name: "runtime_events",
+            columns: &["id", "agent", "kind", "text", "created"],
+        },
+        crate::schema::TableRequirement {
+            name: "runtime_items",
+            columns: &["id", "agent", "record", "created"],
+        },
+    ],
+    conditional_tables: &[
+        crate::schema::ConditionalTableRequirement {
+            table_exists: "runtime_event_meta",
+            tables: EVENT_META_TABLE,
+        },
+        crate::schema::ConditionalTableRequirement {
+            table_exists: "runtime_operation_receipts",
+            tables: RECEIPT_TABLE,
+        },
+        crate::schema::ConditionalTableRequirement {
+            table_exists: "runtime_item_fulltext",
+            tables: &[crate::schema::TableRequirement {
+                name: "runtime_item_fulltext",
+                columns: &["id", "body"],
+            }],
+        },
+    ],
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: &[],
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
+};
 
 impl NotificationDispatchRepository {
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
@@ -342,3 +342,5 @@ fn invalid_record(table: &str, id: &str) -> StoreError {
         id: id.into(),
     }
 }
+
+inventory::submit! { crate::repositories::SchemaRegistration { repository: "notification_dispatch", requirements: &REQUIREMENTS } }

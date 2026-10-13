@@ -25,10 +25,14 @@ pub use records::{
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::execution_history::ExecutionHistoryRepository;
+pub use repositories::federation::FederationRepository;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
+pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
+pub use repositories::projects::ProjectsRepository;
 pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
+pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
@@ -39,6 +43,7 @@ pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
+pub use repositories::usage::{UsageRepositoryError, cancel_capacity_retry, disable_usage_resume};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
@@ -59,6 +64,8 @@ pub enum StoreError {
     SchemaMismatch(String),
     #[error("invalid stored sync object {scope}/{id}")]
     InvalidSyncObject { scope: String, id: String },
+    #[error("invalid stored object {object}/{id}")]
+    InvalidStoredRecord { object: &'static str, id: String },
     #[error("database object {object} in {database} is incompatible: {reason}")]
     SchemaObjectMismatch {
         database: String,

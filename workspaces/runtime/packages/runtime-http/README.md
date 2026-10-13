@@ -83,18 +83,38 @@ or hold a transaction across an await.
 Export a `routes() -> RouteGroup` from the group module. Register each route
 with one method-specific constructor such as `get(path, status, handler)` or
 `post(path, status, handler)`. That call creates the Axum method route and its
-manifest descriptor together. Add the module's `routes()` call once in
-`routes::groups()`; the composer validates every registration against the
-committed OpenAPI authority and rejects undocumented or repeated operations.
-Adding a route inside a group needs no shared registration edit; adding a group
-needs one line in the module list. The ledger reads operation status from these
-registrations, so route authors do not maintain a second allowlist. Use
+manifest descriptor together. Each route module has exactly one
+`inventory::submit!` containing its `RouteModuleRegistration`, the module name,
+its optional `routes` function, and its dependency names:
+
+```rust
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "sync_documents",
+        routes: Some(routes),
+        dependencies: &["resource-policy/publish-drafts"],
+    }
+}
+```
+
+Use `dependencies: &[]` when the module has no declared capabilities. Do not
+add separate dependency submissions. `routes::groups()` sorts registrations
+by module key; operation validation checks dependency names against the same
+inventory. The composer validates every route against the committed OpenAPI
+authority and rejects undocumented or repeated operations. Adding a group
+needs its explicit module line in alphabetical order and its inventory entry;
+a directory parity test catches an omitted module or group registration.
+The ledger reads operation status from these registrations, so route authors do
+not maintain a second allowlist. Use
 `OperationStatus::Partial` with named `Dependency` values when a handler can
 serve only some cases, and use `dependency_unavailable` for its declared 501
 response. Documented operations without a handler return the shared 501
 envelope. The conformance command discovers consumer suites, records matching
 HTTP assertions per operation, and writes its detailed ledger beneath
 `XDG_CACHE_HOME`, outside the checkout.
+
+- No build-script scanner: explicit declarations keep modules visible to Rust tooling.
+- No `automod`: its upstream is archived, and rustfmt skips macro-declared modules.
 
 To migrate a route module written against the previous pattern, replace each
 `Router::route(...)` plus its separate `Operation::new(method, path)` descriptor

@@ -23,27 +23,25 @@ pub struct PreparedQueue {
 }
 
 pub fn work_list(root: &str, records: &[Value]) -> Value {
-    let statuses = records
-        .iter()
-        .map(|item| {
-            (
-                item["id"]
-                    .as_str()
-                    .expect("schema-validated work id")
-                    .to_owned(),
-                item["status"]
-                    .as_str()
-                    .expect("schema-validated work status")
-                    .to_owned(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let statuses = work_statuses(records);
     let items = records
         .iter()
         .filter(|item| item["rootId"] == root)
         .map(|item| work_item_view(item, &statuses))
         .collect::<Vec<_>>();
     json!({"items": items, "tasks": items})
+}
+
+pub fn work_statuses(records: &[Value]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter_map(|item| {
+            Some((
+                item.get("id")?.as_str()?.to_owned(),
+                item.get("status")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
 }
 
 pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, String>) -> Value {

@@ -141,16 +141,13 @@ fn stored_values(
         .into_iter()
         .map(|row| {
             let mut value = record_value(object, &row)?;
-            if value.get("id").and_then(Value::as_str) != Some(row.id.as_str()) {
-                return Err(invalid_stored(object, &row.id));
-            }
             if remove_path {
                 value
                     .as_object_mut()
                     .expect("record is object")
                     .remove("path");
             }
-            if !validators.validate_stored(schema, &value) {
+            if !validators.valid_stored_record(schema, &row.id, &value) {
                 return Err(invalid_stored(object, &row.id));
             }
             Ok(value)
@@ -340,5 +337,12 @@ pub(crate) fn write_error(error: EventWriteError) -> ApiError {
         }
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
+    }
+}
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "work_items",
+        routes: Some(routes),
+        dependencies: &["event-driver/work-items", "workspace-state/organization-effects"],
     }
 }

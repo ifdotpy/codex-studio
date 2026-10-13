@@ -144,3 +144,10 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::Store(_) | QueueWriteError::Json(_) => ApiError::internal(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "queue_read",
+        routes: None,
+        dependencies: &["event-driver/annotations", "event-driver/plan-updates"],
+    }
+}

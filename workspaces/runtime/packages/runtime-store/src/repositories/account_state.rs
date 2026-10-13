@@ -350,3 +350,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "account_state",
+        requirements: &REQUIREMENTS,
+    }
+}

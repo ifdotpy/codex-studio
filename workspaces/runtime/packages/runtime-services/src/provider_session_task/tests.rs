@@ -254,6 +254,6 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
     );
 }
 
-#[path = "../tests/support/session_outcomes.rs"]
+#[path = "../../tests/support/session_outcomes.rs"]
 mod outcome_checks;
 use outcome_checks::CheckedExit;

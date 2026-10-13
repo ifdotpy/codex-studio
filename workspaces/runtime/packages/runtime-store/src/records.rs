@@ -39,6 +39,15 @@ macro_rules! stored_string_enum {
             Other(String),
         }
 
+        impl $name {
+            pub fn as_str(&self) -> &str {
+                match self {
+                    $(Self::$variant => $value,)+
+                    Self::Other(value) => value,
+                }
+            }
+        }
+
         impl Serialize for $name {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
