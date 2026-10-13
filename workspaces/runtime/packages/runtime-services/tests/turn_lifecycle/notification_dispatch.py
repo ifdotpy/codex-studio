@@ -223,6 +223,11 @@ def backup(source):
 
 
 def run_case(command, template, runtime_type):
+    if command['command'] == 'metrics':
+        import resource
+        import os
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        return {'userSeconds':usage.ru_utime,'systemSeconds':usage.ru_stime,'clockTicks':os.sysconf('SC_CLK_TCK')}
     global _runtime, _pristine
     if _runtime is None:
         root = pathlib.Path(command['root'])

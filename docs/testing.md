@@ -49,6 +49,17 @@ without maintaining a second suite inventory.
 | Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
 | Load-class          | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
 
+The Rust runtime differential corpora use one isolated Python JSON-lines oracle
+per test process and Python-written SQLite seed backups. Default nextest runs
+explicit fast witnesses; `just test-rust-runtime-corpora` sets
+`STUDIO_RUNTIME_CORPUS_FULL=1` and runs the full lifecycle/notification matrices
+as an announced heavy run. The notification [coverage manifest](../workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/notification_coverage.json)
+records every method, ordering, review regression and approved deviation; its
+runner requires every method and review regression to remain in the fast set.
+See the [notification corpus guide](../workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/NOTIFICATION-CORPUS.md)
+for the protocol, normalization and timing evidence. These corpora use disposable
+state, stub provider transport and background workers, and create no load generators.
+
 The heavy server suites and the reason for each classification are owned by
 `HEAVY_SUITES` in the [server runner](../workspaces/runtime/apps/server/tests/server/run.py):
 

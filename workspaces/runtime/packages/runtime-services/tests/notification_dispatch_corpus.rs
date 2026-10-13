@@ -333,6 +333,7 @@ fn python_written_notification_corpus() {
 }
 
 fn corpus(full: bool) {
+    let corpus_started = std::time::Instant::now();
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_lifecycle/notification_cases.json"))
             .expect("corpus data");
@@ -445,6 +446,31 @@ fn corpus(full: bool) {
         serde_json::to_vec_pretty(&report).expect("report JSON"),
     )
     .expect("report written");
+    let oracle_cpu = oracle.call(json!({"command":"metrics","module":"notification_dispatch"}));
+    // Linux exposes this process's CPU separately from its oracle/replay children.
+    // Other platforms still report oracle CPU and per-phase wall durations.
+    let rust_cpu = fs::read_to_string("/proc/self/stat").ok().and_then(|stat| {
+        let (_, fields) = stat.rsplit_once(')')?;
+        let fields: Vec<_> = fields.split_whitespace().collect();
+        let hz = oracle_cpu["clockTicks"].as_f64()?;
+        Some(
+            json!({"userSeconds":fields.get(11)?.parse::<f64>().ok()?/hz,
+                    "systemSeconds":fields.get(12)?.parse::<f64>().ok()?/hz}),
+        )
+    });
+    let phase = |key: &str| {
+        report
+            .iter()
+            .map(|row| row["seconds"][key].as_f64().expect("phase duration"))
+            .sum::<f64>()
+    };
+    let timing = json!({"cases":report.len(),"wallSeconds":corpus_started.elapsed().as_secs_f64(),"rustCpu":rust_cpu,"oracleCpu":oracle_cpu,"phases":{"seed":phase("seed"),"apply":phase("apply"),"snapshot":phase("snapshot")}});
+    fs::write(
+        report_path.with_extension("timing.json"),
+        serde_json::to_vec_pretty(&timing).expect("timing JSON"),
+    )
+    .expect("timing report");
+    eprintln!("corpus timing: {timing}");
     assert_eq!(
         green,
         report.len(),

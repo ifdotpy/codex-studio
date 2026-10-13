@@ -96,3 +96,12 @@ connection-reuse mode reduced it to 31.4 seconds. Avoiding recursive duplicate
 path resolution in the isolation guard reduced a default witness run to 7.955
 seconds without weakening guard checks. Full-matrix timing is reported separately
 because it is a manual heavy run; no SQLite durability setting is weakened.
+
+A subsequent busy-host measurement recorded 13.292 seconds wall, 0.970 seconds
+Rust process CPU (0.930 user + 0.040 system), and 1.371 seconds oracle CPU
+(1.223 user + 0.148 system). Phase wall times were 9.618 seconds for Python
+seed/transition/backup, 3.469 for Rust open/apply, and 0.195 for final snapshots.
+The combined CPU cost was 2.341 seconds; other observed default wall times were
+7.955 and 26.861 seconds. Full-matrix wall times were 61.864 and 117.691 seconds.
+Each run now writes a `.timing.json` sidecar with CPU, phase and wall measurements;
+Linux Rust CPU comes from `/proc/self/stat`, and Python uses `getrusage`.
