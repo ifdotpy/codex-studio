@@ -76,3 +76,9 @@ impl AgentRepository {
         put_json_record(connection, "runtime_agents", &record.id.0, record)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "agents",
+        requirements: &REQUIREMENTS,
+    }
+}

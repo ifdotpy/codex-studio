@@ -346,3 +346,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "extractors",
+        routes: None,
+    }
+}

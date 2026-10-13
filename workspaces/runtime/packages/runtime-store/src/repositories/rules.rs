@@ -288,3 +288,9 @@ mod tests {
         assert!(!RulesRepository::has_active_check(&db, "r2").expect("other rule has no check"));
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "rules",
+        requirements: &REQUIREMENTS,
+    }
+}

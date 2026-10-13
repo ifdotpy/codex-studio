@@ -202,3 +202,25 @@ fn invalid_stored(object: &'static str, id: &str) -> ApiError {
 fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
     dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "messages",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("coordination-policy/chat-history")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("coordination-policy/room-visibility")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("event-driver/message-receipts")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("event-driver/message-send")
+}

@@ -304,3 +304,9 @@ fn is_truthy(value: &Value) -> bool {
         Value::Object(value) => !value.is_empty(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "monitors",
+        routes: Some(routes),
+    }
+}

@@ -113,3 +113,17 @@ fn dependency_error() -> Result<ApiError, ApiError> {
     dependency_unavailable("GET", "/api/limits", &LIMITS_DEPENDENCIES)
         .map_err(|_| ApiError::internal())
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "catalog",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("provider-session/account-rate-limits")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("provider-session/model-list")
+}

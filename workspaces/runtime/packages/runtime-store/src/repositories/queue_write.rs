@@ -130,3 +130,9 @@ impl QueueWriteRepository {
         Ok(())
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "queue_write",
+        requirements: &REQUIREMENTS,
+    }
+}

@@ -26,3 +26,44 @@ pub mod work_policy;
 pub mod work_write;
 pub mod workspace_files;
 pub mod workspace_views;
+
+#[cfg(test)]
+mod registration_tests {
+    use std::fs;
+    use std::path::Path;
+
+    fn declared_modules(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                ["pub(crate) mod ", "pub mod ", "mod "]
+                    .into_iter()
+                    .find_map(|prefix| line.strip_prefix(prefix))
+                    .and_then(|declaration| declaration.strip_suffix(';'))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn service_modules_match_the_source_directory_in_alphabetical_order() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut source_modules = fs::read_dir(&directory)
+            .expect("services source directory is readable")
+            .map(|entry| {
+                entry
+                    .expect("services source directory entry is readable")
+                    .path()
+            })
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .filter_map(|path| {
+                let stem = path.file_stem()?.to_str()?;
+                (stem != "lib").then(|| stem.to_owned())
+            })
+            .collect::<Vec<_>>();
+        source_modules.sort_unstable();
+
+        assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
+    }
+}

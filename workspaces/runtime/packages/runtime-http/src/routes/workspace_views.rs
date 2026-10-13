@@ -259,3 +259,25 @@ fn invalid_cursor(parameter: &str) -> ApiError {
 fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
     dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "workspace_views",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("coordination-policy/inbox")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("work-policy/views")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("workspace-state/git-changes")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("workspace-state/snapshot")
+}

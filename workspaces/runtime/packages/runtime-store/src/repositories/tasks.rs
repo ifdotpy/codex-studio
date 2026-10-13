@@ -27,3 +27,9 @@ impl TaskRepository {
         put_json_record(connection, "runtime_tasks", &record.id.0, record)
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "tasks",
+        requirements: &REQUIREMENTS,
+    }
+}

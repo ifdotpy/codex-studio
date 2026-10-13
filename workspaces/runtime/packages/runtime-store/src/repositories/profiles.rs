@@ -144,3 +144,9 @@ fn format_uuid(bytes: &[u8]) -> String {
     }
     value
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "profiles",
+        requirements: &REQUIREMENTS,
+    }
+}

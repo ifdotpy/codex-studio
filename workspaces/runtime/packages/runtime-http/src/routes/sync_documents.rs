@@ -290,3 +290,29 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
         }),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "sync_documents",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("resource-policy/publish-drafts")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("sync-policy/entity-seeding")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("sync-policy/entity-window-maintenance")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("sync-policy/runtime-capabilities")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("transcript-service/pull")
+}

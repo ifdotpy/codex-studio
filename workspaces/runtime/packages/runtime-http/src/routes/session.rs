@@ -17,3 +17,9 @@ pub(crate) fn routes() -> RouteGroup {
 pub(crate) async fn get(State(state): State<HttpState>) -> Json<serde_json::Value> {
     Json(json!({"token": state.token}))
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "session",
+        routes: Some(routes),
+    }
+}

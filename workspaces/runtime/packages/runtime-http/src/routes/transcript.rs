@@ -161,3 +161,25 @@ fn map_transcript_error(error: TranscriptError) -> ApiError {
         TranscriptError::Store => ApiError::internal(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "transcript",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("transcript/event-driver")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("transcript/payload-store")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("transcript/search-index")
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("transcript/workspace-state")
+}

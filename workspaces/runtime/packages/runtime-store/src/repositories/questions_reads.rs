@@ -175,3 +175,9 @@ mod tests {
         );
     }
 }
+inventory::submit! {
+    crate::repositories::SchemaRegistration {
+        repository: "questions_reads",
+        requirements: &REQUIREMENTS,
+    }
+}

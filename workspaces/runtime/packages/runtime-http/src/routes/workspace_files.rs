@@ -274,3 +274,13 @@ fn base64_encode(bytes: &[u8]) -> String {
     }
     encoded
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "workspace_files",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("workspace-state/image-execution")
+}

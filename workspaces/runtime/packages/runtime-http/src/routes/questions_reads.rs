@@ -255,3 +255,9 @@ mod tests {
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "questions_reads",
+        routes: Some(routes),
+    }
+}

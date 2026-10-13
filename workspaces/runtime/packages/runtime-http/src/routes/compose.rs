@@ -212,3 +212,9 @@ mod tests {
         }
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "compose",
+        routes: None,
+    }
+}

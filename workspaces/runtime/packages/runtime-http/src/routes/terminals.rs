@@ -115,3 +115,13 @@ fn terminal_error(error: TerminalError) -> ApiError {
         _ => ApiError::internal(),
     }
 }
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "terminals",
+        routes: Some(routes),
+    }
+}
+
+inventory::submit! {
+    crate::routes::manifest::DependencyRegistration("provider-session/app-server")
+}
