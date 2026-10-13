@@ -281,6 +281,18 @@ for line in sys.stdin:
         ("PYTHONUNBUFFERED".into(), "1".into()),
         ("AUDIT_PATH".into(), audit.to_string_lossy().into_owned()),
         ("PATH".into(), "/usr/bin".into()),
+        ("HOME".into(), workspace.to_string_lossy().into_owned()),
+        (
+            "CODEX_HOME".into(),
+            workspace.join("codex-home").to_string_lossy().into_owned(),
+        ),
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            workspace
+                .join("claude-config")
+                .to_string_lossy()
+                .into_owned(),
+        ),
     ]);
     ProviderLaunchSpec::new(
         vec![python, "-u".into(), "-c".into(), script.into()],
@@ -304,6 +316,18 @@ for line in sys.stdin:
             ("PYTHONUNBUFFERED".into(), "1".into()),
             ("AUDIT_PATH".into(), audit.to_string_lossy().into_owned()),
             ("PATH".into(), "/usr/bin".into()),
+            ("HOME".into(), workspace.to_string_lossy().into_owned()),
+            (
+                "CODEX_HOME".into(),
+                workspace.join("codex-home").to_string_lossy().into_owned(),
+            ),
+            (
+                "CLAUDE_CONFIG_DIR".into(),
+                workspace
+                    .join("claude-config")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         ]),
         workspace.to_path_buf(),
     )
@@ -488,7 +512,21 @@ for line in sys.stdin:
         handle.clone(),
         ProviderLaunchSpec::new(
             vec![python_executable(), "-u".into(), "-c".into(), script.into()],
-            BTreeMap::from([("PATH".into(), "/usr/bin".into())]),
+            BTreeMap::from([
+                ("PATH".into(), "/usr/bin".into()),
+                ("HOME".into(), workspace.to_string_lossy().into_owned()),
+                (
+                    "CODEX_HOME".into(),
+                    workspace.join("codex-home").to_string_lossy().into_owned(),
+                ),
+                (
+                    "CLAUDE_CONFIG_DIR".into(),
+                    workspace
+                        .join("claude-config")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+            ]),
             workspace,
         ),
     );
