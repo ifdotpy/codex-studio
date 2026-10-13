@@ -10,7 +10,6 @@ use std::sync::Arc;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
 
-const OPENAPI: &[u8] = include_bytes!("../openapi.json");
 const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
@@ -83,10 +82,7 @@ impl std::error::Error for CompileError {}
 
 impl Registry {
     pub(crate) fn compile(registered: &[(String, String)]) -> Result<Self, CompileError> {
-        let document: Value = serde_json::from_slice(OPENAPI).map_err(|error| CompileError {
-            operation_id: "<document>".to_owned(),
-            message: error.to_string(),
-        })?;
+        let document = crate::schema::openapi_document().clone();
         let schema_registry = schema_registry(&document).map_err(|message| CompileError {
             operation_id: "<document>".to_owned(),
             message,
@@ -111,16 +107,33 @@ impl Registry {
             })?;
         let mut stored_schemas = BTreeMap::new();
         for name in [
+            "AgentEntityDto",
             "AgentRecordResponse",
             "AnnotationReceipt",
+            "ChatEntityDto",
             "CheckpointSummary",
+            "ComplaintEntityDto",
             "ComplaintRecordResponse",
+            "EdgeEntityDto",
+            "EventEntityDto",
+            "MonitorEntityDto",
             "PlanView",
+            "PeerTeamEntityDto",
+            "ProjectEntityDto",
             "QueueItem",
             "RequestRecordResponse",
+            "RequestEntityDto",
+            "RoomEntityDto",
+            "RuleEntityDto",
+            "SyncEntityPayload",
+            "SyncPullResetResponse",
+            "SyncPullResponse",
+            "TaskEntityDto",
             "TaskDetailResponse",
             "TranscriptAsset",
             "WorkItem",
+            "WorkEntityDto",
+            "WorkspaceEntityDto",
         ] {
             let validator = jsonschema::options()
                 .with_registry(&schema_registry)
@@ -132,6 +145,21 @@ impl Registry {
                 })?;
             stored_schemas.insert(name.to_owned(), validator);
         }
+        let draft_payload: Value = serde_json::from_slice(include_bytes!(
+            "../draft-payload.schema.json"
+        ))
+        .map_err(|error| CompileError {
+            operation_id: "DraftPayload".to_owned(),
+            message: error.to_string(),
+        })?;
+        let draft_payload_validator = jsonschema::options()
+            .with_draft(Draft::Draft202012)
+            .build(&draft_payload)
+            .map_err(|error| CompileError {
+                operation_id: "DraftPayload".to_owned(),
+                message: error.to_string(),
+            })?;
+        stored_schemas.insert("DraftPayload".to_owned(), draft_payload_validator);
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
