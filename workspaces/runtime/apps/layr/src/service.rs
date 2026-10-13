@@ -219,6 +219,10 @@ fn periodic(root: &Path, hourly: bool) {
             }
         }
         if hourly {
+            // Also repairs the git store of a project from an earlier layr, soon after a start.
+            if let Ok(_lock) = repo.p.lock() {
+                let _ = crate::gitbridge::sync_store_access(&repo);
+            }
             let _ = crate::cmd::admin::run_gc(&ctx, &repo, false);
             if let Ok(Some(dir)) = repo.p.config_value("backup.dir") {
                 if let Some(d) = dir.as_str() {
