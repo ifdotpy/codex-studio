@@ -5,22 +5,18 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::Value;
 use studio_runtime_services::transcript::{self, TranscriptError};
+use studio_runtime_services::transcript_runtime::{self, PageRequest};
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
-
-const PAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript/event-driver")];
-const CANVAS_TRANSCRIPT_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("transcript/event-driver")];
-const SEARCH_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript/room-search")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
             "/api/transcript/page",
-            OperationStatus::partial(&PAGE_DEPENDENCIES),
+            OperationStatus::Implemented,
             transcript_page,
         ),
         get(
@@ -38,25 +34,63 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             search_item,
         ),
-        get(
-            "/api/search",
-            OperationStatus::partial(&SEARCH_DEPENDENCIES),
-            search,
-        ),
+        get("/api/search", OperationStatus::Implemented, search),
         get(
             "/api/transcript",
-            OperationStatus::partial(&CANVAS_TRANSCRIPT_DEPENDENCIES),
+            OperationStatus::Implemented,
             canvas_transcript,
         ),
     ])
 }
 
-async fn transcript_page() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "GET",
-        "/api/transcript/page",
-        &PAGE_DEPENDENCIES,
-    ))
+async fn transcript_page(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let request = PageRequest {
+        before: query
+            .typed_value("before")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        around: query
+            .typed_value("around")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        after: query
+            .typed_value("after")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        limit: query.typed_value("limit").and_then(Value::as_i64),
+    };
+    read_page(state, query, request, false).await
+}
+
+async fn read_page(
+    state: HttpState,
+    query: QueryParams,
+    request: PageRequest,
+    native_fallback: bool,
+) -> Result<Json<Value>, ApiError> {
+    let agent = query
+        .typed_value("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let value = tokio::task::spawn_blocking(move || {
+        match transcript_runtime::page(&store, &agent, &request) {
+            Err(TranscriptError::UnknownMessage) if native_fallback => Err(
+                TranscriptError::RequiresDependency("transcript/workspace-state"),
+            ),
+            result => result,
+        }
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::TranscriptPageResponse,
+    >(value)?))
 }
 
 async fn transcript_item(
@@ -131,23 +165,38 @@ async fn search_item(
     >(value)?))
 }
 
-async fn search() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("GET", "/api/search", &SEARCH_DEPENDENCIES))
+async fn search(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    let search = query
+        .typed_value("q")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let limit = query
+        .typed_value("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(50);
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let value =
+        tokio::task::spawn_blocking(move || transcript::search_work(&store, &search, None, limit))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(map_transcript_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::SearchResponse,
+    >(value)?))
 }
 
-async fn canvas_transcript() -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "GET",
-        "/api/transcript",
-        &CANVAS_TRANSCRIPT_DEPENDENCIES,
-    ))
+async fn canvas_transcript(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<Value>, ApiError> {
+    read_page(state, query, PageRequest::default(), true).await
 }
 
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
-}
-
-fn map_transcript_error(error: TranscriptError) -> ApiError {
+pub(crate) fn map_transcript_error(error: TranscriptError) -> ApiError {
     match error {
         TranscriptError::UnknownMessage => ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -166,6 +215,13 @@ fn map_transcript_error(error: TranscriptError) -> ApiError {
         TranscriptError::ChatUnavailable => {
             ApiError::new(StatusCode::BAD_REQUEST, "This chat is unavailable")
         }
+        TranscriptError::HistoryCursor => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Use one history cursor")
+        }
+        TranscriptError::InvalidStoredState { table, id } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
+        ),
         TranscriptError::InvalidSearch => {
             ApiError::new(StatusCode::BAD_REQUEST, "Supply a valid search query")
         }
@@ -184,6 +240,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "transcript",
         routes: Some(routes),
-        dependencies: &["transcript/event-driver", "transcript/payload-store", "transcript/room-search", "transcript/search-index", "transcript/workspace-state"],
+        dependencies: &["transcript/payload-store", "transcript/receipt-page", "transcript/reasoning-page", "transcript/workspace-state"],
     }
 }

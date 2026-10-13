@@ -1,4 +1,4 @@
-//! Read persisted transcript items without projecting live event state.
+//! Transcript item/search readers and durable sync projection from committed state.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
@@ -19,12 +19,16 @@ pub enum TranscriptError {
     MissingContent,
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("invalid stored object {table}/{id}")]
+    InvalidStoredState { table: String, id: String },
     #[error("transcript storage failed")]
     Store,
     #[error("this search result is unavailable")]
     SearchResultUnavailable,
     #[error("this chat is unavailable")]
     ChatUnavailable,
+    #[error("use one history cursor")]
+    HistoryCursor,
     #[error("search query is invalid")]
     InvalidSearch,
     #[error("transcript operation requires {0}")]
@@ -45,7 +49,17 @@ impl From<TranscriptStoreError> for TranscriptError {
 }
 
 impl From<StoreError> for TranscriptError {
-    fn from(_: StoreError) -> Self {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::InvalidSyncObject { scope, id } => {
+                Self::InvalidStoredState { table: scope, id }
+            }
+            _ => Self::Store,
+        }
+    }
+}
+impl From<rusqlite::Error> for TranscriptError {
+    fn from(_: rusqlite::Error) -> Self {
         Self::Store
     }
 }
@@ -56,8 +70,50 @@ pub fn pull_scope(
     agent: &str,
     after: i64,
 ) -> Result<Value, TranscriptError> {
+    let now = crate::transcript_runtime::observed_at()?;
+    let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
+        .open_read_only()
+        .map_err(|_| TranscriptError::Store)?;
     store.transaction_with(|transaction| {
-        TranscriptRepository::pull(transaction, scope, agent, after).map_err(TranscriptError::from)
+        let actor = TranscriptRepository::agent(transaction, agent)?;
+        let deleted = actor
+            .as_ref()
+            .is_none_or(|a| a.get("deletedAt").is_some_and(is_truthy));
+        let revision = transaction
+            .query_row(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                [agent],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        // An unchanged revision is authoritative even when a reasoning view
+        // contains an observation timestamp. Do not turn a read into new deltas.
+        let high=transaction.query_row("SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",[scope],|r|r.get::<_,i64>(0))?;
+        let hash=transaction.query_row("SELECT hash FROM sync_entities WHERE collection=?1 AND id='@revision' AND deleted=0",[scope],|r|r.get::<_,String>(0)).optional()?;
+        if after>0 && after>=high && hash.as_deref()==Some(studio_runtime_store::sha256_hex(revision.to_string().as_bytes()).as_str()) {
+            return Ok(json!({"workspaceId":studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?,"documents":[],"checkpoint":{"seq":high}}));
+        }
+        let payload = if deleted {
+            json!({})
+        } else {
+            crate::transcript_runtime::project(
+                transaction,
+                &analytics,
+                agent,
+                &crate::transcript_runtime::PageRequest::default(),
+                now,
+            )?
+        };
+        TranscriptRepository::pull_payload(
+            transaction,
+            scope,
+            after.max(0),
+            &payload,
+            deleted,
+            Some(revision),
+        )
+        .map_err(TranscriptError::from)
     })
 }
 
@@ -171,6 +227,7 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
             return Err(TranscriptError::SearchResultUnavailable);
         }
         let text = TranscriptRepository::full_text(&connection, &row)?
+            .filter(|text| !text.is_empty())
             .or_else(|| {
                 row.record
                     .get("text")
@@ -201,7 +258,7 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
         if !chat_room_available(&connection, &room)? {
             return Err(TranscriptError::ChatUnavailable);
         }
-        let deliveries = serde_json::from_str::<Value>(&deliveries)
+        serde_json::from_str::<Value>(&deliveries)
             .map_err(|_| invalid_stored("runtime_chat_messages", &id))?;
         return Ok(json!({"id":id,"room":room,"sender":sender,"text":text,
             "seq":sequence,"created":created,"deliveries":deliveries,
@@ -229,7 +286,8 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
     };
     let owner = record
         .get("rootId")
-        .or_else(|| record.get("leadId"))
+        .filter(|value| is_truthy(value))
+        .or_else(|| record.get("leadId").filter(|value| is_truthy(value)))
         .or_else(|| record.get("id"))
         .and_then(Value::as_str)
         .map(str::to_owned)
@@ -240,6 +298,7 @@ pub fn search_item(store: &RuntimeStore, identity: &str) -> Result<Value, Transc
     let text = record
         .get("text")
         .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
         .map(str::to_owned)
         .unwrap_or(serde_json::to_string_pretty(&record).map_err(|_| TranscriptError::Store)?);
     let object = record
@@ -343,7 +402,8 @@ pub fn search_work(
         return Err(TranscriptError::InvalidSearch);
     }
     let limit = limit.clamp(1, 100) as usize;
-    let connection = store.read().map_err(|_| TranscriptError::Store)?;
+    let mut reader = store.read().map_err(|_| TranscriptError::Store)?;
+    let connection = reader.transaction()?;
     let agents = Table::<AgentRecord>::new(&connection)
         .list()
         .map_err(|_| TranscriptError::Store)?;
@@ -394,7 +454,6 @@ pub fn search_work(
         let excerpt = excerpt(&body, query);
         found.push(json!({"id":id,"agent":agent,"type":"message","kind":kind,"reference":id,"excerpt":excerpt,"text":excerpt}));
     }
-    let needle = query.to_lowercase();
     for (table, kind, field) in [
         ("runtime_work", "work", "title"),
         ("runtime_complaints", "complaint", "title"),
@@ -410,7 +469,8 @@ pub fn search_work(
                 serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
             let root = record
                 .get("rootId")
-                .or_else(|| record.get("leadId"))
+                .filter(|value| is_truthy(value))
+                .or_else(|| record.get("leadId").filter(|value| is_truthy(value)))
                 .or_else(|| record.get("id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_stored(table, &stored.id))?;
@@ -418,7 +478,7 @@ pub fn search_work(
                 continue;
             }
             let serialized = serde_json::to_string(&record).map_err(|_| TranscriptError::Store)?;
-            if !serialized.to_lowercase().contains(&needle) {
+            if find_lowercase(&serialized, query).is_none() {
                 continue;
             }
             let excerpt = record
@@ -434,34 +494,109 @@ pub fn search_work(
             }));
         }
     }
+    let directory = crate::sync_entity_context::RoomDirectory::load(&connection)?;
+    let mut readable = std::collections::BTreeSet::new();
+    for room in studio_runtime_store::system_reads::all(&connection, "runtime_rooms")? {
+        if !chat_room_available(&connection, room["id"].as_str().unwrap_or_default())? {
+            continue;
+        }
+        let context = directory.for_room(&connection, &room, false)?;
+        let Some(view) = crate::sync_views::room_entity_view(&room, &context) else {
+            continue;
+        };
+        if let Some(caller) = agent_filter {
+            let members = view["members"].as_array().cloned().unwrap_or_default();
+            if !members.iter().any(|id| id == caller) {
+                continue;
+            }
+            if room["kind"] != "federated" {
+                if caller_root.is_none() || room["rootId"] == "all" {
+                    continue;
+                }
+                let foreign = members
+                    .iter()
+                    .any(|id| !allowed.contains(id.as_str().unwrap_or_default()));
+                let direct = room["radio"]["direct"] == true
+                    && members.iter().all(|id| {
+                        directory.agents().iter().any(|a| {
+                            a["id"] == *id
+                                && a["sharedRoomId"] == room["id"]
+                                && a["cwd"] == room["projectPath"]
+                        })
+                    });
+                if foreign
+                    && !(room["kind"] == "private"
+                        && members.len() == 2
+                        && (view.get("peerTeamId").is_some() || direct))
+                {
+                    continue;
+                }
+            }
+        }
+        if let Some(id) = room["id"].as_str() {
+            readable.insert(id.to_owned());
+        }
+    }
+    let mut messages=connection.prepare("SELECT id,room,sender,text FROM runtime_chat_messages WHERE instr(lower(text),lower(?1))>0 ORDER BY seq DESC LIMIT 1000")?;
+    for row in messages.query_map([query], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })? {
+        let (id, room, sender, text) = row?;
+        if readable.contains(&room) {
+            let excerpt = text.chars().take(500).collect::<String>();
+            found.push(json!({"id":id,"room":room,"agent":sender,"type":"room","kind":"Agent chat","excerpt":excerpt,"reference":id,"text":excerpt}));
+        }
+    }
     found.truncate(limit);
     Ok(json!({"results":found,"query":query,"limit":limit}))
 }
 
 fn excerpt(body: &str, query: &str) -> String {
-    if body.chars().count() <= 500 {
+    const TOKEN_LIMIT: usize = 30;
+    // Use the same Unicode lowercase rule as transcript search. Full casefold
+    // (for example Straße/STRASSE) is deliberately unsupported by both readers.
+    let token = |ch: char| ch.is_alphanumeric();
+    let mut tokens = Vec::new();
+    let mut start = None;
+    for (index, ch) in body.char_indices() {
+        if token(ch) {
+            if start.is_none() {
+                start = Some(index);
+            }
+        } else if let Some(begin) = start.take() {
+            tokens.push((begin, index));
+        }
+    }
+    if let Some(begin) = start {
+        tokens.push((begin, body.len()));
+    }
+    if tokens.len() <= TOKEN_LIMIT {
         return body.to_owned();
     }
-    let lower = body.to_lowercase();
-    let position = lower.find(&query.to_lowercase()).unwrap_or(0);
-    let start = body[..position.min(body.len())]
-        .char_indices()
-        .rev()
-        .nth(250)
-        .map_or(0, |(index, _)| index);
-    let end = body[start..]
-        .char_indices()
-        .nth(500)
-        .map_or(body.len(), |(offset, _)| start + offset);
-    let mut result = String::new();
-    if start > 0 {
-        result.push_str(" … ");
-    }
-    result.push_str(&body[start..end]);
-    if end < body.len() {
-        result.push_str(" … ");
-    }
-    result
+    let terms = query
+        .split(|ch| !token(ch))
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .collect::<std::collections::BTreeSet<_>>();
+    let center = tokens
+        .iter()
+        .position(|(start, end)| terms.contains(&body[*start..*end].to_lowercase()))
+        .unwrap_or(0);
+    let start = center
+        .saturating_sub(TOKEN_LIMIT / 2 - 1)
+        .min(tokens.len() - TOKEN_LIMIT);
+    let end = (start + TOKEN_LIMIT).min(tokens.len());
+    format!(
+        "{}{}{}",
+        if start > 0 { " … " } else { "" },
+        &body[tokens[start].0..tokens[end - 1].1],
+        if end < tokens.len() { " … " } else { "" }
+    )
 }
 
 fn project(
@@ -680,6 +815,30 @@ mod tests {
     use super::{hydrate_input, parent_projection};
     use serde_json::{Value, json};
     use studio_runtime_store::{TranscriptItem, TranscriptItemRecord};
+
+    #[test]
+    fn global_excerpt_uses_thirty_words_and_shared_lowercase_limit() {
+        let body = (0..60)
+            .map(|n| format!("word{n}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            super::excerpt(&body, "WORD40"),
+            format!(
+                " … {} … ",
+                (26..56)
+                    .map(|n| format!("word{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        );
+        assert_eq!(
+            super::find_lowercase("Straße", "STRASSE"),
+            None,
+            "named limit: Unicode lowercase is not Python full casefold"
+        );
+        assert_eq!(super::find_lowercase("ÉTÉ", "été"), Some(0));
+    }
 
     #[test]
     fn legacy_parent_text_is_hydrated_before_projection() {

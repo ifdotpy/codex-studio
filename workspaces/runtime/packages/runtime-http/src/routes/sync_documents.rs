@@ -104,17 +104,7 @@ pub(crate) async fn pull(
         let generation = store.generation().map_err(|_| ApiError::internal())?;
         if let Some(agent) = scope.strip_prefix("transcript:") {
             let mut response = transcript::pull_scope(&store, &scope, agent, after)
-                .map_err(|error| match error {
-                    transcript::TranscriptError::RequiresDependency(dependency) => ApiError::new(
-                        StatusCode::NOT_IMPLEMENTED,
-                        format!("Not implemented: requires {dependency}"),
-                    ),
-                    transcript::TranscriptError::InvalidStoredObject { table, id } => ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Invalid stored object {table}/{id}"),
-                    ),
-                    _ => ApiError::internal(),
-                })?;
+                .map_err(super::transcript::map_transcript_error)?;
             response["generation"] = json!(generation);
             if !validators.validate_stored("SyncPullResponse", &response)
                 || serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone())
