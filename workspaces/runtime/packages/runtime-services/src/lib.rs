@@ -47,6 +47,8 @@ pub mod voice;
 pub mod work_policy;
 pub mod work_write;
 pub mod workspace_files;
+pub mod workspace_ready;
+pub mod workspace_ready_git;
 pub mod workspace_views;
 
 #[cfg(test)]
