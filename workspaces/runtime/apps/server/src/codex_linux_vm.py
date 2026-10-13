@@ -348,12 +348,12 @@ timeout --kill-after=5 600 dpkg --configure -a || true
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd setfacl; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
 if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd acl
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi

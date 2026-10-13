@@ -10,6 +10,11 @@ from common import GuestError, MAX_LINE
 SOCKET = Path("/run/codex-studio/layr-admin.sock")
 
 
+class AdminChannelError(GuestError):
+    """The channel to the broker failed; the broker's own receipt holds the outcome. A caller that
+    keeps request receipts must not keep this one: a repeat of the ID asks the broker again."""
+
+
 async def admin_request(request_id, method, params, emit=None, *, socket_path=SOCKET):
     sent = False
     writer = None
@@ -25,7 +30,7 @@ async def admin_request(request_id, method, params, emit=None, *, socket_path=SO
         while True:
             line = await asyncio.wait_for(reader.readline(), 1810)
             if not line:
-                raise GuestError("outcome_unknown", "The admin connection closed before its reply")
+                raise AdminChannelError("outcome_unknown", "The admin connection closed before its reply")
             response = json.loads(line)
             if response.get("id") != request_id:
                 raise GuestError("outcome_unknown", "The admin reply identity differs")
@@ -37,7 +42,7 @@ async def admin_request(request_id, method, params, emit=None, *, socket_path=SO
                 await emit(response["event"], response.get("data"))
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
         code = "outcome_unknown" if sent else "unavailable"
-        raise GuestError(code, "The layr admin channel is unavailable") from exc
+        raise AdminChannelError(code, "The layr admin channel is unavailable") from exc
     finally:
         if writer is not None:
             writer.close()

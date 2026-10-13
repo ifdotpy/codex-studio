@@ -471,6 +471,26 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.call("project.exec", params, "op-exec"), result)
         self.assertEqual(forwarded, [("op-exec", "project.exec", params)])
 
+    async def test_a_lost_broker_channel_is_asked_again_with_the_same_id(self):
+        from layr_admin_client import AdminChannelError
+        calls = []
+
+        async def admin_request(request_id, method, params, emit=None):
+            calls.append(request_id)
+            if len(calls) == 1:
+                raise AdminChannelError("outcome_unknown", "The layr admin channel is unavailable")
+            return {"exitCode": 0, "stdout": "", "stderr": "", "reason": "exited"}
+
+        params = {"projectId": "app", "argv": ["id"]}
+        with patch("layr_admin_client.admin_request", admin_request):
+            with self.assertRaisesRegex(GuestError, "channel is unavailable"):
+                await self.call("project.exec", params, "op-lost")
+            # The repeat reaches the broker, whose own receipt decides; it is not the kept failure.
+            result = await self.call("project.exec", params, "op-lost")
+            self.assertEqual(await self.call("project.exec", params, "op-lost"), result)
+        self.assertEqual(calls, ["op-lost", "op-lost"])
+        self.assertEqual(result["exitCode"], 0)
+
     async def test_a_seed_expands_the_upload_once_and_the_broker_takes_it(self):
         forwarded = []
 
@@ -791,6 +811,41 @@ for line in sys.stdin:
             self.assertIn("error", response)
         with self.assertRaises(GuestError):
             await self.call("exec", {**self.command("pass"), "timeoutSeconds": -1})
+
+
+class SupervisorReasons(unittest.IsolatedAsyncioTestCase):
+    async def test_first_stop_reason_survives_an_overlapping_stop(self):
+        from supervisor import Supervisor
+
+        for first, second in (("output_limit", "timeout"), ("timeout", "output_limit")):
+            with self.subTest(first=first), tempfile.TemporaryDirectory() as temporary:
+                owner = Supervisor(Path(temporary), {})
+                started = asyncio.Queue()
+                release = asyncio.Event()
+
+                class Child:
+                    pid = 123
+                    returncode = None
+
+                    async def wait(self):
+                        started.put_nowait(True)
+                        await release.wait()
+                        self.returncode = -signal.SIGTERM
+                        return self.returncode
+
+                owner.child = Child()
+                try:
+                    with patch("supervisor.os.killpg"):
+                        first_stop = asyncio.create_task(owner.terminate(first))
+                        await asyncio.wait_for(started.get(), 5)
+                        second_stop = asyncio.create_task(owner.terminate(second))
+                        await asyncio.wait_for(started.get(), 5)
+                        release.set()
+                        await asyncio.gather(first_stop, second_stop)
+                    self.assertEqual(owner.reason, first)
+                finally:
+                    release.set()
+                    owner.db.close()
 
 
 if __name__ == "__main__":

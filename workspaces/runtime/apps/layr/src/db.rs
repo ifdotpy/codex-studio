@@ -347,7 +347,8 @@ impl Db {
             }
             "save.caches" => {
                 // Only the machine that made the state adds its caches (names and subvolume
-                // UUIDs, which a receiver checks).
+                // UUIDs, which a receiver checks). A record adds to the caches of the state and
+                // never drops one that an earlier record of the state gave it.
                 if let Some(st) = s("state") {
                     let row: Option<(String, String)> = tx
                         .query_row("SELECT rec, machine FROM states WHERE id=?1", params![st], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -355,8 +356,13 @@ impl Db {
                     if let Some((raw, machine)) = row {
                         if machine == rec.machine {
                             let mut v: serde_json::Value = serde_json::from_str(&raw)?;
-                            v["caches"] = d.get("caches").cloned().unwrap_or_default();
-                            v["cache_uuids"] = d.get("uuids").cloned().unwrap_or_default();
+                            for (key, field) in [("caches", "caches"), ("cache_uuids", "uuids")] {
+                                let mut all = v.get(key).and_then(|x| x.as_object()).cloned().unwrap_or_default();
+                                if let Some(new) = d.get(field).and_then(|x| x.as_object()) {
+                                    all.extend(new.clone());
+                                }
+                                v[key] = serde_json::Value::Object(all);
+                            }
                             v["cache_by"] = serde_json::json!(rec.actor.uid);
                             v["cache_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
                             tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
@@ -716,6 +722,37 @@ mod tests {
         db.derive(&rec(3, 30, other, a), &|_| true, local).unwrap();
         assert_eq!(db.config(&format!("stack.{line}")).unwrap(), Some(layers(b)));
         assert_eq!(db.config(&format!("stack.{line}@{other}")).unwrap(), Some(layers(a)));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn records_of_caches_add_to_the_caches_of_a_state() {
+        let dir = std::env::temp_dir().join(format!("layr-db-caches-{}", std::process::id()));
+        let db = Db::open(&dir).unwrap();
+        let st = "01a12290-0000-7000-8000-00000000c0c0";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        db.derive(&state_record(1, st, vec![]), &|_| true, machine).unwrap();
+        let caches = |seq: u64, path: &str, uuid: &str| {
+            let mut r = Record::new("save.caches");
+            r.id = format!("01a12290-0000-7000-8000-{:012}", seq);
+            r.machine = machine.into();
+            r.seq = seq;
+            r.time = seq as i64;
+            let snap = format!("{st}@{path}");
+            r.data = serde_json::json!({"state": st, "caches": {path: snap}, "uuids": {snap: uuid}, "shared": true});
+            r
+        };
+        // Two saves of caches on the same state (two seeded folders, one after the other).
+        db.derive(&caches(2, "chromium", "01a12290-0000-7000-8000-000000000001"), &|_| true, machine).unwrap();
+        db.derive(&caches(3, ".attar-cache", "01a12290-0000-7000-8000-000000000002"), &|_| true, machine).unwrap();
+        let s = db.state(st).unwrap().unwrap();
+        assert_eq!(s.caches.keys().map(|k| k.as_str()).collect::<Vec<_>>(), [".attar-cache", "chromium"]);
+        assert!(s.cache_shared);
+        for (path, uuid) in
+            [("chromium", "01a12290-0000-7000-8000-000000000001"), (".attar-cache", "01a12290-0000-7000-8000-000000000002")]
+        {
+            assert_eq!(db.cache_uuid(st, &format!("{st}@{path}")).unwrap().as_deref(), Some(uuid));
+        }
         let _ = std::fs::remove_file(&dir);
     }
 

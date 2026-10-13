@@ -19,7 +19,7 @@ import uuid
 
 from common import (GuestError, MAX_LINE, PORT, PROTOCOL, atomic_bytes,
                     atomic_json, bounded_lock, connect_db, decode, digest, identifier, integer,
-                    number, private_dir, process_identity, receipt, require, save_receipt)
+                    number, private_dir, process_identity, receipt, require, save_receipt, forget_receipt)
 from native import Native
 from upload import Uploads, sha, tree_space, upload_id
 
@@ -577,9 +577,15 @@ class Service:
                 return prior
 
             async def operation():
+                from layr_admin_client import AdminChannelError
                 try:
                     result = await self.dispatch(request_id, method, params, emit)
                     response = {"id": request_id, "result": result}
+                except AdminChannelError as exc:
+                    # The broker keeps its own receipt of this ID. Keeping this failure would answer
+                    # every repeat with it, also after the broker finished; a repeat asks the broker.
+                    forget_receipt(self.db, request_id)
+                    return {"id": request_id, "error": exc.object()}
                 except GuestError as exc:
                     response = {"id": request_id, "error": exc.object()}
                 except Exception:
