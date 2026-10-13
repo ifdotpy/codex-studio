@@ -37,9 +37,6 @@ async fn rename(
             "A name must have 1 to 80 characters",
         ));
     }
-    if name.is_none() && request_id.is_none() {
-        return Err(ApiError::validation(vec![Value::String("body".to_owned())]));
-    }
     let signature = rename_signature(&id, name.as_deref());
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {

@@ -50,7 +50,7 @@ fn validate_queue_action(body: &Value) -> Result<(), ApiError> {
             .and_then(Value::as_str)
             .is_some_and(|value| !value.is_empty())
     });
-    if matches!(action, "cancel" | "edit" | "first" | "send_now") && !has_id {
+    if matches!(action, "edit" | "first" | "send_now") && !has_id {
         return Err(ApiError::validation(vec![Value::String("body".into())]));
     }
     if action == "send_now"
