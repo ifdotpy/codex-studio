@@ -33,6 +33,7 @@ pub mod provider_session_task;
 pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
+pub mod radio;
 pub mod remote_transport;
 pub mod rules;
 pub mod scheduler;
