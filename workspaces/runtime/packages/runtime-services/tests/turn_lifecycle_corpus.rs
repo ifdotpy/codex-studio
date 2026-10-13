@@ -66,24 +66,19 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
     };
     let transition = case["transition"].as_str().expect("transition");
     match transition {
+        "reconcile" => lifecycle_transaction(store, |tx| SchedulerRepository::reconcile_obsolete_before_submit(tx,"agent",0,"attempt").map(|proceed| json!(!proceed))).map_err(|e|e.to_string()),
         "claim" => claim_intent(store, "agent", 0, "attempt", 10.0)
             .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
-        "submission" => lifecycle_transaction(store, |tx| {
-            SchedulerRepository::mark_submitted_identity(
-                tx,
-                "agent",
-                0,
-                "attempt",
-                case["ticket"].as_str().unwrap_or("ticket"),
-                "default",
-                1,
-                "thread",
-            )
-            .map(|value| json!(value))
-        })
-        .map(|value| json!(value))
-        .map_err(|e| e.to_string()),
+        "submission" | "reconcile_submission" => lifecycle_transaction(store, |tx| {
+            use studio_runtime_services::{account_worker::{commit_prepared_turn,preparation::{prepare_turn,PreparationInput}},scheduler::{TurnIntent,TurnEvent}};
+            use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
+            let agent = AgentRepository::get(tx,&AgentId::from("agent"))?.expect("seed agent");
+            let event = QueueEventRepository::get(tx,&QueueEventId::from("event"))?.expect("seed input");
+            let intent = TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:Some("thread".into()),cwd:Some("/fixture".into()),model:Some("fixture-model".into()),events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata:json!({})}]};
+            let prepared=prepare_turn(PreparationInput {intent:&intent,agent:&agent,state_root:store.root(),submitted_at:10.0}).map_err(studio_runtime_store::StoreError::SchemaMismatch)?;
+            commit_prepared_turn(tx,&intent,case["ticket"].as_str().unwrap_or("ticket"),1,&prepared.submission).map(|v|json!(v)).map_err(|e|match e {studio_runtime_services::account_worker::WorkerError::Store(e)=>e,_=>studio_runtime_store::StoreError::SchemaMismatch(e.to_string())})
+        }).map_err(|e|e.to_string()),
         "accepted" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
                 tx,
@@ -288,6 +283,14 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
     let mutations: Vec<Value> = serde_json::from_str(include_str!("turn_lifecycle/mutations.json"))
         .expect("mutation inventory");
     for mutation in mutations {
+        for witness in mutation["workerWitnesses"].as_array().into_iter().flatten() {
+            let name = witness.as_str().expect("worker witness name");
+            assert!(
+                include_str!("../src/account_worker/tests.rs")
+                    .contains(&format!("async fn {name}(")),
+                "missing worker witness {name}"
+            );
+        }
         for id in mutation["witnesses"]
             .as_array()
             .expect("mutation witnesses")
@@ -544,12 +547,15 @@ fn python_written_turn_lifecycle_corpus() {
                 .expect("malformed or conflicting stored evidence must be refused");
             assert!(
                 message
-                    == format!(
-                        "invalid stored sync object {}/{}",
-                        refusal["table"].as_str().expect("refusal table"),
-                        refusal["id"].as_str().expect("refusal id")
-                    ),
-                "error must locate table and stored id only"
+                    == refusal["message"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!(
+                            "invalid stored sync object {}/{}",
+                            refusal["table"].as_str().expect("refusal table"),
+                            refusal["id"].as_str().expect("refusal id")
+                        )),
+                "{id}: error must locate table and stored id only: {message}"
             );
             &expected["before"]
         } else {

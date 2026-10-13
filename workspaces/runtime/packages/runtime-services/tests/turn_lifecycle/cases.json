@@ -189,73 +189,6 @@
     "findings": ["B2"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -264,12 +197,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -291,35 +222,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "tier": "fast",
@@ -369,46 +271,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "fast",
@@ -472,46 +334,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "fast",
@@ -575,46 +397,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "fast",
@@ -672,46 +454,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "fast",
@@ -767,46 +509,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "fast",
@@ -1871,26 +1573,8 @@
         "pythonPresent": true,
         "rust": null,
         "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/modelEventProjection",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/transcriptItemId",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
         "expectedAbsent": true
       },
       {
@@ -1930,49 +1614,24 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
       }
     ],
     "tier": "fast",
     "return": true,
-    "replay": true
+    "replay": true,
+    "contextProjection": "context_preparation_unported"
   },
   {
     "id": "started_notice",
@@ -2175,73 +1834,6 @@
     "replay": true,
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -2250,12 +1842,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -2277,35 +1867,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "tier": "full",
@@ -2355,46 +1916,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -2458,46 +1979,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -2561,46 +2042,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -2658,46 +2099,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -2753,46 +2154,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -4011,46 +3372,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -4103,46 +3424,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -4195,46 +3476,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -4287,46 +3528,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -4379,46 +3580,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -4441,64 +3602,6 @@
     "findings": ["B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4507,12 +3610,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -4534,35 +3635,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -4580,73 +3652,6 @@
     "findings": ["B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4655,12 +3660,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -4682,35 +3685,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -4728,73 +3702,6 @@
     "findings": ["B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4803,12 +3710,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -4830,35 +3735,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -4876,73 +3752,6 @@
     "findings": ["B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4951,12 +3760,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -4978,35 +3785,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -5024,73 +3802,6 @@
     "findings": ["B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -5099,12 +3810,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -5126,35 +3835,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/error",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/status",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -5738,46 +4418,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -5833,46 +4473,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "agent": {
@@ -5893,53 +4493,6 @@
     "findings": ["A9", "B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -5948,12 +4501,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -5975,15 +4526,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -6004,53 +4546,6 @@
     "findings": ["A9", "B6"],
     "expectedDifferences": [
       {
-        "path": "/runtime_agents/0/record/lastCompletedTurnError",
-        "python": null,
-        "pythonPresent": true,
-        "rust": {
-          "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-        },
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/nativeFailureHold",
-        "python": null,
-        "pythonPresent": false,
-        "rust": true,
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_agents/0/record/startAttempt/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
-        "path": "/runtime_execution_attempts/0/record/executionOutcome",
-        "python": null,
-        "pythonPresent": false,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -6059,12 +4554,10 @@
             "input": {
               "agent": "agent",
               "epoch": 0,
-              "error": {
-                "message": "Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."
-              },
+              "error": null,
               "nativeError": null,
               "nativeStatus": "completed",
-              "status": "failed",
+              "status": "completed",
               "turn": "turn"
             },
             "result": true
@@ -6086,15 +4579,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/lastCompletedTurnStatus",
-        "python": "completed",
-        "pythonPresent": true,
-        "rust": "failed",
-        "rustPresent": true,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification"
       }
     ],
     "agent": {
@@ -6356,26 +4840,8 @@
         "pythonPresent": true,
         "rust": null,
         "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/modelEventProjection",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/transcriptItemId",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
         "expectedAbsent": true
       },
       {
@@ -6415,49 +4881,24 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
       }
     ],
     "replay": true,
     "tier": "fast",
-    "return": true
+    "return": true,
+    "contextProjection": "context_preparation_unported"
   },
   {
     "id": "interrupt_accepted",
@@ -6760,26 +5201,8 @@
         "pythonPresent": true,
         "rust": null,
         "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/modelEventProjection",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true
-      },
-      {
-        "path": "/runtime_event_meta/0/record/transcriptItemId",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
+        "deviation": "context_preparation_unported",
+        "entrypoint": "prepare_turn",
         "expectedAbsent": true
       },
       {
@@ -6819,44 +5242,18 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "record_user_submission",
-        "expectedAbsent": true,
-        "pythonId": "agent:event"
+        "path": "/runtime_operation_receipts/0",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "id": "provider-submission:174c52024e064019072b9a5d847cec8773703295bdb32894d22eb2a9bf6d054a",
+          "result": {
+            "status": "written"
+          },
+          "signature": "<validated-signature>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
       }
     ],
     "probe": {
@@ -6864,7 +5261,8 @@
     },
     "tier": "full",
     "return": true,
-    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt",
+    "contextProjection": "context_preparation_unported"
   },
   {
     "id": "claim_queued_conflict",
@@ -7131,7 +5529,8 @@
     ],
     "expectRefusal": {
       "table": "runtime_agents",
-      "id": "agent"
+      "id": "agent",
+      "message": "invalid stored object runtime_agents/agent"
     },
     "expectedDifferences": [],
     "tier": "full",
@@ -7665,46 +6064,6 @@
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
-      },
-      {
-        "path": "/runtime_items/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_indexed/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
-      },
-      {
-        "path": "/runtime_search_rows/0",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "notification_dispatch_unwired",
-        "entrypoint": "dispatch_notification",
-        "expectedAbsent": true,
-        "pythonId": "agent:native-notice:error:turn"
       }
     ],
     "tier": "full",
@@ -8166,7 +6525,8 @@
     "seedRecovery": true,
     "findings": ["A6", "B6"],
     "tier": "fast",
-    "return": null
+    "return": null,
+    "expectedDifferences": []
   },
   {
     "id": "rejected_busy",
@@ -8297,7 +6657,8 @@
     "phase": "accepted",
     "seedRecovery": "restart",
     "findings": ["A6", "B6"],
-    "return": null
+    "return": null,
+    "expectedDifferences": []
   },
   {
     "id": "started_notice__active_tools",
@@ -8325,6 +6686,244 @@
     "removeAfterRecovery": ["startAttempt"],
     "tier": "fast",
     "return": null,
+    "expectedDifferences": [],
+    "state": "recovered_unknown"
+  },
+  {
+    "id": "reconcile_resolved_idle",
+    "transition": "reconcile",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": false
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": true,
+    "tier": "fast",
     "expectedDifferences": []
+  },
+  {
+    "id": "reconcile_resolved_active",
+    "transition": "reconcile",
+    "state": "running",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": true
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": true,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "reconcile_preserves_selected_progress",
+    "transition": "reconcile",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "events": ["event", "later"]
+    },
+    "event": {
+      "kind": "agent_message",
+      "text": "{\"sender\": \"sender\", \"room\": \"room\", \"importance\": \"progress\", \"progress_key\": \"task\", \"progress_version\": 1, \"text\": \"progress\"}"
+    },
+    "extraEvents": [
+      {
+        "id": "later",
+        "kind": "agent_message",
+        "text": "{\"sender\": \"sender\", \"room\": \"room\", \"importance\": \"progress\", \"progress_key\": \"task\", \"progress_version\": 2, \"text\": \"progress\"}",
+        "metadata": {
+          "preserveProgress": true,
+          "earlierProgressUpdates": 3
+        }
+      }
+    ],
+    "return": false,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "submit_retires_resolved_complaint",
+    "transition": "reconcile_submission",
+    "state": "queued_pending",
+    "phase": "claimed",
+    "attempt": {
+      "activeAtReservation": false
+    },
+    "event": {
+      "kind": "complaint",
+      "text": "{\"complaints\": [{\"complaint_id\": \"resolved\"}]}"
+    },
+    "related": [
+      {
+        "table": "complaints",
+        "record": {
+          "id": "resolved",
+          "leadId": "agent",
+          "recipient": "agent",
+          "status": "resolved",
+          "responses": []
+        }
+      }
+    ],
+    "return": false,
+    "tier": "fast",
+    "expectedDifferences": []
+  },
+  {
+    "id": "misalignment_notice",
+    "transition": "interrupted",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "misalignmentPolicyViolation"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "misalignmentPolicyViolation",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "misalignmentPolicyViolation",
+                "message": "denied"
+              },
+              "nativeStatus": "interrupted",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "misalignmentPolicyViolation",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "interrupted"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
+  },
+  {
+    "id": "flex_notice",
+    "transition": "failed",
+    "phase": "accepted",
+    "state": "running",
+    "turn": {
+      "error": {
+        "message": "denied",
+        "codexErrorInfo": "flexUnavailable"
+      }
+    },
+    "findings": ["A8"],
+    "expectedDifferences": [
+      {
+        "path": "/runtime_execution_attempts/0/record/receipts",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "terminal": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "error": {
+                "codexErrorInfo": "flexUnavailable",
+                "message": "denied"
+              },
+              "nativeError": {
+                "codexErrorInfo": "flexUnavailable",
+                "message": "denied"
+              },
+              "nativeStatus": "failed",
+              "status": "failed",
+              "turn": "turn"
+            },
+            "result": true
+          },
+          "terminalInput": {
+            "input": {
+              "agent": "agent",
+              "epoch": 0,
+              "params": {
+                "threadId": "thread",
+                "turn": {
+                  "error": {
+                    "codexErrorInfo": "flexUnavailable",
+                    "message": "denied"
+                  },
+                  "id": "turn",
+                  "status": "failed"
+                }
+              }
+            },
+            "result": true
+          }
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      }
+    ],
+    "tier": "fast",
+    "return": true,
+    "replay": true
   }
 ]

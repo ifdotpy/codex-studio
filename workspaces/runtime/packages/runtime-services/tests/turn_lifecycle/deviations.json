@@ -12,33 +12,10 @@
       "/runtime_execution_attempts/*/record/receipts",
       "/runtime_execution_attempts/*/record/requestTicket",
       "/runtime_agents/*/record/startAttempt/interrupt",
-      "/runtime_execution_attempts/*/record/interrupt"
+      "/runtime_execution_attempts/*/record/interrupt",
+      "/runtime_operation_receipts/*"
     ],
     "returnContract": "Python callbacks are compared by first-call row effects; their raw results are reported. Rust entry-point return values are pinned per case. Rust receipt replay alone must return the saved first result with zero total changes; changed content is refused without writes. Python callbacks have no corresponding idempotent receipt contract."
-  },
-  "notification_dispatch_unwired": {
-    "approvedClass": "a",
-    "reason": "Transcript and context writing is owned by notification dispatch and not yet called by the lifecycle; completed turns use the named HISTORY_UNAVAILABLE agent failure while execution history retains the native outcome.",
-    "entrypoints": ["record_user_submission", "dispatch_notification"],
-    "fields": [
-      "/runtime_agents/*/record/error",
-      "/runtime_agents/*/record/lastCompletedTurnError",
-      "/runtime_agents/*/record/lastCompletedTurnStatus",
-      "/runtime_agents/*/record/nativeFailureHold",
-      "/runtime_agents/*/record/startAttempt/executionOutcome",
-      "/runtime_agents/*/record/status",
-      "/runtime_event_meta/*/record/contextManifest",
-      "/runtime_event_meta/*/record/modelEventProjection",
-      "/runtime_event_meta/*/record/transcriptItemId",
-      "/runtime_execution_attempts/*/record/executionOutcome",
-      "/runtime_items/*",
-      "/runtime_search/*",
-      "/runtime_search_indexed/*",
-      "/runtime_search_rows/*",
-      "/sync_entities/*/payload/value/error",
-      "/sync_entities/*/payload/value/lastCompletedTurnStatus",
-      "/sync_entities/*/payload/value/status"
-    ]
   },
   "durable_reconciliation_hold": {
     "approvedClass": "b",
@@ -114,5 +91,17 @@
   "bounded-open-streams": {
     "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
     "fields": ["/entryResult"]
+  },
+  "context_preparation_unported": {
+    "approvedClass": "a",
+    "reason": "Dynamic start-time context is independently captured from Python. Only its appended text and verified derived search postings are projected out of the Python comparison; identity, base input, transcript links, terminal fields and search metadata remain exact. The Rust snapshot is never projected.",
+    "entrypoints": ["prepare_turn"],
+    "fields": [
+      "/runtime_event_meta/*/record/contextManifest",
+      "/runtime_event_meta/*/record/modelEventProjection",
+      "/runtime_items/*/record/text",
+      "/runtime_search/*/body",
+      "/runtime_search_next_postings/*"
+    ]
   }
 }

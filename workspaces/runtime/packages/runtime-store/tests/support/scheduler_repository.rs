@@ -283,8 +283,11 @@ fn deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck() {
         )
         .expect("agent deletion writes");
     let transaction = connection.transaction().expect("claim begins");
-    assert!(SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 1)
-        .expect("deleted agents are ordinary skipped candidates").is_none());
+    assert!(
+        SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 1)
+            .expect("deleted agents are ordinary skipped candidates")
+            .is_none()
+    );
     transaction
         .rollback()
         .expect("deleted agent claim rolls back");

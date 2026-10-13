@@ -30,6 +30,8 @@ use tokio::{
     sync::{Mutex, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
+pub mod callback;
+pub(crate) mod history;
 pub mod preparation;
 mod store;
 
@@ -59,6 +61,8 @@ pub enum WorkerError {
     TaskFailed,
     #[error("account evidence capacity exhausted; recovery required")]
     Capacity,
+    #[error("provider callback response is unresolved; recovery required")]
+    CallbackUnknown,
 }
 
 /// Share one bridge among all account workers of a runtime. The permit bounds
@@ -201,6 +205,7 @@ pub async fn start_account_worker(
             .collect(),
         streams: NotificationStreamBuffer::default(),
         deferred: VecDeque::new(),
+        callbacks: BTreeMap::new(),
         effects: VecDeque::new(),
         closing: false,
     };
@@ -225,11 +230,18 @@ struct Pending {
     operation: String,
 }
 impl Pending {
-    fn method(&self) -> Method {
-        Method::from_wire(&self.method).expect("pending methods are validated on recovery")
+    fn method(&self) -> Result<Method, WorkerError> {
+        Method::from_wire(&self.method).ok_or_else(|| {
+            StoreError::InvalidSyncObject {
+                scope: "account_worker".into(),
+                id: self.operation.clone(),
+            }
+            .into()
+        })
     }
 }
 enum Effect {
+    Callback(studio_runtime_process::EventCursor, Frame),
     Submit(TurnIntent),
     Interrupt {
         agent: String,
@@ -253,6 +265,7 @@ struct Worker {
     deferred: VecDeque<JournalEntry>,
     effects: VecDeque<Effect>,
     closing: bool,
+    callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
@@ -271,6 +284,7 @@ impl Worker {
             }
             if let Some(effect) = self.effects.pop_front() {
                 match effect {
+                    Effect::Callback(cursor, frame) => self.answer_callback(cursor, frame).await?,
                     Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
                     Effect::Interrupt {
                         agent,
@@ -338,7 +352,7 @@ impl Worker {
         &mut self,
         intent: TurnIntent,
         method: Method,
-        interrupt_turn: Option<String>,
+        interrupt_turn: Option<(String, i64)>,
     ) -> Result<(), WorkerError> {
         if self.closing {
             return Ok(());
@@ -346,17 +360,27 @@ impl Worker {
         let for_params = intent.clone();
         let turn = interrupt_turn.clone();
         let params = self
-            .db(move |store| store::params(store, &for_params, method, turn.as_deref()))
+            .db(move |store| {
+                store::params(
+                    store,
+                    &for_params,
+                    method,
+                    turn.as_ref().map(|(turn, _)| turn.as_str()),
+                )
+            })
             .await?;
         let Some((params, submission)) = params else {
             return Ok(());
         };
-        let operation = format!(
+        let mut operation = format!(
             "account:{}:{}:{}",
             self.account,
             intent.attempt_id,
             method.as_str()
         );
+        if let Some((_, stop_epoch)) = &interrupt_turn {
+            operation.push_str(&format!(":stop:{stop_epoch}"));
+        }
         let prior = operation.clone();
         if self
             .db(move |store| store::was_submitted(store, &prior))
@@ -393,7 +417,7 @@ impl Worker {
                     store,
                     &save_context,
                     &recovery,
-                    interrupt_turn.as_deref(),
+                    interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
                     submission.as_ref(),
                 )
             })
@@ -430,7 +454,10 @@ impl Worker {
         Ok(())
     }
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {
-        let effect = self.db(move |store| store::stop(store, &agent)).await?;
+        let account = self.account.clone();
+        let effect = self
+            .db(move |store| store::stop(store, &account, &agent))
+            .await?;
         if let Some(effect) = effect {
             self.push(effect)?;
         }
@@ -445,8 +472,8 @@ impl Worker {
         let intent = self
             .db(move |store| store::interrupt_intent(store, &agent, &thread))
             .await?;
-        if let Some(intent) = intent {
-            self.submit(intent, Method::TurnInterrupt, Some(turn))
+        if let Some((intent, stop_epoch)) = intent {
+            self.submit(intent, Method::TurnInterrupt, Some((turn, stop_epoch)))
                 .await?;
         }
         Ok(())
@@ -461,6 +488,26 @@ impl Worker {
     async fn event(&mut self, event: SessionEvent) -> Result<(), WorkerError> {
         let reclassify = !event.outcomes.is_empty();
         for outcome in event.outcomes {
+            if let SessionOutcome::Write {
+                operation_id,
+                ticket: None,
+                outcome,
+                ..
+            } = &outcome
+                && let Some(cursor) = self.callbacks.remove(&operation_id.0)
+            {
+                let operation = operation_id.0.clone();
+                let written = *outcome == WriteOutcome::Written;
+                self.db(move |store| store::callback_written(store, &operation, written))
+                    .await?;
+                if !written {
+                    return Err(WorkerError::CallbackUnknown);
+                }
+                if !self.closing {
+                    self.control.settled(cursor).await?;
+                }
+                continue;
+            }
             let ticket = match &outcome {
                 SessionOutcome::Write { ticket, .. } => ticket.as_ref(),
                 SessionOutcome::Resolved { ticket, .. } => Some(ticket),
@@ -512,13 +559,45 @@ impl Worker {
         if let Some(effect) = effect {
             self.push(effect)?;
         }
-        if !self.closing {
+        if let JournalPayload::Frame(frame) = &entry.payload
+            && let Some(response) = callback::response(frame)
+        {
+            self.push(Effect::Callback(cursor, response))?;
+        } else if !self.closing {
             let control = self.control.clone();
             if control.settled(cursor).await.is_err() {
                 self.closing = true;
                 self.control.cancel();
             }
         }
+        Ok(())
+    }
+    async fn answer_callback(
+        &mut self,
+        cursor: studio_runtime_process::EventCursor,
+        frame: Frame,
+    ) -> Result<(), WorkerError> {
+        let operation = format!(
+            "callback:{}:{}:{}",
+            self.account, self.generation.0, cursor.0
+        );
+        let prepared = self
+            .control
+            .prepare_frame(OperationId(operation.clone()), &frame)?;
+        let key = operation.clone();
+        let admission = self
+            .db(move |store| store::callback_admission(store, &key))
+            .await?;
+        if admission {
+            self.control.settled(cursor).await?;
+            return Ok(());
+        }
+        if self.callbacks.len() >= MAX_PENDING_RESPONSES {
+            return Err(WorkerError::Capacity);
+        }
+        self.callbacks.insert(operation, cursor);
+        let control = self.control.clone();
+        self.drive(control.submit_frame(prepared)).await?;
         Ok(())
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
@@ -565,3 +644,40 @@ async fn cancelled(stop: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests;
+
+/// Durable submission boundary shared by account transport and lifecycle replay.
+/// The caller owns the transaction, including canonical agent publication.
+pub fn commit_prepared_turn(
+    tx: &studio_runtime_store::Transaction<'_>,
+    intent: &TurnIntent,
+    request_id: &str,
+    generation: u64,
+    submission: &crate::notification_dispatch::PreparedSubmission,
+) -> Result<bool, WorkerError> {
+    let replay = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
+        .is_some_and(|a| a["receipts"]["submission"].is_object());
+    let may_submit = replay
+        || SchedulerRepository::reconcile_obsolete_before_submit(
+            tx,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+        )?;
+    if !may_submit {
+        return Ok(false);
+    }
+    if !SchedulerRepository::mark_submitted_identity(
+        tx,
+        &intent.agent_id,
+        intent.epoch,
+        &intent.attempt_id,
+        request_id,
+        &intent.account_key,
+        generation,
+        intent.thread_id.as_deref().unwrap_or(""),
+    )? {
+        return Ok(false);
+    }
+    crate::notification_dispatch::record_user_submission(tx, &intent.agent_id, submission)?;
+    Ok(true)
+}

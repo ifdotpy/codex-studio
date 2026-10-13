@@ -187,12 +187,28 @@ pub(crate) fn settle_terminal_in_transaction(
         identity.epoch,
         &identity.attempt_id,
         turn_id,
-        status,
-        error,
+        status.clone(),
+        error.clone(),
         native_status,
         params["turn"].get("error"),
     )?;
     if result {
+        if let Some(agent) = agent.as_ref() {
+            crate::account_worker::history::terminal(
+                transaction,
+                agent,
+                turn_id,
+                match status {
+                    AgentStatus::Failed => "failed",
+                    AgentStatus::Interrupted => "interrupted",
+                    _ => "completed",
+                },
+                error.as_ref(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64()),
+            )?;
+        }
         ExecutionHistoryRepository::save_receipt(
             transaction,
             &identity.attempt_id,

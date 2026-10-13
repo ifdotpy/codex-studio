@@ -304,7 +304,14 @@ impl TranscriptRepository {
                 transaction,
                 id,
                 agent,
-                record.get("role").and_then(Value::as_str).unwrap_or(""),
+                if record["role"] == "system" {
+                    record
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("system")
+                } else {
+                    record.get("role").and_then(Value::as_str).unwrap_or("")
+                },
                 text,
             )?;
         } else {

@@ -106,7 +106,7 @@ TABLES = (
     "runtime_event_meta", "runtime_items", "runtime_item_fulltext", "runtime_context_manifests", "runtime_context_reminders",
     "runtime_budget", "runtime_budget_usage", "runtime_requests", "runtime_tasks", "runtime_complaints", "runtime_operation_receipts",
     "sync_entities", "sync_documents", "sync_versions", "runtime_search", "runtime_search_rows",
-    "runtime_search_indexed", "runtime_search_next_meta",
+    "runtime_search_indexed", "runtime_search_next_meta", "runtime_search_rollout",
 )
 TIMES = {"created", "createdAt", "created_at", "finished", "at", "lastEvent", "reconciledAt", "updated", "updatedAt", "acceptedAt", "enqueuedAt", "dispatchPickedAt", "observedAt"}
 _PRESTATES = {}
@@ -196,6 +196,18 @@ def snapshot(root, tables=TABLES, ordered_tables=("runtime_items",)):
                 for field in ("record", "payload", "result"):
                     if field in record and record[field] is not None:
                         record[field] = json.loads(record[field])
+                if tables == TABLES and table == "runtime_operation_receipts" and record["id"].startswith("provider-submission:"):
+                    item_row = db.execute("SELECT agent,record,created FROM runtime_items WHERE json_extract(record,'$.role')='user'").fetchone()
+                    agent, item_raw, created = item_row
+                    item = json.loads(item_raw)
+                    text = item["text"]
+                    signature_input = dict(agent=agent,firstEventId=item["inputs"][0]["id"],submittedAt=item["at"],createdAt=created,record=item,text=text,inputTexts=[v["text"] for v in item["inputs"]])
+                    # Rust serializes integral f64 values with a decimal; retain the same numeric shape.
+                    signature_input["submittedAt"] = float(signature_input["submittedAt"])
+                    signature_input["createdAt"] = float(signature_input["createdAt"])
+                    digest = hashlib.sha256(json.dumps(signature_input,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+                    assert record["signature"] == digest, "invalid submission signature"
+                    record["signature"] = "<validated-signature>"
                 inspect(record, (table, *(str(record[k]) for k in keys)))
                 if table == "sync_entities":
                     record["hash"] = hashlib.sha256(json.dumps(normalize(record["payload"]), sort_keys=True).encode()).hexdigest()
@@ -344,8 +356,15 @@ def seed(runtime, case):
         runtime.put(db, "agents", agent)
         if case.get("event"):
             for key, value in case["event"].items():
-                assert key in {"status", "text", "epoch", "error", "turn_id"}
+                assert key in {"kind", "status", "text", "epoch", "error", "turn_id"}
                 db.execute('UPDATE runtime_events SET "' + key + '"=? WHERE id=\'event\'', (value,))
+        for extra in case.get("extraEvents", []):
+            runtime.enqueue(db, agent, extra["kind"], extra["text"], extra["id"])
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id=?", (extra["id"],))
+            if "metadata" in extra:
+                db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)", (extra["id"], json.dumps(extra["metadata"])))
+        for related in case.get("related", []):
+            runtime.put(db, related["table"], related["record"])
         if case.get("run"):
             import codex_execution
             run = codex_execution._load(db, "runs", "run:attempt")
@@ -415,11 +434,19 @@ def transition(runtime, case):
                 runtime.corpus_result = recovery.adopt_restart_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"})
             else:
                 runtime.corpus_result = recovery.adopt_transport_turn(runtime,agent,None,server,{"id":"turn","status":"inProgress"},None)
+    elif action in {"reconcile", "reconcile_submission"}:
+        from codex_wakeups import reconcile_start
+        with runtime.db() as db:
+            rows = [dict(db.execute("SELECT * FROM runtime_events WHERE id=?", (key,)).fetchone()) for key in agent["startAttempt"]["events"]]
+            retired = reconcile_start(runtime, db, agent, rows)
+            runtime.corpus_result = not retired if action == "reconcile_submission" else retired
     elif action == "claim":
         with patch.object(codex_runtime, "uid", lambda:"attempt"):
             runtime.corpus_result = runtime.dispatch_candidates("agent")
     elif action == "submission":
-        capture_submission(runtime)
+        captured = capture_submission(runtime)
+        inputs = captured["kwargs"]["inputs"]
+        runtime.corpus_preparation = {"itemId":"agent:" + inputs[0]["id"],"baseText":runtime.model_event_text(inputs),"fullText":captured["args"][3]}
         runtime.corpus_result = {"boundary":"before_provider_submission"}
     elif action.startswith("interrupt_"):
         class InterruptProvider:
@@ -434,6 +461,38 @@ def transition(runtime, case):
     else:
         raise AssertionError("unimplemented oracle transition " + action)
     return runtime
+
+
+def without_unported_context(snapshot, preparation):
+    """Project only independently captured start-time context and its text indexes.
+
+    IDs, roles, links, times, input excerpts, statuses and search metadata remain
+    exact. A wrong base input still differs; the Rust snapshot is never projected.
+    """
+    result = copy.deepcopy(snapshot)
+    item_id, base, full = (preparation[key] for key in ("itemId", "baseText", "fullText"))
+    assert full.startswith(base) and (full == base or full[len(base):].startswith("\n\n"))
+    item = next(row for row in result["runtime_items"] if row["id"] == item_id)
+    assert item["record"]["text"] == full[:20000]
+    assert len(full) <= 20000, "add an explicit fulltext projection witness before expanding this contract"
+    item["record"]["text"] = base
+    for row in result["runtime_search"]:
+        if row["id"] == item_id:
+            assert row["body"] == full
+            row["body"] = base
+    meta = next((row for row in result["runtime_search_next_meta"] if row["id"] == item_id), None)
+    if meta:
+        rowid = meta["search_rowid"]
+        with sqlite3.connect(":memory:") as db:
+            db.execute("CREATE VIRTUAL TABLE projection USING fts5(body,tokenize='unicode61')")
+            db.execute("CREATE VIRTUAL TABLE words USING fts5vocab(projection,'instance')")
+            db.execute("INSERT INTO projection(rowid,body) VALUES (?,?)", (rowid, full))
+            full_postings = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM words ORDER BY 1,2,3,4")]
+            assert [row for row in result["runtime_search_next_postings"] if row[1] == rowid] == full_postings
+            db.execute("UPDATE projection SET body=? WHERE rowid=?", (base,rowid))
+            base_postings = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM words ORDER BY 1,2,3,4")]
+        result["runtime_search_next_postings"] = sorted([row for row in result["runtime_search_next_postings"] if row[1] != rowid] + base_postings)
+    return result
 
 
 class LifecycleCases:
@@ -455,7 +514,7 @@ class LifecycleCases:
         runtime, case = self.runtime, command["case"]
         runtime.close_notification_database()
         runtime.__dict__.pop("_agent_records_cache", None)
-        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","expectRefusal") if k in case}}, sort_keys=True)
+        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","removeAfterRecovery","extraEvents","related","expectRefusal") if k in case}}, sort_keys=True)
         if key not in self.seeds:
             with sqlite3.connect(runtime.db_path) as db:
                 self.pristine.backup(db)
@@ -486,7 +545,10 @@ class LifecycleCases:
         if case.get("afterEventText"):
             with self.runtime.db() as db:
                 db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
-        return {"before":before, "after":snapshot(self.runtime.root), "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
+        after = snapshot(self.runtime.root)
+        if case.get("contextProjection") == "context_preparation_unported":
+            after = without_unported_context(after, self.runtime.corpus_preparation)
+        return {"before":before, "after":after, "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
 
     def close(self):
         if self.runtime is not None:
@@ -506,6 +568,9 @@ def main():
          patch.object(codex_runtime, "_RuntimeWalKeeper", lambda *a: None):
         template = pathlib.Path(tempfile.mkdtemp(prefix="lifecycle-schema-"))
         initialized = QuietRuntime(template, lambda *_a, **_kw: None)
+        with initialized.db() as db:
+            # Match the notification corpus: materialize the next-index schema on both sides.
+            db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
         initialized.close()
         lifecycle = LifecycleCases(template)
         for line in sys.stdin:

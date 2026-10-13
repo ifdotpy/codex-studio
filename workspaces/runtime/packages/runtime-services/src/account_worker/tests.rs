@@ -44,6 +44,7 @@ struct Peer {
     stop: Shutdown,
     clock: SessionClock,
     cursor: u64,
+    ready: watch::Receiver<bool>,
 }
 impl Peer {
     fn new() -> Self {
@@ -65,6 +66,7 @@ impl Peer {
             }),
             initialization: InitializationStatus::AwaitingReply,
         });
+        let (ready_tx, ready) = watch::channel(false);
         let task = tokio::spawn(async move {
             let _status = status;
             loop {
@@ -75,6 +77,7 @@ impl Peer {
                         reply,
                         observed,
                     } => {
+                        let initialized = write.message()["method"] == "initialized";
                         let result = match write.message()["method"].as_str() {
                             Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
                             Some("initialized") => CommandReceipt::Written {
@@ -89,6 +92,9 @@ impl Peer {
                         };
                         let _ignored = reply.send(result);
                         tokio::select! {biased; _=cancelled(&mut stopped)=>break, _=observed=>{}}
+                        if initialized {
+                            ready_tx.send_replace(true);
+                        }
                     }
                     AdapterCommand::Ack { cursor, reply } => {
                         let _ignored = reply.send(CommandReceipt::Acknowledged(cursor));
@@ -112,10 +118,11 @@ impl Peer {
             stop,
             clock: SessionClock::default(),
             cursor: 0,
+            ready,
         }
     }
     async fn worker(&self, bridge: StoreBridge) -> AccountHandle {
-        start_account_worker(
+        let worker = start_account_worker(
             bridge,
             "default".into(),
             self.factory.clone(),
@@ -139,10 +146,21 @@ impl Peer {
             },
         )
         .await
-        .unwrap()
+        .unwrap();
+        let mut ready = self.ready.clone();
+        while !*ready.borrow_and_update() {
+            ready.changed().await.unwrap();
+        }
+        worker
+    }
+    async fn next_write(&mut self) -> Wire {
+        tokio::time::timeout(std::time::Duration::from_secs(120), self.writes.recv())
+            .await
+            .expect("provider write deadline")
+            .expect("worker submits request")
     }
     async fn write(&mut self, method: &str) -> Value {
-        let wire = self.writes.recv().await.expect("worker submits request");
+        let wire = self.next_write().await;
         assert_eq!(wire.value["method"], method);
         let _ignored = wire.receipt.send(CommandReceipt::Written {
             remote_id: None,
@@ -170,7 +188,11 @@ impl Peer {
     }
     async fn acknowledged(&mut self, cursor: u64) {
         loop {
-            let got = self.acks.recv().await.unwrap().0;
+            let got = tokio::time::timeout(std::time::Duration::from_secs(120), self.acks.recv())
+                .await
+                .expect("settlement deadline")
+                .expect("session acknowledges")
+                .0;
             if got >= cursor {
                 assert_eq!(got, cursor);
                 break;
@@ -307,7 +329,30 @@ impl State {
         let resume = peer.write("thread/resume").await;
         peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
             .await;
-        peer.write("turn/start").await
+        let wire = peer.next_write().await;
+        assert_eq!(wire.value["method"], "turn/start");
+        let operation = wire.value["id"].as_str().unwrap().to_owned();
+        self.bridge
+            .run(move |store| {
+                store.transaction_with(|tx| {
+                    assert!(
+                        store::receipt(tx, &operation, "submitted")?.is_some(),
+                        "Submitted must commit before transport admission"
+                    );
+                    Ok::<_, WorkerError>(())
+                })?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        wire.receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .ok()
+            .expect("write receipt receiver");
+        wire.value
     }
 }
 impl Drop for State {
@@ -453,7 +498,7 @@ async fn duplicate_stale_and_completion_before_reply_preserve_order() {
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]
-async fn stop_queued_input_prevents_provider_admission() {
+async fn cancel_queued_input_prevents_provider_admission() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -464,7 +509,7 @@ async fn stop_queued_input_prevents_provider_admission() {
         .await
         .unwrap();
     state.wake(&worker).await;
-    // The queue is FIFO. A second stop's durable effect is observed by completion.
+    // Cancellation overtakes the queued work and cannot admit provider input.
     worker.cancel();
     worker.completion().await.unwrap();
     assert!(peer.writes.try_recv().is_err());
@@ -546,7 +591,135 @@ async fn restart_after_submitted_before_written_recovers_unknown_without_resend(
         .await;
     peer.acknowledged(cursor).await;
     assert_eq!(state.event_status("input").await, "delivered");
+    let interrupt = peer.write("turn/interrupt").await;
+    peer.reply(&interrupt, json!({})).await;
     peer.completed().await;
     assert_eq!(state.record().await["status"], "completed");
+    worker.shutdown().await.unwrap();
+}
+
+async fn unsupported_callback(method: &str) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let cursor = peer
+        .frame(json!({"id":"callback", "method":method,"params":{}}))
+        .await;
+    let wire = peer.next_write().await;
+    assert_eq!(wire.value["id"], "callback");
+    assert_eq!(wire.value["error"]["code"], -32601);
+    assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                assert!(
+                    store::receipt(tx, &format!("journal:default:1:{cursor}"), "settled")?
+                        .is_some()
+                );
+                assert!(
+                    store::receipt(tx, &format!("callback:default:1:{cursor}"), "submitted")?
+                        .is_some()
+                );
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(
+        peer.acks.try_recv().is_err(),
+        "callback not ACKed before its answer is written"
+    );
+    wire.receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .unwrap();
+    peer.acknowledged(cursor).await;
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn unsupported_approval_is_answered_after_commit() {
+    unsupported_callback("item/commandExecution/requestApproval").await;
+}
+#[tokio::test(start_paused = true)]
+async fn unsupported_question_is_answered_after_commit() {
+    unsupported_callback("item/tool/requestUserInput").await;
+}
+#[tokio::test(start_paused = true)]
+async fn unsupported_dynamic_tool_is_answered_after_commit() {
+    unsupported_callback("item/tool/call").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn foreign_account_stop_cannot_revoke_agent() {
+    let state = State::new().await;
+    let before = state.record().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            assert!(store::stop(store, "another-account", &agent)?.is_none());
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(state.record().await, before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn callback_unknown_write_is_not_resent_on_replay() {
+    let state = State::new().await;
+    let frame = json!({"id":"callback", "method":"item/tool/call", "params":{}});
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    peer.frame(frame.clone()).await;
+    let wire = peer.next_write().await;
+    wire.receipt.send(CommandReceipt::Unknown).ok().unwrap();
+    assert!(matches!(
+        worker.completion().await,
+        Err(WorkerError::CallbackUnknown)
+    ));
+    assert!(peer.acks.try_recv().is_err());
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    peer.frame(frame).await;
+    assert!(matches!(
+        worker.completion().await,
+        Err(WorkerError::CallbackUnknown)
+    ));
+    assert!(peer.writes.try_recv().is_err());
+    assert!(peer.acks.try_recv().is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_stop_can_retry_a_definitely_rejected_interrupt() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    let first = peer.write("turn/interrupt").await;
+    let rejected = peer
+        .frame(json!({"id":first["id"],"error":{"code":-1,"message":"rejected"}}))
+        .await;
+    peer.acknowledged(rejected).await;
+    worker
+        .send(AccountCommand::Stop {
+            agent_id: state.agent.clone(),
+        })
+        .await
+        .unwrap();
+    let second = peer.write("turn/interrupt").await;
+    assert_ne!(first["id"], second["id"]);
+    peer.reply(&second, json!({})).await;
     worker.shutdown().await.unwrap();
 }

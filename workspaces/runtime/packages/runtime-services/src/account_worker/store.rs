@@ -1,8 +1,7 @@
 //! Synchronous account transactions. Only StoreBridge calls these operations.
 use super::*;
 use crate::notification_dispatch::{
-    PreparedSubmission, ProviderDeliveryIdentity, dispatch_notification,
-    flush_notification_streams, record_user_submission,
+    PreparedSubmission, ProviderDeliveryIdentity, dispatch_notification, flush_notification_streams,
 };
 use rusqlite::params;
 use studio_runtime_store::EventWriteRepository;
@@ -17,7 +16,7 @@ fn invalid(id: &str) -> WorkerError {
 fn receipt_id(operation: &str, phase: &str) -> String {
     format!("account-worker:{operation}:{phase}")
 }
-fn receipt(
+pub(super) fn receipt(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
     phase: &str,
@@ -108,7 +107,7 @@ pub(super) fn recover(
             if request.ticket.generation != generation.0 {
                 continue;
             }
-            if context.method() == Method::TurnStart {
+            if context.method()? == Method::TurnStart {
                 SchedulerRepository::settle_start_outcome(
                     tx,
                     &context.intent.identity(),
@@ -198,27 +197,14 @@ pub(super) fn submitted(
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(i.agent_id.as_str()))? else {
             return Ok(false);
         };
-        let authorized = match context.method() {
-            Method::TurnStart => {
-                if !SchedulerRepository::reconcile_obsolete_before_submit(
-                    tx,
-                    &i.agent_id,
-                    i.epoch,
-                    &i.attempt_id,
-                )? {
-                    return Ok(false);
-                }
-                SchedulerRepository::mark_submitted_identity(
-                    tx,
-                    &i.agent_id,
-                    i.epoch,
-                    &i.attempt_id,
-                    &id_string(&request.ticket.id),
-                    &i.account_key,
-                    request.ticket.generation,
-                    i.thread_id.as_deref().unwrap_or(""),
-                )?
-            }
+        let authorized = match context.method()? {
+            Method::TurnStart => commit_prepared_turn(
+                tx,
+                i,
+                &id_string(&request.ticket.id),
+                request.ticket.generation,
+                submission.ok_or_else(|| invalid(&i.attempt_id))?,
+            )?,
             Method::TurnInterrupt => SchedulerRepository::prepare_interrupt(
                 tx,
                 &i.agent_id,
@@ -237,13 +223,6 @@ pub(super) fn submitted(
         };
         if !authorized {
             return Ok(false);
-        }
-        if context.method() == Method::TurnStart {
-            record_user_submission(
-                tx,
-                &i.agent_id,
-                submission.ok_or_else(|| invalid(&i.attempt_id))?,
-            )?;
         }
         save(
             tx,
@@ -302,7 +281,7 @@ pub(super) fn outcome(
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
         } => {
-            match context.method() {
+            match context.method()? {
                 Method::ThreadResume => {
                     if let ResponseBody::Result(ref value) = body
                         && value["thread"]["id"].as_str() == i.thread_id.as_deref()
@@ -384,7 +363,7 @@ fn uncertain(
     ticket: Option<&studio_runtime_providers::RequestTicket>,
     not_sent: bool,
 ) -> Result<(), WorkerError> {
-    if context.method() == Method::TurnInterrupt {
+    if context.method()? == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
         scheduler::lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_interrupt(
@@ -397,7 +376,7 @@ fn uncertain(
     } else {
         let outcome = if not_sent {
             TurnStart::NotSubmitted
-        } else if context.method() == Method::TurnStart {
+        } else if context.method()? == Method::TurnStart {
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
@@ -463,16 +442,15 @@ pub(super) fn journal(
                 if let Some((identity, bound)) = attempt {
                     match method {
                         "turn/started" => {
-                            if let Some(turn) = turn {
-                                if SchedulerRepository::observe_started(tx, &identity, turn)?
+                            if let Some(turn) = turn
+                                && SchedulerRepository::observe_started(tx, &identity, turn)?
                                     == Some(true)
-                                {
-                                    effect = Some(Effect::Interrupt {
-                                        agent: identity.agent_id,
-                                        thread: thread.into(),
-                                        turn: turn.into(),
-                                    });
-                                }
+                            {
+                                effect = Some(Effect::Interrupt {
+                                    agent: identity.agent_id,
+                                    thread: thread.into(),
+                                    turn: turn.into(),
+                                });
                             }
                         }
                         "turn/completed" => {
@@ -533,8 +511,24 @@ pub(super) fn save_recovery(
 ) -> Result<(), WorkerError> {
     store.transaction_with(|tx| save(tx,&format!("recovery:{account}:{}",recovery.generation.map_or(0,|g|g.0)),"required",json!({"handle":recovery.handle.as_str(),"generation":recovery.generation.map(|g|g.0),"phase":format!("{:?}",recovery.phase)})))
 }
-pub(super) fn stop(store: &RuntimeStore, agent: &str) -> Result<Option<Effect>, WorkerError> {
+pub(super) fn stop(
+    store: &RuntimeStore,
+    account: &str,
+    agent: &str,
+) -> Result<Option<Effect>, WorkerError> {
     scheduler::lifecycle_transaction(store, |tx| {
+        let Some(record) = AgentRepository::get(tx, &AgentId::from(agent))? else {
+            return Ok(None);
+        };
+        if record
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != account
+        {
+            return Ok(None);
+        }
         SchedulerRepository::stop_agent(tx, agent, "Stopped by user")?;
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent))? else {
             return Ok(None);
@@ -557,7 +551,7 @@ pub(super) fn interrupt_intent(
     store: &RuntimeStore,
     agent: &str,
     thread: &str,
-) -> Result<Option<TurnIntent>, WorkerError> {
+) -> Result<Option<(TurnIntent, i64)>, WorkerError> {
     let Some(a) = AgentRepository::get(&store.read()?, &AgentId::from(agent))? else {
         return Ok(None);
     };
@@ -565,22 +559,27 @@ pub(super) fn interrupt_intent(
     Ok(attempt["id"]
         .as_str()
         .zip(attempt["epoch"].as_i64())
-        .map(|(id, epoch)| TurnIntent {
-            agent_id: agent.into(),
-            epoch,
-            attempt_id: id.into(),
-            account_key: a
-                .extra
-                .get("accountKey")
-                .unwrap_or(&Value::Null)
-                .as_str()
-                .unwrap_or("default")
-                .into(),
-            provider: "codex".into(),
-            thread_id: Some(thread.into()),
-            cwd: None,
-            model: None,
-            events: vec![],
+        .map(|(id, epoch)| {
+            (
+                TurnIntent {
+                    agent_id: agent.into(),
+                    epoch,
+                    attempt_id: id.into(),
+                    account_key: a
+                        .extra
+                        .get("accountKey")
+                        .unwrap_or(&Value::Null)
+                        .as_str()
+                        .unwrap_or("default")
+                        .into(),
+                    provider: "codex".into(),
+                    thread_id: Some(thread.into()),
+                    cwd: None,
+                    model: None,
+                    events: vec![],
+                },
+                a.epoch,
+            )
         }))
 }
 fn id_string(id: &RequestId) -> String {
@@ -592,4 +591,36 @@ fn id_string(id: &RequestId) -> String {
 
 pub(super) fn was_submitted(store: &RuntimeStore, operation: &str) -> Result<bool, WorkerError> {
     store.transaction_with(|tx| Ok(receipt(tx, operation, "submitted")?.is_some()))
+}
+
+// Written callback responses can be acknowledged on replay. A Submitted marker
+// without Written is uncertainty, never permission to answer a second time.
+pub(super) fn callback_admission(
+    store: &RuntimeStore,
+    operation: &str,
+) -> Result<bool, WorkerError> {
+    store.transaction_with(|tx| {
+        if receipt(tx, operation, "written")? == Some(json!(true)) {
+            return Ok(true);
+        }
+        if receipt(tx, operation, "submitted")?.is_some() {
+            return Err(WorkerError::CallbackUnknown);
+        }
+        save(tx, operation, "submitted", json!(true))?;
+        Ok(false)
+    })
+}
+pub(super) fn callback_written(
+    store: &RuntimeStore,
+    operation: &str,
+    written: bool,
+) -> Result<(), WorkerError> {
+    store.transaction_with(|tx| {
+        save(
+            tx,
+            operation,
+            if written { "written" } else { "unknown" },
+            json!(true),
+        )
+    })
 }

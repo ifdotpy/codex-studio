@@ -358,17 +358,13 @@ impl SchedulerRepository {
         }
         let (complaints, _work) = load_policy_records(transaction, &agent, &rows)?;
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &rows)?;
-        let prepared = prepare_pending_batch(
-            &agent,
-            rows.clone(),
-            BTreeMap::new(),
-            &complaints,
-            &obsolete_work,
-        )?;
+        // Submission reconciliation retires resolved business notifications only.
+        // Progress coalescing belongs to selection and must not run a second time.
+        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
         let mut changes = BTreeMap::new();
         let mut retired = Vec::new();
         for event in &rows {
-            let reason = prepared.retired.get(&event.id.0);
+            let reason = obsolete.get(&event.id.0);
             if let Some(reason) = reason {
                 retired.push(event.id.0.clone());
                 changes.insert(
@@ -426,8 +422,8 @@ impl SchedulerRepository {
             agent
                 .extra
                 .insert("inFlight".to_owned(), Value::Bool(false));
-            publish_agent(transaction, &agent)?;
         }
+        publish_agent(transaction, &agent)?;
         Ok(false)
     }
 }
@@ -676,22 +672,13 @@ pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u
     ))
 }
 
-pub(super) fn prepare_pending_batch(
+fn obsolete_events(
     agent: &AgentRecord,
-    events: Vec<QueueEvent>,
-    mut metadata: BTreeMap<String, Value>,
+    events: &[QueueEvent],
     complaints: &BTreeMap<String, Value>,
     obsolete_work: &BTreeSet<String>,
-) -> StoreResult<PreparedBatch> {
-    let mut metadata_updates = BTreeMap::new();
+) -> BTreeMap<String, String> {
     let mut retired = BTreeMap::new();
-    let mut cancelled = BTreeMap::new();
-    for event in events.iter().filter(|event| event.kind == "chat_review") {
-        cancelled.insert(
-            event.id.0.clone(),
-            "Scheduled chat reviews have been removed".to_owned(),
-        );
-    }
     for event in events.iter().filter(|event| event.kind == "complaint") {
         if complaints_resolved(agent, event, complaints) {
             retired.insert(
@@ -709,6 +696,26 @@ pub(super) fn prepare_pending_batch(
             "The exact result already has a decision".to_owned(),
         );
     }
+    retired
+}
+
+pub(super) fn prepare_pending_batch(
+    agent: &AgentRecord,
+    events: Vec<QueueEvent>,
+    mut metadata: BTreeMap<String, Value>,
+    complaints: &BTreeMap<String, Value>,
+    obsolete_work: &BTreeSet<String>,
+) -> StoreResult<PreparedBatch> {
+    let mut metadata_updates = BTreeMap::new();
+    let mut retired = BTreeMap::new();
+    let mut cancelled = BTreeMap::new();
+    for event in events.iter().filter(|event| event.kind == "chat_review") {
+        cancelled.insert(
+            event.id.0.clone(),
+            "Scheduled chat reviews have been removed".to_owned(),
+        );
+    }
+    retired.extend(obsolete_events(agent, &events, complaints, obsolete_work));
     let mut groups: BTreeMap<(String, String, String), Vec<(usize, u64)>> = BTreeMap::new();
     let mut preserved = Vec::with_capacity(events.len());
     for (index, event) in events.iter().enumerate() {
