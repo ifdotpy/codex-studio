@@ -99,9 +99,9 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
     match action {
         "status" => {
+            let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let snapshot = tokio::task::spawn_blocking(move || federation::snapshot(&store))
                 .await
                 .map_err(|_| ApiError::internal())?
@@ -118,6 +118,7 @@ async fn manage(
             if enabled {
                 return Err(dependency_error("POST", "/api/federation"));
             }
+            let store = state.store.clone().ok_or_else(ApiError::internal)?;
             tokio::task::spawn_blocking(move || federation::set_enabled(&store, false))
                 .await
                 .map_err(|_| ApiError::internal())?
