@@ -1,0 +1,12 @@
+[
+  {
+    "id": "discard-pty-output",
+    "file": "workspaces/runtime/packages/runtime-services/src/terminal_pty.rs",
+    "edits": [
+      {
+        "before": "event: TerminalEvent::Output(buffer[..count].to_vec()),",
+        "after": "event: TerminalEvent::Output(Vec::new()),"
+      }
+    ]
+  }
+]

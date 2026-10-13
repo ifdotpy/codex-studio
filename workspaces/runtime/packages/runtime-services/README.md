@@ -29,6 +29,24 @@ declared in the module, with an in-memory fake for tests. A route module in
 service inside `tokio::task::spawn_blocking`, and converts the result or error
 to the response DTO.
 
+## Terminals
+
+On Unix, `terminal_driver` persists terminal records and bounded output history;
+`terminal_pty` runs the local PTY session through the `PtyHost` port. The PTY
+child is a session and process-group leader. Close, server shutdown, and final
+session-owner drop signal the group and wait for the child. Reader events pass
+through the driver's incremental UTF-8 decoder before storage, and each committed
+change wakes `ChangeNotificationHub`. Terminal sessions do not start a model turn.
+
+The PTY adapter uses `pty-process` 0.5.3 (MIT). Its blocking API supplies PTY
+allocation, resize, byte I/O, and child wait; `rustix` 1.1.5 supplies the safe
+process-group signal. Windows live terminal actions remain unavailable.
+
+### Accidental Python behavior reproduced
+
+Terminal output cursors count Unicode scalar values, not UTF-8 bytes. Rust keeps
+that offset convention for existing Python-written terminal history.
+
 Add each service with an explicit `pub mod` line in alphabetical order; a
 directory parity test checks that module declarations match the source files.
 

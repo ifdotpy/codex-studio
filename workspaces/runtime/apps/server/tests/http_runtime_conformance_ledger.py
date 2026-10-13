@@ -528,11 +528,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$terminal", "title": "Ledger"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$liveTerminal"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$liveTerminal", "title": "Ledger"}, "expected": "2xx"}},
+    ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$liveTerminal", "cols": 80, "rows": 24}, "expected": "2xx"}},
     ("POST", "/api/native-command"): {
         "primary": {
             "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
@@ -1328,6 +1328,35 @@ def probe_operations(
                         queue_value = json.loads(queue_snapshot.body)
                         identifiers["emptyQueueRevision"] = queue_value["revision"]
                         identifiers["queueIds"] = [item["id"] for item in queue_value["items"]]
+                    if (
+                        os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
+                        and method == "POST"
+                        and template in {
+                            "/api/terminals/close",
+                            "/api/terminals/input",
+                            "/api/terminals/rename",
+                            "/api/terminals/resize",
+                        }
+                    ):
+                        live_terminal = backend.request(
+                            "POST",
+                            "/api/terminals/create",
+                            body={
+                                "id": f"ledger-live-{template.rsplit('/', 1)[-1]}",
+                                "agent": identifiers["agent"],
+                            },
+                            headers={
+                                "X-Canvas-Token": token,
+                                "X-Canvas-Workspace": backend.identity["workspaceId"],
+                                "X-Studio-API-Schema": backend.schema_hash,
+                            },
+                        )
+                        if live_terminal.status != 200:
+                            raise RuntimeError(
+                                "could not create terminal for live-action ledger cases: "
+                                f"{live_terminal.status} {live_terminal.body[:1000]!r}"
+                            )
+                        identifiers["liveTerminal"] = live_terminal.json()["id"]
                     path, body, header_overrides = valid_probe(
                         method, template, identifiers, probe_case
                     )

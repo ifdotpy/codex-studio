@@ -8,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::event_write::request_signature as receipt_signature;
 use base64::Engine as _;
 use serde_json::{Value, json};
-use studio_runtime_store::{RuntimeStore, StoreError, TerminalRecord, TerminalsRepository};
+use studio_runtime_store::{
+    AgentId, AgentRepository, RuntimeStore, StoreError, TerminalRecord, TerminalsRepository,
+};
 use thiserror::Error;
 
 pub const OUTPUT_LIMIT: usize = 1_048_576;
@@ -88,6 +90,7 @@ pub struct TerminalDriver<S: TerminalSession> {
 pub struct TerminalCreate<'a> {
     pub request_id: &'a str,
     pub agent: &'a str,
+    pub agent_cwd: &'a str,
     pub cwd: &'a Path,
     pub columns: u64,
     pub rows: u64,
@@ -223,6 +226,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
         let TerminalCreate {
             request_id,
             agent,
+            agent_cwd,
             cwd,
             columns,
             rows,
@@ -254,15 +258,31 @@ impl<S: TerminalSession> TerminalDriver<S> {
         });
         let typed = TerminalRecord::from_value(record.clone())
             .map_err(|_| TerminalError::InvalidStoredObject(id.clone()))?;
-        self.store.transaction(|transaction| {
+        let inserted = self.store.transaction(|transaction| {
+            let Some(current_agent) = AgentRepository::get(transaction, &AgentId::from(agent))?
+            else {
+                return Ok(false);
+            };
+            if current_agent
+                .extra
+                .get("deletedAt")
+                .is_some_and(json_truthy)
+                || current_agent.extra.get("cwd").and_then(Value::as_str) != Some(agent_cwd)
+            {
+                return Ok(false);
+            }
             TerminalsRepository::put(transaction, &id, &typed, "", 0)?;
             TerminalsRepository::save_receipt(
                 transaction,
                 request_id,
                 &signature,
                 &record.to_string(),
-            )
+            )?;
+            Ok(true)
         })?;
+        if !inserted {
+            return Err(TerminalError::InvalidRequest);
+        }
         let params = json!({
             "processHandle": id,
             "cwd": cwd,
@@ -511,7 +531,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     record.set("status", json!("exited"));
                     record.set(
                         "error",
-                        json!("The terminal connection closed. The exit code is unknown."),
+                        json!("The server restarted. This shell cannot be resumed."),
                     );
                     record.set("updated", json!(now_seconds()));
                     let id = record.id().as_str();
@@ -590,6 +610,17 @@ fn terminal_title(title: &str) -> Result<&str, TerminalError> {
     }
 }
 
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
 fn slice_chars(value: &str, start: usize, count: usize) -> String {
     value.chars().skip(start).take(count).collect()
 }
@@ -640,7 +671,7 @@ fn new_id() -> Result<String, TerminalError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::{Arc, Barrier, Mutex};
@@ -652,7 +683,10 @@ mod tests {
         new_id, now_seconds, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
-    use studio_runtime_store::{RuntimeStore, TerminalRecord, TerminalsRepository};
+    use studio_runtime_store::{
+        AgentId, AgentRecord, AgentRepository, AgentStatus, RuntimeStore, TerminalRecord,
+        TerminalsRepository,
+    };
 
     #[derive(Default)]
     struct FakeSession {
@@ -783,6 +817,18 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         let store = Arc::new(RuntimeStore::open(Some(&root)).expect("test runtime store"));
+        let mut extra = BTreeMap::new();
+        extra.insert("cwd".to_owned(), serde_json::json!(root));
+        let agent = AgentRecord {
+            id: AgentId::from("agent"),
+            root_id: AgentId::from("agent"),
+            epoch: 0,
+            status: AgentStatus::Running,
+            extra,
+        };
+        store
+            .transaction(|transaction| AgentRepository::put(transaction, &agent))
+            .expect("test agent");
         TestState {
             root,
             _directory: directory,
@@ -799,6 +845,7 @@ mod tests {
             .create(TerminalCreate {
                 request_id: "create:request",
                 agent: "agent",
+                agent_cwd: cwd.to_str().expect("UTF-8 test cwd"),
                 cwd,
                 columns: 100,
                 rows: 28,
@@ -940,6 +987,7 @@ mod tests {
             .create(TerminalCreate {
                 request_id: "python-create",
                 agent: "agent",
+                agent_cwd: state.root.to_str().expect("UTF-8 test cwd"),
                 cwd: &state.root,
                 columns: 100,
                 rows: 28,
@@ -1080,7 +1128,7 @@ mod tests {
         assert_eq!(persisted["status"], "exited");
         assert_eq!(
             persisted["error"],
-            "The terminal connection closed. The exit code is unknown."
+            "The server restarted. This shell cannot be resumed."
         );
     }
 
