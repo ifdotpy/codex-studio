@@ -12,6 +12,14 @@ use studio_runtime_services::multi_server_auth::{self, AccessError, SignedReques
 use crate::error::error_response;
 use crate::router::HttpState;
 
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "incoming_multi_server",
+        routes: None,
+        dependencies: &[],
+    }
+}
+
 pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
     !path.starts_with("/api/federation/")
         && ((path == "/api/multi-server/v1/identity" && headers.contains_key("x-forwarded-for"))
