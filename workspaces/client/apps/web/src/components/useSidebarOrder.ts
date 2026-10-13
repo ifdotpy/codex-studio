@@ -10,7 +10,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { ApiError, errorText, type PostBody } from "../api";
+import { ApiError, errorText, untilAnswered, type PostBody } from "../api";
 
 import type { components } from "../generated/api";
 
@@ -44,6 +44,17 @@ export function useSidebarOrder(
   );
   const revision = useRef(-1);
   const busy = useRef(false);
+  // The newest server order. A move keeps its own order on screen until its request ends.
+  const latestServer = useRef(server);
+  latestServer.current = server;
+  const adoptServerOrder = (value: ServerOrder | undefined) => {
+    if (!value || value.revision <= revision.current) return;
+    revision.current = value.revision;
+    if (value.groups !== null) {
+      setOrder(value.groups);
+      save(key, value.groups);
+    }
+  };
   const pendingKey = `${key}:pending`;
   const drag = useRef<Drag | null>(null);
   const [target, setTarget] = useState<(Drag & { after: boolean }) | null>(
@@ -62,14 +73,8 @@ export function useSidebarOrder(
       !sidebarOrderCanWrite(sessionToken, services.available?.(migrationTarget))
     )
       return;
-    if (server.revision > revision.current) {
-      revision.current = server.revision;
-      if (server.groups !== null) {
-        setOrder(server.groups);
-        save(key, server.groups);
-      }
-    }
     if (busy.current) return;
+    adoptServerOrder(server);
     const pending = saved<Pending | null>(pendingKey, null);
     if (pending?.body) {
       void send(pending);
@@ -103,9 +108,10 @@ export function useSidebarOrder(
         requestBackend.current ||
         services.byOwner(request.ownerId || services.cache.ownerId);
       requestBackend.current = backend;
-      const result = await backend.post("/api/projects", request.body, {
-        timeoutMs: 15000,
-      });
+      // The request ID makes a repeated reorder return the first receipt.
+      const result = await untilAnswered(() =>
+        backend.post("/api/projects", request.body, { timeoutMs: 30000 }),
+      );
       if (!("revision" in result))
         throw new Error("Invalid sidebar order response");
       if (result.revision >= revision.current) {
@@ -113,6 +119,7 @@ export function useSidebarOrder(
         setOrder(result.groups || {});
         save(key, result.groups || {});
       }
+      adoptServerOrder(latestServer.current);
       try {
         await refresh?.();
       } catch (error) {
@@ -130,7 +137,7 @@ export function useSidebarOrder(
       ) {
         requestBackend.current = null;
         clearPending = true;
-        setOrder(server?.groups || {});
+        setOrder(latestServer.current?.groups || {});
         notify?.(
           error.status === 409
             ? "Sidebar order changed in another client. Refreshing from the server."

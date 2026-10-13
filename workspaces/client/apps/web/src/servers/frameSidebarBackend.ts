@@ -2,6 +2,8 @@ import type { SidebarBackend } from "../components/sidebar/services";
 import type { ApiPostPath, PostBody, PostOptions, PostResult } from "../api";
 import {
   preferenceStorageForServer,
+  readPreferenceFields,
+  receivePreferenceFields,
   writePreferenceEdit,
 } from "../sync/uiPreferenceStore";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
@@ -47,6 +49,9 @@ export function frameSidebarBackend(
       if (!online()) throw new Error("The sidebar server is offline.");
       return writePreferenceEdit(key, previous, next, storage);
     },
+    preferenceFields: () => readPreferenceFields("server", storage),
+    adoptPreferenceFields: (fields) =>
+      receivePreferenceFields("server", fields, storage),
     subscribePreference(key, update) {
       let value = storage.getItem(key);
       const receive = () => {

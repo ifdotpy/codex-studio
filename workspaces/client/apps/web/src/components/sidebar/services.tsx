@@ -3,7 +3,12 @@ import { post, saved, save } from "../../api";
 import { serverViewId } from "../../servers/environment";
 import { serverLocalStorage } from "../../servers/storage";
 import { preferenceEvent } from "../../sync/uiPreferenceMerge";
-import { writePreferenceEdit } from "../../sync/uiPreferenceStore";
+import {
+  readPreferenceFields,
+  receivePreferenceFields,
+  writePreferenceEdit,
+} from "../../sync/uiPreferenceStore";
+import type { PreferenceFields } from "../../sync/uiPreferenceMerge";
 import type { Project } from "../../types";
 import type { LayrReadinessEntry } from "./LayrReadiness";
 import type { LayrSyncEntry } from "./MacSync";
@@ -30,6 +35,10 @@ export type SidebarBackend = {
   editPreference: typeof writePreferenceEdit;
   viewPreference?: typeof writePreferenceEdit;
   subscribePreference: (key: string, update: () => void) => () => void;
+  /** This window's server-scope preference fields with their edit times. */
+  preferenceFields?: () => PreferenceFields;
+  /** Merge fields by edit time before an edit, so the edit is newer than every shown value. */
+  adoptPreferenceFields?: (fields: PreferenceFields) => void;
 };
 
 export type SidebarServices = {
@@ -61,6 +70,8 @@ export const localSidebarBackend: SidebarBackend = {
   save,
   storage: serverLocalStorage,
   editPreference: writePreferenceEdit,
+  preferenceFields: () => readPreferenceFields("server"),
+  adoptPreferenceFields: (fields) => receivePreferenceFields("server", fields),
   subscribePreference(key, update) {
     const receive = (event: Event) => {
       if (event instanceof CustomEvent && event.detail !== key) return;

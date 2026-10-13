@@ -20,6 +20,10 @@ import {
   mergedSidebarPreferences,
   sidebarOrderWrite,
 } from "./mergedSidebarPreferences";
+import {
+  mergePreferenceFields,
+  type PreferenceFields,
+} from "../sync/uiPreferenceMerge";
 
 const path = "/same/project";
 const scope = "/same/state";
@@ -83,6 +87,8 @@ function source(
 }
 function backend(value: SidebarSource) {
   const values = new Map<string, string>();
+  // This window's preference fields with edit times, as uiPreferenceStore keeps them.
+  const fields: PreferenceFields = {};
   const writes: string[] = [];
   const listeners = new Map<string, Set<() => void>>();
   const storage = {
@@ -106,10 +112,28 @@ function backend(value: SidebarSource) {
     save(key, data) {
       storage.setItem(key, JSON.stringify(data));
     },
-    editPreference(key, _previous, next) {
+    editPreference(key, previous, next) {
       storage.setItem(key, JSON.stringify(next));
+      const timestamp = Math.max(
+        Date.now(),
+        ...Object.values(fields).map((field) => field.timestamp + 1),
+      );
+      for (const name of new Set([
+        ...Object.keys(previous),
+        ...Object.keys(next),
+      ]))
+        if (previous[name] !== next[name])
+          fields[JSON.stringify([key, name])] = {
+            value: (next[name] as boolean | undefined) ?? null,
+            timestamp,
+            writer: "this-window",
+          };
       listeners.get(key)?.forEach((listener) => listener());
       return next;
+    },
+    preferenceFields: () => ({ ...fields }),
+    adoptPreferenceFields(incoming) {
+      Object.assign(fields, mergePreferenceFields(fields, incoming));
     },
     subscribePreference(key, update) {
       const callbacks = listeners.get(key) || new Set();
@@ -120,7 +144,7 @@ function backend(value: SidebarSource) {
       };
     },
   };
-  return { backend: result, values, writes, listeners };
+  return { backend: result, values, writes, listeners, fields };
 }
 
 describe("complete multi-server sidebar projection", () => {
@@ -451,7 +475,27 @@ describe("complete multi-server sidebar projection", () => {
       sources[1],
     ]);
     expect(next.data.threads[0]).toBe(before.data.threads[0]);
-    expect(next.data.runtime.sidebarOrder!.revision).toBeGreaterThan(
+    // A snapshot for another reason keeps the order revision, so a waiting move stays.
+    expect(next.data.runtime.sidebarOrder).toBe(
+      before.data.runtime.sidebarOrder,
+    );
+    const moved = select([
+      {
+        ...sources[0],
+        sidebar: {
+          ...local.sidebar,
+          sidebarOrder: {
+            revision: 4,
+            groups: {
+              ...local.sidebar.sidebarOrder!.groups,
+              [itemGroup(path)]: ["missing", "same"],
+            },
+          },
+        },
+      },
+      sources[1],
+    ]);
+    expect(moved.data.runtime.sidebarOrder!.revision).toBeGreaterThan(
       before.data.runtime.sidebarOrder!.revision,
     );
     store.forget("remote");
@@ -587,7 +631,7 @@ describe("original saved sidebar state", () => {
     expect(local.sidebar.collapsed).toEqual({ [path]: true });
   });
 
-  it("keeps this window's collapse over stale snapshots for a short time", () => {
+  it("shows each collapse by its latest edit time, however late a snapshot arrives", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000_000);
     const local = source("local");
@@ -599,38 +643,45 @@ describe("original saved sidebar state", () => {
       ["remote", b.backend],
     ]);
     const heading = JSON.stringify([path, "project"]);
+    const field = JSON.stringify([`codex-project-tree:${scope}`, heading]);
     const tree = (model: ReturnType<typeof mergeSidebar>) =>
       `codex-project-tree:${model.data.stateDir}`;
+    const shown = (model: ReturnType<typeof mergeSidebar>, key: string) =>
+      mergedSidebarPreferences(model, backends).saved<Record<string, boolean>>(
+        tree(model),
+        {},
+      )[key];
+    const snapshot = (value: boolean, timestamp: number) => {
+      const row = source("local");
+      row.sidebar.collapsed = { [heading]: value };
+      row.sidebar.visualFields = {
+        [field]: { value, timestamp, writer: "frame" },
+      };
+      return mergeSidebar([row, source("remote")]);
+    };
     const first = mergeSidebar([local, remote]);
     const key = JSON.stringify([first.projectKey("local", path), "project"]);
     const cache = mergedSidebarPreferences(first, backends);
     const previous = cache.saved<Record<string, boolean>>(tree(first), {});
     cache.editPreference(tree(first), previous, { ...previous, [key]: true });
-    // The model is rebuilt from snapshots that do not carry the edit yet.
-    const rebuilt = mergeSidebar([source("local"), source("remote")]);
-    const next = mergedSidebarPreferences(rebuilt, backends);
-    expect(next.saved<Record<string, boolean>>(tree(rebuilt), {})[key]).toBe(
+    // A snapshot that does not carry the edit yet does not hide it.
+    expect(shown(mergeSidebar([source("local"), source("remote")]), key)).toBe(
       true,
     );
-    // A late echo of an earlier value does not flip it back.
-    const echo = source("local");
-    echo.sidebar.collapsed = { [heading]: false };
-    const echoed = mergeSidebar([echo, source("remote")]);
-    expect(
-      mergedSidebarPreferences(echoed, backends).saved<Record<string, boolean>>(
-        tree(echoed),
-        {},
-      )[key],
-    ).toBe(true);
-    // After the short time the snapshot rules, so a change from elsewhere wins.
-    vi.setSystemTime(1_000_000 + 10_001);
-    const later = mergeSidebar([source("local"), source("remote")]);
-    expect(
-      mergedSidebarPreferences(later, backends).saved<Record<string, boolean>>(
-        tree(later),
-        {},
-      )[key],
-    ).toBe(false);
+    // A late echo of an earlier value does not flip it back, at any time.
+    expect(shown(snapshot(false, 999_000), key)).toBe(true);
+    vi.setSystemTime(1_000_000 + 60_000);
+    expect(shown(snapshot(false, 999_000), key)).toBe(true);
+    // A newer change from another window wins.
+    const newer = snapshot(false, 1_000_000 + 50_000);
+    expect(shown(newer, key)).toBe(false);
+    // The next edit in this window is newer than the value it replaces.
+    const view = mergedSidebarPreferences(newer, backends);
+    const before = view.saved<Record<string, boolean>>(tree(newer), {});
+    view.editPreference(tree(newer), before, { ...before, [key]: true });
+    expect(shown(snapshot(false, 1_000_000 + 50_000), key)).toBe(true);
+    expect(a.fields[field]).toMatchObject({ value: true });
+    expect(a.fields[field].timestamp).toBeGreaterThan(1_000_000 + 50_000);
     vi.useRealTimers();
   });
 

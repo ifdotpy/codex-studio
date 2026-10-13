@@ -660,7 +660,21 @@ export function createMergedSidebarSelector(combined = true) {
       )
     )
       return previous;
-    const next = mergeSidebar(sources, ++revision, combined);
+    const next = mergeSidebar(sources, revision + 1, combined);
+    // The merged order revision grows only when the merged order changes. A snapshot for
+    // another reason must not replace an order move that waits for its server.
+    const previousOrder = previous?.data.runtime.sidebarOrder;
+    const nextOrder = next.data.runtime.sidebarOrder;
+    const merged = combined || sources.length !== 1;
+    if (
+      merged &&
+      previousOrder &&
+      nextOrder &&
+      previous!.data.stateDir === next.data.stateDir &&
+      JSON.stringify(previousOrder.groups) === JSON.stringify(nextOrder.groups)
+    )
+      next.data.runtime.sidebarOrder = previousOrder;
+    else revision++;
     if (previous) {
       const retain = <T extends { id: string }>(rows: T[], old: T[]) => {
         const prior = new Map(old.map((row) => [row.id, row]));
