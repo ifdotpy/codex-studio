@@ -111,6 +111,18 @@ with tempfile.TemporaryDirectory(prefix="studio-entity-windows-") as tmp:
             sync_event_window(db)
             assert_state(runtime, db, "after window movement")
 
+            # The incremental event pass relies on the runtime_events triggers
+            # and must leave the same window as the full pass.
+            for index in range(430, 470):
+                db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) "
+                           "VALUES (?,?,?,?,?,?,?,?,?)",
+                           (f"event-{index + 270}", rng.choice(agents), "fixture", "private text",
+                            "delivered", float(index + 1000), 1, None, "incremental"))
+            db.execute("UPDATE runtime_events SET status='failed' WHERE id IN ('event-5','event-700')")
+            db.execute("DELETE FROM runtime_events WHERE id IN ('event-699','event-698')")
+            sync_event_window(db, full=False)
+            assert_state(runtime, db, "after incremental event window movement")
+
             # Deleting an agent must retire its tasks/monitors and allow the task
             # archive window to refill from other agents.
             removed = runtime.agent(agents[0], db)

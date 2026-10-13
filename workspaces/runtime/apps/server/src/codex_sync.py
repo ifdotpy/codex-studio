@@ -458,7 +458,8 @@ class SyncStore:
         from codex_sync_entities import (entity_tombstone_floor, max_seq,
                                          seed, sync_task_window,
                                          sync_event_window, sync_monitor_window,
-                                         ENTITY_TOMBSTONE_COUNT_KEY, ENTITY_TOMBSTONE_LIMIT)
+                                         entity_tombstone_prune_due,
+                                         ENTITY_TOMBSTONE_COUNT_KEY)
         with self.connection("SyncStore.pull") as db:
             db.execute('BEGIN')
             startup_memory_mark("first-renderer-sync-pull")
@@ -473,17 +474,22 @@ class SyncStore:
                 # Retire old task DTOs gradually so existing checkpoints
                 # consume the resulting tombstones through ordinary deltas.
                 sync_task_window(db)
-                sync_event_window(db)
+                # Event triggers project each event change in its own write.
+                # After one full check per process, retire displaced events
+                # without projecting the whole window again under the lock.
+                event_window_checked = getattr(self, '_entity_event_window_checked', False)
+                sync_event_window(db, full=not event_window_checked)
                 if not monitor_window_checked:
                     sync_monitor_window(db)
                 db.commit()
                 self._entity_monitor_window_checked = True
+                self._entity_event_window_checked = True
                 db.execute('BEGIN')
             elif not monitor_window_checked:
                 self._entity_monitor_window_checked = True
             count = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
                                (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()
-            if count is None or int(count[0]) > ENTITY_TOMBSTONE_LIMIT:
+            if count is None or entity_tombstone_prune_due(int(count[0])):
                 self._schedule_entity_pruning()
             high = max_seq(db)
             floor = entity_tombstone_floor(db)

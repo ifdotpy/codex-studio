@@ -192,6 +192,55 @@ class EntityReadLockContract(unittest.TestCase):
             self.assertEqual(self.store.pull('state:entities:v1', response['checkpoint']['seq'])['documents'], [])
         self.assertEqual(self.writes(), [])
 
+    def test_event_window_projects_the_whole_window_once_per_store(self):
+        import codex_entity_contracts
+        import codex_sync_entities
+        projected = []
+        original_put = codex_sync_entities.put
+
+        def counted_put(db, collection, key, record, deleted=False):
+            if collection == 'event':
+                projected.append((key, deleted))
+            return original_put(db, collection, key, record, deleted)
+
+        def add(key, created):
+            with self.connect() as db:
+                db.execute("INSERT INTO runtime_events VALUES (?,'owner','user','pending',?,NULL)",
+                           (key, created))
+
+        def live_events():
+            with self.connect() as db:
+                return {key: json.loads(payload)['value'] for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='event' AND deleted=0")}
+
+        with patch.object(codex_entity_contracts, 'EVENT_WINDOW', 3), \
+             patch.object(codex_sync_entities, 'put', counted_put):
+            for index in range(3):
+                add(f'event-{index}', index)
+            # A restarted store checks every window row once.
+            self.store = SyncStore(self.connect, lambda _key: {},
+                                   runtime=self.runtime_view, canvas=self.canvas_view)
+            first = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+            self.assertEqual(len([row for row in projected if not row[1]]), 3)
+            projected.clear()
+            # The trigger projects the new event; the pull only retires the displaced one.
+            add('event-3', 3)
+            moved = self.store.pull('state:entities:v1', first['checkpoint']['seq'])
+            self.assertEqual(projected, [('event-0', True)])
+            rows = {row['id']: row for row in moved['documents']}
+            self.assertTrue(rows['entity:event:event-0']['_deleted'])
+            self.assertEqual(set(live_events()), {'event-1', 'event-2', 'event-3'})
+            projected.clear()
+            # A deleted event lets an older event back into the window.
+            with self.connect() as db:
+                db.execute("DELETE FROM runtime_events WHERE id='event-3'")
+            self.store.pull('state:entities:v1', moved['checkpoint']['seq'])
+            self.assertEqual(projected, [('event-0', False)])
+            with self.connect() as db:
+                expected = {record['id']: codex_sync_entities.project('event', record)
+                            for record in codex_entity_contracts.event_records(db)}
+            self.assertEqual(live_events(), expected)
+
     def test_boot_markers_still_require_seed_and_window_repairs(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
@@ -268,14 +317,17 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(self.values(response)['entity:monitor:monitor']['tail'], 'Newer output')
 
     def test_pruner_runs_only_when_its_durable_count_requires_a_batch(self):
-        with self.connect() as db:
-            db.execute("UPDATE sync_entity_meta SET value='10001' WHERE key='entity_tombstone_count'")
-        self.statements.clear()
-        with patch.object(self.store, '_schedule_entity_pruning') as prune, self.writer():
-            response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
-        self.assertEqual(response['documents'], [])
-        self.assertEqual(self.writes(), [])
-        prune.assert_called_once_with()
+        # Each new tombstone at the limit must not start a one-row prune.
+        for count, due in (('10001', False), ('10500', False), ('10501', True)):
+            with self.subTest(count=count):
+                with self.connect() as db:
+                    db.execute("UPDATE sync_entity_meta SET value=? WHERE key='entity_tombstone_count'", (count,))
+                self.statements.clear()
+                with patch.object(self.store, '_schedule_entity_pruning') as prune, self.writer():
+                    response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+                self.assertEqual(response['documents'], [])
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(prune.call_count, int(due))
 
 
 if __name__ == '__main__':

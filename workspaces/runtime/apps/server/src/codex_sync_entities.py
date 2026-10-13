@@ -43,6 +43,17 @@ ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 MAX_MUTATION_SYNC_ENTITIES = 500
 
 
+def entity_tombstone_prune_due(count: int) -> bool:
+    """Start pruning only after the count passes the limit by a slack.
+
+    Without slack, each new tombstone at the limit started a pruner thread
+    and a write transaction that deleted one row. The pruner still removes
+    the excess down to the limit.
+    """
+    limit = ENTITY_TOMBSTONE_LIMIT
+    return count > limit + min(ENTITY_TOMBSTONE_PRUNE_BATCH, limit // 20)
+
+
 _DTO_MODELS = {
     "agent": AgentEntityDto,
     "room": RoomEntityDto,
@@ -872,8 +883,14 @@ def seed(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
                    "ON CONFLICT(key) DO UPDATE SET value='2'")
 
 
-def sync_event_window(db: sqlite3.Connection) -> int:
-    """Materialize the shared bounded event window."""
+def sync_event_window(db: sqlite3.Connection, *, full: bool = True) -> int:
+    """Materialize the shared bounded event window.
+
+    The runtime_events triggers project every inserted or changed event with
+    the same DTO projection as put(). Without `full`, only window events that
+    have no live entity are projected again; a full pass also repairs rows
+    left by older versions. Both passes retire events that left the window.
+    """
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
         return 0
     changed = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
@@ -881,19 +898,19 @@ def sync_event_window(db: sqlite3.Connection) -> int:
     if marker and int(marker[0]) == changed:
         return 0
     recent = event_records(db)
-    selected: list[str] = []
+    live = {str(key) for (key,) in db.execute(
+        "SELECT id FROM sync_entities WHERE collection='event' AND deleted=0")}
+    selected: set[str] = set()
     for record in recent:
         key = record.get("id")
         if not isinstance(key, str) or not key:
             _report_bad_entity("event", "", ValueError("event record has no valid id"))
             continue
-        selected.append(key)
-        put(db, "event", key, record)
-    placeholders = ",".join("?" for _ in selected)
-    exclusion = f" AND id NOT IN ({placeholders})" if selected else ""
-    stale = db.execute("SELECT id FROM sync_entities WHERE collection='event' AND deleted=0" + exclusion,
-                       selected).fetchall()
-    for (key,) in stale:
+        selected.add(key)
+        if full or key not in live:
+            put(db, "event", key, record)
+    stale = sorted(live - selected)
+    for key in stale:
         put(db, "event", key, {}, deleted=True)
     final_seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
     db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('event_window_seq',?) "
