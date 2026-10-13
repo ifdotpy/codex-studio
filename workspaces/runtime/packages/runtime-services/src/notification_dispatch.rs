@@ -118,7 +118,7 @@ pub enum NotificationDispatchError {
     #[error("open notification stream capacity reached")]
     StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
-    InvalidStoredObject { table: &'static str, id: String },
+    InvalidStoredObject { table: String, id: String },
     #[error("delivery identity was reused with different content")]
     ConflictingDelivery,
     #[error("submitted input identity was reused with different content")]
@@ -128,9 +128,20 @@ pub enum NotificationDispatchError {
     #[error("Not implemented: requires {0}")]
     Dependency(&'static str),
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(StoreError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
+}
+
+impl From<StoreError> for NotificationDispatchError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::InvalidSyncObject { scope, id } => {
+                Self::InvalidStoredObject { table: scope, id }
+            }
+            error => Self::Store(error),
+        }
+    }
 }
 
 /// Persist Python's submitted batch before the provider turn begins.
@@ -1026,7 +1037,7 @@ fn sha256_json(value: &Value) -> Result<String, NotificationDispatchError> {
 
 fn stored(table: &'static str, id: &str) -> NotificationDispatchError {
     NotificationDispatchError::InvalidStoredObject {
-        table,
+        table: table.into(),
         id: id.to_owned(),
     }
 }

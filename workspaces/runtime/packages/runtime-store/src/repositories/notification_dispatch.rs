@@ -337,5 +337,8 @@ fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &s
 }
 
 fn invalid_record(table: &str, id: &str) -> StoreError {
-    StoreError::SchemaMismatch(format!("invalid stored object {table}:{id}"))
+    StoreError::InvalidSyncObject {
+        scope: table.into(),
+        id: id.into(),
+    }
 }
