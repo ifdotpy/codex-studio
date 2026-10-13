@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+import codex_token_rate
 from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
 from codex_streaming import StreamBuffer
@@ -31,6 +32,58 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_workspace_publication_coalesces_events_into_latest_bounded_snapshot(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.started = False
+                self.instances.append(self)
+
+            def start(self):
+                self.started = True
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'rootId': 'lead', 'threadId': 'thread'}
+            published = []
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=lambda _root, snapshot: published.append(snapshot)), \
+                    patch.object(rates, 'workspace_snapshot', wraps=rates.workspace_snapshot) as snapshot:
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                for _ in range(25):
+                    rates.stream('item/agentMessage/delta', {
+                        'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                    }, 'a', 'c', 1)
+
+                self.assertEqual(snapshot.call_count, 0)
+                self.assertEqual(len(DeferredTimer.instances), 1)
+                self.assertTrue(DeferredTimer.instances[0].started)
+                self.assertEqual(DeferredTimer.instances[0].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_DELAY_SECONDS)
+                DeferredTimer.instances[0].fire()
+                rates.stream('item/agentMessage/delta', {
+                    'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                }, 'a', 'c', 2)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(snapshot.call_count, 2)
+            self.assertEqual(len(published), 2)
+            self.assertEqual(set(published[0].rates), {'worker'})
+            self.assertEqual(set(published[0].teams), {'lead'})
+            self.assertEqual(published[0].rates['worker'].outputTokens, 250)
+            self.assertEqual(published[0].teams['lead']['worker'].outputTokens, 250)
+            self.assertEqual(len(published), 2)
+            self.assertEqual(published[1].rates['worker'].outputTokens, 260)
+
     def test_codex_rollout_usage_after_tool_result_uses_generation_span(self):
         # rollout: token_usage_record precedes a tool call; token_count arrives after its result.
         rates = TokenRates(lambda: 100.1)
