@@ -26,6 +26,7 @@ pub mod analytics_measurements;
 pub mod analytics_rollout;
 pub mod bounded_child;
 pub mod budget;
+pub mod budget_runtime;
 pub mod budget_service;
 pub mod budget_wait;
 pub mod capacity_retry;
