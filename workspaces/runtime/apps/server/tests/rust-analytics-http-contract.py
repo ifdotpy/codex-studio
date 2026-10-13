@@ -317,8 +317,10 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             incomplete = json.loads(json.dumps(saved))
             incomplete["source"].pop("pricingSignature")
             cache_file.write_text(json.dumps(incomplete))
+            before_refusal = no_write_snapshot(self.backend.state)
             refused = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
             self.assertEqual(refused.status, 501, refused.body[:1000])
+            self.assertEqual(no_write_snapshot(self.backend.state), before_refusal)
         saved["source"]["usage"]["generation"] += 1
         cache_file.write_text(json.dumps(saved))
         stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)

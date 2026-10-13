@@ -182,7 +182,7 @@ fn run(case: &Value, records: &Value) -> Value {
                         },
                         now
                     )
-                    .expect("capture")
+                    .unwrap_or_else(|error| panic!("{}: {error}", case["name"]))
                 )
             }
             "update" => {
@@ -304,6 +304,9 @@ fn budget_python_corpus() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let mut oracle = Oracle::new();
     for case in cases.as_array().expect("cases") {
+        if has_changed_response_replay(case) {
+            continue;
+        }
         let expected = oracle.call(case);
         compare(
             &run(case, &expected["records"]),
@@ -311,6 +314,75 @@ fn budget_python_corpus() {
             case["name"].as_str().expect("name"),
         );
     }
+}
+
+fn has_changed_response_replay(case: &Value) -> bool {
+    let mut responses = BTreeMap::new();
+    case["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|step| step["op"] == "capture")
+        .any(|step| {
+            let Some(response_id) = step["params"]["responseId"].as_str() else {
+                return false;
+            };
+            let Some(tokens) = step["params"]["requestUsage"]["totalTokens"].as_u64() else {
+                return false;
+            };
+            responses
+                .insert(response_id.to_owned(), tokens)
+                .is_some_and(|previous| previous != tokens)
+        })
+}
+
+#[test]
+fn exact_response_replay_is_noop_and_conflicting_replay_refuses_without_writes() {
+    let (case, records) = fixture();
+    let mut connection = db(&records, &case);
+    sync_fixture(&connection);
+    let params = &case["steps"][0]["params"];
+    let tx = connection.transaction().expect("initial transaction");
+    let mut agent = records["agents"]["a"].clone();
+    assert_eq!(
+        budget_service::capture(&tx, &mut agent, params, 101., CaptureSource::Live, 100.)
+            .expect("initial response capture"),
+        20
+    );
+    tx.commit().expect("initial commit");
+
+    let before_replay = all_stored(&connection);
+    let tx = connection.transaction().expect("replay transaction");
+    let mut agent =
+        studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
+    assert_eq!(
+        budget_service::capture(&tx, &mut agent, params, 101., CaptureSource::Live, 100.)
+            .expect("identical replay"),
+        20
+    );
+    tx.commit().expect("replay commit");
+    assert_eq!(
+        all_stored(&connection),
+        before_replay,
+        "identical replay writes nothing"
+    );
+
+    let before_conflict = all_stored(&connection);
+    let tx = connection.transaction().expect("conflict transaction");
+    let mut agent =
+        studio_runtime_store::budget::BudgetRepository::agent(&tx, "a").expect("current agent");
+    let mut changed = params.clone();
+    changed["requestUsage"]["totalTokens"] = json!(21);
+    assert!(
+        budget_service::capture(&tx, &mut agent, &changed, 101., CaptureSource::Live, 100.)
+            .is_err()
+    );
+    tx.commit().expect("commit conflict refusal");
+    assert_eq!(
+        all_stored(&connection),
+        before_conflict,
+        "conflicting replay writes nothing"
+    );
 }
 
 fn compare(actual: &Value, expected: &Value, path: &str) {
@@ -871,6 +943,9 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
         size: 100,
         final_size: 100,
         tail: "{}\n".into(),
+        modified_seconds: 0,
+        modified_nanos: 0,
+        content_hash: String::new(),
     };
     let observation =
         HistoryObservation::from_records(&agent, Some(&history), Some(&file)).expect("observation");
