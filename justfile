@@ -77,3 +77,7 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+[doc("Run complete Rust runtime decision and failure-point corpora explicitly.")]
+test-rust-runtime-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/_corpus$/)'

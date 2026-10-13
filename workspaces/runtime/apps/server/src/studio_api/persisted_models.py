@@ -9,6 +9,13 @@ from pydantic_core import PydanticCustomError
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 
+from studio_api.multi_server.persisted import (
+    PersistedAccessClient,
+    PersistedAccessInvite,
+    PersistedAccessReceipt,
+    PersistedServerDelivery,
+)
+
 
 def _unicode_scalar(value: str) -> str:
     if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
@@ -17,7 +24,6 @@ def _unicode_scalar(value: str) -> str:
 
 
 UnicodeScalar = Annotated[StrictStr, AfterValidator(_unicode_scalar)]
-
 
 class ClaudeCustomModelRecord(ContractModel):
     id: StrictStr
@@ -272,6 +278,10 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-access-client.schema.json": PersistedAccessClient,
+    "persisted-access-invite.schema.json": PersistedAccessInvite,
+    "persisted-access-receipt.schema.json": PersistedAccessReceipt,
+    "persisted-server-delivery.schema.json": PersistedServerDelivery,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-task-record.schema.json": PersistedTaskRecord,
     "persisted-plan-record.schema.json": PersistedPlanRecord,

@@ -6,6 +6,7 @@ pub(crate) mod compose;
 mod desktop;
 pub(crate) mod extractors;
 mod federation;
+pub(crate) mod incoming_multi_server;
 mod insights;
 pub(crate) mod manifest;
 mod messages;

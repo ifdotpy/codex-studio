@@ -1895,6 +1895,7 @@ dependencies = [
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
 ]
@@ -1965,10 +1966,12 @@ dependencies = [
  "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-store",
+ "subtle",
  "tempfile",
  "thiserror",
  "tokio",
  "ureq",
+ "url",
  "uuid",
 ]
 

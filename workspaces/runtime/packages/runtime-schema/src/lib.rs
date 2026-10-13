@@ -39,6 +39,20 @@ const GRAPH_AGENT_RECORD_URI: &str =
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
 
+const ACCESS_RECEIPT_URI: &str =
+    "https://codex-studio.invalid/persisted-access-receipt.schema.json";
+const ACCESS_RECEIPT: &[u8] = include_bytes!("schemas/persisted-access-receipt.schema.json");
+
+const ACCESS_CLIENT_URI: &str = "https://codex-studio.invalid/persisted-access-client.schema.json";
+const ACCESS_CLIENT: &[u8] = include_bytes!("schemas/persisted-access-client.schema.json");
+
+const ACCESS_INVITE_URI: &str = "https://codex-studio.invalid/persisted-access-invite.schema.json";
+const ACCESS_INVITE: &[u8] = include_bytes!("schemas/persisted-access-invite.schema.json");
+
+const SERVER_DELIVERY_URI: &str =
+    "https://codex-studio.invalid/persisted-server-delivery.schema.json";
+const SERVER_DELIVERY: &[u8] = include_bytes!("schemas/persisted-server-delivery.schema.json");
+
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
 const USAGE_LIMITS: &[u8] = include_bytes!("schemas/workspace-usage-limits.schema.json");
@@ -63,8 +77,12 @@ const GRAPH_AGENT_RECORD: &[u8] =
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (ACCESS_CLIENT_URI, ACCESS_CLIENT),
+    (ACCESS_INVITE_URI, ACCESS_INVITE),
+    (ACCESS_RECEIPT_URI, ACCESS_RECEIPT),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
+    (SERVER_DELIVERY_URI, SERVER_DELIVERY),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
     (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
     (EVENT_METADATA_URI, EVENT_METADATA),
@@ -128,6 +146,10 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_access_clients" | "runtime_access_discovered" => "PersistedAccessClient",
+        "runtime_access_invites" => "PersistedAccessInvite",
+        "runtime_access_receipts" => "PersistedAccessReceipt",
+        "runtime_server_inbox" | "runtime_server_outbox" => "PersistedServerDelivery",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
@@ -180,6 +202,12 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     let mut validators = BTreeMap::new();
 
     for name in [
+        "DevicePairResponse",
+        "ServerIdentityResponse",
+        "DiscoveryIdentity",
+        "ServerOperationRequest",
+        "AutoPairRequest",
+        "DevicePairRequest",
         "AgentRecordResponse",
         "AgentRequest",
         "AnnotationReceipt",
@@ -206,6 +234,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         validators.insert(name.to_owned(), validator);
     }
     for (name, uri) in [
+        ("PersistedAccessClient", ACCESS_CLIENT_URI),
+        ("PersistedAccessInvite", ACCESS_INVITE_URI),
+        ("PersistedAccessReceipt", ACCESS_RECEIPT_URI),
+        ("PersistedServerDelivery", SERVER_DELIVERY_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),

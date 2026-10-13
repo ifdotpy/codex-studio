@@ -43,27 +43,27 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     )?;
     connection.pragma_update(None, "query_only", "ON")?;
 
-    Ok(StateCheckReport {
-        tables: vec![
-            check_table::<AgentRecord>(&connection)?,
-            check_table::<TaskRecord>(&connection)?,
-            check_table::<PlanRecord>(&connection)?,
-            check_table::<AnnotationRecord>(&connection)?,
-            check_table::<RequestRecord>(&connection)?,
-            check_table::<ComplaintRecord>(&connection)?,
-            check_table::<CheckpointRecord>(&connection)?,
-            check_table::<MonitorRecord>(&connection)?,
-            check_table::<TerminalRecord>(&connection)?,
-            check_table::<UsageResumeRecord>(&connection)?,
-            check_table::<WorkItemRecord>(&connection)?,
-            check_table::<RuleRecord>(&connection)?,
-            check_table::<TranscriptItemRecord>(&connection)?,
-            check_table::<TranscriptAssetRecord>(&connection)?,
-            check_table::<EventMetadataRecord>(&connection)?,
-            check_table::<GraphAgentRecord>(&connection)?,
-            check_table::<ProfileRecord>(&connection)?,
-        ],
-    })
+    let mut tables = vec![
+        check_table::<AgentRecord>(&connection)?,
+        check_table::<TaskRecord>(&connection)?,
+        check_table::<PlanRecord>(&connection)?,
+        check_table::<AnnotationRecord>(&connection)?,
+        check_table::<RequestRecord>(&connection)?,
+        check_table::<ComplaintRecord>(&connection)?,
+        check_table::<CheckpointRecord>(&connection)?,
+        check_table::<MonitorRecord>(&connection)?,
+        check_table::<TerminalRecord>(&connection)?,
+        check_table::<UsageResumeRecord>(&connection)?,
+        check_table::<WorkItemRecord>(&connection)?,
+        check_table::<RuleRecord>(&connection)?,
+        check_table::<TranscriptItemRecord>(&connection)?,
+        check_table::<TranscriptAssetRecord>(&connection)?,
+        check_table::<EventMetadataRecord>(&connection)?,
+        check_table::<GraphAgentRecord>(&connection)?,
+        check_table::<ProfileRecord>(&connection)?,
+    ];
+    tables.extend(crate::multi_server_state_check::check(&connection)?);
+    Ok(StateCheckReport { tables })
 }
 
 fn check_table<R: JsonRecord>(connection: &Connection) -> StoreResult<StateCheckTable> {
