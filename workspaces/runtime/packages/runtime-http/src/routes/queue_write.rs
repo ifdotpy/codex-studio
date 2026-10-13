@@ -27,7 +27,6 @@ pub(crate) async fn queue_action(
     let before_sequence = SyncDocumentsRepository::entity_sequence(&before_connection)
         .map_err(|_| ApiError::internal())?;
     drop(before_connection);
-    let validators = state.validators.clone();
     let result = tokio::task::spawn_blocking(move || {
         let result = store
             .transaction_with_error(|transaction| {
@@ -36,9 +35,7 @@ pub(crate) async fn queue_action(
                     &agent_id,
                     &body,
                     &signature,
-                    |connection, agent| {
-                        super::queue_read::queue_snapshot(connection, agent, &validators)
-                    },
+                    |connection, agent| super::queue_read::queue_snapshot(connection, agent),
                 )
             })
             .map_err(write_error)?;

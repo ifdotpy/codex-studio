@@ -1,11 +1,12 @@
 //! Queue event mutations used by the queue-write service.
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use serde_json::Value;
 
+use crate::records::{EventMetadataRecord, QueueEventId, Table};
 use crate::{
     StoreResult,
-    schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement},
+    schema::{SchemaRequirements, TableRequirement},
 };
 
 const EVENT_TABLE: &[TableRequirement] = &[TableRequirement {
@@ -20,17 +21,8 @@ const META_TABLE: &[TableRequirement] = &[TableRequirement {
 }];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[],
-    conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_events",
-            tables: EVENT_TABLE,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_event_meta",
-            tables: META_TABLE,
-        },
-    ],
+    tables: &[EVENT_TABLE[0], META_TABLE[0]],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -108,14 +100,10 @@ impl QueueWriteRepository {
         Ok(())
     }
 
-    pub fn metadata(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<String>> {
-        Ok(transaction
-            .query_row(
-                "SELECT record FROM runtime_event_meta WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?)
+    pub fn metadata(transaction: &Transaction<'_>, id: &str) -> StoreResult<Option<Value>> {
+        Ok(Table::<EventMetadataRecord>::new(transaction)
+            .get(&QueueEventId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
     pub fn put_metadata(
@@ -123,10 +111,8 @@ impl QueueWriteRepository {
         id: &str,
         metadata: &Value,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, serde_json::to_string(metadata)?],
-        )?;
-        Ok(())
+        let key = QueueEventId::from(id);
+        let record = EventMetadataRecord::from_value(metadata.clone())?;
+        Table::<EventMetadataRecord>::new(transaction).put_at(&key, &record)
     }
 }
