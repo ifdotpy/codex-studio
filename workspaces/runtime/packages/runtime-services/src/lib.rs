@@ -17,6 +17,7 @@ pub mod multi_server;
 pub mod model_catalog;
 pub mod panels;
 pub mod progress_panel;
+pub mod projects;
 pub mod provider_session;
 pub mod questions_reads;
 pub mod questions_write;
