@@ -40,10 +40,14 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
         let rules = rules
             .into_iter()
             .map(|mut rule| {
-                let dto =
-                    serde_json::from_str::<crate::generated::RuleRecordResponse>(&rule.record)
-                        .map_err(|_| invalid_rule(&rule.id))?;
-                rule.record = serde_json::to_string(&dto).map_err(|_| ApiError::internal())?;
+                let value = serde_json::from_str::<Value>(&rule.record)
+                    .map_err(|_| invalid_rule(&rule.id))?;
+                if !value.is_object()
+                    || value.get("id").and_then(Value::as_str) != Some(rule.id.as_str())
+                {
+                    return Err(invalid_rule(&rule.id));
+                }
+                rule.record = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
                 Ok(rule)
             })
             .collect::<Result<Vec<_>, ApiError>>()?;

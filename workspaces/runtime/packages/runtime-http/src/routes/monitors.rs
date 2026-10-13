@@ -51,10 +51,11 @@ async fn log(
         if monitor.id != id {
             return Err(invalid_monitor(&monitor.id));
         }
-        let record =
-            serde_json::from_str::<crate::generated::MonitorRecordResponse>(&monitor.record)
-                .map_err(|_| invalid_monitor(&monitor.id))?;
-        let value = serde_json::to_value(record).map_err(|_| ApiError::internal())?;
+        let value: Value =
+            serde_json::from_str(&monitor.record).map_err(|_| invalid_monitor(&monitor.id))?;
+        if !value.is_object() || value.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err(invalid_monitor(&monitor.id));
+        }
         let owner = value
             .get("agent")
             .and_then(Value::as_str)

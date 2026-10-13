@@ -284,9 +284,7 @@ fn workspace_view(
                 .map_err(|_| invalid_stored("runtime_complaints", "unknown"))?,
         )?
     };
-    let rules = parse_records(
-        validators,
-        "RuleRecordResponse",
+    let rules = parse_open_records(
         "runtime_rules",
         WorkspaceViewsRepository::records_for_agents(connection, "runtime_rules", "agent", &ids)
             .map_err(|_| invalid_stored("runtime_rules", "unknown"))?,
@@ -364,9 +362,7 @@ fn workspace_view(
     let checkpoint_ids = agent_id
         .map(|id| vec![id.to_owned()])
         .unwrap_or_else(|| ids.clone());
-    let checkpoint_records = parse_records(
-        validators,
-        "CheckpointSummary",
+    let checkpoint_records = parse_open_records(
         "runtime_checkpoints",
         WorkspaceViewsRepository::records_for_agents(
             connection,
@@ -443,6 +439,23 @@ fn parse_records(
             let value: Value =
                 serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
             checked_stored(validators, schema, table, &row.id, value)
+        })
+        .collect()
+}
+
+fn parse_open_records(table: &str, records: Vec<StoredRecord>) -> Result<Vec<Value>, ApiError> {
+    records
+        .into_iter()
+        .map(|row| {
+            let raw = row.record.ok_or_else(|| invalid_stored(table, &row.id))?;
+            let value: Value =
+                serde_json::from_str(&raw).map_err(|_| invalid_stored(table, &row.id))?;
+            if !value.is_object()
+                || value.get("id").and_then(Value::as_str) != Some(row.id.as_str())
+            {
+                return Err(invalid_stored(table, &row.id));
+            }
+            Ok(value)
         })
         .collect()
 }

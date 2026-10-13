@@ -106,8 +106,7 @@ pub(crate) async fn checkpoints(
             })
             .map_err(|_| ApiError::internal())?;
         let agents = validate_records(&validators, agents, "AgentRecordResponse", "agents")?;
-        let checkpoints =
-            validate_records(&validators, records, "CheckpointSummary", "checkpoints")?;
+        let checkpoints = validate_open_records(records, "checkpoints")?;
         let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, checkpoints)
             .map_err(questions_error)?;
         Ok::<_, ApiError>(value)
@@ -157,6 +156,23 @@ fn validate_records(
     records
         .into_iter()
         .map(|record| validate_record(validators, record, schema, object))
+        .collect()
+}
+
+fn validate_open_records(
+    records: Vec<studio_runtime_store::QuestionsReadsRecord>,
+    object: &'static str,
+) -> Result<Vec<ValidatedRecord>, ApiError> {
+    records
+        .into_iter()
+        .map(|record| {
+            let value = serde_json::from_str::<Value>(&record.record)
+                .ok()
+                .and_then(|value| value.as_object().cloned())
+                .filter(|value| value.get("id").and_then(Value::as_str) == Some(&record.id))
+                .ok_or_else(|| invalid_stored_object(object, &record.id))?;
+            Ok((record.id, value))
+        })
         .collect()
 }
 

@@ -38,7 +38,7 @@ class LedgerTraceContract(unittest.TestCase):
             "layoutRevision", "emptyQueueRevision", "queueIds", "question",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
-            "analyticsAgent", "schemaHash", "approvalRequest",
+            "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin",
         }
 
         def references(value):

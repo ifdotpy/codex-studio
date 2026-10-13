@@ -298,7 +298,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/limits"): {
         "primary": {"query": {"account_key": "default", "cached": "1"}, "expected": "2xx"},
-        "additional": [{"name": "live provider limits", "query": {"account_key": "default"}, "expected": "501"}],
+        "additional": [{"name": "live provider limits", "query": {"account_key": "disconnected"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/account-rate-limits"}],
     },
     ("GET", "/api/task"): {
         "primary": {"query": {"id": "$task"}},
@@ -485,7 +485,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
     },
     ("POST", "/api/accounts/login/cancel"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888886"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True, "assert_no_file_write": ["accounts/registry.json"]},
     },
     ("POST", "/api/accounts/delete"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "request_id": "ledger-delete"}, "expected": "400", "assert_no_write": True},
@@ -507,21 +507,21 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
-        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/capacity-retry", "assert_no_write": True}],
+        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, store-bootstrap/capacity-retry-schema, turn-driver/capacity-retry", "assert_no_write": True}],
     },
     ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {}}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "serverId": "local", "cursor": 0}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1, "serverId": "local", "requestId": "ledger-status"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"enabled": True}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"serverId": "local", "payload": {}}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
@@ -529,7 +529,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
-        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/usage-resume", "assert_no_write": True}],
+        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
     },
     ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
@@ -543,7 +543,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/checkpoint"): {
         "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"}],
+        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
@@ -590,6 +590,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "name": "active-check dependency",
             "body": {"agent": "$agent", "action": "pause", "id": "$activeRule"},
             "expected": "501",
+            "expected_error": "Not implemented: requires monitor-driver/active-checks",
+            "fixture_mutations": {"activate_rule_check": True},
+            "restore": ["rule_monitor"],
         }],
     },
     ("POST", "/api/work"): {
@@ -1027,6 +1030,7 @@ finally:
         "checkpoint": terminal_identifiers["checkpoint"],
         "item": f"{agent_id}:{item_id}",
         "monitor": terminal_identifiers["monitor"],
+        "activeMonitor": terminal_identifiers["activeMonitor"],
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
@@ -1121,10 +1125,16 @@ def probe_fixture_state(
         raise ValueError("identity file probe mutations must declare identity_file restoration")
     if ("stale_session_cost_cache" in mutations) != ("session_cost_cache" in restore):
         raise ValueError("session cost cache mutations must declare cache restoration")
+    if ("clear_workspace_monitors" in mutations) != ("workspace_monitors" in restore):
+        raise ValueError("workspace monitor mutations must declare restoration")
+    if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
+        raise ValueError("active rule-check mutations must declare restoration")
 
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
+    workspace_monitors: dict[str, str] | None = None
+    rule_monitor: tuple[str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
@@ -1156,6 +1166,38 @@ def probe_fixture_state(
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1
             path.write_text(json.dumps(cache), encoding="utf-8")
+        if mutations.get("clear_workspace_monitors") or mutations.get("activate_rule_check"):
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                if mutations.get("clear_workspace_monitors"):
+                    workspace_monitors = {
+                        monitor_id: raw
+                        for monitor_id, raw in connection.execute(
+                            "SELECT id,record FROM runtime_monitors WHERE "
+                            "json_extract(record,'$.status') IN ('running','starting','approval')"
+                        )
+                    }
+                    for monitor_id, raw in workspace_monitors.items():
+                        changed = json.loads(raw)
+                        changed["status"] = "completed"
+                        connection.execute(
+                            "UPDATE runtime_monitors SET record=? WHERE id=?",
+                            (json.dumps(changed), monitor_id),
+                        )
+                if mutations.get("activate_rule_check"):
+                    monitor_id = identifiers["activeMonitor"]
+                    row = connection.execute(
+                        "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,)
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("seeded rule-check monitor is missing")
+                    rule_monitor = (monitor_id, row[0])
+                    changed = json.loads(row[0])
+                    changed["status"] = "running"
+                    changed["ruleId"] = identifiers["activeRule"]
+                    connection.execute(
+                        "UPDATE runtime_monitors SET record=? WHERE id=?",
+                        (json.dumps(changed), monitor_id),
+                    )
         yield
     finally:
         try:
@@ -1175,6 +1217,20 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
+                if workspace_monitors is not None or rule_monitor is not None:
+                    with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                        if workspace_monitors is not None:
+                            for monitor_id, raw in workspace_monitors.items():
+                                connection.execute(
+                                    "UPDATE runtime_monitors SET record=? WHERE id=?",
+                                    (raw, monitor_id),
+                                )
+                        if rule_monitor is not None:
+                            monitor_id, raw = rule_monitor
+                            connection.execute(
+                                "UPDATE runtime_monitors SET record=? WHERE id=?",
+                                (raw, monitor_id),
+                            )
 
 
 def probe_operations(
@@ -1193,6 +1249,7 @@ def probe_operations(
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             seed_catalog_state(backend)
+            codex_login_id = seed_codex_login(backend)
             import importlib.util
             analytics_path = TESTS / "rust-analytics-http-contract.py"
             analytics_spec = importlib.util.spec_from_file_location("ledger_analytics_seed", analytics_path)
@@ -1202,6 +1259,7 @@ def probe_operations(
             analytics_spec.loader.exec_module(analytics_module)
             analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend)
+            identifiers["codexLogin"] = codex_login_id
             backend.start()
             token = backend.session["token"]
             rows = []
@@ -1253,6 +1311,12 @@ def probe_operations(
                         sqlite_snapshot(backend.state / "canvas.sqlite3")
                         if probe_case.get("assert_no_write") else None
                     )
+                    file_paths = probe_case.get("assert_no_file_write", [])
+                    files_before = {
+                        relative: (backend.state / relative).read_bytes()
+                        if (backend.state / relative).is_file() else None
+                        for relative in file_paths
+                    }
                     with probe_fixture_state(backend, identifiers, probe_case):
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
@@ -1303,6 +1367,11 @@ def probe_operations(
                     no_write = (
                         database_before is None
                         or database_before == sqlite_snapshot(backend.state / "canvas.sqlite3")
+                    )
+                    no_write = no_write and all(
+                        ((backend.state / relative).read_bytes()
+                         if (backend.state / relative).is_file() else None) == original
+                        for relative, original in files_before.items()
                     )
                     expected = probe_case.get("expected")
                     expected_matches = (
@@ -1394,6 +1463,11 @@ def seed_catalog_state(backend: Any) -> None:
                 "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
                 "status": "ready",
             },
+            "disconnected": {
+                "id": "disconnected", "home": str(backend.root / "missing-account"),
+                "label": "Disconnected", "source": "ledger fixture", "provider": "codex",
+                "accountId": "stale-id", "status": "ready", "disconnected": True,
+            },
             "claude-ledger": {
                 "id": "claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
                 "source": "ledger fixture", "provider": "claude", "accountId": "claude:ledger",
@@ -1415,6 +1489,40 @@ def seed_catalog_state(backend: Any) -> None:
         env=environment,
         timeout=30,
     )
+
+
+def seed_codex_login(backend: Any) -> str:
+    """Create the pending local login through AccountStore's Python writer."""
+    login_id = "88888888-8888-4888-8888-888888888880"
+    account_key = "ledger-pending-login"
+    profile = backend.state / "accounts" / account_key
+    profile.mkdir(parents=True, exist_ok=True)
+    source = ROOT / "workspaces/runtime/apps/server/src"
+    environment = backend._environment()
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source), environment.get("PYTHONPATH", ""))))
+    python = os.environ.get("CODEX_AGENTS_PYTHON")
+    if not python:
+        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    script = f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+from codex_accounts import AccountStore
+store = AccountStore(Path(sys.argv[1]))
+store.data["accounts"][{account_key!r}] = {{
+    "id": {account_key!r}, "home": {str(profile)!r}, "label": "Pending login fixture",
+    "source": "ledger fixture", "provider": "codex", "accountId": None,
+    "email": None, "plan": None, "status": "signedOut",
+    "_credentialIdentity": None, "duplicateOf": "default",
+}}
+store.data["logins"][{login_id!r}] = {{
+    "requestId": {login_id!r}, "accountKey": {account_key!r}, "status": "pending",
+    "createdAt": 1.0, "loginId": "ledger-live-login",
+}}
+store._save()
+"""
+    subprocess.run([python, "-B", "-c", script, str(backend.state)], env=environment, check=True, timeout=30)
+    return login_id
 
 
 def case_results(log_text: str) -> list[dict[str, Any]]:

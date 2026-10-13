@@ -211,6 +211,13 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "recipient": lead["id"],
                         "responses": [],
                     })
+                runtime.rules({
+                    "agent": lead["id"], "action": "save",
+                    "id": "workspace-view-ticked-rule",
+                    "name": "Ticked workspace rule", "kind": "low_workers",
+                    "minimumWorkers": 1, "durationMinutes": 60,
+                })
+                runtime.rules_tick()
                 cls.lead_id = lead["id"]
                 cls.worker_id = worker["id"]
                 cls.other_id = other["id"]
@@ -399,6 +406,11 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertLessEqual(len(task["command"]), 2000)
         self.assertIn("workspace-view-complaint", {item["id"] for item in snapshot["inbox"]})
         self.assertNotIn("workspace-view-other-review", {item["id"] for item in snapshot["inbox"]})
+        ticked_rule = next(rule for rule in snapshot["rules"] if rule["id"] == "workspace-view-ticked-rule")
+        self.assertEqual(ticked_rule["kind"], "low_workers")
+        self.assertEqual(ticked_rule["activeWorkers"], 0)
+        self.assertIsNotNone(ticked_rule["lowSince"])
+        self.assertFalse(ticked_rule["alerted"])
         complaint_ids = [item["id"] for item in snapshot["inbox"] if item["kind"] == "complaint"]
         self.assertEqual(
             complaint_ids,

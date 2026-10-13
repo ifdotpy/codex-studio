@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::Value;
 use studio_runtime_services::checkpoints::{self, CheckpointsError};
-use studio_runtime_store::{StoreError, StoredCheckpointObject, WorkspaceSnapshot};
+use studio_runtime_store::StoreError;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -48,11 +48,9 @@ pub(crate) async fn capture(
     ApiJson(body): ApiJson<crate::generated::CheckpointCaptureRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = tokio::task::spawn_blocking(move || {
         let snapshot = checkpoints::capture_context(&store, &body.agent)
             .map_err(|error| map_error(error, "/api/checkpoint"))?;
-        validate_capture_snapshot(&snapshot, &validators)?;
         let label = body.label.unwrap_or_else(|| "Checkpoint".to_owned());
         let record = checkpoints::capture(&store, snapshot, &label)
             .map_err(|error| map_error(error, "/api/checkpoint"))?;
@@ -68,12 +66,9 @@ pub(crate) async fn preview(
     ApiJson(body): ApiJson<crate::generated::CheckpointPreviewRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = tokio::task::spawn_blocking(move || {
         let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
             .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
-        validate_agent(&context.agent, &validators)?;
-        validate_checkpoint(&context.checkpoint, &validators)?;
         let value = checkpoints::preview(&store, context)
             .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
         super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
@@ -99,44 +94,6 @@ pub(crate) async fn branch(
         dependency_unavailable("POST", "/api/branch", &THREAD_FORK_DEPENDENCIES)
             .unwrap_or_else(|_| ApiError::internal()),
     )
-}
-
-fn validate_capture_snapshot(
-    snapshot: &WorkspaceSnapshot,
-    validators: &crate::validation::Registry,
-) -> Result<(), ApiError> {
-    for agent in &snapshot.agents {
-        validate_agent(agent, validators)?;
-    }
-    if let Some(parent) = &snapshot.parent_checkpoint {
-        validate_checkpoint(parent, validators)?;
-    }
-    Ok(())
-}
-
-fn validate_agent(
-    agent: &StoredCheckpointObject,
-    validators: &crate::validation::Registry,
-) -> Result<(), ApiError> {
-    validate_stored(agent, validators, "AgentRecordResponse", "agents")
-}
-
-fn validate_checkpoint(
-    checkpoint: &StoredCheckpointObject,
-    validators: &crate::validation::Registry,
-) -> Result<(), ApiError> {
-    validate_stored(checkpoint, validators, "CheckpointSummary", "checkpoints")
-}
-
-fn validate_stored(
-    record: &StoredCheckpointObject,
-    validators: &crate::validation::Registry,
-    schema: &str,
-    object: &'static str,
-) -> Result<(), ApiError> {
-    let raw = serde_json::to_string(&record.record).map_err(|_| ApiError::internal())?;
-    super::questions_reads::validate_stored_value(validators, &record.id, &raw, schema, object)?;
-    Ok(())
 }
 
 fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {

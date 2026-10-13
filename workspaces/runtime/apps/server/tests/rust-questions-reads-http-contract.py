@@ -233,7 +233,7 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cases = (
             ("runtime_requests", "questions-read-new", "createdAt", "invalid"),
             ("runtime_complaints", "questions-read-complaint", "version", 9007199254740992),
-            ("runtime_checkpoints", "questions-read-checkpoint", "created", "invalid"),
+            ("runtime_checkpoints", "questions-read-checkpoint", "id", "wrong-row-id"),
         )
         for table, record_id, field, invalid in cases:
             with sqlite3.connect(database_path) as database:
