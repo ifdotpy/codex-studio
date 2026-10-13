@@ -5,6 +5,7 @@ import builtins
 import contextlib
 import ctypes
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import importlib.util
 import io
 import json
@@ -615,6 +616,43 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(empty, [])
         self.assertEqual(skipped_only, [("native.py", "native")])
         self.assertEqual(failures, [])
+
+    def test_scratch_cleanup_failure_names_its_holder_and_is_not_a_start_failure(self):
+        holders = []
+
+        def execute(_command, _cwd, _timeout, environment):
+            # Like a compiler started in its own session, it outlives the suite.
+            holders.append(subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                cwd=environment["TMPDIR"], start_new_session=True))
+            return 0, None, [], []
+
+        def failing_cleanup(scratch):
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), scratch.name)
+
+        with tempfile.TemporaryDirectory(prefix="server-cleanup-holder-") as temp:
+            try:
+                with (contextlib.redirect_stdout(io.StringIO()),
+                      mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)),
+                      mock.patch.object(RUNNER, "_focused_slot_count", return_value=1),
+                      mock.patch.object(RUNNER, "_focused_run_slot",
+                                        return_value=contextlib.nullcontext()),
+                      mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+                      mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}}),
+                      mock.patch.object(tempfile.TemporaryDirectory, "cleanup", failing_cleanup)):
+                    _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                        [("holder.py", "safe")], set(), 1, 1, root=ROOT, execute=execute)
+            finally:
+                for holder in holders:
+                    holder.kill()
+                    holder.wait()
+
+        self.assertEqual(len(holders), 1)
+        self.assertEqual([suite for suite, _reason in failures], ["holder.py"])
+        reason = failures[0][1]
+        self.assertTrue(reason.startswith("scratch cleanup failed: "), reason)
+        self.assertNotIn("could not start", reason)
+        self.assertIn(f"processes still using it: {holders[0].pid} (", reason)
 
     def test_parallel_suites_receive_distinct_short_runtime_directories(self):
         barrier = threading.Barrier(2)

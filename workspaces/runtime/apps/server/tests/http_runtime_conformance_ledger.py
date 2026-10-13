@@ -42,9 +42,6 @@ MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
     "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
         "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
     },
-    "workspaces/runtime/apps/server/tests/sync-http-contract.py": {
-        "__main__.SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once": {"operation": "GET /api/messages/receipts", "service": "event-driver/message-receipts", "reason": "Voice replay checks the unavailable event-driver/message-receipts endpoint."},
-    },
 }
 
 # These tests need provider turn execution, but no current route declares that
@@ -111,7 +108,7 @@ def validate_missing_service_exclusions(
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/agent-chat"): {
-        "primary": {"query": {"room": "$room"}, "expected": "501"},
+        "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
         "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
@@ -200,11 +197,17 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/checkpoints"): {
         "primary": {"query": {"agent": "$agent"}},
     },
+    ("GET", "/api/diagnostics"): {
+        "primary": {"expected": "501", "assert_no_write": True},
+    },
+    ("GET", "/api/directories"): {
+        "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
+    },
     ("GET", "/api/messages"): {
         "primary": {"query": {"room": "$room"}},
     },
     ("GET", "/api/messages/receipts"): {
-        "primary": {"query": {"agent": "$agent", "ids": "$message"}, "expected": "501", "assert_no_write": True},
+        "primary": {"query": {"agent": "$agent", "ids": "[]"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/panel"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -234,7 +237,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/tool-requests"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent", "request_id": "$toolReceipt"}, "expected": "2xx", "assert_no_write": True},
+        "additional": [{"name": "list", "query": {"agent": "$agent"}, "query_omit": ["request_id"], "expected": "2xx", "assert_no_write": True}],
     },
     ("GET", "/api/transcript"): {
         "primary": {"query": {"id": "$agent"}, "expected": "501"},
@@ -526,7 +530,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "2xx"}},
     ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
@@ -588,6 +592,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/voice/approvals"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/record"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession", "event_id": "ledger-event", "kind": "event", "text": "ledger"}, "replace_body": True, "expected": "2xx"},
+    },
+    ("POST", "/api/tool-requests/cancel"): {
+        "primary": {"body": {"agent": "$agent", "request_id": "$toolCancel"}, "expected": "2xx"},
     },
     ("POST", "/api/voice/records"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/status"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
@@ -884,6 +891,17 @@ try:
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "agents", image_agent, sync_rooms=False)
+        runtime.put(db, "tool_requests", {{
+            "id": "ledger-tool-receipt", "agent": {agent_id!r},
+            "tool": "orchestration_peers", "stage": "completed", "outcome": "applied",
+            "created": now, "updated": now, "finished": now,
+            "result": {{"success": True, "contentItems": []}},
+        }})
+        runtime.put(db, "tool_requests", {{
+            "id": "ledger-tool-cancel", "agent": {agent_id!r},
+            "tool": "orchestration_peers", "stage": "queued", "outcome": "pending",
+            "created": now, "updated": now,
+        }})
         runtime.capacity_save(db, agent, cancel_retry)
         runtime.capacity_save(db, agent, retry_retry)
         runtime.usage_resume_save(db, agent, disable_resume)
@@ -1081,6 +1099,8 @@ finally:
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
         "claudeAccount": "claude-ledger",
+        "toolReceipt": "ledger-tool-receipt",
+        "toolCancel": "ledger-tool-cancel",
     }
 
 

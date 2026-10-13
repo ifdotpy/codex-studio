@@ -149,7 +149,8 @@ class Projects:
                 require(parent.is_dir(), "The layer path has a file parent")
             seeded = not (target.exists() or target.is_symlink())
             if seeded:
-                partial = parent / (".layr-seed-" + hashlib.sha256(request_id.encode()).hexdigest()[:16])
+                # Named by the path: a later request after a failed one removes the earlier partial copy.
+                partial = parent / (".layr-seed-" + hashlib.sha256(path.encode()).hexdigest()[:16])
                 try:
                     if partial.exists():
                         await remove_tree(partial)
@@ -157,9 +158,12 @@ class Projects:
                     # second copy. Reflinks share the uploaded blocks; one sync for the tree.
                     await command(["btrfs", "subvolume", "create", partial], timeout=120)
                     await command(["cp", "-a", "--reflink=always", "--", str(source) + "/.", partial], timeout=1800)
+                    # The archive's folder modes, before the owner gets the tree (upload.FOLDER_MODES).
+                    modes = folder_modes(source.parent / "folder-modes.json")
+                    restore_folder_modes(partial, modes)
                     await command(["chown", "-R", "--no-dereference", user.pw_name + ":" + user.pw_name, partial],
                                   timeout=1800)
-                    partial.chmod(0o755)
+                    partial.chmod(modes.get(".", 0o755))
                     await command(["sync", "-f", partial], timeout=600)
                     os.rename(partial, target)
                 except BaseException:
@@ -258,6 +262,35 @@ class Projects:
         return {"version": version, "state": "ready" if daemon else "unavailable", "root": str(self.root),
                 "storeBytes": usage.total - usage.free, "freeBytes": usage.free,
                 "totalBytes": usage.total, "share": await self.share.status()}
+
+
+def folder_modes(path):
+    """The folder modes of a seed archive: relative path -> permission bits. A missing file (an
+    upload extracted before this record existed) gives no modes."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {}
+    with os.fdopen(descriptor) as stream:
+        value = json.loads(stream.read(64 * 1024 * 1024))
+    require(isinstance(value, dict) and all(isinstance(mode, int) for mode in value.values()),
+            "The seed folder modes are invalid")
+    return {name: mode & 0o777 for name, mode in value.items()}
+
+
+def restore_folder_modes(folder, modes):
+    """Give each folder of the seed copy its archive mode, through descriptors and never through
+    a link. Bottom up, so a folder without write or search permission comes last."""
+    if not modes:
+        return
+    top = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for directory, _, _, descriptor in os.fwalk(".", topdown=False, follow_symlinks=False, dir_fd=top):
+            mode = modes.get(os.path.normpath(directory))
+            if mode is not None:
+                os.fchmod(descriptor, mode)
+    finally:
+        os.close(top)
 
 
 async def remove_tree(path):

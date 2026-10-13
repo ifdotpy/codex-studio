@@ -126,9 +126,12 @@ class ScannerTests(unittest.TestCase):
             },
         ]
 
-    def scan(self, home, cache):
+    def scan(self, home, cache, *, user_home=None):
         home_path = self.case / home
         cache_path = self.case / cache
+        environment = None
+        if user_home is not None:
+            environment = {**os.environ, "HOME": str(user_home)}
         result = subprocess.run(
             [
                 str(self.binary),
@@ -140,6 +143,7 @@ class ScannerTests(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=30,
+            env=environment,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)[0]
@@ -173,6 +177,28 @@ class ScannerTests(unittest.TestCase):
         installed_pricing = Path.home() / "Library/Caches/CodexBar/model-pricing/models-dev-v1.json"
         self.assertEqual((self.case / "cache-a" / "model-pricing" / "models-dev-v1.json").exists(), installed_pricing.exists())
         self.assertTrue((self.case / "cache-b" / "cost-usage" / "codex-v8.json").exists())
+
+    def test_installed_pricing_comes_from_the_caller_home(self):
+        # Foundation resolves the account home and ignores HOME. A caller with
+        # an isolated HOME must not receive the real user's CodexBar catalog.
+        path = self.session_path("home", "one")
+        self.append_rows(path, self.rows("one", "gpt-5", 1000, 1000))
+        caller_home = self.case / "caller-home"
+        caller_home.mkdir()
+        scoped = Path("model-pricing") / "models-dev-v1.json"
+
+        self.scan("home", "cache-without", user_home=caller_home)
+        self.assertFalse((self.case / "cache-without" / scoped).exists())
+
+        installed = caller_home / "Library" / "Caches" / "CodexBar" / scoped
+        installed.parent.mkdir(parents=True)
+        installed.write_text(json.dumps({
+            "version": 1,
+            "fetchedAt": self.timestamp.isoformat().replace("+00:00", "Z"),
+            "catalog": {"providers": {}},
+        }))
+        self.scan("home", "cache-with", user_home=caller_home)
+        self.assertEqual((self.case / "cache-with" / scoped).read_bytes(), installed.read_bytes())
 
     def test_old_cache_producer_is_rejected_and_native_logs_are_rescanned(self):
         path = self.session_path("home", "one")

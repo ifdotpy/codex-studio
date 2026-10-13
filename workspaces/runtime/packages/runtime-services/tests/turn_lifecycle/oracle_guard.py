@@ -75,6 +75,12 @@ class OracleGuard:
 
 
 def install_guard(*, block_processes=False):
+    # Initialize the runtime guard's physical forbidden roots before the oracle
+    # rejects even metadata resolution beneath those roots. Later imports reuse it.
+    tests = Path(__file__).resolve().parents[4] / "apps/server/tests"
+    sys.path.insert(0, str(tests))
+    from runtime_home_guard import install_home_guard
+    install_home_guard()
     guard = OracleGuard(block_processes=block_processes)
     sys.addaudithook(guard.audit)
     # CPython emits no audit event for these metadata calls.

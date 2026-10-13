@@ -23,7 +23,7 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "event_write_runtime_fixture", HERE / "runtime-contract.py"
@@ -117,19 +117,6 @@ def seed_remote_agent(backend) -> str:
         runtime.close()
 
 
-def state_snapshot(state: Path):
-    with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        tables = [
-            row[0]
-            for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND (name LIKE 'runtime_%' OR name LIKE 'sync_%') ORDER BY name"
-            )
-        ]
-        return {
-            name: sorted(database.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
-            for name in tables
-        }
 
 
 class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -191,7 +178,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         expected_status = "pending" if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else "cancelled"
         self.assertEqual([status for _, status in statuses], [expected_status, expected_status])
 
-        committed = state_snapshot(self.backend.state)
+        committed = no_write_snapshot(self.backend.state)
         for body in (
             {**plan_body, "version": 999},
             {**note_body, "line": 0},
@@ -201,7 +188,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(response.status, 400, response.body[:1000])
-            self.assertEqual(state_snapshot(self.backend.state), committed)
+            self.assertEqual(no_write_snapshot(self.backend.state), committed)
 
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self._assert_rust_replay_and_python_scheduler(plan_body, note_body)
@@ -269,13 +256,13 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(rust_deltas, python_deltas)
 
     def _assert_rust_replay_and_python_scheduler(self, plan_body, note_body):
-        before_replay = state_snapshot(self.backend.state)
+        before_replay = no_write_snapshot(self.backend.state)
         for path, body in (("/api/plan", plan_body), ("/api/annotation", note_body)):
             replay = self.backend.request(
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
         for path, body in (
             ("/api/plan", {**plan_body, "text": "conflicting plan"}),
@@ -285,7 +272,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "POST", path, body=body, headers=self.headers()
             )
             self.assertEqual(refusal.status, 400, refusal.body[:1000])
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             events = database.execute(
@@ -327,7 +314,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.backend.stop()
         agent_id = seed_agent_with_event_rule(self.backend)
         self.backend.start()
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         requests = (
             (
                 "/api/plan",
@@ -350,14 +337,14 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("rule-driver/event-rules", response.body.decode())
-            self.assertEqual(state_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_remote_event_writes_refuse_without_changes(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust remote-event boundary")
         agent_id = seed_remote_agent(self.backend)
         self.backend.start()
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         for path, body in (
             ("/api/plan", {"agent": agent_id, "version": 0, "text": "blocked"}),
             ("/api/annotation", {"agent": agent_id, "path": "src/main.rs", "line": 1, "text": "blocked"}),
@@ -365,7 +352,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("cross-server/remote-events", response.body.decode())
-            self.assertEqual(state_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_rust_replays_python_annotation_receipt_by_content(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
@@ -402,13 +389,13 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             runtime.close()
 
         self.backend.start()
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST", "/api/annotation", body=body, headers=self.headers()
         )
         self.assertEqual(response.status, 200, response.body[:1000])
         self.assertEqual(response.json(), saved)
-        self.assertEqual(state_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 
 if __name__ == "__main__":

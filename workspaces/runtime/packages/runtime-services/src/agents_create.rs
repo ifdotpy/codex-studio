@@ -575,13 +575,13 @@ fn rename(
 
 /// Share the mode-boundary oracle's interpreter resolution with other unit-test oracles.
 #[cfg(test)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_support;
+pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
+    test_support::prepared_python::prepared_python(source)
+}
 
 #[cfg(test)]
-pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
-    prepared_python_support::prepared_python(source)
-}
+#[path = "../tests/support/agents_create.rs"]
+mod test_support;
 
 #[cfg(test)]
 mod tests {

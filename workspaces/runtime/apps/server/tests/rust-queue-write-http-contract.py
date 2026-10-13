@@ -26,7 +26,7 @@ from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 fixture_spec = importlib.util.spec_from_file_location("queue_write_fixture", HERE / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(fixture_spec)
@@ -73,16 +73,6 @@ def seed_queue(backend: object) -> tuple[str, list[str]]:
         runtime.close()
 
 
-def queue_state(state: Path):
-    with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        tables = [row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND (name LIKE 'runtime_%' OR name LIKE 'sync_%') ORDER BY name"
-        )]
-        return {
-            table: sorted(database.execute(f'SELECT * FROM "{table}"').fetchall(), key=repr)
-            for table in tables
-        }
 
 
 def clone_for_python(backend: object) -> Path:
@@ -263,7 +253,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ]
                 self.assertEqual(differences, [], f"persisted queue rows differ: {state_difference(actual_state, python_state)}")
 
-                before_replay = queue_state(self.backend.state)
+                before_replay = no_write_snapshot(self.backend.state)
                 replay = self.request(body)
                 self.assertEqual(replay.status, 200, replay.body[:1000])
                 self.assertEqual(replay.json()["status"], actual.json()["status"])
@@ -278,12 +268,12 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     {key: replay.json()[key] for key in ("status", "revision", "capabilities")},
                     saved,
                 )
-                self.assertEqual(queue_state(self.backend.state), before_replay)
+                self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
                 if action == "edit":
                     conflict = self.request({**body, "text": "Conflicting content"})
                     self.assertEqual(conflict.status, 400, conflict.body[:1000])
-                    self.assertEqual(queue_state(self.backend.state), before_replay)
+                    self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
     def test_reads_python_written_queue_and_applies_durable_mutations(self):
         initial = self.get_queue()
@@ -324,24 +314,24 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_stale_and_invalid_mutations_leave_state_unchanged(self):
         initial = self.get_queue().json()
-        before = queue_state(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         stale = self.request({
             "agent": self.agent_id, "action": "reorder", "request_id": "stale-1",
             "expected_revision": "stale-revision", "ordered_ids": list(reversed(self.queue_ids)),
         })
         self.assertEqual(stale.status, 400, stale.body[:1000])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         invalid = self.request({
             "agent": self.agent_id, "action": "send_now", "message_id": self.queue_ids[0],
         })
         self.assertEqual(invalid.status, 400, invalid.body[:1000])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         blank_identity = self.request({
             "agent": self.agent_id, "action": "send_now", "request_id": "  ",
             "message_id": self.queue_ids[0],
         })
         self.assertEqual(blank_identity.status, 400, blank_identity.body[:1000])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         self.assertEqual(self.get_queue().json(), initial)
 
     def test_failure_after_first_write_rolls_back_every_table(self):
@@ -352,7 +342,7 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "BEGIN SELECT RAISE(ABORT, 'injected queue metadata failure'); END"
             )
             database.commit()
-        before = queue_state(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         try:
             response = self.request({
                 "agent": self.agent_id, "action": "edit", "request_id": "rollback-after-write",
@@ -364,17 +354,17 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
                 database.execute("DROP TRIGGER IF EXISTS fail_queue_metadata")
                 database.commit()
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_original_text_length_limit_and_python_strip_boundaries(self):
         current = self.get_queue().json()
-        before = queue_state(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         too_long = self.request({
             "agent": self.agent_id, "action": "edit", "message_id": self.queue_ids[0],
             "text": " " + "x" * 32000,
         })
         self.assertEqual(too_long.status, 400, too_long.body[:1000])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
         request_id = "\x1c strip-key \x1f"
         body = {
@@ -445,11 +435,11 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 (f"queue:{self.agent_id}:broken-receipt", signature),
             )
             database.commit()
-        before = queue_state(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         receipt = self.request(broken_body)
         self.assertEqual(receipt.status, 500, receipt.body[:1000])
         self.assertIn(f"runtime_operation_receipts/queue:{self.agent_id}:broken-receipt", receipt.json()["error"])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("PRAGMA ignore_check_constraints=ON")
             original_agent = database.execute(
@@ -464,13 +454,13 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "UPDATE runtime_agents SET record='{' WHERE id=?", (self.agent_id,)
             )
             database.commit()
-        before = queue_state(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         agent = self.request({
             "agent": self.agent_id, "action": "cancel", "message_id": self.queue_ids[0],
         })
         self.assertEqual(agent.status, 500, agent.body[:1000])
         self.assertIn(f"runtime_agents/{self.agent_id}", agent.json()["error"])
-        self.assertEqual(queue_state(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute(
                 "UPDATE runtime_agents SET record=? WHERE id=?", (original_agent, self.agent_id)

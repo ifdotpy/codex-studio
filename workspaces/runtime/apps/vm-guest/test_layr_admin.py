@@ -7,6 +7,7 @@ import os
 import pwd
 import shutil
 import socket
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -369,6 +370,21 @@ class SeedTests(unittest.IsolatedAsyncioTestCase):
         # The guest service removes its upload folder after the receipt.
         self.assertTrue(self.upload.exists())
         self.assertEqual([p.name for p in self.main.iterdir()], ["chromium"])
+
+    async def test_the_copy_takes_the_archive_modes_of_files_and_folders(self):
+        (self.upload / "src/BUILD.gn").chmod(0o400)
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o700)
+        (self.upload / "src/link").symlink_to(outside)
+        (self.upload.parent / "folder-modes.json").write_text(json.dumps(
+            {".": 0o750, "src": 0o555, "src/.git": 0o751, "src/link": 0o777}))
+        await self.seed()
+        mode = lambda path: oct(stat.S_IMODE(path.lstat().st_mode))
+        self.assertEqual([mode(self.main / name) for name in ("chromium", "chromium/src", "chromium/src/.git")],
+                         ["0o750", "0o555", "0o751"])
+        self.assertEqual(mode(self.main / "chromium/src/BUILD.gn"), "0o400")
+        # A link named in the record is never followed.
+        self.assertEqual(mode(outside), "0o700")
 
     async def test_an_existing_folder_is_kept_and_its_caches_are_saved(self):
         (self.main / "chromium").mkdir()

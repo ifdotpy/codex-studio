@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 import uuid
 from urllib.parse import urlencode
@@ -15,9 +18,40 @@ isolate_supervisor_environment()
 
 from http_backend_harness import (
     HTTP_WAIT_GUARD_SECONDS,
+    BackendProcess,
     TimedHTTPContractTest,
     start_contract_backend,
 )
+
+
+class BackendStartupReport(unittest.TestCase):
+    def test_missing_native_module_names_the_backend_interpreter_setup(self) -> None:
+        # The backend child gets no PYTHONPATH, so a missing module needs a
+        # setup hint that a copy on PYTHONPATH cannot satisfy.
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as folder:
+            backend = BackendProcess(Path(folder), initialize_workspace=False)
+            try:
+                backend._backend_python = Path("/fixture/bin/python")
+                backend._stderr = [
+                    "codex-canvas: The backend requires studio_operations_native.\n",
+                ]
+                with self.assertRaises(RuntimeError) as caught:
+                    backend._raise_backend_not_ready(
+                        "process exited before the ready line", 1,
+                    )
+                backend._stderr = ["backend bootstrap failed\n"]
+                with self.assertRaises(RuntimeError) as unrelated:
+                    backend._raise_backend_not_ready(
+                        "process exited before the ready line", 1,
+                    )
+            finally:
+                backend.close()
+        message = str(caught.exception)
+        self.assertIn("/fixture/bin/python", message)
+        self.assertIn("without the caller's PYTHONPATH", message)
+        self.assertIn("install-cli.py --dev", message)
+        self.assertIn(".github/actions/fast-tier-setup", message)
+        self.assertNotIn("install-cli.py", str(unrelated.exception))
 
 
 class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):

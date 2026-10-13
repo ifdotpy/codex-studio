@@ -15,7 +15,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 FIXTURE = "restart-mid-turn-supervisor-replay.json"
@@ -31,12 +31,15 @@ def _read_rows(path, agent: str) -> list[tuple[str, str]]:
         ).fetchall()
 
 
-def _snapshot(path) -> tuple[int, int]:
+def _snapshot(path) -> tuple[int, int, tuple[tuple[object, ...], ...]]:
     uri = f"file:{path}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as database:
         items = database.execute("SELECT count(*) FROM runtime_items").fetchone()[0]
         events = database.execute("SELECT count(*) FROM runtime_events").fetchone()[0]
-        return items, events
+        entities = database.execute(
+            "SELECT collection,id,seq,hash,payload,deleted FROM sync_entities ORDER BY collection,id"
+        ).fetchall()
+        return items, events, tuple(entities)
 
 
 def _write_item(path, agent: str, identity: str, record: dict, created: float) -> None:
@@ -196,6 +199,49 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 path = "/api/transcript/search?" + urlencode({"id": cls.agent, "q": query})
                 response = cls.backend.request("GET", path, headers=cls.headers)
                 cls.python_search[case["name"]] = (response.status, response.json())
+            cls.python_workspace_search = cls.backend.request(
+                "GET", "/api/search?" + urlencode({"q": "Recovered output."}),
+                headers=cls.headers,
+            )
+            cls.python_search_item = cls.backend.request(
+                "GET", "/api/search/item?" + urlencode({"id": cls.item_id}),
+                headers=cls.headers,
+            )
+            cls.unavailable_chat_ids = ("chat-from-deleted-member", "chat-from-pending-room")
+            with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
+                database.execute(
+                    "INSERT INTO runtime_rooms (id,record) VALUES (?,?)",
+                    ("deleted-member-room", json.dumps({"id": "deleted-member-room", "kind": "private", "members": ["deleted-chat-member"]})),
+                )
+                database.execute(
+                    "INSERT INTO runtime_rooms (id,record) VALUES (?,?)",
+                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "kind": "federated", "members": [cls.agent]})),
+                )
+                database.execute(
+                    "INSERT INTO runtime_federation_rooms (id,record) VALUES (?,?)",
+                    ("pending-federated-room", json.dumps({"id": "pending-federated-room", "status": "pending", "localApproved": False, "remoteApproved": False, "localMembers": [cls.agent]})),
+                )
+                for identity, room in zip(cls.unavailable_chat_ids, ("deleted-member-room", "pending-federated-room"), strict=True):
+                    database.execute(
+                        "INSERT INTO runtime_chat_messages (id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                        (identity, room, cls.agent, "private unavailable text", 2_000_000_100.0, "{}"),
+                    )
+                database.commit()
+            cls.python_unavailable_chat_items = {
+                identity: cls.backend.request(
+                    "GET", "/api/search/item?" + urlencode({"id": identity}),
+                    headers=cls.headers,
+                )
+                for identity in cls.unavailable_chat_ids
+            }
+            cls.python_transcript_pull = cls.backend.request(
+                "GET", f"/api/sync/pull?scope=transcript:{cls.agent}&after=0",
+                headers=cls.headers,
+            )
+            if cls.python_transcript_pull.status != 200:
+                raise AssertionError(
+                    f"Python transcript sync pull failed: {cls.python_transcript_pull.body[:1000]}"
+                )
             if rust_command:
                 cls.backend.stop()
                 os.environ["STUDIO_HTTP_BACKEND_COMMAND"] = rust_command
@@ -227,7 +273,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertTrue(any(row["sourceId"] == self.item_id for row in results.json()["results"]))
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_python_rust_differential_for_python_written_transcript(self) -> None:
+    def test_00_python_rust_differential_for_python_written_transcript(self) -> None:
         item_path = "/api/transcript/item?" + urlencode(
             {"id": self.agent, "message_id": self.item_id}
         )
@@ -251,14 +297,113 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(rust.status, python_status, rust.body[:1000])
                 self.assertEqual(rust.json(), python_body)
 
+        search_path = "/api/search?" + urlencode({"q": "Recovered output."})
+        rust_search = self.backend.request("GET", search_path, headers=self.headers)
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(rust_search.status, 501, rust_search.body[:1000])
+            self.assertEqual(
+                rust_search.json()["error"],
+                "Not implemented: requires transcript/room-search",
+            )
+        else:
+            self.assertEqual(rust_search.status, self.python_workspace_search.status)
+            self.assertEqual(rust_search.json(), self.python_workspace_search.json())
+
+        item_path = "/api/search/item?" + urlencode({"id": self.item_id})
+        rust_search_item = self.backend.request("GET", item_path, headers=self.headers)
+        self.assertEqual(rust_search_item.status, self.python_search_item.status)
+        self.assertEqual(rust_search_item.json(), self.python_search_item.json())
+
+        pull = self.backend.request(
+            "GET", f"/api/sync/pull?scope=transcript:{self.agent}&after=0",
+            headers=self.headers,
+        )
+        self.assertEqual(pull.status, 200, pull.body[:1000])
+        expected_documents = self.python_transcript_pull.json()["documents"]
+        actual_documents = pull.json()["documents"]
+        self.assertEqual(len(actual_documents), len(expected_documents))
+        for actual, expected in zip(actual_documents, expected_documents, strict=True):
+            self.assertEqual(
+                {
+                    "id": actual["id"], "payload": json.loads(actual["payload"]),
+                    "_deleted": actual["_deleted"],
+                },
+                {
+                    "id": expected["id"], "payload": json.loads(expected["payload"]),
+                    "_deleted": expected["_deleted"],
+                },
+            )
+        replay_snapshot = _snapshot(self.backend.state / "canvas.sqlite3")
+        replay = self.backend.request(
+            "GET", f"/api/sync/pull?scope=transcript:{self.agent}&after=0",
+            headers=self.headers,
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(_snapshot(self.backend.state / "canvas.sqlite3"), replay_snapshot)
+        self.assertEqual(replay.json()["documents"], pull.json()["documents"])
+
+    def test_search_item_refuses_unavailable_chat_rooms(self) -> None:
+        for identity in self.unavailable_chat_ids:
+            with self.subTest(identity=identity):
+                response = self.backend.request(
+                    "GET", "/api/search/item?" + urlencode({"id": identity}),
+                    headers=self.headers,
+                )
+                python = self.python_unavailable_chat_items[identity]
+                self.assertEqual(response.status, python.status, response.body[:1000])
+                self.assertEqual(response.status, 400)
+                self.assertEqual(response.json(), python.json())
+
     def test_unknown_transcript_item_does_not_write_state(self) -> None:
-        before = _snapshot(self.backend.state / "canvas.sqlite3")
+        before = no_write_snapshot(self.backend.state)
         path = "/api/transcript/item?" + urlencode(
             {"id": self.agent, "message_id": "missing-transcript-item"}
         )
         response = self.backend.request("GET", path, headers=self.headers)
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(_snapshot(self.backend.state / "canvas.sqlite3"), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_active_transcript_pull_names_event_driver_without_writes(self) -> None:
+        database_path = self.backend.state / "canvas.sqlite3"
+        with closing(sqlite3.connect(database_path)) as database:
+            original = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent,)
+            ).fetchone()[0]
+            revision_row = database.execute(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?",
+                (self.agent,),
+            ).fetchone()
+            database.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','running') WHERE id=?",
+                (self.agent,),
+            )
+            database.commit()
+        before = _snapshot(database_path)
+        response = self.backend.request(
+            "GET", f"/api/sync/pull?scope=transcript:{self.agent}&after=0",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status, 501, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"], "Not implemented: requires transcript/event-driver"
+        )
+        self.assertEqual(_snapshot(database_path), before)
+        with closing(sqlite3.connect(database_path)) as database:
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?", (original, self.agent)
+            )
+            if revision_row is not None:
+                database.execute(
+                    "UPDATE runtime_transcript_revisions SET revision=? WHERE agent=?",
+                    (revision_row[0], self.agent),
+                )
+            else:
+                database.execute(
+                    "DELETE FROM runtime_transcript_revisions WHERE agent=?",
+                    (self.agent,),
+                )
+            database.commit()
 
     def test_truncated_container_resolves_from_durable_input_event(self) -> None:
         identity = "transcript-event-container-case"
@@ -507,9 +652,8 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_unavailable_event_and_workspace_routes_name_their_dependencies(self) -> None:
         expected = {
             "/api/transcript": "transcript/event-driver",
-            "/api/transcript/page": "transcript/event-driver, transcript/workspace-state",
-            "/api/search": "transcript/search-index",
-            "/api/search/item": "transcript/workspace-state",
+            "/api/transcript/page": "transcript/event-driver",
+            "/api/search": "transcript/room-search",
         }
         for path, dependency in expected.items():
             with self.subTest(path=path):
@@ -523,7 +667,7 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             if path == "/api/search/item"
                             else {"id": self.agent}
                         )
-                        if path.startswith("/api/transcript") or path == "/api/search/item"
+                        if path.startswith("/api/transcript")
                         else {"q": "fixture"}
                     ),
                     headers=self.headers,

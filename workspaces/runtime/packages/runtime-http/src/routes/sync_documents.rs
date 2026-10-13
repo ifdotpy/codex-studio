@@ -1,7 +1,7 @@
 //! HTTP adapter for the durable sync document operations.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -10,22 +10,18 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
+use studio_runtime_services::transcript;
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
 
 const SYNC_STREAM_BYTE_LIMIT: i64 = 1_048_576;
-const TRANSCRIPT_PULL_DEPENDENCIES: [Dependency; 1] = [Dependency::new("transcript-service/pull")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/sync/protocol", OperationStatus::Implemented, protocol),
-        get(
-            "/api/sync/pull",
-            OperationStatus::partial(&TRANSCRIPT_PULL_DEPENDENCIES),
-            pull,
-        ),
+        get("/api/sync/pull", OperationStatus::Implemented, pull),
         post(
             "/api/sync/drafts",
             OperationStatus::Implemented,
@@ -101,17 +97,33 @@ pub(crate) async fn pull(
         .typed_value("priorityId")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    if scope.starts_with("transcript:") {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires transcript-service/pull",
-        ));
-    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let state_dir = state.state_dir.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let generation = store.generation().map_err(|_| ApiError::internal())?;
+        if let Some(agent) = scope.strip_prefix("transcript:") {
+            let mut response = transcript::pull_scope(&store, &scope, agent, after)
+                .map_err(|error| match error {
+                    transcript::TranscriptError::RequiresDependency(dependency) => ApiError::new(
+                        StatusCode::NOT_IMPLEMENTED,
+                        format!("Not implemented: requires {dependency}"),
+                    ),
+                    transcript::TranscriptError::InvalidStoredObject { table, id } => ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Invalid stored object {table}/{id}"),
+                    ),
+                    _ => ApiError::internal(),
+                })?;
+            response["generation"] = json!(generation);
+            if !validators.validate_stored("SyncPullResponse", &response)
+                || serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone())
+                    .is_err()
+            {
+                return Err(invalid_entity("sync_entities", "transcript-pull-response").into());
+            }
+            return Ok(response);
+        }
         if scope == "drafts" {
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let workspace_id = SyncDocumentsRepository::workspace_id(&connection)
@@ -449,6 +461,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "sync_documents",
         routes: Some(routes),
-        dependencies: &["resource-policy/publish-drafts", "sync-policy/entity-seeding", "sync-policy/entity-window-maintenance", "sync-policy/runtime-capabilities", "transcript-service/pull"],
+        dependencies: &["resource-policy/publish-drafts", "sync-policy/entity-seeding", "sync-policy/entity-window-maintenance", "sync-policy/runtime-capabilities"],
     }
 }

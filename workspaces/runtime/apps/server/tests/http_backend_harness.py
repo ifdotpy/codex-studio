@@ -11,11 +11,13 @@ import shlex
 import signal
 import shutil
 import statistics
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import tempfile
+from contextlib import closing
 from typing import Any, Callable, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -55,6 +57,141 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
     "CLAUDE_CODE_OAUTH_ACCESS_TOKEN",
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 })
+
+# Dispatcher- and scheduler-owned fields that can change between an HTTP
+# response and the test's post-request read. Values are paths within each row's
+# JSON record (or, for plain columns, the column name). Keep this as the sole
+# authority; docs/testing.md points here.
+BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
+    "runtime_agents": frozenset({
+        # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
+        "complaintsPresented",
+        # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.
+        "startAttempt.settingsFixed",
+    }),
+    "runtime_agent_record_generation": frozenset({
+        # Scheduler roster invalidation counter is maintained by agent triggers at codex_runtime.py:1607-1620.
+        "value",
+    }),
+    "runtime_scheduler_agent_changes": frozenset({
+        # Scheduler journal rows are maintained by agent triggers at codex_runtime.py:2855-2868.
+        "generation",
+    }),
+    "runtime_scheduler_agent_change_state": frozenset({
+        # Scheduler journal cursor is maintained by agent triggers at codex_runtime.py:2860-2871.
+        "floor", "generation", "entries", "total",
+    }),
+    "runtime_event_meta": frozenset({
+        # Dispatcher timings/projections are written in codex_runtime.py:4302,
+        # 4354, 4368, 6571-6871, 6854, 6879, 7138-7144, 7264 and codex_efficiency.py:715.
+        "timing.dispatchPickedAt", "timing.startBeganAt", "timing.nativeSubmitBeganAt",
+        "timing.submittedAt", "timing.acceptedAt",
+        "timing.fastQueuedAt", "timing.fastSkipReason", "timing.fastScheduledAt",
+        "timing.fastEnteredAt", "timing.fastLockedAt", "timing.fastLockOwners",
+        "timing.fastIndexesReadyAt", "timing.fastTeamCheckedAt", "timing.fastAgentLoadedAt",
+        "timing.fastActiveScanAt", "timing.fastCandidatesAt", "timing.fastCapacityCheckedAt",
+        "timing.fastBudgetCheckedAt", "timing.fastAccountCheckedAt", "timing.fastRadioCheckedAt",
+        "timing.fastWorkspaceScanAt", "timing.fastToolGateAt", "timing.fastBatchLoadedAt",
+        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt", "modelEventProjection",
+        "contextManifest", "transcriptItemId",
+    }),
+    # The dispatcher sets this in codex_runtime.py:6943; reconcile_agent copies
+    # it into this projection in codex_execution.py:255-259.
+    "runtime_execution_attempts": frozenset({"settingsFixed"}),
+    "sync_entities": frozenset({
+        # Same dispatcher-only field is copied into the agent entity at codex_runtime.py:3302,3372.
+        "payload.value.complaintsPresented",
+        # Agent projection carries dispatcher-normalized attempts via codex_runtime.py:3302,3372.
+        "payload.value.startAttempt.settingsFixed",
+    }),
+    # Rule tick updates its scheduling and liveness projection in codex_rules.py:420-483.
+    "runtime_rules": frozenset({
+        "status", "inFlight", "activeWorkers", "nextAt", "lastAt", "checks", "wakes",
+        "lowSince", "alerted", "error", "previousOutcome", "lastExitCode",
+        "lastStallExitCode", "lastStallError", "lastOutput", "lastFinished", "lastEvent",
+        "eventText", "fingerprint", "fileActivityAt", "fileGeneration",
+        "stallWakeGeneration", "stallProbe", "stallEventKey", "stallText",
+    }),
+    # Monitor workers, output callbacks and stall checks advance these fields in codex_runtime.py:9895-10192.
+    "runtime_monitors": frozenset({
+        "status", "tail", "bytes", "activityAt", "activityGeneration",
+        "stallWakeGeneration", "stallProbeGeneration", "stallProbeStarted", "lastStallAt",
+        "lastLivenessResult", "exitCode", "error", "finished", "configurationPending",
+        "operation", "reattachRecovery",
+    }),
+}
+
+
+def no_write_snapshot(state: Path) -> tuple[object, ...]:
+    """Snapshot request-visible databases, omitting only named background fields.
+
+    A no-write proof compares what a request could write. Fields owned by the
+    background dispatcher or scheduler are excluded by their table and field
+    names; whole tables are never excluded, except the separate analytics.sqlite3
+    database. Python writes that database only through Runtime startup and the
+    background analytics capture/rollout collectors: codex_runtime.py:1811-1812,
+    2407-2425, 2545-2592, 4139-4145, 7779, 7917-7921, 9052, 9209;
+    codex_analytics.py:265-299, 301-324, 350-468, 493-768;
+    codex_cost_usage.py:64-120; codex_streaming.py:154-189;
+    codex_native_errors.py:287; native_notifications/dispatch.py:177;
+    codex_analytics_history.py:348-351, 354-404, 468-829. HTTP analytics/cost
+    handlers read it (studio_api/insights/router.py:143-155); no HTTP handler
+    writes it. An absent table and a present empty table compare equally, but
+    any row in another newly created table remains visible.
+    """
+    database_snapshots = []
+    for database_path in sorted(state.glob("*.sqlite3")):
+        if database_path.name == "analytics.sqlite3":
+            continue
+        with closing(sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)) as database:
+            tables = [
+                row[0] for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name"
+                )
+            ]
+            snapshots = []
+            for table in tables:
+                columns = tuple(row[1] for row in database.execute(f'PRAGMA table_info("{table}")'))
+                excluded = BACKGROUND_OWNED_FIELDS.get(table, frozenset())
+                retained_columns = tuple(column for column in columns if column not in excluded)
+                selected_columns = ",".join(f'"{column}"' for column in columns)
+                rows = database.execute(f'SELECT {selected_columns} FROM "{table}"').fetchall()
+                if not rows:
+                    continue
+                retained_rows = []
+                for row in rows:
+                    values = dict(zip(columns, row, strict=True))
+                    for json_column in ("record", "payload"):
+                        encoded = values.get(json_column)
+                        if not isinstance(encoded, (str, bytes, bytearray)):
+                            continue
+                        try:
+                            parsed = json.loads(encoded)
+                        except (TypeError, ValueError):
+                            continue
+                        if not isinstance(parsed, dict):
+                            continue
+                        for field in excluded:
+                            prefix = f"{json_column}."
+                            if json_column == "record" and not field.startswith(("record.", "payload.")):
+                                path = field
+                            elif field.startswith(prefix):
+                                path = field[len(prefix):]
+                            else:
+                                continue
+                            parts = path.split(".")
+                            current = parsed
+                            for part in parts[:-1]:
+                                current = current.get(part) if isinstance(current, dict) else None
+                            if isinstance(current, dict):
+                                current.pop(parts[-1], None)
+                        values[json_column] = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+                    retained_rows.append(tuple(values[column] for column in retained_columns))
+                retained_rows.sort(key=repr)
+                snapshots.append((table, retained_columns, tuple(retained_rows)))
+            database_snapshots.append((database_path.name, tuple(snapshots)))
+    return tuple(database_snapshots)
 
 
 @dataclass(frozen=True)
@@ -472,8 +609,25 @@ class BackendProcess:
             f"Backend did not emit its ready line: {reason}; "
             f"child exit status={exit_status}; stderr tail:\n{stderr_tail}"
         )
+        if "studio_operations_native" in stderr_tail:
+            message += "\n" + self._native_module_setup_hint()
         self.stop()
         raise RuntimeError(message)
+
+    def _native_module_setup_hint(self) -> str:
+        # The child environment is an allow-list without PYTHONPATH, so only the
+        # backend interpreter's own site-packages can supply the native module.
+        python = self._backend_python or "the configured backend interpreter"
+        return (
+            f"Test environment: the harness starts the backend with {python} and "
+            "without the caller's PYTHONPATH, so a module copy on PYTHONPATH is not "
+            "visible to it. Install the module in that interpreter's site-packages: "
+            "run `cargo build --release -p studio-operations-python`, then "
+            "`python3 workspaces/runtime/apps/server/src/install-cli.py --dev "
+            "--bin-dir <folder>` under the XDG_CACHE_HOME that selected that "
+            "interpreter. CI runs both steps "
+            "in .github/actions/fast-tier-setup before the server suites."
+        )
 
     @property
     def stderr(self) -> str:

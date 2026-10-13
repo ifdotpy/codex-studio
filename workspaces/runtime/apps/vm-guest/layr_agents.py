@@ -190,6 +190,52 @@ class AgentHandlers:
     async def head(self, context):
         return await self.layr(context, "rev-parse", "HEAD", root=True)
 
+    async def branch_line(self, params, project, record):
+        parent = self.context(params["parentAgentId"])
+        require(parent["projectId"] == params["projectId"] and not parent["readOnly"],
+                "The parent must own a writable line in this project")
+        readonly = params.get("readOnly", False)
+        require(type(readonly) is bool, "readOnly must be a boolean")
+        subpath = params.get("subpath", ".")
+        require(isinstance(subpath, str) and not PurePosixPath(subpath).is_absolute()
+                and ".." not in PurePosixPath(subpath).parts, "The line subpath is invalid")
+        name = params["agentId"]
+        target = project / "lines" / name
+        # The broker's durable receipt reserves the request before this command.
+        # A pre-existing line without our association is an unknown outcome.
+        require(not target.exists(), "The line exists without a proven agent association")
+        if readonly:
+            # A reviewer line needs setfacl; find a missing tool before the line exists.
+            await self.command(str(project), ["setfacl", "--version"])
+        user = join_project_group(_user("studio-a-" + uuid.UUID(name).hex[:22]), params["projectId"])
+        source = params.get("stateId") or await self.head(parent)
+        require(isinstance(source, str) and source and not source.startswith("-"), "The state ID is invalid")
+        created = False
+        try:
+            await self.layr(parent, "branch", name, source, "--owner", "0" if readonly else user["owner"], root=True)
+            created = True
+            if readonly:
+                await self.command(str(project), ["setfacl", "-RP", "-m", "u:" + str(user["uid"]) + ":r-X", str(target)])
+                await self.command(str(project), ["btrfs", "property", "set", "-ts", str(target), "ro", "true"])
+            value = {"agentId": name, "projectId": params["projectId"], "line": name,
+                     "subpath": subpath, "readOnly": readonly, **user,
+                     "parentAgentId": parent["agentId"], "requestedState": params.get("stateId")}
+            atomic_json(record, value)
+            context = self.context(name)
+            return {**context, "stateId": await self.head(context)}
+        except BaseException:
+            try:
+                # Never expose an association for a line whose setup failed.
+                record.unlink(missing_ok=True)
+                if created or target.exists():
+                    # layr deletes read-only subvolumes without changing their flag.
+                    await self.layr(parent, "branch", "-D", name, root=True)
+                require(not target.exists(), "The failed line still exists after rollback")
+            except BaseException as rollback_error:
+                raise GuestError("outcome_unknown",
+                                 "The line setup failed and its rollback has no proven result") from rollback_error
+            raise
+
     async def dispatch(self, request_id, method, params, emit):
         agent = params.get("agentId")
         lock = self.locks.setdefault(agent or params.get("handle") or "providers", asyncio.Lock())
@@ -235,28 +281,7 @@ class AgentHandlers:
                 name, subpath, readonly = "main", ".", False
                 extra = {}
             else:
-                parent = self.context(params["parentAgentId"])
-                require(parent["projectId"] == params["projectId"] and not parent["readOnly"],
-                        "The parent must own a writable line in this project")
-                user = join_project_group(_user("studio-a-" + uuid.UUID(params["agentId"]).hex[:22]),
-                                          params["projectId"])
-                name = params["agentId"]
-                readonly = params.get("readOnly", False)
-                require(type(readonly) is bool, "readOnly must be a boolean")
-                subpath = params.get("subpath", ".")
-                require(isinstance(subpath, str) and not PurePosixPath(subpath).is_absolute()
-                        and ".." not in PurePosixPath(subpath).parts, "The line subpath is invalid")
-                source = params.get("stateId") or await self.head(parent)
-                require(isinstance(source, str) and source and not source.startswith("-"), "The state ID is invalid")
-                target = project / "lines" / name
-                # The broker's durable receipt reserves the request before this command.
-                # A pre-existing line without our association is an unknown outcome.
-                require(not target.exists(), "The line exists without a proven agent association")
-                await self.layr(parent, "branch", name, source, "--owner", "0" if readonly else user["owner"], root=True)
-                if readonly:
-                    await self.command(str(project), ["setfacl", "-RP", "-m", "u:" + str(user["uid"]) + ":r-X", str(target)])
-                    await self.command(str(project), ["btrfs", "property", "set", "-ts", str(target), "ro", "true"])
-                extra = {"parentAgentId": parent["agentId"], "requestedState": params.get("stateId")}
+                return await self.branch_line(params, project, record)
             value = {"agentId": params["agentId"], "projectId": params["projectId"], "line": name,
                      "subpath": subpath, "readOnly": readonly, **user, **extra}
             atomic_json(record, value)

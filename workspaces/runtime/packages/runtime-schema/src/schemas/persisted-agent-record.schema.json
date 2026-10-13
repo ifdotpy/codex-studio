@@ -130,6 +130,17 @@
   },
   "description": "Persisted agent identity plus the extensible state written by the runtime.",
   "properties": {
+    "accountKey": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accountkey"
+    },
     "activeTools": {
       "anyOf": [
         {
@@ -189,6 +200,20 @@
       ],
       "title": "Cwd"
     },
+    "deletedAt": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deletedat"
+    },
     "epoch": {
       "maximum": 9007199254740991,
       "minimum": 0,
@@ -211,6 +236,28 @@
     "id": {
       "title": "Id",
       "type": "string"
+    },
+    "isLead": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Islead"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Model"
     },
     "name": {
       "anyOf": [
@@ -254,6 +301,17 @@
         }
       ]
     },
+    "parentId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Parentid"
+    },
     "rootId": {
       "title": "Rootid",
       "type": "string"
@@ -275,6 +333,28 @@
     "status": {
       "title": "Status",
       "type": "string"
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnid"
     }
   },
   "required": ["id", "rootId", "epoch", "status"],

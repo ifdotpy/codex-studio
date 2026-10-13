@@ -6,7 +6,8 @@ import sys
 
 if os.environ.get("CODEX_SERVER_TEST_AUDIT_HOME") == "1":
     real_home = os.path.abspath(os.environ["CODEX_SERVER_TEST_REAL_HOME"])
-    protected = tuple(os.path.normcase(os.path.abspath(os.path.join(real_home, relative)))
+    # Checked values are physical paths (macOS /var is /private/var), so roots are too.
+    protected = tuple(os.path.normcase(os.path.realpath(os.path.join(real_home, relative)))
                       for relative in (".codex", ".claude", ".local/state/codex-agents"))
     allowed_value = os.environ.get("CODEX_SERVER_TEST_AUDIT_ALLOW_EXECUTABLE", "")
     allowed_executable = (os.path.normcase(os.path.realpath(allowed_value)) if allowed_value else "")

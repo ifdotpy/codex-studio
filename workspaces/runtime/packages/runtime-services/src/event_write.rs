@@ -1,7 +1,7 @@
 //! Atomic plan and annotation writes with durable scheduler events.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -320,12 +320,7 @@ fn enqueue(
         if auto_wake {
             queue_agent(transaction, agent)?;
         }
-        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        EventWriteRepository::mark_event_enqueued(
-            transaction,
-            &id,
-            START.get_or_init(Instant::now).elapsed().as_nanos(),
-        )?;
+        EventWriteRepository::mark_event_enqueued(transaction, &id, monotonic_ns())?;
     }
     Ok(inserted)
 }
@@ -496,6 +491,12 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
         object,
         id: id.to_owned(),
     }
+}
+
+/// System monotonic nanoseconds, sharing the clock base of Python monotonic_ns.
+pub(crate) fn monotonic_ns() -> u128 {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    time.tv_sec as u128 * 1_000_000_000 + time.tv_nsec as u128
 }
 
 #[cfg(test)]

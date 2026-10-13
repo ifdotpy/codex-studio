@@ -12,6 +12,9 @@ from studio_api.claude_persisted_models import (
     PersistedClaudeAttemptRecord, PersistedClaudeControlRecord, PersistedClaudeLoginRecord,
 )
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.workspace_operation_models import (
+    PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
+)
 from studio_api.recovery_models import RecoveryAgentRecord, RecoveryTaskRecord, RecoveryToolReceipt
 
 
@@ -95,6 +98,13 @@ class PersistedAgentRecord(ContractModel):
     name: StrictStr | None = None
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
+    parentId: StrictStr | None = None
+    isLead: StrictBool | None = None
+    deletedAt: StrictBool | float | None = None
+    turnId: StrictStr | None = None
+    threadId: StrictStr | None = None
+    accountKey: StrictStr | None = None
+    model: StrictStr | None = None
 
     # Notification-owned fields; absent values remain absent in stored JSON.
     activeTools: list[PersistedActiveTool] | None = None
@@ -113,6 +123,205 @@ class _OpenPersistedRecord(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     id: StrictStr
+
+
+class PersistedSupervisor(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    generation: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+
+
+class PersistedToolRequestRecord(_OpenPersistedRecord):
+    agent: StrictStr
+    stage: Literal["queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed"]
+    outcome: Literal["pending", "applied", "not_applied", "unknown"]
+    tool: StrictStr | None = None
+    signature: StrictStr | None = None
+    cancelRequested: StrictBool = False
+    readOnly: StrictBool = False
+    result: PersistedToolResult | None = None
+    agentIds: list[StrictStr] = Field(default_factory=list)
+    created: float | None = None
+    updated: float | None = None
+    finished: float | None = None
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    accountKey: StrictStr | None = None
+    threadId: StrictStr | None = None
+    callId: StrictStr | None = None
+    request_id: StrictStr | None = None
+    operationResult: dict[StrictStr, JsonValue] | None = None
+    supervisor: PersistedSupervisor | None = None
+    timing: dict[StrictStr, JsonValue] = Field(default_factory=dict)
+
+
+class PersistedToolAlias(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    agent: StrictStr
+    alias: StrictStr
+    request: StrictStr
+
+
+class PersistedToolContent(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    type: StrictStr | None = None
+    text: StrictStr | None = None
+
+
+class PersistedToolResult(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    success: StrictBool | None = None
+    contentItems: list[PersistedToolContent] | None = None
+    serverOutputExpiresAt: float | None = None
+
+
+class PersistedOperationResult(ContractModel):
+    """Opaque operation answer; only its presence is consumed by receipt reads."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class PersistedExecutionRecord(_OpenPersistedRecord):
+    runId: StrictStr | None = None
+    latestAttemptId: StrictStr | None = None
+    kind: StrictStr | None = None
+    status: StrictStr | None = None
+    outcome: StrictStr | None = None
+    resultReference: StrictStr | None = None
+
+
+class PersistedPeerTeam(_OpenPersistedRecord):
+    name: StrictStr
+    members: list[StrictStr]
+
+
+class PersistedRoomRecord(_OpenPersistedRecord):
+    kind: StrictStr
+    members: list[StrictStr] = Field(default_factory=list)
+    rootId: StrictStr | None = None
+    customName: StrictStr | None = None
+    updated: float | None = None
+    projectPath: StrictStr | None = None
+    userHidden: StrictBool | None = None
+    radio: dict[StrictStr, JsonValue] | None = None
+
+
+class PersistedProjectLocationOutbox(_OpenPersistedRecord):
+    """Only the durable outbox identity is consumed by the location dependency gate."""
+
+
+class PersistedProjectRecord(_OpenPersistedRecord):
+    path: StrictStr | None = None
+    name: StrictStr | None = None
+    peerTeams: list[PersistedPeerTeam] = Field(default_factory=list)
+
+
+class PersistedFederationMember(_OpenPersistedRecord):
+    name: StrictStr | None = None
+
+
+class PersistedFederationRoomRecord(_OpenPersistedRecord):
+    status: StrictStr
+    localApproved: StrictBool = False
+    remoteApproved: StrictBool = False
+    localMembers: list[StrictStr] = Field(default_factory=list)
+    remoteMembers: list[PersistedFederationMember] = Field(default_factory=list)
+    localParticipants: list[dict[StrictStr, JsonValue]] = Field(default_factory=list)
+    peerId: StrictStr
+    peerLabel: StrictStr
+    name: StrictStr
+
+
+class PersistedMessageEvent(_OpenPersistedRecord):
+    status: Literal["pending", "reserved", "dispatching", "uncertain", "failed", "cancelled",
+                    "delivered", "stored_only", "queued", "accepted", "sent"]
+    error: StrictStr | None = None
+
+
+class PersistedChatMessage(_OpenPersistedRecord):
+    seq: Annotated[StrictInt, Field(ge=1, le=MAX_SAFE_INTEGER)]
+    room: StrictStr
+    sender: StrictStr
+    text: StrictStr
+    created: float
+    deliveries: dict[StrictStr, StrictStr]
+
+
+class PersistedReadState(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    read: StrictBool | None = None
+
+
+class PersistedSummaryQuestion(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    question: StrictStr | None = None
+
+
+class PersistedSummaryParams(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    questions: list[PersistedSummaryQuestion] | None = None
+
+
+class PersistedSummaryValue(_OpenPersistedRecord):
+    """Fields consumed from the durable sidebar projection, not an HTTP DTO."""
+
+    name: StrictStr | None = None
+    path: StrictStr | None = None
+    source: StrictStr | None = None
+    status: StrictStr | None = None
+    hostProjectPath: StrictStr | None = None
+    cwd: StrictStr | None = None
+    isLead: StrictBool | None = None
+    inFlight: StrictBool | None = None
+    archived: StrictBool | None = None
+    pinned: StrictBool | None = None
+    userHidden: StrictBool | None = None
+    needsUserResponse: StrictBool | None = None
+    deferred: StrictBool | None = None
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    lastCompletedTurn: StrictStr | None = None
+    lastCompletedTurnStatus: StrictStr | None = None
+    readState: PersistedReadState | None = None
+    members: list[StrictStr] | None = None
+    peerTeams: list[PersistedPeerTeam] | None = None
+    locations: list[dict[StrictStr, JsonValue]] | None = None
+    projectAliases: list[dict[StrictStr, JsonValue]] | None = None
+    serverId: StrictStr | None = None
+    projectId: StrictStr | None = None
+    projectServerId: StrictStr | None = None
+    homeServerId: StrictStr | None = None
+    projectPath: StrictStr | None = None
+    sharedRoomId: StrictStr | None = None
+    provider: StrictStr | None = None
+    agent: StrictStr | None = None
+    leadId: StrictStr | None = None
+    tail: StrictStr | None = None
+    title: StrictStr | None = None
+    created: float | None = None
+    updated: float | None = None
+    version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    params: PersistedSummaryParams | None = None
+
+
+class PersistedSyncEntity(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    value: PersistedSummaryValue
+
+
+class PersistedAccessRecord(_OpenPersistedRecord):
+    kind: StrictStr | None = None
+    status: StrictStr | None = None
+    revoked: float | None = None
 
 
 class PersistedTaskRecord(_OpenPersistedRecord):
@@ -212,6 +421,7 @@ class PersistedTranscriptInput(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
+    id: StrictStr | None = None
     kind: StrictStr | None = None
     text: StrictStr | None = None
     truncated: StrictBool | None = None
@@ -220,6 +430,7 @@ class PersistedTranscriptInput(ContractModel):
 class PersistedTranscriptRecord(_OpenPersistedRecord):
     """Legacy parent text is hydrated from fulltext before response validation."""
 
+    role: StrictStr | None = None
     text: StrictStr | None = None
     inputs: list[PersistedTranscriptInput] | None = None
 
@@ -230,6 +441,7 @@ class RuntimeEventMetadataRecord(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
+    transcriptItemId: StrictStr | None = None
     assets: list[JsonValue] = Field(default_factory=list)
     timing: dict[StrictStr, JsonValue] | None = None
 
@@ -318,34 +530,48 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
-
-
 STATE_SCHEMA_MODELS = {
+    **BUDGET_SCHEMA_MODELS,
+    "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-access-record.schema.json": PersistedAccessRecord,
+    "persisted-agent-record.schema.json": PersistedAgentRecord,
+    "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
+    "persisted-chat-message.schema.json": PersistedChatMessage,
+    "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
     "persisted-claude-attempt.schema.json": PersistedClaudeAttemptRecord,
     "persisted-claude-control.schema.json": PersistedClaudeControlRecord,
     "persisted-claude-login.schema.json": PersistedClaudeLoginRecord,
-    "account-registry.schema.json": AccountRegistryRecord,
-    **BUDGET_SCHEMA_MODELS,
-    "persisted-agent-record.schema.json": PersistedAgentRecord,
-    "persisted-task-record.schema.json": PersistedTaskRecord,
-    "persisted-plan-record.schema.json": PersistedPlanRecord,
-    "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
-    "persisted-request-record.schema.json": PersistedRequestRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
-    "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
+    "persisted-execution-record.schema.json": PersistedExecutionRecord,
+    "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
+    "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
+    "persisted-message-event.schema.json": PersistedMessageEvent,
     "persisted-monitor-record.schema.json": PersistedMonitorRecord,
+    "persisted-operation-result.schema.json": PersistedOperationResult,
+    "persisted-plan-record.schema.json": PersistedPlanRecord,
+    "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "persisted-project-location-outbox.schema.json": PersistedProjectLocationOutbox,
+    "persisted-project-record.schema.json": PersistedProjectRecord,
+    "persisted-request-record.schema.json": PersistedRequestRecord,
+    "persisted-room-record.schema.json": PersistedRoomRecord,
+    "persisted-rule-record.schema.json": PersistedRuleRecord,
+    "persisted-sync-entity.schema.json": PersistedSyncEntity,
+    "persisted-task-record.schema.json": PersistedTaskRecord,
     "persisted-terminal-record.schema.json": PersistedTerminalRecord,
+    "persisted-tool-alias.schema.json": PersistedToolAlias,
+    "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,
+    "persisted-tool-result.schema.json": PersistedToolResult,
+    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
-    "persisted-rule-record.schema.json": PersistedRuleRecord,
-    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
-    "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
-    "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
     "recovery-agent-record.schema.json": RecoveryAgentRecord,
     "recovery-task-record.schema.json": RecoveryTaskRecord,
     "recovery-tool-receipt.schema.json": RecoveryToolReceipt,
-    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
+    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
+    "workspace-checkpoint-agent-record.schema.json": WorkspaceCheckpointAgentRecord,
+    "workspace-checkpoint-history-record.schema.json": WorkspaceCheckpointHistoryRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
 }
 

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
 
@@ -21,6 +22,7 @@ pub(crate) struct LocatedError {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RawRequest {
     pub body: Option<Value>,
+    pub raw_body: Option<Bytes>,
     pub query: BTreeMap<String, Vec<String>>,
     pub headers: BTreeMap<String, Vec<String>>,
     pub invalid_headers: BTreeSet<String>,
@@ -45,6 +47,7 @@ struct Part {
     location: &'static str,
     schema: Value,
     definitions: Arc<Map<String, Value>>,
+    has_opaque_json: bool,
 }
 
 #[derive(Clone, Default)]
@@ -240,10 +243,11 @@ impl Registry {
                 ],
             });
         }
+        let raw_body = raw.raw_body;
         let body = if let Some(part) = &operation.body {
             match raw.body {
                 Some(mut value) => {
-                    validate_part(part, &mut value)?;
+                    validate_part(part, &mut value, raw_body.as_deref())?;
                     Some(value)
                 }
                 None if operation.body_required => {
@@ -258,7 +262,7 @@ impl Registry {
         };
         let mut query = Value::Object(parameter_object(raw.query, operation.query.as_ref()));
         if let Some(part) = &operation.query {
-            validate_part(part, &mut query)?;
+            validate_part(part, &mut query, None)?;
         }
         let headers =
             raw.headers
@@ -307,7 +311,7 @@ impl Registry {
         }
         let mut headers = Value::Object(parameter_object(headers, operation.headers.as_ref()));
         if let Some(part) = &operation.headers {
-            validate_part(part, &mut headers)?;
+            validate_part(part, &mut headers, None)?;
         }
         Ok(ValidatedRequest {
             body,
@@ -339,6 +343,19 @@ impl Registry {
             self.operations
                 .get(&format!("{method} {template}"))
                 .map(|operation| operation.body.is_some())
+        })
+    }
+
+    pub(crate) fn has_opaque_body(&self, method: &str, path: &str) -> Option<bool> {
+        self.template_for(method, path).and_then(|template| {
+            self.operations
+                .get(&format!("{method} {template}"))
+                .map(|operation| {
+                    operation
+                        .body
+                        .as_ref()
+                        .is_some_and(|part| part.has_opaque_json)
+                })
         })
     }
 
@@ -812,9 +829,46 @@ fn compile_part(
     Ok(Part {
         validator,
         location,
+        has_opaque_json: location == "body" && schema_has_opaque_json(&schema, definitions),
         schema,
         definitions: Arc::clone(definitions),
     })
+}
+
+fn schema_has_opaque_json(schema: &Value, definitions: &Map<String, Value>) -> bool {
+    let mut pending = vec![schema];
+    let mut visited_references = BTreeSet::new();
+    while let Some(schema) = pending.pop() {
+        let Some(object) = schema.as_object() else {
+            continue;
+        };
+        if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+            if reference == "#/components/schemas/JsonValue" {
+                return true;
+            }
+            if let Some(name) = reference.strip_prefix("#/components/schemas/")
+                && visited_references.insert(reference.to_owned())
+                && let Some(target) = definitions.get(name)
+            {
+                pending.push(target);
+            }
+        }
+        for keyword in ["properties", "allOf", "anyOf", "oneOf"] {
+            if let Some(children) = object.get(keyword) {
+                if let Some(children) = children.as_object() {
+                    pending.extend(children.values());
+                } else if let Some(children) = children.as_array() {
+                    pending.extend(children.iter());
+                }
+            }
+        }
+        for keyword in ["items", "additionalProperties"] {
+            if let Some(child) = object.get(keyword).filter(|child| child.is_object()) {
+                pending.push(child);
+            }
+        }
+    }
+    false
 }
 
 fn parameter_schema_uri(method: &str, path: &str, index: usize) -> String {
@@ -845,14 +899,194 @@ fn schema_registry(document: &Value) -> Result<SchemaRegistry<'_>, String> {
         .map_err(|error| error.to_string())
 }
 
-fn validate_part(part: &Part, value: &mut Value) -> Result<(), LocatedError> {
+fn validate_part(
+    part: &Part,
+    value: &mut Value,
+    raw_body: Option<&[u8]>,
+) -> Result<(), LocatedError> {
     if matches!(part.location, "query" | "header") {
         convert_parameters(&part.schema, &part.definitions, value);
+    }
+    if part.location == "body" {
+        let location = part
+            .has_opaque_json
+            .then_some(raw_body)
+            .flatten()
+            .and_then(|bytes| {
+                #[cfg(test)]
+                OPAQUE_BODY_SCAN_COUNT.with(|count| count.set(count.get() + 1));
+                serde_json::from_slice::<&serde_json::value::RawValue>(bytes).ok()
+            })
+            .and_then(|raw| {
+                opaque_integer_precision_error(
+                    &part.schema,
+                    raw,
+                    &part.definitions,
+                    &mut Vec::new(),
+                    &mut BTreeSet::new(),
+                )
+            });
+        if let Some(mut location) = location {
+            location.insert(0, Value::String("body".to_owned()));
+            return Err(LocatedError { location });
+        }
     }
     match part.validator.iter_errors(value).next() {
         Some(error) => Err(convert_error(&error, part.location)),
         None => Ok(()),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static OPAQUE_BODY_SCAN_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn opaque_body_scan_count() -> usize {
+    OPAQUE_BODY_SCAN_COUNT.with(std::cell::Cell::get)
+}
+
+fn opaque_integer_precision_error(
+    schema: &Value,
+    raw: &serde_json::value::RawValue,
+    definitions: &Map<String, Value>,
+    location: &mut Vec<Value>,
+    resolving: &mut BTreeSet<String>,
+) -> Option<Vec<Value>> {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        if reference == "#/components/schemas/JsonValue" {
+            return unsafe_integer_location(raw, location);
+        }
+        let name = reference.strip_prefix("#/components/schemas/")?;
+        let target = definitions.get(name)?;
+        if !resolving.insert(reference.to_owned()) {
+            return None;
+        }
+        let result = opaque_integer_precision_error(target, raw, definitions, location, resolving);
+        resolving.remove(reference);
+        return result;
+    }
+
+    if let Ok(object) =
+        serde_json::from_str::<BTreeMap<String, &serde_json::value::RawValue>>(raw.get())
+    {
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if let Some(properties) = properties {
+            for (name, child_schema) in properties {
+                if let Some(child) = object.get(name) {
+                    location.push(Value::String(name.clone()));
+                    let result = opaque_integer_precision_error(
+                        child_schema,
+                        child,
+                        definitions,
+                        location,
+                        resolving,
+                    );
+                    location.pop();
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+            }
+        }
+        if let Some(additional_schema) = schema
+            .get("additionalProperties")
+            .and_then(Value::as_object)
+        {
+            for (name, child) in object.iter().filter(|(name, _)| {
+                !properties.is_some_and(|properties| properties.contains_key(*name))
+            }) {
+                location.push(Value::String(name.clone()));
+                let result = opaque_integer_precision_error(
+                    &Value::Object(additional_schema.clone()),
+                    child,
+                    definitions,
+                    location,
+                    resolving,
+                );
+                location.pop();
+                if result.is_some() {
+                    return result;
+                }
+            }
+        }
+    }
+    if let (Some(items), Ok(array)) = (
+        schema.get("items"),
+        serde_json::from_str::<Vec<&serde_json::value::RawValue>>(raw.get()),
+    ) {
+        for (index, child) in array.iter().enumerate() {
+            location.push(Value::String(index.to_string()));
+            let result =
+                opaque_integer_precision_error(items, child, definitions, location, resolving);
+            location.pop();
+            if result.is_some() {
+                return result;
+            }
+        }
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+        if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+            for branch in branches {
+                if let Some(result) =
+                    opaque_integer_precision_error(branch, raw, definitions, location, resolving)
+                {
+                    return Some(result);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn unsafe_integer_location(
+    raw: &serde_json::value::RawValue,
+    location: &mut Vec<Value>,
+) -> Option<Vec<Value>> {
+    let raw_text = raw.get();
+    if raw_text.starts_with('{') {
+        let values =
+            serde_json::from_str::<BTreeMap<String, &serde_json::value::RawValue>>(raw_text)
+                .ok()?;
+        for (name, child) in values {
+            location.push(Value::String(name));
+            let result = unsafe_integer_location(child, location);
+            location.pop();
+            if result.is_some() {
+                return result;
+            }
+        }
+        None
+    } else if raw_text.starts_with('[') {
+        let values = serde_json::from_str::<Vec<&serde_json::value::RawValue>>(raw_text).ok()?;
+        for (index, child) in values.iter().enumerate() {
+            location.push(Value::String(index.to_string()));
+            let result = unsafe_integer_location(child, location);
+            location.pop();
+            if result.is_some() {
+                return result;
+            }
+        }
+        None
+    } else if raw_text.starts_with('-')
+        || raw_text.as_bytes().first().is_some_and(u8::is_ascii_digit)
+    {
+        unsafe_integer_literal(raw_text).then(|| location.clone())
+    } else {
+        None
+    }
+}
+
+fn unsafe_integer_literal(value: &str) -> bool {
+    if value.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+        return false;
+    }
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    digits.len() > 16
+        || digits
+            .parse::<u64>()
+            .is_ok_and(|number| number > MAX_SAFE_INTEGER as u64)
 }
 
 fn convert_error(error: &jsonschema::ValidationError<'_>, section: &str) -> LocatedError {
@@ -1537,6 +1771,135 @@ mod tests {
             )
             .expect_err("an integer outside the serde_json exact range is rejected");
         assert_eq!(error.location, vec![json!("query"), json!("before")]);
+    }
+
+    #[test]
+    fn opaque_json_integer_precision_cases_are_refused_at_the_value_location() {
+        let registry =
+            Registry::compile(&[("POST".to_owned(), "/api/servers/orchestration".to_owned())])
+                .expect("orchestration request schema compiles");
+        let integers = [
+            "9007199254740992",
+            "-9007199254740992",
+            "9007199254740993",
+            "-9007199254740993",
+            "18446744073709551615",
+            "18446744073709551616",
+            "1267650600228229401496703205376",
+            "-1267650600228229401496703205376",
+        ];
+
+        for integer in integers {
+            let raw_body = format!(
+                "{{\"requestId\":\"r\",\"action\":\"x\",\"payload\":{{\"key\":{integer}}}}}"
+            );
+            let raw: &serde_json::value::RawValue =
+                serde_json::from_slice(raw_body.as_bytes()).expect("raw body parses");
+            let top: BTreeMap<String, &serde_json::value::RawValue> =
+                serde_json::from_str(raw.get()).expect("raw object parses");
+            let payload: BTreeMap<String, &serde_json::value::RawValue> =
+                serde_json::from_str(top["payload"].get()).expect("raw payload parses");
+            assert!(super::unsafe_integer_literal(payload["key"].get()));
+            let operation = registry
+                .operations
+                .get("POST /api/servers/orchestration")
+                .expect("registered operation exists");
+            let part = operation.body.as_ref().expect("request body schema exists");
+            assert_eq!(
+                super::opaque_integer_precision_error(
+                    &part.schema,
+                    raw,
+                    &part.definitions,
+                    &mut Vec::new(),
+                    &mut BTreeSet::new(),
+                ),
+                Some(vec![json!("payload"), json!("key")]),
+            );
+            let body: Value = serde_json::from_str(&raw_body).expect("JSON integer parses");
+            let error = registry
+                .validate_route(
+                    "POST",
+                    "/api/servers/orchestration",
+                    RawRequest {
+                        body: Some(body),
+                        raw_body: Some(raw_body.into_bytes().into()),
+                        ..RawRequest::default()
+                    },
+                )
+                .expect_err("opaque JSON integers beyond exact precision are refused");
+            assert_eq!(
+                error.location,
+                vec![json!("body"), json!("payload"), json!("key")],
+                "integer literal: {integer}"
+            );
+        }
+
+        let safe_raw_body = r#"{"requestId":"r","action":"x","payload":{"key":9007199254740991}}"#;
+        let safe_body = serde_json::from_str(safe_raw_body).expect("safe integer parses");
+        assert!(
+            registry
+                .validate_route(
+                    "POST",
+                    "/api/servers/orchestration",
+                    RawRequest {
+                        body: Some(safe_body),
+                        raw_body: Some(safe_raw_body.as_bytes().into()),
+                        ..RawRequest::default()
+                    },
+                )
+                .is_ok()
+        );
+        let large_fraction =
+            r#"{"requestId":"r","action":"x","payload":{"key":18446744073709551616.5}}"#;
+        let fractional_body =
+            serde_json::from_str(large_fraction).expect("large fractional JSON number parses");
+        assert!(
+            registry
+                .validate_route(
+                    "POST",
+                    "/api/servers/orchestration",
+                    RawRequest {
+                        body: Some(fractional_body),
+                        raw_body: Some(large_fraction.as_bytes().into()),
+                        ..RawRequest::default()
+                    },
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn precision_refusal_is_limited_to_opaque_json_schema_nodes() {
+        let document = json!({
+            "components": {"schemas": {
+                "JsonValue": {"anyOf": [
+                    {"type":"null"}, {"type":"number"}, {"type":"object","additionalProperties":{"$ref":"#/components/schemas/JsonValue"}},
+                    {"type":"array","items":{"$ref":"#/components/schemas/JsonValue"}}
+                ]}
+            }},
+            "paths": {"/fixture": {"get": {}}}
+        });
+        let operation = json!({
+            "requestBody": {"required":true,"content":{"application/json":{"schema":{
+                "type":"object",
+                "properties": {
+                    "opaque":{"$ref":"#/components/schemas/JsonValue"},
+                    "count":{"type":"number"}
+                }
+            }}}}
+        });
+        let compiled = compile_for_test(&document, "/fixture", &operation)
+            .expect("fixture request schema compiles");
+        let raw_body = r#"{"opaque":1,"count":9007199254740992}"#;
+        let body: Value = serde_json::from_str(raw_body).expect("JSON body parses");
+        assert!(
+            super::validate_part(
+                compiled.body.as_ref().expect("body schema exists"),
+                &mut body.clone(),
+                Some(raw_body.as_bytes()),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

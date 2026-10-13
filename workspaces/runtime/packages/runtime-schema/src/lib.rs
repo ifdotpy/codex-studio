@@ -42,6 +42,51 @@ const GRAPH_AGENT_RECORD_URI: &str =
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
 
+const TOOL_REQUEST_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-tool-request-record.schema.json";
+const TOOL_REQUEST_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-tool-request-record.schema.json");
+
+const TOOL_RESULT_URI: &str = "https://codex-studio.invalid/persisted-tool-result.schema.json";
+const TOOL_RESULT: &[u8] = include_bytes!("schemas/persisted-tool-result.schema.json");
+
+const EXECUTION_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-execution-record.schema.json";
+const EXECUTION_RECORD: &[u8] = include_bytes!("schemas/persisted-execution-record.schema.json");
+
+const ROOM_RECORD_URI: &str = "https://codex-studio.invalid/persisted-room-record.schema.json";
+const ROOM_RECORD: &[u8] = include_bytes!("schemas/persisted-room-record.schema.json");
+
+const PROJECT_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-project-record.schema.json";
+const PROJECT_RECORD: &[u8] = include_bytes!("schemas/persisted-project-record.schema.json");
+
+const FEDERATION_ROOM_RECORD_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-room-record.schema.json";
+const FEDERATION_ROOM_RECORD: &[u8] =
+    include_bytes!("schemas/persisted-federation-room-record.schema.json");
+
+const CHAT_MESSAGE_URI: &str = "https://codex-studio.invalid/persisted-chat-message.schema.json";
+const CHAT_MESSAGE: &[u8] = include_bytes!("schemas/persisted-chat-message.schema.json");
+
+const SYNC_ENTITY_URI: &str = "https://codex-studio.invalid/persisted-sync-entity.schema.json";
+const SYNC_ENTITY: &[u8] = include_bytes!("schemas/persisted-sync-entity.schema.json");
+
+const ACCESS_RECORD_URI: &str = "https://codex-studio.invalid/persisted-access-record.schema.json";
+const ACCESS_RECORD: &[u8] = include_bytes!("schemas/persisted-access-record.schema.json");
+
+const OPERATION_RESULT_URI: &str =
+    "https://codex-studio.invalid/persisted-operation-result.schema.json";
+const OPERATION_RESULT: &[u8] = include_bytes!("schemas/persisted-operation-result.schema.json");
+
+const PROJECT_LOCATION_OUTBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-project-location-outbox.schema.json";
+const PROJECT_LOCATION_OUTBOX: &[u8] =
+    include_bytes!("schemas/persisted-project-location-outbox.schema.json");
+const MESSAGE_EVENT_URI: &str = "https://codex-studio.invalid/persisted-message-event.schema.json";
+const MESSAGE_EVENT: &[u8] = include_bytes!("schemas/persisted-message-event.schema.json");
+const TOOL_ALIAS_URI: &str = "https://codex-studio.invalid/persisted-tool-alias.schema.json";
+const TOOL_ALIAS: &[u8] = include_bytes!("schemas/persisted-tool-alias.schema.json");
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
 const USAGE_LIMITS: &[u8] = include_bytes!("schemas/workspace-usage-limits.schema.json");
@@ -68,6 +113,21 @@ const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
+const WORKSPACE_OPERATION_URI: &str =
+    "https://codex-studio.invalid/persisted-workspace-operation-record.schema.json";
+const WORKSPACE_OPERATION: &[u8] =
+    include_bytes!("schemas/persisted-workspace-operation-record.schema.json");
+
+const WORKSPACE_CHECKPOINT_AGENT_URI: &str =
+    "https://codex-studio.invalid/workspace-checkpoint-agent-record.schema.json";
+const WORKSPACE_CHECKPOINT_AGENT: &[u8] =
+    include_bytes!("schemas/workspace-checkpoint-agent-record.schema.json");
+
+const WORKSPACE_CHECKPOINT_HISTORY_URI: &str =
+    "https://codex-studio.invalid/workspace-checkpoint-history-record.schema.json";
+const WORKSPACE_CHECKPOINT_HISTORY: &[u8] =
+    include_bytes!("schemas/workspace-checkpoint-history-record.schema.json");
+
 const CLAUDE_ATTEMPT_URI: &str =
     "https://codex-studio.invalid/persisted-claude-attempt.schema.json";
 const CLAUDE_CONTROL_URI: &str =
@@ -76,19 +136,6 @@ const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-lo
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (
-        CLAUDE_ATTEMPT_URI,
-        include_bytes!("schemas/persisted-claude-attempt.schema.json"),
-    ),
-    (
-        CLAUDE_CONTROL_URI,
-        include_bytes!("schemas/persisted-claude-control.schema.json"),
-    ),
-    (
-        CLAUDE_LOGIN_URI,
-        include_bytes!("schemas/persisted-claude-login.schema.json"),
-    ),
-    (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
-    (
         "https://codex-studio.invalid/budget-capture.schema.json",
         include_bytes!("schemas/budget-capture.schema.json"),
     ),
@@ -96,14 +143,6 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         "https://codex-studio.invalid/budget-history.schema.json",
         include_bytes!("schemas/budget-history.schema.json"),
     ),
-    (USAGE_LIMITS_URI, USAGE_LIMITS),
-    (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
-    (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
-    (EVENT_METADATA_URI, EVENT_METADATA),
-    (AGENT_RECORD_URI, AGENT_RECORD),
-    (TASK_RECORD_URI, TASK_RECORD),
-    (PLAN_RECORD_URI, PLAN_RECORD),
-    (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
     (
         "https://codex-studio.invalid/persisted-budget-agent.schema.json",
         include_bytes!("schemas/persisted-budget-agent.schema.json"),
@@ -116,19 +155,59 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         "https://codex-studio.invalid/persisted-budget-usage.schema.json",
         include_bytes!("schemas/persisted-budget-usage.schema.json"),
     ),
+    (ACCESS_RECORD_URI, ACCESS_RECORD),
+    (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (AGENT_RECORD_URI, AGENT_RECORD),
+    (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
+    (CHAT_MESSAGE_URI, CHAT_MESSAGE),
+    (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
+    (
+        CLAUDE_ATTEMPT_URI,
+        include_bytes!("schemas/persisted-claude-attempt.schema.json"),
+    ),
+    (
+        CLAUDE_CONTROL_URI,
+        include_bytes!("schemas/persisted-claude-control.schema.json"),
+    ),
+    (
+        CLAUDE_LOGIN_URI,
+        include_bytes!("schemas/persisted-claude-login.schema.json"),
+    ),
+    (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
+    (EVENT_METADATA_URI, EVENT_METADATA),
+    (EXECUTION_RECORD_URI, EXECUTION_RECORD),
+    (FEDERATION_ROOM_RECORD_URI, FEDERATION_ROOM_RECORD),
+    (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
+    (MESSAGE_EVENT_URI, MESSAGE_EVENT),
+    (MONITOR_RECORD_URI, MONITOR_RECORD),
+    (OPERATION_RESULT_URI, OPERATION_RESULT),
+    (PLAN_RECORD_URI, PLAN_RECORD),
+    (PROFILE_RECORD_URI, PROFILE_RECORD),
+    (PROJECT_LOCATION_OUTBOX_URI, PROJECT_LOCATION_OUTBOX),
+    (PROJECT_RECORD_URI, PROJECT_RECORD),
     (RECOVERY_AGENT_URI, RECOVERY_AGENT),
     (RECOVERY_RECEIPT_URI, RECOVERY_RECEIPT),
     (RECOVERY_TASK_URI, RECOVERY_TASK),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
-    (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
-    (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
-    (MONITOR_RECORD_URI, MONITOR_RECORD),
-    (TERMINAL_RECORD_URI, TERMINAL_RECORD),
-    (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
-    (WORK_ITEM_RECORD_URI, WORK_ITEM_RECORD),
+    (ROOM_RECORD_URI, ROOM_RECORD),
     (RULE_RECORD_URI, RULE_RECORD),
-    (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
-    (PROFILE_RECORD_URI, PROFILE_RECORD),
+    (SYNC_ENTITY_URI, SYNC_ENTITY),
+    (TASK_RECORD_URI, TASK_RECORD),
+    (TERMINAL_RECORD_URI, TERMINAL_RECORD),
+    (TOOL_ALIAS_URI, TOOL_ALIAS),
+    (TOOL_REQUEST_RECORD_URI, TOOL_REQUEST_RECORD),
+    (TOOL_RESULT_URI, TOOL_RESULT),
+    (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
+    (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
+    (USAGE_LIMITS_URI, USAGE_LIMITS),
+    (USAGE_RESUME_RECORD_URI, USAGE_RESUME_RECORD),
+    (WORKSPACE_CHECKPOINT_AGENT_URI, WORKSPACE_CHECKPOINT_AGENT),
+    (
+        WORKSPACE_CHECKPOINT_HISTORY_URI,
+        WORKSPACE_CHECKPOINT_HISTORY,
+    ),
+    (WORKSPACE_OPERATION_URI, WORKSPACE_OPERATION),
+    (WORK_ITEM_RECORD_URI, WORK_ITEM_RECORD),
 ];
 
 type SchemaResult<T> = Result<T, String>;
@@ -175,25 +254,41 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
-        "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
+        "graph_agents" => "PersistedGraphAgentRecord",
+        "runtime_access_clients" => "PersistedAccessRecord",
+        "runtime_access_discovered" => "PersistedAccessRecord",
         "runtime_agents" => "PersistedAgentRecord",
-        "runtime_tasks" => "PersistedTaskRecord",
-        "runtime_plans" => "PersistedPlanRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
+        "runtime_assets" => "PersistedTranscriptAsset",
         "runtime_budget" => "PersistedBudgetState",
         "runtime_budget_usage" => "PersistedBudgetUsage",
-        "runtime_requests" => "PersistedRequestRecord",
-        "runtime_complaints" => "PersistedComplaintRecord",
+        "runtime_chat_messages" => "PersistedChatMessage",
         "runtime_checkpoints" => "PersistedCheckpointRecord",
+        "runtime_complaints" => "PersistedComplaintRecord",
+        "runtime_event_meta" => "RuntimeEventMetadataRecord",
+        "runtime_events" => "PersistedMessageEvent",
+        "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
+        "runtime_execution_effects" => "PersistedExecutionRecord",
+        "runtime_execution_runs" => "PersistedExecutionRecord",
+        "runtime_federation_rooms" => "PersistedFederationRoomRecord",
+        "runtime_items" => "PersistedTranscriptRecord",
         "runtime_monitors" => "PersistedMonitorRecord",
-        "user_terminals" => "PersistedTerminalRecord",
+        "runtime_operation_receipts" => "PersistedOperationResult",
+        "runtime_plans" => "PersistedPlanRecord",
+        "runtime_projects" => "PersistedProjectRecord",
+        "runtime_requests" => "PersistedRequestRecord",
+        "runtime_rooms" => "PersistedRoomRecord",
+        "runtime_rules" => "PersistedRuleRecord",
+        "runtime_server_outbox" => "PersistedProjectLocationOutbox",
+        "runtime_tasks" => "PersistedTaskRecord",
+        "runtime_tool_request_aliases" => "PersistedToolAlias",
+        "runtime_tool_requests" => "PersistedToolRequestRecord",
+        "runtime_tool_results" => "PersistedToolResult",
         "runtime_usage_resumes" => "PersistedUsageResumeRecord",
         "runtime_work" => "PersistedWorkItemRecord",
-        "runtime_rules" => "PersistedRuleRecord",
-        "graph_agents" => "PersistedGraphAgentRecord",
-        "runtime_assets" => "PersistedTranscriptAsset",
-        "runtime_items" => "PersistedTranscriptRecord",
-        "runtime_event_meta" => "RuntimeEventMetadataRecord",
+        "runtime_workspace_operations" => "PersistedWorkspaceOperationRecord",
+        "sync_entities" => "PersistedSyncEntity",
+        "user_terminals" => "PersistedTerminalRecord",
         _ => return None,
     })
 }
@@ -264,18 +359,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             "BudgetHistory",
             "https://codex-studio.invalid/budget-history.schema.json",
         ),
-        ("PersistedClaudeAttemptRecord", CLAUDE_ATTEMPT_URI),
-        ("PersistedClaudeControlRecord", CLAUDE_CONTROL_URI),
-        ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
-        ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
-        ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
-        ("RecoveryAgentRecord", RECOVERY_AGENT_URI),
-        ("RecoveryTaskRecord", RECOVERY_TASK_URI),
-        ("RecoveryToolReceipt", RECOVERY_RECEIPT_URI),
-        ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        ("PersistedAccessRecord", ACCESS_RECORD_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
-        ("PersistedTaskRecord", TASK_RECORD_URI),
-        ("PersistedPlanRecord", PLAN_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
         (
             "PersistedBudgetAgent",
@@ -289,16 +374,51 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             "PersistedBudgetUsage",
             "https://codex-studio.invalid/persisted-budget-usage.schema.json",
         ),
-        ("PersistedRequestRecord", REQUEST_RECORD_URI),
-        ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
+        ("PersistedChatMessage", CHAT_MESSAGE_URI),
         ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),
+        ("PersistedClaudeAttemptRecord", CLAUDE_ATTEMPT_URI),
+        ("PersistedClaudeControlRecord", CLAUDE_CONTROL_URI),
+        ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
+        ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
+        ("PersistedExecutionRecord", EXECUTION_RECORD_URI),
+        ("PersistedFederationRoomRecord", FEDERATION_ROOM_RECORD_URI),
+        ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
+        ("PersistedMessageEvent", MESSAGE_EVENT_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
+        ("PersistedOperationResult", OPERATION_RESULT_URI),
+        ("PersistedPlanRecord", PLAN_RECORD_URI),
+        ("PersistedProfileRecord", PROFILE_RECORD_URI),
+        (
+            "PersistedProjectLocationOutbox",
+            PROJECT_LOCATION_OUTBOX_URI,
+        ),
+        ("PersistedProjectRecord", PROJECT_RECORD_URI),
+        ("PersistedRequestRecord", REQUEST_RECORD_URI),
+        ("PersistedRoomRecord", ROOM_RECORD_URI),
+        ("PersistedRuleRecord", RULE_RECORD_URI),
+        ("PersistedSyncEntity", SYNC_ENTITY_URI),
+        ("PersistedTaskRecord", TASK_RECORD_URI),
         ("PersistedTerminalRecord", TERMINAL_RECORD_URI),
+        ("PersistedToolAlias", TOOL_ALIAS_URI),
+        ("PersistedToolRequestRecord", TOOL_REQUEST_RECORD_URI),
+        ("PersistedToolResult", TOOL_RESULT_URI),
+        ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
+        ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("PersistedUsageResumeRecord", USAGE_RESUME_RECORD_URI),
         ("PersistedWorkItemRecord", WORK_ITEM_RECORD_URI),
-        ("PersistedRuleRecord", RULE_RECORD_URI),
-        ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
-        ("PersistedProfileRecord", PROFILE_RECORD_URI),
+        ("PersistedWorkspaceOperationRecord", WORKSPACE_OPERATION_URI),
+        ("RecoveryAgentRecord", RECOVERY_AGENT_URI),
+        ("RecoveryTaskRecord", RECOVERY_TASK_URI),
+        ("RecoveryToolReceipt", RECOVERY_RECEIPT_URI),
+        ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        (
+            "WorkspaceCheckpointAgentRecord",
+            WORKSPACE_CHECKPOINT_AGENT_URI,
+        ),
+        (
+            "WorkspaceCheckpointHistoryRecord",
+            WORKSPACE_CHECKPOINT_HISTORY_URI,
+        ),
         (
             "account-registry/AccountRegistryRecord",
             ACCOUNT_REGISTRY_URI,

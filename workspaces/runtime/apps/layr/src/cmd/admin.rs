@@ -32,11 +32,19 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
-        let caches = if a.has("--caches") { repo.cache_paths(&repo.working(&l)) } else { Vec::new() };
+        let (caches, versioned) = if a.has("--caches") { repo.line_cache_paths(&l)? } else { Default::default() };
         let st = if a.has("--caches") {
             // A cache folder that a tool made again as a plain folder becomes a cache first, so
-            // its files stay out of the state.
+            // its files stay out of the state. A folder with versioned files is no cache; one
+            // that an older layr made a cache becomes a plain folder again, so the state keeps
+            // its files.
             let (u, g) = repo.owner_ids(&l);
+            for p in &versioned {
+                let again = crate::repo::uncache(&repo.working(&l), p, u, g)?;
+                if !a.has("-q") {
+                    outln!(ctx, "{p}: {}", if again { VERSIONED_AGAIN } else { VERSIONED });
+                }
+            }
             for p in &caches {
                 let _ = crate::repo::convert_cache(&repo.working(&l), p, u, g);
             }
@@ -67,6 +75,8 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
 
 /// Snapshot the caches at `paths` of a working folder (`w`) as the caches of `state` and record
 /// them (`save.caches`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
+/// A cache that an earlier save already gave the state keeps its snapshot and is recorded again,
+/// so the record names every cache of `paths` that the state has.
 pub fn record_caches(
     ctx: &Ctx,
     repo: &Repo,
@@ -75,31 +85,42 @@ pub fn record_caches(
     paths: &[String],
     shared: bool,
 ) -> Result<BTreeMap<String, String>> {
-    let mut caches = BTreeMap::new();
+    let (mut caches, mut made) = (BTreeMap::new(), Vec::new());
     for p in paths {
         let cp = fsutil::safe_join(w, p)?;
         let name = format!("{state}@{}", p.replace('/', "%2F"));
-        if crate::model::is_cache_name(&name, state) && btrfs::is_subvolume(&cp) && !repo.p.cache_path(state, &name).exists() {
-            btrfs::snapshot(&cp, &repo.p.cache_path(state, &name), true)?;
+        if !crate::model::is_cache_name(&name, state) {
+            continue;
+        }
+        let snap = repo.p.cache_path(state, &name);
+        if snap.exists() {
+            caches.insert(p.clone(), name);
+        } else if btrfs::is_subvolume(&cp) {
+            btrfs::snapshot(&cp, &snap, true)?;
+            made.push(snap);
             caches.insert(p.clone(), name);
         }
     }
-    if caches.is_empty() {
+    let undo = |e: anyhow::Error| {
+        for snap in &made {
+            let _ = btrfs::delete_tree(snap);
+        }
+        e
+    };
+    // Nothing to record when the state already names each of them (a repeated save). A state
+    // whose record lost some (an older layr replaced its caches) gets them back.
+    let known = repo.state(state).map_err(undo)?.caches;
+    if made.is_empty() && caches.iter().all(|(p, n)| known.get(p) == Some(n)) {
         return Ok(caches);
     }
     let mut uuids = serde_json::Map::new();
     for snap in caches.values() {
-        let info = btrfs::subvol_info(&repo.p.cache_path(state, snap))?;
+        let info = btrfs::subvol_info(&repo.p.cache_path(state, snap)).map_err(undo)?;
         uuids.insert(snap.clone(), serde_json::Value::String(info.uuid));
     }
     let mut rec = Record::new("save.caches");
     rec.data = serde_json::json!({"state": state, "caches": caches, "uuids": uuids, "shared": shared});
-    if let Err(e) = repo.commit_record(ctx, rec) {
-        for snap in caches.values() {
-            let _ = btrfs::delete_tree(&repo.p.cache_path(state, snap));
-        }
-        return Err(e);
-    }
+    repo.commit_record(ctx, rec).map_err(undo)?;
     Ok(caches)
 }
 
@@ -1474,6 +1495,12 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// Why a cache path is no cache (`save --caches`, `cache list`, `cache add`): its folder holds
+/// files of the head state, and a cache would hide them from the states that follow.
+const VERSIONED: &str = "not a cache: has versioned files; remove them from history first";
+/// A folder with versioned files that an older layr made a cache, after it became plain again.
+const VERSIONED_AGAIN: &str = "not a cache: has versioned files; a plain folder again";
+
 /// Regenerable caches: folders kept as nested subvolumes, outside automatic states.
 pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
@@ -1482,20 +1509,20 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
     match sub {
         "list" => {
             // The machine setting, and in a line also the regenerable folders of `.layrattributes`.
-            let paths = match &h.line {
-                Some(l) => repo.cache_paths(&repo.working(l)),
-                None => repo.p.config_strings("regenerable"),
+            let (paths, versioned) = match &h.line {
+                Some(l) => (repo.cache_paths(&repo.working(l)), repo.line_cache_paths(l)?.1),
+                None => (repo.p.config_strings("regenerable"), Vec::new()),
             };
             for p in paths {
                 let state = match &h.line {
                     Some(l) => {
                         let cp = repo.working(l).join(&p);
-                        if btrfs::is_subvolume(&cp) {
-                            "cache"
-                        } else if cp.exists() {
-                            "plain folder (run layr cache repair)"
-                        } else {
-                            "absent"
+                        match (versioned.contains(&p), btrfs::is_subvolume(&cp)) {
+                            (true, true) => "not a cache: has versioned files (run layr cache repair)",
+                            (true, false) => VERSIONED,
+                            (false, true) => "cache",
+                            (false, false) if cp.exists() => "plain folder (run layr cache repair)",
+                            (false, false) => "absent",
                         }
                     }
                     None => "",
@@ -1520,21 +1547,32 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
             set_config(ctx, repo, "regenerable", serde_json::json!(v))?;
             if sub == "add" {
                 if let Some(l) = &h.line {
-                    let (u, g) = repo.owner_ids(l);
-                    crate::repo::convert_cache(&repo.working(l), path, u, g)?;
+                    if crate::repo::holds_files(&repo.state_root(&l.head)?, path) {
+                        outln!(ctx, "{path}: {VERSIONED}");
+                    } else {
+                        let (u, g) = repo.owner_ids(l);
+                        crate::repo::convert_cache(&repo.working(l), path, u, g)?;
+                    }
                 }
             }
             Ok(0)
         }
         "repair" => {
             // Cache folders that a tool deleted and made again as plain folders become caches
-            // again. Best at a quiet point, when no build runs in the line.
+            // again. Best at a quiet point, when no build runs in the line. A cache folder that
+            // holds versioned files (an older layr made it a cache) becomes a plain folder again.
             let l = h.line()?.clone();
             repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
             let _lock = repo.p.lock()?;
             let l = repo.line(&l.id)?;
             let (u, g) = repo.owner_ids(&l);
-            for p in repo.cache_paths(&repo.working(&l)) {
+            let (caches, versioned) = repo.line_cache_paths(&l)?;
+            for p in versioned {
+                if crate::repo::uncache(&repo.working(&l), &p, u, g)? {
+                    outln!(ctx, "{p}: {VERSIONED_AGAIN}");
+                }
+            }
+            for p in caches {
                 if crate::repo::convert_cache(&repo.working(&l), &p, u, g)? {
                     outln!(ctx, "{p}: a cache again");
                 }

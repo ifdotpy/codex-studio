@@ -178,7 +178,7 @@ pub fn run_as(argv: Vec<String>, caller: Caller, cwd: PathBuf, env: HashMap<Stri
     }
 }
 
-/// Periodic work: automatic states of busy lines, retention, backups.
+/// Periodic work: automatic states of busy lines, access to the git store, retention, backups.
 fn periodic(root: &Path, hourly: bool) {
     let now = crate::ids::now_ms();
     let store = match Store::open(root) {
@@ -219,6 +219,10 @@ fn periodic(root: &Path, hourly: bool) {
             }
         }
         if hourly {
+            // Also repairs the git store of a project from an earlier layr, soon after a start.
+            if let Ok(_lock) = repo.p.lock() {
+                let _ = crate::gitbridge::sync_store_access(&repo);
+            }
             let _ = crate::cmd::admin::run_gc(&ctx, &repo, false);
             if let Ok(Some(dir)) = repo.p.config_value("backup.dir") {
                 if let Some(d) = dir.as_str() {

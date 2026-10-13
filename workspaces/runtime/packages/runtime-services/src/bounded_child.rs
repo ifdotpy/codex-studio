@@ -11,6 +11,14 @@ use std::time::{Duration, Instant};
 use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 
+// Each test thread can expire one child deadline after its readiness handshake.
+// This seam is absent from production builds and leaves termination unchanged.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DEADLINE_OVERRIDE: std::cell::RefCell<Option<Box<dyn FnOnce() -> Instant>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const MAX_ERROR_CHARS: usize = 1200;
 
 #[derive(Debug)]
@@ -109,6 +117,10 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
         detach(stdout_reader, stderr_reader);
         return Err(ChildError::Other);
     }
+
+    #[cfg(test)]
+    let deadline =
+        DEADLINE_OVERRIDE.with_borrow_mut(|hook| hook.take().map_or(deadline, |ready| ready()));
 
     let status = loop {
         match child.try_wait() {

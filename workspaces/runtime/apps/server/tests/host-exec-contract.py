@@ -24,21 +24,24 @@ from codex_layout import SERVER_TESTS_ROOT, VM_GUEST_ROOT  # noqa: E402
 from server_test_waits import wait_for_condition  # noqa: E402
 
 sys.path.insert(0, str(VM_GUEST_ROOT))
-from codex_host_exec_server import HostService
+import codex_host_exec_server
+from codex_host_exec_server import HostService, clone_tree
 from codex_host_exec import run_tool, tool_definition
 from host_exec import HostExec
-from host_exec_protocol import HostExecError, conflicts, key, mapped, scan
+import host_exec_protocol
+from host_exec_protocol import FRAME_LIMIT, HostExecError, conflicts, key, mapped, page, scan
 from host_exec_slot import HostSlotHandlers
 
 
 class Agents:
     def __init__(self, context):
         self.context = context
+        self.contexts = {context["agentId"]: context}
 
     async def dispatch(self, request_id, method, params, emit=None):
-        if params["agentId"] != self.context["agentId"]:
+        if params["agentId"] not in self.contexts:
             raise HostExecError("forbidden", "Unknown agent")
-        return self.context
+        return self.contexts[params["agentId"]]
 
 
 class Slots(HostSlotHandlers):
@@ -65,12 +68,17 @@ class Slots(HostSlotHandlers):
         return run(params)
 
     async def layr(self, context, args, ok=(0,)):
+        line = Path(context["path"])
         if args[0] == "rev-parse":
             return "0123456789abcdef0123456789abcdef"
+        if args[:2] == ["cache", "list"]:
+            return "".join(path + ("\tcache\n" if (line / path).is_dir() else "\tabsent\n") for path in self.caches)
         if args[0] == "export":
-            source, line = Path(args[2]), Path(context["path"])
+            source = Path(args[2])
             shutil.rmtree(source)
-            shutil.copytree(line, source, symlinks=True)
+            # layr keeps cache folders outside states: an export has none of their files.
+            shutil.copytree(line, source, symlinks=True, ignore=lambda folder, names: [
+                name for name in names if (Path(folder) / name).relative_to(line).as_posix() in self.caches])
             (source / ".layr-export.json").write_text('{"state": "%s"}' % args[1])
             if self.bad_names:
                 return ("exported state fixture\nnot written (names differ only in case or Unicode form; "
@@ -98,21 +106,32 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         layr.mkdir()
         self.slots = Slots(self.state, layr, Agents(context))
         self.slots.bad_names = False
+        self.slots.caches = []
         self.slots.collect_batches = []
         self.slots.collect_conflicts = []
         async def host_context(agent):
             return await self.slots.agents.dispatch("context", "agent.context", {"agentId": agent})
         self.guest = HostExec(SimpleNamespace(state=self.state, host_context=host_context))
         self.guest.configure({"token": "a" * 64})
-        async def call(method, params, phase):
-            response = await self.host.request({"id": key(params["operationId"] + ":" + phase),
-                "method": method, "params": params, "token": "a" * 64})
+        self.calls = []
+        async def call(method, params, phase, timeout=300):
+            request = {"id": key(params["operationId"] + ":" + phase), "method": method, "params": params, "token": "a" * 64}
+            # The real channel refuses a larger request.
+            self.assertLessEqual(len(json.dumps(request)) + 1, FRAME_LIMIT)
+            self.calls.append(method)
+            response = await self.host.request(request)
             if "error" in response:
                 raise HostExecError(response["error"]["code"], response["error"]["message"])
             return response["result"]
         self.guest.call = call
+        self.applied = []
         async def broker(method, params, phase):
-            return await self.slots.dispatch(key(params["operationId"] + phase), method, params)
+            if method == "host.slot.apply":
+                self.applied.append(params["action"])
+            result = await self.slots.dispatch(key(params["operationId"] + phase), method, params)
+            # The admin channel has the same frame limit.
+            self.assertLessEqual(len(json.dumps({"id": "x" * 64, "result": result})) + 1, FRAME_LIMIT)
+            return result
         self.guest.broker = broker
         self.events = []
         async def emit(event, value):
@@ -126,9 +145,24 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.host.close()
         self.temp.cleanup()
 
-    async def execute(self, operation, script, timeout=5):
-        return await self.guest.handle(operation, {"agentId": "agent", "operationId": operation,
-            "argv": [sys.executable, "-c", script], "cwd": str(self.line), "timeoutSeconds": timeout}, self.emit)
+    async def execute(self, operation, script, timeout=5, agent="agent"):
+        cwd = self.slots.agents.contexts[agent]["path"]
+        return await self.guest.handle(operation, {"agentId": agent, "operationId": operation,
+            "argv": [sys.executable, "-c", script], "cwd": cwd, "timeoutSeconds": timeout}, self.emit)
+
+    def another_line(self, agent, path):
+        """A second line of the project with its own agent; the Mac slots belong to the project."""
+        self.slots.agents.contexts[agent] = {**self.slots.agents.context, "agentId": agent, "line": agent,
+                                            "path": str(path), "cwd": str(path)}
+
+    def project_settings(self, value):
+        folder = self.state / "layr-projects" / "project"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "host-exec.json").write_text(value if isinstance(value, str) else json.dumps(value))
+
+    async def acquire(self, operation):
+        return await self.guest.call("acquire", {"operationId": operation, "agentId": "agent", "projectId": "project",
+                                                 "linePath": str(self.line)}, "acquire")
 
     async def test_source_return_artifact_file_and_warm_path(self):
         first = await self.execute("first", 'import os,pathlib; p=pathlib.Path("main.swift");p.write_text("host edit\\n");'
@@ -177,6 +211,22 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             await self.guest.call("status", {"operationId": "owned", "agentId": "other"}, "other")
         self.assertEqual(caught.exception.code, "forbidden")
 
+    async def test_retirement_requires_token_and_build_identity(self):
+        params = {"buildId": self.host.build_id, "pid": os.getpid()}
+        denied = await self.host.request({"id": "retire-auth", "method": "service.retire", "params": params, "token": "b" * 64})
+        self.assertEqual(denied["error"]["code"], "forbidden")
+        wrong = await self.host.request({"id": "retire-build", "method": "service.retire",
+            "params": {**params, "buildId": "old"}, "token": "a" * 64})
+        self.assertEqual(wrong["error"]["code"], "id_conflict")
+        self.assertFalse(self.host.retiring)
+        health = await self.host.request({"id": "health", "method": "health", "token": "a" * 64})
+        self.assertEqual((health["result"]["buildId"], health["result"]["busy"]), (self.host.build_id, False))
+        retired = await self.host.request({"id": "retire", "method": "service.retire", "params": params, "token": "a" * 64})
+        self.assertEqual(retired["result"]["state"], "retiring")
+        refused = await self.host.request({"id": "after-retire", "method": "status",
+            "params": {"operationId": "x", "agentId": "agent"}, "token": "a" * 64})
+        self.assertEqual(refused["error"]["code"], "busy")
+
     async def test_slots_are_exclusive(self):
         for operation in ("a", "b"):
             await self.guest.call("acquire", {"operationId": operation, "agentId": "agent", "projectId": "project", "linePath": str(self.line)}, "acquire")
@@ -191,6 +241,80 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["nameConflicts"], ["Readme", "README"])
         self.assertFalse((self.line / "ran").exists())
         self.assertFalse((Path(result["slotPath"]) / "ran").exists())
+
+    async def test_failed_sync_releases_even_when_forget_fails(self):
+        self.host.slots = 1
+        layr, io = self.slots.layr, self.slots.io
+        async def failed_layr(context, args, ok=(0,)):
+            if args[0] == "export":
+                raise HostExecError("layr_failed", "Permission denied")
+            return await layr(context, args, ok)
+        async def failed_io(context, params):
+            if params["action"] == "delete":
+                raise HostExecError("operation_failed", "Permission denied")
+            return await io(context, params)
+        with patch.object(self.slots, "layr", side_effect=failed_layr), \
+                patch.object(self.slots, "io", side_effect=failed_io):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("sync-failed", 'open("must-not-run", "w").write("bad")')
+        self.assertEqual(caught.exception.code, "layr_failed")
+        self.assertIn("Mac slot released", str(caught.exception))
+        old = self.host.load("sync-failed")
+        self.assertEqual(old["state"], "released")
+        self.assertEqual(old["reason"], "sync_failed")
+        self.assertEqual(old["preRunError"]["code"], "layr_failed")
+        self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
+        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        self.assertTrue((staging / "lease.json").exists())
+        self.assertFalse((self.line / "must-not-run").exists())
+        self.assertFalse(self.host.commands)
+        # The only Mac slot is free again, with a new generation: the old staging is never reused.
+        new = await self.execute("after-failure", 'print("next command")')
+        self.assertEqual(new["slotPath"], old["slotPath"])
+        self.assertNotEqual(new["generation"], old["generation"])
+        self.assertEqual(new["exitCode"], 0)
+
+    async def test_failed_transfer_releases_both_leases(self):
+        call = self.guest.call
+        async def failed(method, params, phase, *options):
+            # The held manifest is a Mac transfer step before the run request.
+            if method == "manifest":
+                raise HostExecError("sync_conflict", "Checksum differs")
+            return await call(method, params, phase, *options)
+        with patch.object(self.guest, "call", side_effect=failed):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("transfer-failed", 'open("must-not-run", "w").write("bad")')
+        self.assertEqual(caught.exception.code, "sync_conflict")
+        old = self.host.load("transfer-failed")
+        staging = self.slots.root / key("project") / key("agent") / old["slotId"] / old["generation"]
+        self.assertEqual(old["state"], "released")
+        self.assertFalse((staging / "lease.json").exists())
+        self.assertFalse((Path(old["slotPath"]).parent / "lease.json").exists())
+        self.assertFalse((self.line / "must-not-run").exists())
+
+    async def test_lost_run_response_keeps_lease(self):
+        call = self.guest.call
+        async def lost(method, params, phase, *options):
+            result = await call(method, params, phase, *options)
+            if method == "run":
+                raise HostExecError("outcome_unknown", "Run response lost")
+            return result
+        with patch.object(self.guest, "call", side_effect=lost):
+            with self.assertRaises(HostExecError) as caught:
+                await self.execute("run-lost", 'import time;time.sleep(0.2)')
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        old = self.host.load("run-lost")
+        self.assertEqual(old["state"], "running")
+        self.assertTrue((Path(old["slotPath"]).parent / "lease.json").exists())
+
+    async def test_a_transfer_error_release_needs_an_error_object(self):
+        op = await self.guest.call("acquire", {"operationId": "pre-run", "agentId": "agent", "projectId": "project",
+                                               "linePath": str(self.line)}, "acquire")
+        with self.assertRaises(HostExecError) as caught:
+            await self.guest.call("release", {"operationId": "pre-run", "agentId": "agent", "preRunError": "text"},
+                                  "release-text")
+        self.assertEqual(caught.exception.code, "invalid_params")
+        self.assertTrue((self.host.slot(op) / "lease.json").exists())
 
     async def test_timeout_collects_completed_edits(self):
         result = await self.execute("timeout", 'import time,pathlib;pathlib.Path("edit").write_text("before timeout");time.sleep(20)', timeout=0.1)
@@ -245,16 +369,18 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         slot_b = self.host.slot(self.host.load("b"))
         await self.guest.call("release", {"operationId": "a", "agentId": "agent"}, "release")
         (slot_a / "DerivedData" / "large").write_bytes(b"x" * 65536)
-        self.host.budget = self.host.size(slot_b) + 8192
-        self.host.evict(slot_b.parent, exclude=slot_b)
+        budget = self.host.size(slot_b) + 8192
+        self.host.evict(slot_b.parent, budget, exclude=slot_b)
         self.assertFalse(slot_a.exists())
         self.assertTrue(slot_b.exists())
         with self.assertRaises(HostExecError):
-            self.host.evict(slot_b.parent, reserve=self.host.budget + 1)
+            self.host.evict(slot_b.parent, budget, reserve=budget + 1)
 
     async def test_output_alias_split_and_large_manifest(self):
         for index in range(270):
             (self.line / ("file-%03d" % index)).write_text("x")
+        # Several manifest pages on both sides.
+        self.enterContext(patch.object(host_exec_protocol, "PAGE_ENTRIES", 100))
         result = await self.execute("paged", 'import os,pathlib,time;value=str(pathlib.Path("main.swift").resolve());'
             'value=value.replace("/private/tmp/","/tmp/");data=value.encode();'
             'os.write(1,data[:len(data)//2]);time.sleep(0.02);os.write(1,data[len(data)//2:])')
@@ -323,6 +449,332 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.code, "invalid_params")
         self.assertTrue((self.host.slot(op) / "lease.json").exists())
 
+    async def test_project_settings_set_the_slot_count_and_budget(self):
+        self.project_settings({"slots": 1, "diskBudgetGiB": 300})
+        first = await self.acquire("one")
+        self.assertEqual((first["diskBudget"], first["macOnly"]), (300 * 1024**3, []))
+        with self.assertRaises(HostExecError) as caught:
+            await self.acquire("two")
+        self.assertEqual(caught.exception.code, "busy")
+
+    async def test_invalid_project_settings_refuse_the_command(self):
+        for index, value in enumerate(({"slots": 0}, {"slots": True}, {"diskBudgetGiB": -1}, {"diskBudgetGiB": "300"},
+                                       {"budget": 300}, {"macOnly": ["../out"]}, {"macOnly": "out"}, "{not json")):
+            with self.subTest(value=value):
+                self.project_settings(value)
+                with self.assertRaises(HostExecError) as caught:
+                    await self.acquire("invalid-%d" % index)
+                self.assertEqual(caught.exception.code, "invalid_config")
+                self.assertIn("host-exec.json", str(caught.exception))
+                self.assertFalse(self.host.opdir("invalid-%d" % index).exists())
+
+    async def test_a_smaller_slot_count_removes_idle_slots_oldest_first(self):
+        for operation in ("a", "b"):
+            await self.acquire(operation)
+        for operation in ("a", "b"):
+            await self.guest.call("release", {"operationId": operation, "agentId": "agent"}, "release")
+        self.project_settings({"slots": 1})
+        third = await self.acquire("c")
+        self.assertEqual(third["slotId"], self.host.load("b")["slotId"])
+        self.assertEqual(len(list((self.state / "host-slots" / key("project")).iterdir())), 1)
+
+    async def test_source_transfer_walks_the_project_folder_rarely(self):
+        for index in range(300):
+            (self.line / ("file-%03d" % index)).write_text("x")
+        with patch.object(self.host, "size", wraps=self.host.size) as size:
+            result = await self.execute("walks", 'print("ok")')
+        self.assertTrue(result["collected"])
+        # One walk per lease step and budget check, not one for each of the 301 files.
+        self.assertLess(size.call_count, 20)
+
+    async def test_a_cache_folder_reaches_the_mac_and_build_output_stays_there(self):
+        self.project_settings({"slots": 1, "diskBudgetGiB": 300, "macOnly": ["chromium/src/out"]})
+        self.slots.caches = ["chromium"]
+        source = self.line / "chromium" / "src"
+        (source / ".git").mkdir(parents=True)
+        (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (source / "a.cc").write_text("int a = 1;\n")
+        (source / "out" / "Linux").mkdir(parents=True)
+        (source / "out" / "Linux" / "linux.o").write_bytes(b"linux")
+        first = await self.execute("chromium-1", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"a.cc").read_text()=="int a = 1;\\n" and (s/".git/HEAD").exists();'
+            'assert not (s/"out/Linux").exists();'
+            '(s/"out/Default").mkdir(parents=True);(s/"out/Default/a.o").write_text("object 1");'
+            '(s/"a.cc").write_text("mac edit");(s/"gen.h").write_text("generated");'
+            'pathlib.Path("main.swift").write_text("host edit\\n")')
+        self.assertEqual((first["exitCode"], first["diskBudget"]), (0, 300 * 1024**3))
+        self.assertTrue(first["collected"])
+        # Normal sources return; nothing inside the cache folder does.
+        self.assertEqual((self.line / "main.swift").read_text(), "host edit\n")
+        self.assertEqual((source / "a.cc").read_text(), "int a = 1;\n")
+        self.assertFalse((source / "gen.h").exists())
+        self.assertFalse((source / "out" / "Default").exists())
+
+        # Another line of the project: the warm slot receives only the file that differs, and
+        # the build output survives for an incremental build.
+        line2 = self.root / "line2"
+        shutil.copytree(self.line, line2, symlinks=True)
+        (line2 / "chromium" / "src" / "a.cc").write_text("int a = 2;\n")
+        self.another_line("agent2", line2)
+        second = await self.execute("chromium-2", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"out/Default/a.o").read_text()=="object 1";'
+            'assert (s/"a.cc").read_text()=="int a = 2;\\n";assert not (s/"gen.h").exists()', agent="agent2")
+        self.assertEqual(second["exitCode"], 0)
+        self.assertEqual(second["slotPath"], first["slotPath"])
+        self.assertEqual(second["transferredBytes"], len("int a = 2;\n"))
+
+        # A line without the cache folder: the slot follows it and keeps the Mac-only output.
+        line3 = self.root / "line3"
+        line3.mkdir()
+        (line3 / "main.swift").write_text("host edit\n")
+        self.another_line("agent3", line3)
+        third = await self.execute("chromium-3", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert not (s/"a.cc").exists() and not (s/".git").exists();'
+            'assert (s/"out/Default/a.o").read_text()=="object 1"', agent="agent3")
+        self.assertEqual(third["exitCode"], 0)
+
+    async def test_the_broker_never_collects_cache_or_mac_only_paths(self):
+        self.slots.caches = ["chromium"]
+        (self.line / "chromium").mkdir()
+        slot = {"agentId": "agent", "slotId": "0", "generation": "0" * 32, "operationId": "filter"}
+        prepared = await self.slots.dispatch("prepare", "host.slot.prepare", {**slot, "macOnly": ["keep"]})
+        self.assertEqual(prepared["caches"], ["chromium"])
+        await self.slots.dispatch("collect", "host.slot.collect",
+                                  {**slot, "paths": ["chromium/x.cc", "keep/y", "main.swift"], "final": True})
+        self.assertEqual(self.slots.collect_batches, [["main.swift"]])
+
+    def mac_project(self, files):
+        """The project folder on this Mac, as project.json names it."""
+        folder = self.root / "mac-project"
+        for name, data in files.items():
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(data)
+        record = self.state / "layr-projects" / "project"
+        record.mkdir(parents=True, exist_ok=True)
+        (record / "project.json").write_text(json.dumps({"projectId": "project", "source": str(folder)}))
+        return folder
+
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
+    async def test_a_new_slot_clones_the_cache_folder_and_sends_only_differences(self):
+        files = {"chromium/src/big.bin": os.urandom(3 * 1024 * 1024), "chromium/src/a.cc": b"int a = 1;\n",
+                 "chromium/src/.git/HEAD": b"ref: refs/heads/main\n"}
+        project = self.mac_project({**files, "chromium/src/out/Default/user.o": b"user build"})
+        self.project_settings({"slots": 1, "macOnly": ["chromium/src/out"]})
+        self.slots.caches = ["chromium"]
+        for name, data in files.items():
+            (self.line / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / name).write_bytes(data)
+        (self.line / "chromium/src/a.cc").write_text("int a = 2;\n")
+        first = await self.execute("prime-1", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"a.cc").read_text()=="int a = 2;\\n";'
+            'assert (s/"out/Default/user.o").read_text()=="user build";'
+            '(s/"out/Default/a.o").write_text("slot build")')
+        self.assertEqual(first["exitCode"], 0)
+        self.assertEqual([(row["path"], row["primed"]) for row in first["primed"]], [("chromium", True)])
+        # The clone has the same content, so only the changed file and main.swift travel.
+        self.assertEqual(first["transferredBytes"], len("int a = 2;\n") + len('print("Hello")\n'))
+
+        # A line without the cache folder leaves only Mac-only output in the slot ...
+        empty = self.root / "empty-line"
+        empty.mkdir()
+        (empty / "main.swift").write_text('print("Hello")\n')
+        self.another_line("empty", empty)
+        await self.execute("prime-2", 'print("no cache")', agent="empty")
+        (project / "chromium/src/out/Default/user.o").write_text("user build 2")
+        # ... and the next line with the folder clones it again and keeps the slot's own output.
+        again = await self.execute("prime-3", 'import pathlib;s=pathlib.Path("chromium/src");'
+            'assert (s/"out/Default/a.o").read_text()=="slot build";assert (s/"out/Default/user.o").read_text()=="user build";'
+            'assert (s/"big.bin").stat().st_size==3*1024*1024')
+        self.assertEqual(again["exitCode"], 0)
+        self.assertEqual([(row["path"], row["primed"]) for row in again["primed"]], [("chromium", True)])
+        self.assertEqual(again["transferredBytes"], len("int a = 2;\n"))
+
+    async def test_a_failed_clone_falls_back_to_the_transfer(self):
+        files = {"chromium/a.cc": b"a" * 1000, "chromium/b.cc": b"b" * 2000}
+        self.mac_project(files)
+        self.slots.caches = ["chromium"]
+        for name, data in files.items():
+            (self.line / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / name).write_bytes(data)
+        with patch.object(codex_host_exec_server, "clone_tree", side_effect=OSError(45, "Operation not supported")):
+            result = await self.execute("no-clone", 'print("ok")')
+        self.assertEqual(result["exitCode"], 0)
+        self.assertFalse(result["primed"][0]["primed"])
+        self.assertIn("clone failed", result["primed"][0]["reason"])
+        self.assertEqual(result["transferredBytes"], 3000 + len('print("Hello")\n'))
+        self.assertEqual(list((self.state / "host-slots").rglob("prime")), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
+    def test_clone_tree_copies_files_and_links_and_skips_special_files(self):
+        origin = self.root / "origin"
+        (origin / "a/b").mkdir(parents=True)
+        (origin / "a/b/file").write_bytes(b"content")
+        (origin / "a/b/file").chmod(0o751)
+        (origin / "link").symlink_to("a/b/file")
+        os.mkfifo(origin / "pipe")
+        total = clone_tree(origin, self.root / "copy")
+        self.assertEqual((self.root / "copy/a/b/file").read_bytes(), b"content")
+        self.assertEqual((self.root / "copy/a/b/file").stat().st_mode & 0o777, 0o751)
+        self.assertEqual(os.readlink(self.root / "copy/link"), "a/b/file")
+        self.assertFalse((self.root / "copy/pipe").exists())
+        self.assertEqual(total, (origin / "a/b/file").lstat().st_blocks * 512)
+
+    def test_the_hash_cache_reads_only_changed_files(self):
+        tree = self.root / "hashed"
+        for index in range(20):
+            (tree / "d").mkdir(parents=True, exist_ok=True)
+            (tree / "d" / ("f%02d" % index)).write_text("x%02d" % index)
+        hashes = {}
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        first = scan(tree, hashes=hashes)
+        self.assertEqual((digest.call_count, len(hashes)), (20, 20))
+        digest.reset_mock()
+        self.assertEqual(scan(tree, hashes=hashes), first)
+        self.assertEqual(digest.call_count, 0)
+        # The same size and new content: the stat key changes, so the file is read again.
+        (tree / "d/f03").write_text("y03")
+        os.utime(tree / "d/f05", ns=(1, 1))
+        changed = scan(tree, hashes=hashes)
+        self.assertEqual(digest.call_count, 2)
+        self.assertNotEqual(changed["d/f03"]["sha256"], first["d/f03"]["sha256"])
+        (tree / "d/f07").unlink()
+        scan(tree, hashes=hashes)
+        self.assertNotIn("d/f07", hashes)
+        # A skipped folder keeps its cached hashes.
+        scan(tree, ["d"], hashes)
+        self.assertEqual(len(hashes), 19)
+
+    def test_the_hash_cache_does_not_keep_a_file_that_just_changed(self):
+        tree = self.root / "racy"
+        tree.mkdir()
+        (tree / "new").write_text("now")
+        hashes = {}
+        scan(tree, hashes=hashes)
+        self.assertEqual(hashes, {})
+
+    async def test_a_warm_command_does_not_hash_unchanged_cache_files_again(self):
+        self.slots.caches = ["chromium"]
+        for index in range(60):
+            (self.line / "chromium" / ("f%02d.cc" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "chromium" / ("f%02d.cc" % index)).write_text("int f%02d;\n" % index)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        await self.execute("hash-1", 'print("cold")')
+        await asyncio.sleep(0.01)
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        result = await self.execute("hash-2", 'print("warm")')
+        self.assertEqual(result["exitCode"], 0)
+        # Without the caches the guest and the Mac would read the 60 cache files three times.
+        self.assertLess(digest.call_count, 10)
+
+    async def test_a_mode_change_alone_changes_the_mode_of_the_slot_file(self):
+        big = self.line / "pack.bin"
+        big.write_bytes(os.urandom(600 * 1024))
+        big.chmod(0o400)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        first = await self.execute("mode-1", 'import pathlib,stat;'
+            'print(oct(stat.S_IMODE(pathlib.Path("pack.bin").stat().st_mode)), pathlib.Path("pack.bin").stat().st_ino)')
+        self.assertEqual(first["exitCode"], 0)
+        self.assertIn("0o400", "".join(row.get("text", "") for row in self.events))
+        inode = "".join(row.get("text", "") for row in self.events).split()[-1]
+        await asyncio.sleep(0.01)
+        # The line has the same content with another mode, as after a seed upload.
+        big.chmod(0o600)
+        self.events.clear()
+        self.calls.clear()
+        digest = self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest",
+                                                wraps=host_exec_protocol.hashlib.file_digest))
+        second = await self.execute("mode-2", 'import pathlib,stat;'
+            'print(oct(stat.S_IMODE(pathlib.Path("pack.bin").stat().st_mode)), pathlib.Path("pack.bin").stat().st_ino)')
+        self.assertEqual(second["exitCode"], 0)
+        self.assertEqual(second["transferredBytes"], 0)
+        self.assertIn("sync.mode", self.calls)
+        self.assertNotIn("sync.chunk", self.calls)
+        output = "".join(row.get("text", "") for row in self.events).split()
+        # The same file with the new mode; the run check did not read it again.
+        self.assertEqual(output, ["0o600", inode])
+        self.assertLessEqual(digest.call_count, 3)
+
+    async def test_a_mode_change_on_the_mac_returns_without_the_content(self):
+        tool = self.line / "tool.sh"
+        tool.write_bytes(b"#!/bin/sh\n" + b"x" * (700 * 1024))
+        tool.chmod(0o644)
+        result = await self.execute("mac-chmod", 'import pathlib;pathlib.Path("tool.sh").chmod(0o755)')
+        self.assertTrue(result["collected"])
+        self.assertEqual(self.applied, ["mode"])
+        self.assertEqual(tool.stat().st_mode & 0o777, 0o755)
+
+    async def test_a_mode_change_refuses_a_slot_file_with_other_content(self):
+        await self.execute("mode-content", 'print("slot has main.swift")')
+        await self.acquire("mode-refused")
+        for name in ("main.swift", "missing.swift"):
+            with self.subTest(path=name), self.assertRaises(HostExecError) as caught:
+                await self.guest.call("sync.mode", {"operationId": "mode-refused", "agentId": "agent", "items": [
+                    {"path": name, "entry": {"kind": "file", "bytes": 15, "mode": 0o600, "sha256": "0" * 64}}]}, "mode:" + name)
+            self.assertEqual(caught.exception.code, "sync_conflict")
+
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
+    async def test_a_large_file_is_cloned_from_the_project_folder_instead_of_sent(self):
+        same, other = os.urandom(700 * 1024), os.urandom(400 * 1024)
+        self.mac_project({"assets/big.bin": same, "assets/other.bin": os.urandom(400 * 1024)})
+        (self.line / "assets").mkdir()
+        (self.line / "assets/big.bin").write_bytes(same)
+        (self.line / "assets/big.bin").chmod(0o600)
+        (self.line / "assets/other.bin").write_bytes(other)
+        self.enterContext(patch.object(host_exec_protocol, "RACY_NS", 0))
+        await asyncio.sleep(0.01)
+        read = []
+        real = host_exec_protocol.hashlib.file_digest
+        def recording(stream, digest):
+            read.append(Path(stream.name).name)
+            return real(stream, digest)
+        self.enterContext(patch.object(host_exec_protocol.hashlib, "file_digest", side_effect=recording))
+        result = await self.execute("clone-file", 'import pathlib,stat;p=pathlib.Path("assets/big.bin");'
+            'assert p.read_bytes()==pathlib.Path(%r).read_bytes();assert stat.S_IMODE(p.stat().st_mode)==0o600'
+            % str(self.line / "assets/big.bin"))
+        self.assertEqual(result["exitCode"], 0)
+        # The same file is a clone; the file with other content of the same size travels.
+        self.assertEqual(result["clonedBytes"], len(same))
+        self.assertEqual(result["transferredBytes"], len(other) + len('print("Hello")\n'))
+        # The guest scan and the check of the project file read it; the run check does not.
+        self.assertEqual(read.count("big.bin"), 2)
+
+    async def test_small_files_travel_in_batches_below_the_frame_limit(self):
+        for index in range(300):
+            (self.line / "small" / ("f%03d" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "small" / ("f%03d" % index)).write_text("x" * index)
+        for index in range(12):
+            (self.line / "medium" / ("m%02d" % index)).parent.mkdir(parents=True, exist_ok=True)
+            (self.line / "medium" / ("m%02d" % index)).write_bytes(os.urandom(250 * 1024))
+        (self.line / "large.bin").write_bytes(os.urandom(600 * 1024))
+        result = await self.execute("batched", 'import pathlib;assert len(list(pathlib.Path("small").iterdir()))==300;'
+            'assert pathlib.Path("large.bin").stat().st_size==600*1024')
+        self.assertEqual(result["exitCode"], 0)
+        sync = [method for method in self.calls if method.startswith("sync.")]
+        # 316 entries: a few batches, and the chunks of the one large file.
+        self.assertLess(len(sync), 20)
+        self.assertGreater(sync.count("sync.batch"), 1)
+
+    def test_scan_skips_paths_and_pages_follow_the_cursor(self):
+        tree = self.root / "tree"
+        for name in ("a/b/out/x.o", "a/b/c.cc", "z.txt"):
+            (tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (tree / name).write_text(name)
+        entries = scan(tree, ["a/b/out"])
+        self.assertEqual(sorted(entries), ["a", "a/b", "a/b/c.cc", "z.txt"])
+        items = sorted(scan(tree).items())
+        found, after = {}, ""
+        with patch.object(host_exec_protocol, "PAGE_ENTRIES", 2):
+            while True:
+                result = page(items, after)
+                found.update(result["entries"])
+                if result["next"] is None:
+                    break
+                after = result["next"]
+        self.assertEqual(found, dict(items))
+
     def test_name_and_alias_rules(self):
         self.assertTrue(conflicts(["README", "readme"]))
         self.assertTrue(conflicts(["café", "cafe\u0301"]))
@@ -342,6 +794,44 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         actual, output = runner.frames(streamed, "host.exec", {}, "proof")
         self.assertEqual(output, "once")
 
+    async def test_slot_parents_under_private_umask(self):
+        # The guest units run with UMask=0077; every slot parent must stay 0711.
+        private = self.root / "private-broker"
+        private.mkdir()
+        previous = os.umask(0o077)
+        try:
+            slots = Slots(self.state, private / "layr", self.slots.agents)
+            # The fixture settings of the shared Slots (bad_names and the others).
+            for name, value in vars(self.slots).items():
+                vars(slots).setdefault(name, value)
+            params = {"agentId": "agent", "operationId": "private-umask", "slotId": "0", "generation": "f" * 32}
+            prepared = await slots.dispatch("private-umask", "host.slot.prepare", params)
+            # The export fixture copies the line folder, so only the owner of the source is checked.
+            source = Path(prepared["path"])
+            self.assertEqual(source.stat().st_uid, os.getuid())
+            parent = source.parent
+            while True:
+                self.assertEqual(parent.stat().st_mode & 0o777, 0o711, str(parent))
+                if parent == slots.root:
+                    break
+                parent = parent.parent
+            slots.root.chmod(0o700)
+            Slots(self.state, private / "layr", self.slots.agents)
+            self.assertEqual(slots.root.stat().st_mode & 0o777, 0o711)
+        finally:
+            os.umask(previous)
+
+    def test_slot_parent_rejects_symlink(self):
+        private = self.root / "symlink-broker"
+        private.mkdir()
+        target = self.root / "private-target"
+        target.mkdir(mode=0o700)
+        (private / "host-slots").symlink_to(target, target_is_directory=True)
+        with self.assertRaises(HostExecError) as caught:
+            Slots(self.state, private / "layr", self.slots.agents)
+        self.assertEqual(caught.exception.code, "forbidden")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
     def test_vm_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "native"})
         with self.assertRaises(PermissionError):
@@ -350,7 +840,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
 
     def test_reviewer_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "vm"})
-        with patch("codex_linux_workspaces.client") as client:
+        with patch("codex_linux_workspaces.client") as client, patch("codex_host_exec.ensure_service") as ensured:
             for action in ("execute", "status", "cancel"):
                 with self.subTest(action=action), self.assertRaises(PermissionError):
                     run_tool(runtime, {"id": "agent", "role": "reviewer"},
@@ -361,6 +851,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                 result = run_tool(runtime, {"id": "agent", "cwd": "/line", "role": role},
                                   {"action": "execute", "command": "true"}, "tool")
                 self.assertEqual(result["state"], "done")
+            # Each command first checks the Mac service: a VM start was the only check before.
+            ensured.assert_called_with(client.return_value.state_dir)
 
 
 if __name__ == "__main__":

@@ -177,6 +177,11 @@ impl NotificationDispatchRepository {
             transaction,
             &TranscriptItem {
                 id: id.to_owned(),
+                agent: transaction.query_row(
+                    "SELECT agent FROM runtime_items WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )?,
                 record: record.clone(),
             },
         )
@@ -387,7 +392,9 @@ fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &s
     match error {
         TranscriptStoreError::Store(error) => error,
         TranscriptStoreError::Sqlite(error) => StoreError::Sqlite(error),
-        TranscriptStoreError::InvalidStoredObject { .. } => invalid_record(table, id),
+        TranscriptStoreError::InvalidStoredObject { .. } | TranscriptStoreError::ActiveTurn => {
+            invalid_record(table, id)
+        }
     }
 }
 

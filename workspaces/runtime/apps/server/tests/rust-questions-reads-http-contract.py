@@ -19,7 +19,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_python_records(backend) -> None:
@@ -141,20 +141,6 @@ finally:
     )
 
 
-def state_snapshot(state):
-    with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        schema = database.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
-        ).fetchall()
-        tables = [row[1] for row in schema if row[0] == "table"]
-        rows = {
-            table: sorted(
-                database.execute(f' SELECT * FROM "{table.replace(chr(34), chr(34) * 2)}"').fetchall(),
-                key=repr,
-            )
-            for table in tables
-        }
-        return schema, rows
 
 
 class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -175,9 +161,9 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }
 
     def _read(self, method, path, headers):
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(method, path, headers=headers)
-        self.assertEqual(state_snapshot(self.backend.state), before, f"read wrote state: {method} {path}")
+        self.assertEqual(no_write_snapshot(self.backend.state), before, f"read wrote state: {method} {path}")
         return response
 
     def test_reads_python_written_questions_complaint_and_checkpoint(self) -> None:
@@ -251,7 +237,7 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     f"UPDATE {table} SET record=? WHERE id=?",
                     (json.dumps(value), record_id),
                 )
-            before = state_snapshot(backend.state)
+            before = no_write_snapshot(backend.state)
             path = {
                 "runtime_requests": "/api/questions?agent=questions-read-lead",
                 "runtime_complaints": "/api/complaint?id=questions-read-complaint",
@@ -261,7 +247,7 @@ class QuestionsReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 response = backend.request("GET", path, headers=self._headers())
                 self.assertEqual(response.status, 500, response.body[:1000])
                 self.assertEqual(response.json()["error"], f"Invalid stored object {table.removeprefix('runtime_')}/{record_id}")
-                self.assertEqual(state_snapshot(backend.state), before)
+                self.assertEqual(no_write_snapshot(backend.state), before)
             finally:
                 with sqlite3.connect(database_path) as database:
                     database.execute(

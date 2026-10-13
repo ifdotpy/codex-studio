@@ -12,9 +12,11 @@ import subprocess
 import sys
 import tempfile
 
-from host_exec_protocol import CHUNK, HostExecError, inside, relative, require, scan
+from host_exec_protocol import CHUNK, HostExecError, atomic, inside, load_hashes, relative, require, scan
 
 EXPORT_MARKER = ".layr-export.json"
+# A batch read returns at most this many bytes of file content.
+BATCH_BYTES = 4 * 1024 * 1024
 
 
 def _entry(path: Path):
@@ -111,11 +113,33 @@ def collect(params):
     return {"copied": copied, "conflicts": conflicts}
 
 
+def read_many(items):
+    """Small files of a batch transfer: path -> base64 content."""
+    files, total = {}, 0
+    for item in items:
+        path = inside(Path(item["root"]), item["path"], leaf=True)
+        require(path.is_file() and not path.is_symlink(), "The source is not a regular file: " + item["path"])
+        data = path.read_bytes()
+        total += len(data)
+        require(total <= BATCH_BYTES, "The source batch exceeds its limit")
+        files[item["path"]] = base64.b64encode(data).decode()
+    return {"files": files}
+
+
 def run(params):
-    root = Path(params["root"])
     action = params["action"]
+    if action == "read-many":
+        return read_many(params["items"])
+    root = Path(params["root"])
     if action == "manifest":
-        return {"entries": scan(root)}
+        if not params.get("hashes"):
+            return {"entries": scan(root, params.get("skip", []))}
+        # The line owner's hash cache: an unchanged file is not read again.
+        cache = Path(params["hashes"])
+        hashes = load_hashes(cache)
+        entries = scan(root, params.get("skip", []), hashes)
+        atomic(cache, hashes)
+        return {"entries": entries}
     if action == "collect":
         return collect(params)
     if action == "clear":
@@ -126,7 +150,7 @@ def run(params):
             else:
                 shutil.rmtree(child)
         return {"path": str(root)}
-    path = inside(root, params["path"], leaf=action == "read")
+    path = inside(root, params["path"], leaf=action in {"read", "mode"})
     if action == "read":
         offset = params.get("offset", 0)
         require(isinstance(offset, int) and offset >= 0, "Invalid source offset")
@@ -160,6 +184,13 @@ def run(params):
             stream.flush()
             import os
             os.fsync(stream.fileno())
+    elif action == "mode":
+        # A mode change from the Mac: the file must still hold the content it started from.
+        entry = params["entry"]
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size == entry["bytes"], "The source file differs")
+        with path.open("rb") as stream:
+            require(hashlib.file_digest(stream, "sha256").hexdigest() == entry["sha256"], "The source file differs")
+        path.chmod(entry["mode"] & 0o777)
     elif action == "commit":
         entry = params["entry"]
         require(not path.is_symlink(), "The source file is a symbolic link")

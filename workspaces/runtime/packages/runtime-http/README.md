@@ -193,12 +193,12 @@ Run the shared corpus differential with the prepared Python interpreter using
   validator behavior is intentional; typed route DTOs will still reject a
   value they cannot deserialize. The corpus does not generate integral
   decimal JSON bodies as rejection cases.
-- Free-form `JsonValue` is opaque. `serde_json` preserves integers through
-  `u64::MAX`; larger integer tokens are carried as `f64`, so precision can be
-  lost above `2^64`. This is accepted for opaque payloads because no client
-  produces such integers. The differential permits this only at a `JsonValue`
-  schema pointer and normalizes the exact numeric leaf before strictly comparing
-  the rest of the observation.
+- Free-form `JsonValue` remains dynamically typed, but integer tokens outside
+  ±9,007,199,254,740,991 are refused with a located 400 before their exact
+  value can be lost during JSON number conversion. Decimal and exponent forms
+  remain governed by JSON Schema. The differential classifies the eight
+  opaque-value positions as expected refusals and compares the rest of each
+  observation without numeric normalization.
 - Echoed values whose OpenAPI schema is `number` compare by numeric value, so
   `1` and `1.0` are equal. All other types remain strictly typed: booleans are
   never numbers, and an `integer` value must be integral on both sides.
@@ -208,9 +208,10 @@ Run the shared corpus differential with the prepared Python interpreter using
   decimals, and empty values are rejected. Repeated scalar query parameters
   are rejected even when names are percent-encoded or all values are empty;
   arrays retain repeated occurrences.
-- The only accepted-value differences are the eight documented opaque-
-  `JsonValue` large-integer precision cases. Queue and rename identity rules are
-  expressed in the OpenAPI schema. The extractor differential stubs handlers;
+- The only predicted status differences are generated opaque-`JsonValue`
+  large-integer cases at eight schema positions, which Rust refuses with a
+  located 400. Queue and rename identity rules are expressed in the OpenAPI
+  schema. The extractor differential stubs handlers;
   it reports rules that need parsed payloads or the current time separately as
   `handler_validation_cases`. Those checks are exercised through the real Rust
   routes by `rust-rules-http-contract.py` and

@@ -21,7 +21,7 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "work_items_runtime_fixture", HERE / "runtime-contract.py"
@@ -65,21 +65,6 @@ def seed_python_state(backend) -> str:
         runtime.close()
 
 
-def work_state_snapshot(state: Path):
-    with sqlite3.connect(state / "canvas.sqlite3") as database:
-        names = {
-            row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
-        snapshot = {}
-        for name in (
-            "runtime_agents", "runtime_work", "runtime_plans", "runtime_annotations",
-            "runtime_events", "runtime_event_meta", "runtime_operation_receipts",
-        ):
-            if name in names:
-                snapshot[name] = database.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
-        return snapshot
 
 
 def append_python_queue_item(state: Path, agent_id: str) -> None:
@@ -160,7 +145,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ),
             ("POST", "/api/organization", {"id": self.agent_id, "pinned": True}, "workspace-state/organization-effects"),
         )
-        before = work_state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         for body in (
             {"agent": self.agent_id, "action": "cancel", "id": None},
             {"agent": self.agent_id, "action": "send_now", "message_id": "python-queue-1"},
@@ -170,7 +155,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(invalid_queue.status, 400, invalid_queue.body[:1000])
             self.assertEqual(invalid_queue.json(), {"error": "Invalid request", "location": ["body"]})
-            self.assertEqual(work_state_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         for method, path, body, dependency in cases:
             with self.subTest(path=path):
                 response = self.backend.request(method, path, body=body, headers=self._headers())
@@ -179,17 +164,17 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     response.json(),
                     {"error": f"Not implemented: requires {dependency}"},
                 )
-                self.assertEqual(work_state_snapshot(self.backend.state), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_cancel_without_message_identity_is_refused_without_writing(self):
-        before = work_state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST", "/api/queue",
             body={"agent": self.agent_id, "action": "cancel", "id": None},
             headers=self._headers(),
         )
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(work_state_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_reads_refuse_deleted_agents(self):
         state_file = self.backend.state / "canvas.sqlite3"

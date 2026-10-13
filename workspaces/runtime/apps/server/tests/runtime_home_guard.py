@@ -15,18 +15,48 @@ import os
 import sys
 import threading
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no descriptor paths
+    fcntl = None
+
+_READLINK = os.readlink
+# macOS F_GETPATH fills a MAXPATHLEN buffer; CPython accepts 1024 bytes.
+_MAX_DESCRIPTOR_PATH_BYTES = 1024
+
 
 def password_home() -> str:
     import pwd
     return pwd.getpwuid(os.getuid()).pw_dir
 
 
+def descriptor_path(descriptor):
+    """Return the path of an open descriptor, or None when it has no path.
+
+    Linux exposes it through /proc; macOS has no /proc and uses F_GETPATH.
+    """
+    try:
+        return _READLINK(f"/proc/self/fd/{descriptor}")
+    except OSError:
+        pass
+    get_path = getattr(fcntl, "F_GETPATH", None)
+    if get_path is None:
+        return None
+    try:
+        value = fcntl.fcntl(descriptor, get_path, bytes(_MAX_DESCRIPTOR_PATH_BYTES))
+    except OSError:
+        return None
+    return os.fsdecode(value.split(b"\0", 1)[0]) or None
+
+
 class HomeAccessGuard:
     def __init__(self, home_resolver=password_home, extra_roots=()):
         home = os.path.abspath(home_resolver())
-        self.roots = tuple(os.path.normcase(os.path.abspath(p)) for p in (
-            os.path.join(home, ".codex"), os.path.join(home, ".claude"), *extra_roots,
-        ))
+        roots = (os.path.join(home, ".codex"), os.path.join(home, ".claude"), *extra_roots)
+        # Descriptor paths are physical (macOS /var is /private/var): block both forms.
+        self.roots = tuple(dict.fromkeys(
+            os.path.normcase(form) for root in roots
+            for form in (os.path.abspath(root), os.path.realpath(root))))
         self.counters = {"file_checks": 0, "exec_checks": 0, "socket_checks": 0, "blocked": 0}
         self._local = threading.local()
 
@@ -35,9 +65,9 @@ class HomeAccessGuard:
 
     def check_path(self, value, event="file"):
         if isinstance(value, int):
-            try:
-                value = os.readlink(f"/proc/self/fd/{value}")
-            except OSError:
+            # Pipes and sockets have no path and cannot name protected state.
+            value = descriptor_path(value)
+            if value is None:
                 return
         if not isinstance(value, (str, bytes, os.PathLike)):
             return
@@ -108,7 +138,12 @@ class HomeAccessGuard:
             @functools.wraps(original)
             def guarded(path, *args, _original=original, **kwargs):
                 if isinstance(path, (str, bytes, os.PathLike)) and kwargs.get("dir_fd") is not None:
-                    base = os.readlink(f"/proc/self/fd/{kwargs['dir_fd']}")
+                    base = descriptor_path(kwargs["dir_fd"])
+                    if base is None:
+                        # An unresolved base must not pass the check, and must
+                        # not look like ENOENT: rmtree skips missing entries.
+                        raise PermissionError(
+                            f"test isolation cannot resolve dir_fd {kwargs['dir_fd']} for {path!r}")
                     self.check_path(os.path.join(base, os.fsdecode(path)))
                 else:
                     self.check_path(path)

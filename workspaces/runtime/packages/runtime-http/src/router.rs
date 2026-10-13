@@ -682,6 +682,7 @@ mod tests {
                 (limit, at_limit_status),
                 (limit + 1, StatusCode::PAYLOAD_TOO_LARGE),
             ] {
+                let opaque_scans_before = crate::validation::opaque_body_scan_count();
                 let mut body = Vec::with_capacity(length);
                 body.extend_from_slice(valid_json.as_bytes());
                 body.resize(length, b' ');
@@ -701,6 +702,13 @@ mod tests {
                     .expect("request builds");
                 let response = app.clone().oneshot(request).await.expect("response");
                 assert_eq!(response.status(), expected, "{path} with {length} bytes");
+                if path == "/api/assets" && length == limit {
+                    assert_eq!(
+                        crate::validation::opaque_body_scan_count(),
+                        opaque_scans_before,
+                        "asset upload schema has no opaque JSON positions and must not run the raw-token scan"
+                    );
+                }
             }
         }
     }

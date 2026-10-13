@@ -35,7 +35,7 @@ class LedgerTraceContract(unittest.TestCase):
         fixture_keys = {
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
-            "layoutRevision", "emptyQueueRevision", "queueIds", "question",
+            "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin",
@@ -283,7 +283,7 @@ class LedgerTraceContract(unittest.TestCase):
 
 
 
-    def test_opaque_json_precision_normalizes_only_the_named_leaf(self) -> None:
+    def test_opaque_json_precision_is_a_located_rust_refusal(self) -> None:
         case = {"path": "/widgets", "method": "POST", "label": "payload:lax:18446744073709551616"}
         operation = {
             "operationId": "create_widget",
@@ -293,25 +293,45 @@ class LedgerTraceContract(unittest.TestCase):
             "paths": {"/widgets": {"post": operation}},
             "components": {"schemas": {"JsonValue": {"anyOf": [{"type": "null"}, {"type": "integer"}, {"type": "object"}]}}},
         }
-        rust = {"status": 200, "accepted": True, "value": {"body": {"payload": float(2**64), "host": "same"}, "query": {}, "headers": {}}}
+        rust = {"status": 400, "accepted": False, "body": {"error": "Invalid request", "location": ["body", "payload"]}}
         python = {"status": 200, "accepted": True, "value": {"body": {"payload": 2**64, "host": "same"}, "query": {}, "headers": {}}}
         old = differential._EXPECTED_STATUS_DIFFERENCES.copy()
         try:
             differential._EXPECTED_STATUS_DIFFERENCES.clear()
             result = differential.classify([case], [rust], [python], document)
             self.assertEqual(result["mismatches_by_cause"], {differential.OPAQUE_JSON_INTEGER_CAUSE: 1})
-            self.assertEqual(result["opaque_json_precision_fields"][0]["pointer"], "#/components/schemas/JsonValue")
-            altered_values = (
-                {"body": {"payload": 2**64, "host": "wrong"}, "query": {}, "headers": {}},
-                {"body": {"payload": 2**64}, "query": {}, "headers": {}},
-                {"body": {"payload": 2**64, "host": "same", "extra": True}, "query": {}, "headers": {}},
-                {"body": {"payload": 2**64, "host": "same"}, "query": {"extra": "x"}, "headers": {}},
-                {"body": {"payload": 2**64, "host": "same"}, "query": {}, "headers": {"x-extra": "x"}},
-                {"body": {"payload": 2**64, "host": "same", "other": 2**64}, "query": {}, "headers": {}},
-            )
-            for value in altered_values:
-                with self.subTest(value=value), self.assertRaisesRegex(AssertionError, "opaque JsonValue"):
-                    differential.classify([case], [rust], [{"status": 200, "accepted": True, "value": value}], document)
+            self.assertEqual(result["mismatch_direction"], {"rust_reject_python_accept": 1})
+            self.assertEqual(result["expected_difference_cases"][0]["pointer"], "#/components/schemas/JsonValue")
+        finally:
+            differential._EXPECTED_STATUS_DIFFERENCES.clear()
+            differential._EXPECTED_STATUS_DIFFERENCES.update(old)
+
+    def test_opaque_precision_classifier_resolves_additional_properties_inside_unions(self) -> None:
+        case = {"path": "/answers", "method": "POST", "label": "answers/key:lax:18446744073709551616"}
+        operation = {
+            "operationId": "answer_api_answer_post",
+            "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnswerBody"}}}},
+        }
+        document = {
+            "paths": {"/answers": {"post": operation}},
+            "components": {"schemas": {
+                "JsonValue": {"anyOf": [{"type": "null"}, {"type": "number"}, {"type": "object"}]},
+                "AnswerBody": {"type": "object", "properties": {
+                    "answers": {"anyOf": [
+                        {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/JsonValue"}},
+                        {"type": "null"},
+                    ]},
+                }},
+            }},
+        }
+        rust = {"status": 400, "accepted": False, "body": {"error": "Invalid request", "location": ["body", "answers", "key"]}}
+        python = {"status": 200, "accepted": True, "value": {"body": {"answers": {"key": 2**64}}, "query": {}, "headers": {}}}
+        old = differential._EXPECTED_STATUS_DIFFERENCES.copy()
+        try:
+            differential._EXPECTED_STATUS_DIFFERENCES.clear()
+            result = differential.classify([case], [rust], [python], document)
+            self.assertEqual(result["mismatches_by_cause"], {differential.OPAQUE_JSON_INTEGER_CAUSE: 1})
+            self.assertEqual(result["expected_difference_cases"][0]["pointer"], "#/components/schemas/JsonValue")
         finally:
             differential._EXPECTED_STATUS_DIFFERENCES.clear()
             differential._EXPECTED_STATUS_DIFFERENCES.update(old)

@@ -44,10 +44,7 @@ pub fn maintain_entity_projections(
     ] {
         let _ = stored_records(transaction, table)?;
     }
-    let agents = stored_records(transaction, "runtime_agents")?
-        .into_iter()
-        .map(|(_, raw)| serde_json::from_str::<Value>(&raw).map_err(StoreError::from))
-        .collect::<StoreResult<Vec<_>>>()?;
+    let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
     let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
     maintain_peer_team_entities(transaction, &validate_projection)?;
     let mut current_rooms = BTreeSet::new();
@@ -82,17 +79,13 @@ pub fn maintain_entity_projections(
                     )?,
                 ),
                 "room" => {
-                    let context = crate::sync_entity_context::room_view_context(
-                        transaction,
-                        &record,
-                        &agents,
-                    )?;
+                    let context = rooms.for_room(transaction, &record, true)?;
                     room_entity_view(&record, &context)
                 }
                 "complaint" => complaint_entity_view(
                     &record,
                     &ComplaintViewContext {
-                        agents: agents.clone(),
+                        agents: rooms.agents().to_vec(),
                     },
                 ),
                 "project" => {

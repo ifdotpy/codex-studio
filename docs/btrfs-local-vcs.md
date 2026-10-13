@@ -113,7 +113,8 @@ so models learn it quickly, and it has equal convenience. It does not take the n
       layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
       warm cache comes only from an explicit `layr save --caches` on main, and which tools'
       output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
-      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the cache folders; the operator
+      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the cache folders
+      (a folder with files in the head state stays a plain folder); the operator
       (`codex_layr_exec.py`) or the lead builds in main and runs `layr save --caches`
       ([vm-layr.md](vm-layr.md), "Warm caches");
     - Studio merges as the lead agent's user, not as root: root passes every rule;
@@ -281,6 +282,11 @@ over ssh or the paired server channel, [multiple Studio servers](multi-server.md
   (decision 18); only root makes lines owned by root.
 - The git object store is open to all local users when everyone has a role, otherwise `0750`
   with an access list for the users and groups with a role and the line owners on this machine.
+  Only the store folder decides. git writes the content below it with
+  `core.sharedRepository=0644` (files `0644`, folders `0755`), also under the `0077` umask of the
+  service unit, so a line owner reads the objects through the `alternates` of its `.git` folder.
+  A store of an earlier layr gets read access below its folder once: at the next `layr branch`
+  or role change, or at the first periodic run of the daemon after it starts.
 
 A state snapshot keeps the owner of the line root, so its owner could clear the read-only flag if it
 could reach the path. The `0700` root folder above `states/` is what prevents this, so it is a hard

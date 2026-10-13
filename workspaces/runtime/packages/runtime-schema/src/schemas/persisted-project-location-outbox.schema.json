@@ -1,0 +1,18 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Only the durable outbox identity is consumed by the location dependency gate.",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    }
+  },
+  "required": ["id"],
+  "title": "PersistedProjectLocationOutbox",
+  "type": "object"
+}

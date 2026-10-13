@@ -1,5 +1,6 @@
 //! Frozen Claude input can be retried only after an exact, positive rejection.
 //! This module has no I/O. Its caller loads and applies records in one transaction.
+pub mod runtime;
 pub mod store;
 
 use serde::{Deserialize, Serialize};

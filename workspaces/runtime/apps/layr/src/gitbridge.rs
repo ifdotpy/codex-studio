@@ -49,12 +49,14 @@ pub fn git_out(git_dir: &Path, args: &[&str]) -> Result<String> {
 /// Who can read the git object store: the objects are the project history too. When everyone
 /// may read the project the store is 0755; otherwise 0750 for root, plus an access list (POSIX
 /// ACL) with read access for the users and groups with a role of reader or more, and the owners
-/// of lines on this machine.
+/// of lines on this machine. Only the store folder decides: everything below it is readable by
+/// whoever enters it (`open_content`).
 pub fn sync_store_access(repo: &Repo) -> Result<()> {
     let s = store(repo);
     if !s.join("objects").is_dir() {
         return Ok(());
     }
+    open_content(&s)?;
     let (everyone, users, groups) = repo.policy().readers();
     if everyone {
         std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o755))?;
@@ -71,6 +73,37 @@ pub fn sync_store_access(repo: &Repo) -> Result<()> {
     let gids: std::collections::BTreeSet<u32> = groups.into_iter().collect();
     std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o750))?;
     set_acl(&s, &uids.into_iter().collect::<Vec<_>>(), &gids.into_iter().collect::<Vec<_>>())
+}
+
+/// `core.sharedRepository` of the store: git makes its files 0644 (objects 0444) and its folders
+/// 0755, whatever the umask of the service (0077 in a systemd unit).
+const SHARED: &str = "0644";
+
+/// Make everything below the store folder readable for those who may enter the folder: the
+/// readers use the objects through the `alternates` of their lines. git keeps new files readable
+/// (`core.sharedRepository`); a store without that setting, written under the umask of the
+/// service by an earlier layr, gets read access for its folders and files once.
+fn open_content(s: &Path) -> Result<()> {
+    if git_out(s, &["config", "--get", "core.sharedRepository"]).map(|v| v.trim() == SHARED).unwrap_or(false) {
+        return Ok(());
+    }
+    let mut modes = Vec::new();
+    fsutil::walk(s, "", &mut |rel, m| {
+        let add = match m.ftype {
+            fsutil::FType::Dir => 0o055,
+            fsutil::FType::File => 0o044,
+            _ => 0,
+        };
+        if m.mode & add != add {
+            modes.push((rel.to_string(), m.mode | add));
+        }
+        Ok(true)
+    })?;
+    for (rel, mode) in modes {
+        std::fs::set_permissions(s.join(rel), std::fs::Permissions::from_mode(mode))?;
+    }
+    git_out(s, &["config", "core.sharedRepository", SHARED])?;
+    Ok(())
 }
 
 fn acl_entry(buf: &mut Vec<u8>, tag: u16, perm: u16, id: u32) {
@@ -105,7 +138,8 @@ fn remove_acl(path: &Path) -> Result<()> {
 pub fn init_store(repo: &Repo) -> Result<PathBuf> {
     let s = store(repo);
     if !has_store(repo) {
-        let out = Command::new("git").args(["init", "--bare", "-q", "-b", "main"]).arg(&s).output()?;
+        let shared = format!("--shared={SHARED}");
+        let out = Command::new("git").args(["init", "--bare", "-q", "-b", "main", &shared]).arg(&s).output()?;
         if !out.status.success() {
             bail!("git init failed: {}", String::from_utf8_lossy(&out.stderr));
         }

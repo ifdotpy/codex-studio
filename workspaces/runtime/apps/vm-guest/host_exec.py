@@ -8,7 +8,21 @@ import socket
 from typing import Any
 import uuid
 
-from host_exec_protocol import FRAME_LIMIT, PORT, HostExecError, atomic, conflicts, key, relative, require
+from host_exec_protocol import FRAME_LIMIT, PORT, HostExecError, atomic, conflicts, key, relative, require, under
+
+
+# Files up to this size travel in batches; a batch stays below the frame limit.
+SMALL_FILE = 256 * 1024
+BATCH_FRAME = 1536 * 1024
+BATCH_ENTRIES = 1024
+# The Mac hashes a large slot or clones cache folders in one request.
+LONG_CALL = 1800
+
+
+def same_content(entry: Any, other: Any) -> bool:
+    """Two file entries that differ at most in their mode."""
+    return (isinstance(entry, dict) and isinstance(other, dict) and entry.get("kind") == other.get("kind") == "file"
+            and entry["bytes"] == other["bytes"] and entry["sha256"] == other["sha256"])
 
 
 def request_key(operation: str, phase: str) -> str:
@@ -28,7 +42,7 @@ class HostExec:
         self.config.chmod(0o600)
         return {"configured": True}
 
-    async def call(self, method: str, params: dict[str, Any], phase: str) -> dict[str, Any]:
+    async def call(self, method: str, params: dict[str, Any], phase: str, timeout: float = 300) -> dict[str, Any]:
         require(self.config.exists(), "The host command channel is not configured", "unavailable")
         identity = request_key(params["operationId"], phase)
         channel = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
@@ -42,7 +56,7 @@ class HostExec:
             require(len(data) <= FRAME_LIMIT, "The host request exceeds its frame limit")
             writer.write(data)
             await asyncio.wait_for(writer.drain(), 15)
-            line = await asyncio.wait_for(reader.readline(), 300)
+            line = await asyncio.wait_for(reader.readline(), timeout)
             require(line and len(line) <= FRAME_LIMIT, "The host response is missing or too large", "outcome_unknown")
             response = json.loads(line)
             require(response.get("id") == identity, "The host response ID differs", "outcome_unknown")
@@ -68,9 +82,11 @@ class HostExec:
     async def manifest(self, method: str, params: dict[str, Any], phase: str, *, broker: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {}
         after = ""
-        caller = self.broker if broker else self.call
         while True:
-            page = await caller(method, {**params, "after": after}, phase + ":" + key(after))
+            if broker:
+                page = await self.broker(method, {**params, "after": after}, phase + ":" + key(after))
+            else:
+                page = await self.call(method, {**params, "after": after}, phase + ":" + key(after), LONG_CALL)
             result.update(page["entries"])
             if not page["next"]:
                 return result
@@ -78,6 +94,28 @@ class HostExec:
             after = page["next"]
 
     async def handle(self, request_id: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
+        # The steps record the leased operation, and the run request before it is sent.
+        steps: dict[str, Any] = {}
+        try:
+            return await self.handle_steps(request_id, params, emit, steps)
+        except HostExecError as exc:
+            op = steps.get("leased")
+            if op is None or steps.get("run"):
+                # A run request can have started the Mac command: its lease stays.
+                raise
+            # No run request exists yet, so no Mac command started. Release the Mac slot.
+            common = {"operationId": op["operationId"], "agentId": op["agentId"]}
+            await self.call("release", {**common, "preRunError": exc.object()}, "sync-failed-release")
+            try:
+                await self.broker("host.slot.forget", {**common, "slotId": op["slotId"], "generation": op["generation"]},
+                                  "sync-failed-forget")
+            except HostExecError as cleanup_error:
+                raise HostExecError(exc.code, str(exc) + "; Mac slot released; old staging cleanup failed: "
+                                    + str(cleanup_error)) from exc
+            raise
+
+    async def handle_steps(self, request_id: str, params: dict[str, Any], emit: Any,
+                           steps: dict[str, Any]) -> dict[str, Any]:
         identity = params.get("operationId", request_id)
         require(isinstance(identity, str) and 0 < len(identity) <= 128, "Invalid host operation ID")
         context = await self.service.host_context(params.get("agentId"))
@@ -103,8 +141,12 @@ class HostExec:
         require(cwd.is_absolute() and cwd.is_relative_to(line) and ".." not in cwd.parts,
                 "The host command cwd is outside its line")
         op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line)}, "acquire")
+        steps["leased"] = op
         slot = {**common, "slotId": op["slotId"], "generation": op["generation"]}
-        prepared = await self.broker("host.slot.prepare", slot, "prepare")
+        # Paths that the project settings keep on the Mac (docs/host-exec.md).
+        mac_only = list(op.get("macOnly", []))
+        prepared = await self.broker("host.slot.prepare", {**slot, "macOnly": mac_only}, "prepare")
+        caches = list(prepared.get("caches", []))
         if prepared.get("nameConflicts"):
             await self.broker("host.slot.forget", slot, "conflict-forget")
             await self.call("release", common, "conflict-release")
@@ -115,15 +157,72 @@ class HostExec:
             await self.broker("host.slot.forget", slot, "conflict-forget")
             await self.call("release", common, "conflict-release")
             return {**op, "state": "refused", "reason": "name_conflict", "nameConflicts": bad}
+        features = op.get("features", [])
+        primed = []
+        if caches and "prime" in features:
+            # A slot without a cache folder clones it from the project folder on the Mac.
+            primed = (await self.call("prime", {**common, "caches": caches}, "prime", LONG_CALL))["primed"]
         held = await self.manifest("manifest", common, "held")
         deleted = [path for path in held if path not in target or held[path]["kind"] != target[path]["kind"]]
         for path in sorted(deleted, key=lambda value: (-value.count("/"), value)):
             await self.call("sync.delete", {**common, "path": path}, "delete:" + key(path))
         sent = 0
+        cloned = 0
+        batch: list[tuple[str, dict[str, Any]]] = []
+        size = 0
+        modes: list[dict[str, Any]] = []
+        mode_size = 0
+
+        async def flush_modes() -> None:
+            # Files that the slot has with the same content: only their modes change.
+            nonlocal mode_size
+            if modes:
+                await self.call("sync.mode", {**common, "items": list(modes)},
+                                "mode:" + key("\0".join(item["path"] for item in modes)), LONG_CALL)
+                modes.clear()
+                mode_size = 0
+
+        async def flush() -> None:
+            # Folders, links and small files: one read in the guest and one request to the Mac.
+            nonlocal sent, size
+            if not batch:
+                return
+            names = [path for path, entry in batch if entry["kind"] == "file"]
+            data = {}
+            if names:
+                data = (await self.broker("host.slot.read", {**slot, "paths": names},
+                                          "batch-read:" + key("\0".join(names))))["files"]
+            items = [{"path": path, "entry": entry, **({"data": data[path]} if entry["kind"] == "file" else {})}
+                     for path, entry in batch]
+            await self.call("sync.batch", {**common, "items": items}, "batch:" + key("\0".join(path for path, _ in batch)))
+            sent += sum(entry["bytes"] for _, entry in batch if entry["kind"] == "file")
+            batch.clear()
+            size = 0
+
         for path in sorted(target, key=lambda value: (value.count("/"), value)):
             entry = target[path]
             if entry == held.get(path):
                 continue
+            if "mode" in features and same_content(entry, held.get(path)):
+                cost = 2 * len(path.encode()) + 300
+                if modes and (mode_size + cost > BATCH_FRAME or len(modes) >= 4096):
+                    await flush_modes()
+                modes.append({"path": path, "entry": entry})
+                mode_size += cost
+                continue
+            if "batch" in features and (entry["kind"] != "file" or entry["bytes"] <= SMALL_FILE):
+                cost = 2 * len(path.encode()) + 4 * (entry.get("bytes", 0) // 3 + 1) + 400
+                if batch and (size + cost > BATCH_FRAME or len(batch) >= BATCH_ENTRIES):
+                    await flush()
+                batch.append((path, entry))
+                size += cost
+                continue
+            if entry["kind"] == "file" and "clone" in features:
+                # The project folder on the Mac may hold the same file: a clone, not a transfer.
+                reply = await self.call("sync.clone", {**common, "path": path, "entry": entry}, "clone:" + key(path), LONG_CALL)
+                if reply.get("cloned"):
+                    cloned += entry["bytes"]
+                    continue
             await self.call("sync.entry", {**common, "path": path, "entry": entry}, "entry:" + key(path))
             if entry["kind"] == "file":
                 offset = 0
@@ -134,9 +233,13 @@ class HostExec:
                     offset += data["bytes"]
                     sent += data["bytes"]
                 await self.call("sync.commit", {**common, "path": path}, "commit:" + key(path))
+        await flush()
+        await flush_modes()
         relative_cwd = cwd.relative_to(line).as_posix()
+        steps["run"] = True
         await self.call("run", {**common, "argv": params["argv"], "cwd": "" if relative_cwd == "." else relative_cwd,
-            "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300)}, "run")
+            "manifestSha256": key(json.dumps(target, sort_keys=True)), "timeoutSeconds": params.get("timeoutSeconds", 300),
+            "caches": caches}, "run", LONG_CALL)
         after_seq = 0
         while True:
             attached = await self.call("attach", {**common, "afterSeq": after_seq, "waitSeconds": 10}, "attach:" + str(after_seq))
@@ -150,14 +253,20 @@ class HostExec:
             if final["state"] == "exited" and not attached["events"]:
                 break
         changes = await self.manifest("result.manifest", {**common, "area": "changes"}, "changes")
+        # Cache folders and Mac-only paths never return to the line, also from an older Mac service.
+        changes = {path: entry for path, entry in changes.items() if not under(path, caches + mac_only)}
         if final.get("nameConflicts"):
-            return {**final, "state": "collection_refused", "transferredBytes": sent}
+            return {**final, "state": "collection_refused", "transferredBytes": sent, "clonedBytes": cloned}
         for path in sorted(changes, key=lambda value: (-value.count("/"), value)):
             if changes[path] is None:
                 await self.broker("host.slot.apply", {**slot, "action": "delete", "path": path}, "back-delete:" + key(path))
         for path in sorted(changes, key=lambda value: (value.count("/"), value)):
             entry = changes[path]
             if entry is None:
+                continue
+            if same_content(entry, target.get(path)):
+                # The guest slot folder holds the content the Mac started from: only the mode changed.
+                await self.broker("host.slot.apply", {**slot, "action": "mode", "path": path, "entry": entry}, "back-mode:" + key(path))
                 continue
             await self.broker("host.slot.apply", {**slot, "action": "entry", "path": path, "entry": entry}, "back-entry:" + key(path))
             if entry["kind"] == "file":
@@ -194,5 +303,5 @@ class HostExec:
             merge_conflicts.extend(report.get("conflicts", []))
         await self.call("release", {**common, "collected": True}, "release")
         return {**final, "state": "conflicted" if merge_conflicts else final["state"], "collected": True,
-                "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent,
-                "artifacts": artifact_files, "lastSeq": after_seq}
+                "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent, "clonedBytes": cloned,
+                "artifacts": artifact_files, "lastSeq": after_seq, "primed": primed}

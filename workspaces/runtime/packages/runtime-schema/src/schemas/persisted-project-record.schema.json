@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "PersistedPeerTeam": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": ["id", "name", "members"],
+      "title": "PersistedPeerTeam",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Name"
+    },
+    "path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Path"
+    },
+    "peerTeams": {
+      "items": {
+        "$ref": "#/$defs/PersistedPeerTeam"
+      },
+      "title": "Peerteams",
+      "type": "array"
+    }
+  },
+  "required": ["id"],
+  "title": "PersistedProjectRecord",
+  "type": "object"
+}

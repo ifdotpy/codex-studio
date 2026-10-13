@@ -127,7 +127,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
     let mut stderr_text = String::new();
     let mut stderr_seen = false;
     let mut exit_code = None;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + HANG_GUARD;
     let mut readers_drained = false;
     while Instant::now() < deadline && !(readers_drained && stderr_seen) {
         let result = client
@@ -217,7 +217,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         |event| event.kind == EventKind::Exit,
     );
     let mut ended = false;
-    let reader_deadline = Instant::now() + Duration::from_secs(15);
+    let reader_deadline = Instant::now() + HANG_GUARD;
     while !ended && Instant::now() < reader_deadline {
         let next = client
             .next(CursorRequest {
@@ -229,7 +229,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         ended =
             next.return_code.is_some() && !next.stdout_reader_alive && !next.stderr_reader_alive;
         if !ended {
-            thread::yield_now();
+            thread::park_timeout(Duration::from_millis(1));
         }
     }
     assert!(ended, "command readers did not stop before retirement");

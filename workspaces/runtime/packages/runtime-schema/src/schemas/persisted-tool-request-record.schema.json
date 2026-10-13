@@ -1,0 +1,305 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "PersistedSupervisor": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "generation": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generation"
+        }
+      },
+      "title": "PersistedSupervisor",
+      "type": "object"
+    },
+    "PersistedToolContent": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Text"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Type"
+        }
+      },
+      "title": "PersistedToolContent",
+      "type": "object"
+    },
+    "PersistedToolResult": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "contentItems": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PersistedToolContent"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Contentitems"
+        },
+        "serverOutputExpiresAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Serveroutputexpiresat"
+        },
+        "success": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Success"
+        }
+      },
+      "title": "PersistedToolResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "accountKey": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accountkey"
+    },
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "agentIds": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Agentids",
+      "type": "array"
+    },
+    "callId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Callid"
+    },
+    "cancelRequested": {
+      "title": "Cancelrequested",
+      "type": "boolean"
+    },
+    "created": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Created"
+    },
+    "epoch": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Epoch"
+    },
+    "finished": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "operationResult": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Operationresult"
+    },
+    "outcome": {
+      "enum": ["pending", "applied", "not_applied", "unknown"],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "readOnly": {
+      "title": "Readonly",
+      "type": "boolean"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Request Id"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedToolResult"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Signature"
+    },
+    "stage": {
+      "enum": [
+        "queued",
+        "running",
+        "cancelled",
+        "interrupted",
+        "failed",
+        "unknown",
+        "completed"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "supervisor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersistedSupervisor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    },
+    "timing": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Timing",
+      "type": "object"
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Tool"
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Updated"
+    }
+  },
+  "required": ["id", "agent", "stage", "outcome"],
+  "title": "PersistedToolRequestRecord",
+  "type": "object"
+}
