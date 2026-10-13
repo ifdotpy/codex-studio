@@ -229,7 +229,7 @@ pub(crate) fn stored_records(
     Ok(rows)
 }
 
-fn normalized_project_path(value: &str) -> Option<String> {
+pub(crate) fn normalized_project_path(value: &str) -> Option<String> {
     if value.trim().is_empty() {
         return None;
     }
