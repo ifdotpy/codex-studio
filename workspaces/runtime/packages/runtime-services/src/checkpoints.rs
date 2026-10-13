@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bounded_child::{self, ChildError};
+use crate::event_write::truthy;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     CheckpointsRepository, RuntimeStore, StoreError, StoredCheckpointObject, WorkspaceSnapshot,
@@ -633,17 +634,6 @@ fn invalid_checkpoint(id: &str) -> CheckpointsError {
     CheckpointsError::InvalidStoredObject {
         object: "checkpoints",
         id: id.to_owned(),
-    }
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
     }
 }
 

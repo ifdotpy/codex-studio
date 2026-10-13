@@ -10,7 +10,7 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-pub use studio_runtime_store::{python_json, python_json_compact};
+pub use studio_runtime_store::{python_json, python_json_compact, truthy};
 
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -395,17 +395,6 @@ fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
         .get("autoWake")
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
-}
-
-pub fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(values)) => !values.is_empty(),
-        Some(Value::Object(values)) => !values.is_empty(),
-        Some(Value::Bool(true)) => true,
-    }
 }
 
 pub fn unix_time() -> Result<f64, EventWriteError> {

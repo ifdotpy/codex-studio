@@ -204,6 +204,17 @@ pub fn sha256_hex(value: &[u8]) -> String {
     data_encoding::HEXLOWER.encode(&digest)
 }
 
+pub fn truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Object(values)) => !values.is_empty(),
+        Some(Value::Bool(true)) => true,
+    }
+}
+
 /// Python-compatible sorted-key JSON used for persisted signatures.
 pub fn python_json(value: &Value) -> String {
     python_json_separated(value, ", ", ": ")

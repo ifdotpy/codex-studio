@@ -265,27 +265,6 @@ impl EventWriteRepository {
         })
     }
 
-    /// Project the fields changed when a manual message wakes an agent.
-    pub fn set_agent_sync_manual_input(
-        transaction: &Transaction<'_>,
-        agent: &crate::AgentRecord,
-    ) -> StoreResult<()> {
-        Self::update_agent_sync(transaction, &agent.id.0, |value| {
-            let mut changed = false;
-            for field in ["autoWake", "error", "capacityRetry", "startAttempt"] {
-                match agent.extra.get(field) {
-                    Some(next) if value.get(field) != Some(next) => {
-                        value.insert(field.to_owned(), next.clone());
-                        changed = true;
-                    }
-                    None if value.remove(field).is_some() => changed = true,
-                    _ => {}
-                }
-            }
-            changed
-        })
-    }
-
     fn update_agent_sync(
         transaction: &Transaction<'_>,
         agent_id: &str,

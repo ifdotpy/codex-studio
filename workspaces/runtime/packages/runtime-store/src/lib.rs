@@ -4,13 +4,9 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
-pub use schema::{python_json, python_json_compact, sha256_hex};
+pub use schema::{python_json, python_json_compact, sha256_hex, truthy};
 
 pub use repositories::account_state;
-pub use repositories::analytics::{
-    self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
-    SessionCostError,
-};
 pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,
