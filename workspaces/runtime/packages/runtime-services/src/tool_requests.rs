@@ -58,9 +58,7 @@ pub fn execute(
         })? {
             let (id, raw) = row?;
             let mut record = records::decode(TABLE, &id, &raw)?;
-            if !terminal(&record) {
-                refresh(tx, &mut record, &actor, now, false)?;
-            }
+            refresh(tx, &mut record, &actor, now, false)?;
             strip(&mut record, &["result", "signature", "_payloadBlobs"]);
             requests.push(record);
         }
@@ -213,7 +211,9 @@ fn refresh(
     }
     let Some(result) = saved
         .map(|mut result| {
-            expire(&mut result, now);
+            if specific {
+                expire(&mut result, now);
+            }
             result
         })
         .or_else(|| record.get("result").filter(|r| r.is_object()).cloned())
@@ -306,27 +306,21 @@ fn reconcile_effect(
             .filter(|v| truthy(Some(v)))
             .or_else(|| actor.get("turnId"));
         let account = actor["accountKey"].as_str().unwrap_or("default");
-        let query = if truthy(turn) {
-            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2"
-        } else {
-            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND epoch=?3 AND turn IS NULL AND ?4 IS NULL ORDER BY created DESC LIMIT 1"
-        };
-        let identity = if truthy(turn) {
-            actor["threadId"]
-                .as_str()
-                .map(|v| rusqlite::types::Value::Text(v.to_owned()))
-                .unwrap_or(rusqlite::types::Value::Null)
-        } else {
-            rusqlite::types::Value::Integer(actor["epoch"].as_i64().unwrap_or(0))
-        };
-        let mut statement = tx.prepare(query)?;
+        let mut statement = tx.prepare(
+            "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2
+             AND ((?6 AND thread IS ?3 AND turn=?4)
+               OR (NOT ?6 AND epoch=?5 AND turn IS NULL AND ?4 IS NULL))
+             ORDER BY created DESC LIMIT CASE WHEN ?6 THEN 2 ELSE 1 END",
+        )?;
         let rows = statement
             .query_map(
                 params![
                     actor["id"].as_str(),
                     account,
-                    identity,
-                    turn.and_then(Value::as_str)
+                    actor["threadId"].as_str(),
+                    turn.and_then(Value::as_str),
+                    actor["epoch"].as_i64().unwrap_or(0),
+                    truthy(turn)
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?
