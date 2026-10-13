@@ -23,12 +23,12 @@ import ast
 import copy
 import json
 import sqlite3
-import types
 
 SERVER = Path(__file__).resolve().parents[4] / "apps/server/src"
 sys.path.insert(0, str(SERVER))
 from codex_runtime import Runtime
 from codex_team_isolation import assert_events
+from codex_peer_teams import _path
 from codex_budget import budget_admission
 from codex_daybreak import turn_program
 
@@ -100,51 +100,39 @@ def insert(db, table, key, value):
     db.execute(f"INSERT INTO runtime_{table} VALUES (?,?)", (key, json.dumps(value)))
 
 
+def authorization_records(case, db):
+    for table, records in case["records"].items():
+        for key, value in records.items():
+            insert(db, table, key, value)
+    for table, records in case.get("raw_rows", {}).items():
+        for key, raw in records.items():
+            db.execute(f"INSERT OR REPLACE INTO runtime_{table} VALUES (?,?)", (key, raw))
+    db.execute("CREATE TABLE runtime_events(id TEXT, kind TEXT, text TEXT)")
+    for event in case["events"]:
+        db.execute("INSERT INTO runtime_events VALUES (?,?,?)", (event["id"], event["kind"], event["text"]))
+    records = {table: dict(db.execute(f"SELECT id,record FROM runtime_{table}"))
+               for table in ("agents", "rooms", "complaints", "projects", "event_meta")}
+    paths = {}
+    for table, field in (("agents", "cwd"), ("projects", "path")):
+        for raw in records[table].values():
+            try:
+                value = json.loads(raw)
+                path = value.get(field) if isinstance(value, dict) else None
+                if isinstance(path, str) and path.strip():
+                    paths[path] = _path(path)
+            except ValueError:
+                pass
+    events = [dict(id=row[0], kind=row[1], text=row[2]) for row in db.execute("SELECT * FROM runtime_events")]
+    return dict(records, recipient_id=case["recipient_id"], events=events, resolved_paths=paths)
+
+
 def authorization(case, db):
-    snapshot = case["snapshot"]
-    for key, agent in snapshot["agents"].items():
-        insert(db, "agents", key, dict(id=agent["id"], rootId=agent["root_id"],
-            parentId=agent["parent_id"], isLead=agent["is_lead"],
-            deletedAt=1 if agent["deleted"] else None, cwd=agent["resolved_cwd"]))
-    for key, room in snapshot["rooms"].items():
-        insert(db, "rooms", key, dict(kind=room["kind"], rootId=room.get("root_id"), members=room.get("members")))
-    for key, complaint in snapshot["complaints"].items():
-        insert(db, "complaints", key, dict(author=complaint["author"], leadId=complaint["lead_id"]))
-    for key, project in snapshot["projects"].items():
-        insert(db, "projects", key, dict(path=project["resolved_path"], peerTeams=[
-            dict(id=str(i), name="peers", members=members) for i, members in enumerate(project["teams"])]))
-    events = []
-    for i, event in enumerate(case["events"]):
-        key = str(i)
-        if event["kind"] == "followup" and event["sender_present"]:
-            insert(db, "event_meta", key, {"senderId": event.get("sender")})
-        payload = dict(sender=event.get("sender"), room=event.get("room"),
-            complaint_id=event.get("complaint_id"), responder=event.get("responder"),
-            response={"author": event.get("response_author")})
-        events.append(dict(id=key, kind=event["kind"], text=json.dumps(payload)))
     before = list(db.iterdump())
     try:
-        assert_events(Host(db), db, {"id": snapshot["recipient_id"]}, events)
+        assert_events(Host(db), db, {"id": case["recipient_id"]}, case["events"])
     finally:
         assert list(db.iterdump()) == before, "authorization wrote state"
     return {"allowed": True}
-
-
-def settings(value):
-    return dict(model=value["model"], effort=value["effort"], nativeEffort=value["native_effort"],
-                fastMode=value["fast_mode"], daybreakEnabled=value["daybreak_enabled"])
-
-
-def agent(snapshot):
-    result = dict(id="recipient", provider=snapshot.get("provider", "codex"), accountKey=snapshot["account_key"], **settings(snapshot["settings"]),
-                  startAttempt={"settingsFixed": snapshot["settings_fixed"]})
-    if snapshot["execution_settings_account_key"] is not None:
-        result["executionSettingsAccountKey"] = snapshot["execution_settings_account_key"]
-    if snapshot["pending"] is not None:
-        result["pendingSettings"] = settings(snapshot["pending"]["settings"])
-        if snapshot["pending"]["account_key"] is not None:
-            result["pendingSettingsAccountKey"] = snapshot["pending"]["account_key"]
-    return result
 
 
 def catalog_value(value):
@@ -156,25 +144,36 @@ def catalog_value(value):
         for row in value["models"]]}
 
 
+# Extract the actual provider effort and service-tier projection, not a rewrite.
+_tier = [n for n in ast.walk(_start) if isinstance(n, ast.Assign)
+         and any(ast.unparse(target) == "params['serviceTier']" for target in n.targets)]
+_effort = [n for n in ast.walk(_start) if isinstance(n, ast.If)
+           and ast.unparse(n.test) == "a.get('nativeEffort', a.get('effort')) is not None"]
+assert len(_tier) == len(_effort) == 1, "provider settings projection changed"
+provider_settings = compile_block("provider_settings", ["a"],
+    [ast.parse("params = {}").body[0], *_tier, *_effort,
+     ast.Return(value=ast.Name(id="params", ctx=ast.Load()))])
+
+
 def execution(case, db):
-    current, observed = agent(case["current"]), agent(case.get("observed", case["current"]))
+    insert(db, "agents", "recipient", case["current"])
     host = Host(db, catalog_value(case.get("catalog")))
-    # Saved pending settings go through the real validator before the original
-    # start-time freeze block. Freshness/account mismatches are Rust-only holds.
-    if not current["startAttempt"]["settingsFixed"] and current.get("pendingSettings"):
-        pending = current["pendingSettings"]
-        host.validate_execution(host.catalog(current["accountKey"]), pending["model"], pending["effort"], pending["fastMode"])
-    validated = revalidate(host, observed, observed["accountKey"],
-                          observed.get("executionSettingsAccountKey", observed["accountKey"]))
-    freeze(host, db, current, current["startAttempt"], validated)
+    current = host.agent("recipient", db)
+    observed = copy.deepcopy(case.get("observed", case["current"]))
+    validated = revalidate(host, observed, observed.get("accountKey", "default"),
+        observed.get("executionSettingsAccountKey", observed.get("accountKey", "default")))
+    freeze(host, db, current, current.get("startAttempt") or {}, validated)
     turn_program(host, current)
-    fields = dict(model=current["model"], effort=current["effort"], native_effort=current["nativeEffort"],
-                  fast_mode=current["fastMode"], daybreak_enabled=current["daybreakEnabled"])
-    patch = None if not host.writes else dict(expected=case["current"], settings=fields,
-        execution_settings_account_key=current.get("executionSettingsAccountKey"),
-        consume_pending=case["current"]["pending"] is not None,
-        invalidate_loaded="recipient" not in host.loaded, settings_fixed=current["startAttempt"]["settingsFixed"])
-    return {"allowed": True, "selection": {"settings": fields, "freeze": patch}}
+    after = host.agent("recipient", db)
+    return {"allowed": True, "record_after": after, "provider_settings": provider_settings(after),
+            "freeze": bool(host.writes), "invalidated_loaded": "recipient" not in host.loaded}
+
+
+def validation(case, db):
+    s = case["settings"]
+    effort = Runtime.validate_execution(catalog_value(case["catalog"]), s["model"], s.get("effort"),
+        s.get("fastMode", False), fallback_effort=case.get("fallback_effort", False))
+    return {"allowed": True, "efforts": list(effort)}
 
 
 def budget(case, db):
@@ -192,10 +191,15 @@ def budget(case, db):
 
 def run(case):
     with database() as db:
+        records = authorization_records(case, db) if case["gate"] == "authorization" else None
         try:
-            return {"authorization": authorization, "execution": execution, "budget": budget}[case["gate"]](case, db)
-        except ValueError as error:
-            return {"allowed": False, "message": str(error)}
+            result = {"authorization": authorization, "execution": execution, "budget": budget,
+                      "validation": validation}[case["gate"]](case, db)
+        except (ValueError, TypeError, KeyError) as error:
+            result = {"allowed": False, "message": str(error)}
+        if records is not None:
+            result["records"] = records
+        return result
 
 
 for line in sys.stdin:

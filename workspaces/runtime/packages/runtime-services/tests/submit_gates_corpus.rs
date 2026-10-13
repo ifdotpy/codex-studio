@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 use studio_runtime_services::submit_gates::{
-    AuthorizationSnapshot, CatalogObservation, EventSnapshot, ExecutionSnapshot, authorize_events,
-    budget_admission, select_execution,
+    AuthorizationRecords, AuthorizationSnapshot, CatalogIdentity, CatalogObservation,
+    ExecutionSettings, ExecutionSnapshot, authorize_events, budget_admission, select_execution,
+    validate_execution,
 };
 
 struct Oracle {
@@ -54,55 +55,121 @@ impl Drop for Oracle {
         assert!(self.child.wait().expect("reap oracle").success());
     }
 }
-fn rust(case: &Value) -> Value {
+fn profile(case: &Value, record: &Value, key: &str) -> CatalogIdentity {
+    let p = case.get(key).unwrap_or(&case["profile"]);
+    CatalogIdentity {
+        account_key: record["accountKey"].as_str().unwrap_or("default").into(),
+        home: p["home"].as_str().expect("profile home").into(),
+        provider: p["provider"].as_str().expect("provider").into(),
+        generation: p["generation"].as_u64().expect("generation"),
+    }
+}
+fn catalog(case: &Value, now: Instant) -> Option<CatalogObservation> {
+    (!case["catalog"].is_null()).then(|| CatalogObservation {
+        identity: CatalogIdentity {
+            account_key: case["catalog"]["account_key"]
+                .as_str()
+                .expect("catalog account")
+                .into(),
+            home: case["catalog"]["home"].as_str().expect("home").into(),
+            provider: case["catalog"]["provider"]
+                .as_str()
+                .expect("provider")
+                .into(),
+            generation: case["catalog"]["generation"].as_u64().expect("generation"),
+        },
+        expires_at: now
+            + Duration::from_secs(case["catalog"]["lifetime"].as_u64().expect("expiry")),
+        models: serde_json::from_value(case["catalog"]["models"].clone())
+            .expect("model capabilities"),
+    })
+}
+fn rejection(error: impl serde::Serialize) -> Value {
+    json!({"allowed":false,"denial":error})
+}
+fn rust(case: &Value, records: Option<&Value>) -> Value {
     match case["gate"].as_str().expect("gate") {
         "authorization" => {
-            let snapshot: AuthorizationSnapshot =
-                serde_json::from_value(case["snapshot"].clone()).expect("typed authority");
-            let events: Vec<EventSnapshot> =
-                serde_json::from_value(case["events"].clone()).expect("typed events");
-            match authorize_events(&snapshot, &events) {
-                Ok(()) => json!({"allowed":true}),
+            let records: AuthorizationRecords =
+                serde_json::from_value(records.expect("Python-written rows").clone())
+                    .expect("rows");
+            let snapshot = match AuthorizationSnapshot::from_records(&records) {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
-                    json!({"allowed":false,"denial":serde_json::to_value(error).expect("denial")})
+                    return json!({"allowed":false,"denial":"invalid-stored-input","location":error.location});
                 }
+            };
+            match authorize_events(&snapshot) {
+                Ok(()) => json!({"allowed":true}),
+                Err(error) => rejection(error),
             }
         }
         "execution" => {
-            let current: ExecutionSnapshot =
-                serde_json::from_value(case["current"].clone()).expect("typed current");
-            let observed: ExecutionSnapshot =
-                serde_json::from_value(case.get("observed").unwrap_or(&case["current"]).clone())
-                    .expect("typed observed");
-            let now = Instant::now();
-            let catalog = (!case["catalog"].is_null()).then(|| CatalogObservation {
-                account_key: case["catalog"]["account_key"]
-                    .as_str()
-                    .expect("account")
-                    .into(),
-                generation: case["catalog"]["generation"].as_u64().expect("generation"),
-                expires_at: now
-                    + Duration::from_secs(case["catalog"]["lifetime"].as_u64().expect("expiry")),
-                models: serde_json::from_value(case["catalog"]["models"].clone())
-                    .expect("typed models"),
-            });
-            match select_execution(&current, &observed, catalog.as_ref(), now) {
-                Ok(selection) => json!({"allowed":true,"selection":selection}),
+            let current = match ExecutionSnapshot::from_record(
+                &case["current"],
+                profile(case, &case["current"], "profile"),
+            ) {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
-                    json!({"allowed":false,"denial":serde_json::to_value(error).expect("denial")})
+                    return json!({"allowed":false,"denial":"invalid-stored-input","location":error.location});
                 }
+            };
+            let before = case.get("observed").unwrap_or(&case["current"]);
+            let observed =
+                ExecutionSnapshot::from_record(before, profile(case, before, "observed_profile"))
+                    .expect("observed snapshot");
+            let now = Instant::now();
+            let catalog = catalog(case, now);
+            let selected = select_execution(&current, &observed, catalog.as_ref(), now);
+            if let Some(expected) = case.get("selection_denial") {
+                assert_eq!(
+                    selected.as_ref().err().map(|error| json!(error)),
+                    Some(expected.clone()),
+                    "selection must refuse before producing a freeze patch"
+                );
+            }
+            match selected {
+                Ok(selection) => {
+                    let record = case.get("commit_record").unwrap_or(&case["current"]);
+                    let account = profile(case, record, "commit_profile");
+                    match selection.freeze_record(
+                        record,
+                        &account,
+                        now + Duration::from_secs(case["commit_delay"].as_u64().unwrap_or(0)),
+                    ) {
+                        Ok(after) => {
+                            json!({"allowed":true,"record_after":after,"provider_settings":selection.provider_settings(),
+                            "freeze":selection.freeze.is_some(),"invalidated_loaded":selection.freeze.as_ref().is_some_and(|p| p.consume_pending)})
+                        }
+                        Err(error) => rejection(error),
+                    }
+                }
+                Err(error) => rejection(error),
             }
         }
-        "budget" => match budget_admission(case["budget"].as_u64()) {
+        "validation" => {
+            let settings: ExecutionSettings =
+                serde_json::from_value(case["settings"].clone()).expect("typed settings");
+            match validate_execution(
+                &settings,
+                &catalog(case, Instant::now()).expect("catalog"),
+                case["fallback_effort"].as_bool().unwrap_or(false),
+            ) {
+                Ok(efforts) => json!({"allowed":true,"efforts":efforts}),
+                Err(error) => rejection(error),
+            }
+        }
+        "budget" => match budget_admission(case.get("budget")) {
             Ok(()) => json!({"allowed":true}),
-            Err(error) => json!({"allowed":false,"denial":error.to_string()}),
+            Err(error) => rejection(error.to_string()),
         },
         _ => panic!("unknown gate"),
     }
 }
 fn compare(oracle: &mut Oracle, name: &str, case: &Value, deviation: Option<&str>) {
-    let python = oracle.call(case);
-    let actual = rust(case);
+    let mut python = oracle.call(case);
+    let actual = rust(case, python.get("records"));
+    python.as_object_mut().expect("result").remove("records");
     // This assertion is deliberately independent of the deviation list: no
     // Python denial can ever be transformed into a Rust allow.
     assert!(
@@ -129,11 +196,28 @@ fn compare(oracle: &mut Oracle, name: &str, case: &Value, deviation: Option<&str
 fn patched(seed: &Value, witness: &Value) -> Value {
     let mut case = seed.clone();
     for patch in witness["patches"].as_array().expect("patches") {
-        let path = patch["path"].as_str().expect("path");
-        if path == "/observed" {
-            case["observed"] = patch["value"].clone();
+        let keys: Vec<_> = patch["path"]
+            .as_str()
+            .expect("path")
+            .trim_start_matches('/')
+            .split('/')
+            .map(|s| s.replace("~1", "/").replace("~0", "~"))
+            .collect();
+        let mut parent = &mut case;
+        for key in &keys[..keys.len() - 1] {
+            parent = if parent.is_array() {
+                &mut parent[key.parse::<usize>().expect("index")]
+            } else {
+                &mut parent[key]
+            };
+        }
+        let key = keys.last().expect("key");
+        if patch["remove"] == true {
+            parent.as_object_mut().expect("object").remove(key);
+        } else if parent.is_array() {
+            parent[key.parse::<usize>().expect("index")] = patch["value"].clone();
         } else {
-            *case.pointer_mut(path).expect("existing fixture path") = patch["value"].clone();
+            parent[key] = patch["value"].clone();
         }
     }
     case
@@ -160,12 +244,16 @@ fn submit_gates_python_corpus() {
                 for broadcast in [false, true] {
                     for deleted in [false, true] {
                         let mut case = fixtures["seeds"]["authorization"].clone();
-                        case["snapshot"]["agents"]["sender"]["root_id"] = root.clone();
-                        case["snapshot"]["agents"]["sender"]["deleted"] = json!(deleted);
-                        case["events"][0]["sender"] = sender.clone();
+                        case["records"]["agents"]["sender"]["rootId"] = root.clone();
+                        case["records"]["agents"]["sender"]["deletedAt"] = json!(deleted);
+                        let mut payload: Value =
+                            serde_json::from_str(case["events"][0]["text"].as_str().expect("text"))
+                                .expect("payload");
+                        payload["sender"] = sender.clone();
+                        case["events"][0]["text"] = json!(payload.to_string());
                         if broadcast {
-                            case["snapshot"]["rooms"]["room"] =
-                                json!({"kind":"broadcast","root_id":root});
+                            case["records"]["rooms"]["room"] =
+                                json!({"kind":"broadcast","rootId":root});
                         }
                         compare(&mut oracle, "authorization-matrix", &case, None);
                         count += 1;
@@ -181,16 +269,17 @@ fn submit_gates_python_corpus() {
                             for priority in [false, true] {
                                 for hidden in [false, true] {
                                     let mut case = fixtures["seeds"]["execution"].clone();
-                                    case["current"]["execution_settings_account_key"] =
-                                        json!("old");
-                                    case["current"]["settings_fixed"] = json!(fixed);
-                                    case["current"]["settings"]["model"] = model.clone();
-                                    case["current"]["settings"]["effort"] = effort.clone();
-                                    case["current"]["settings"]["fast_mode"] = json!(fast);
+                                    case["current"]["executionSettingsAccountKey"] = json!("old");
+                                    case["current"]["startAttempt"]["settingsFixed"] = json!(fixed);
+                                    case["current"]["model"] = model.clone();
+                                    case["current"]["effort"] = effort.clone();
+                                    case["current"]["fastMode"] = json!(fast);
                                     case["catalog"]["models"][0]["priority"] = json!(priority);
                                     case["catalog"]["models"][0]["hidden"] = json!(hidden);
                                     if pending {
-                                        case["current"]["pending"] = json!({"account_key":"account","settings":case["current"]["settings"]});
+                                        case["current"]["pendingSettings"] = json!({"model":model,"effort":effort,"nativeEffort":"medium","fastMode":fast,"daybreakEnabled":false});
+                                        case["current"]["pendingSettingsAccountKey"] =
+                                            json!("account");
                                     }
                                     compare(&mut oracle, "execution-matrix", &case, None);
                                     count += 1;
@@ -218,15 +307,12 @@ fn submit_gates_python_corpus() {
 }
 
 #[test]
-fn malformed_snapshots_fail_closed_at_typed_boundary() {
+fn malformed_settings_fail_closed_at_typed_boundary() {
     let fixtures: Value =
         serde_json::from_str(include_str!("submit_gates/cases.json")).expect("fixtures");
     for value in [json!(null), json!("yes"), json!(0), json!({})] {
-        let mut current = fixtures["seeds"]["execution"]["current"].clone();
-        current["settings"]["fast_mode"] = value.clone();
-        assert!(serde_json::from_value::<ExecutionSnapshot>(current).is_err());
-        let mut snapshot = fixtures["seeds"]["authorization"]["snapshot"].clone();
-        snapshot["rooms"]["room"]["members"] = value;
-        assert!(serde_json::from_value::<AuthorizationSnapshot>(snapshot).is_err());
+        let mut case = fixtures["seeds"]["execution"].clone();
+        case["current"]["fastMode"] = value;
+        assert_eq!(rust(&case, None)["allowed"], false);
     }
 }

@@ -2,32 +2,32 @@
   "seeds": {
     "authorization": {
       "gate": "authorization",
-      "snapshot": {
-        "recipient_id": "recipient",
+      "recipient_id": "recipient",
+      "records": {
         "agents": {
           "recipient": {
             "id": "recipient",
-            "root_id": "root",
-            "parent_id": null,
-            "is_lead": false,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
+            "rootId": "root",
+            "parentId": null,
+            "isLead": false,
+            "deletedAt": null,
+            "cwd": "/var/tmp/submit-gates-project"
           },
           "sender": {
             "id": "sender",
-            "root_id": "root",
-            "parent_id": null,
-            "is_lead": false,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
+            "rootId": "root",
+            "parentId": null,
+            "isLead": false,
+            "deletedAt": null,
+            "cwd": "/var/tmp/submit-gates-project"
           },
           "foreign": {
             "id": "foreign",
-            "root_id": "foreign",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
+            "rootId": "foreign",
+            "parentId": null,
+            "isLead": true,
+            "deletedAt": null,
+            "cwd": "/var/tmp/submit-gates-project"
           }
         },
         "rooms": {
@@ -39,33 +39,38 @@
         "complaints": {
           "complaint": {
             "author": "recipient",
-            "lead_id": "sender"
+            "leadId": "sender"
           }
         },
-        "projects": {}
+        "projects": {},
+        "event_meta": {}
       },
       "events": [
         {
+          "id": "0",
           "kind": "agent_message",
-          "sender": "sender",
-          "room": "room"
+          "text": "{\"sender\": \"sender\", \"room\": \"room\", \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
         }
       ]
     },
     "execution": {
       "gate": "execution",
       "current": {
-        "account_key": "account",
-        "execution_settings_account_key": "account",
-        "settings": {
-          "model": "model",
-          "effort": null,
-          "native_effort": "medium",
-          "fast_mode": false,
-          "daybreak_enabled": false
+        "id": "recipient",
+        "provider": "codex",
+        "accountKey": "account",
+        "model": "model",
+        "effort": null,
+        "nativeEffort": "medium",
+        "fastMode": false,
+        "daybreakEnabled": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 4,
+          "events": ["event"],
+          "settingsFixed": false
         },
-        "pending": null,
-        "settings_fixed": false
+        "executionSettingsAccountKey": "account"
       },
       "catalog": {
         "account_key": "account",
@@ -80,13 +85,58 @@
             "default_effort": "medium",
             "priority": true
           }
-        ]
+        ],
+        "home": "/disposable/catalog",
+        "provider": "codex"
+      },
+      "profile": {
+        "home": "/disposable/catalog",
+        "provider": "codex",
+        "generation": 7
       }
     },
     "budget": {
       "gate": "budget",
       "budget": null,
       "spent": 0
+    },
+    "validation": {
+      "gate": "validation",
+      "settings": {
+        "id": "recipient",
+        "provider": "codex",
+        "accountKey": "account",
+        "model": "model",
+        "effort": null,
+        "nativeEffort": "medium",
+        "fastMode": false,
+        "daybreakEnabled": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 4,
+          "events": ["event"],
+          "settingsFixed": false
+        },
+        "executionSettingsAccountKey": "account"
+      },
+      "catalog": {
+        "account_key": "account",
+        "generation": 7,
+        "lifetime": 30,
+        "models": [
+          {
+            "model": "model",
+            "resolved_model": "alias",
+            "hidden": false,
+            "supported_efforts": ["low", "medium", "high"],
+            "default_effort": "medium",
+            "priority": true
+          }
+        ],
+        "home": "/disposable/catalog",
+        "provider": "codex"
+      },
+      "fallback_effort": false
     }
   },
   "witnesses": [
@@ -103,7 +153,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "user_message"
+              "id": "0",
+              "kind": "user_message",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -117,7 +169,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "work_review"
+              "id": "0",
+              "kind": "work_review",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -131,7 +185,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "complaint"
+              "id": "0",
+              "kind": "complaint",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -145,7 +201,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "tool_response"
+              "id": "0",
+              "kind": "tool_response",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -159,7 +217,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "native_recovery"
+              "id": "0",
+              "kind": "native_recovery",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -173,7 +233,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "unknown"
+              "id": "0",
+              "kind": "unknown",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -187,7 +249,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "chat_review"
+              "id": "0",
+              "kind": "chat_review",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -201,7 +265,9 @@
           "path": "/events",
           "value": [
             {
-              "kind": "radio_turn"
+              "id": "0",
+              "kind": "radio_turn",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -215,9 +281,9 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": false,
-              "sender": null
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -231,9 +297,9 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": false,
-              "sender": "foreign"
+              "text": "{\"sender\": \"foreign\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -244,12 +310,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/0",
+          "value": {
+            "senderId": null
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": null
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -260,12 +332,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/0",
+          "value": {
+            "senderId": "sender"
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": "sender"
+              "text": "{\"sender\": \"sender\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -276,12 +354,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/0",
+          "value": {
+            "senderId": "foreign"
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": "foreign"
+              "text": "{\"sender\": \"foreign\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -292,12 +376,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/0",
+          "value": {
+            "senderId": "missing"
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": "missing"
+              "text": "{\"sender\": \"missing\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -308,12 +398,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/0",
+          "value": {
+            "senderId": ""
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": ""
+              "text": "{\"sender\": \"\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -324,11 +420,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room",
-          "value": {
-            "kind": "broadcast",
-            "root_id": "root"
-          }
+          "path": "/records/rooms/room/members",
+          "remove": true
+        },
+        {
+          "path": "/records/rooms/room/kind",
+          "value": "broadcast"
+        },
+        {
+          "path": "/records/rooms/room/rootId",
+          "value": "root"
         }
       ]
     },
@@ -337,11 +438,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room",
-          "value": {
-            "kind": "broadcast",
-            "root_id": "foreign"
-          }
+          "path": "/records/rooms/room/members",
+          "remove": true
+        },
+        {
+          "path": "/records/rooms/room/kind",
+          "value": "broadcast"
+        },
+        {
+          "path": "/records/rooms/room/rootId",
+          "value": "foreign"
         }
       ]
     },
@@ -350,11 +456,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room",
-          "value": {
-            "kind": "broadcast",
-            "root_id": "all"
-          }
+          "path": "/records/rooms/room/members",
+          "remove": true
+        },
+        {
+          "path": "/records/rooms/room/kind",
+          "value": "broadcast"
+        },
+        {
+          "path": "/records/rooms/room/rootId",
+          "value": "all"
         }
       ]
     },
@@ -363,11 +474,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room",
-          "value": {
-            "kind": "broadcast",
-            "root_id": null
-          }
+          "path": "/records/rooms/room/members",
+          "remove": true
+        },
+        {
+          "path": "/records/rooms/room/kind",
+          "value": "broadcast"
+        },
+        {
+          "path": "/records/rooms/room/rootId",
+          "value": null
         }
       ]
     },
@@ -376,11 +492,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room",
-          "value": {
-            "kind": "broadcast",
-            "root_id": ""
-          }
+          "path": "/records/rooms/room/members",
+          "remove": true
+        },
+        {
+          "path": "/records/rooms/room/kind",
+          "value": "broadcast"
+        },
+        {
+          "path": "/records/rooms/room/rootId",
+          "value": ""
         }
       ]
     },
@@ -389,7 +510,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": []
         }
       ]
@@ -399,7 +520,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": ["recipient"]
         }
       ]
@@ -409,7 +530,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": ["sender"]
         }
       ]
@@ -419,7 +540,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": ["recipient", "sender", "foreign"]
         }
       ]
@@ -429,7 +550,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": ["recipient", "sender", "missing"]
         }
       ]
@@ -439,7 +560,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/members",
+          "path": "/records/rooms/room/members",
           "value": ["recipient", "sender", "sender"]
         }
       ]
@@ -449,7 +570,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient/root_id",
+          "path": "/records/agents/recipient/rootId",
           "value": null
         }
       ]
@@ -459,7 +580,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient/root_id",
+          "path": "/records/agents/recipient/rootId",
           "value": ""
         }
       ]
@@ -469,7 +590,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/sender/root_id",
+          "path": "/records/agents/sender/rootId",
           "value": "foreign"
         }
       ]
@@ -479,8 +600,16 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents",
-          "value": {}
+          "path": "/records/agents/sender",
+          "remove": true
+        },
+        {
+          "path": "/records/agents/foreign",
+          "remove": true
+        },
+        {
+          "path": "/records/agents/recipient",
+          "remove": true
         }
       ]
     },
@@ -489,8 +618,8 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms",
-          "value": {}
+          "path": "/records/rooms/room",
+          "remove": true
         }
       ]
     },
@@ -499,7 +628,7 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/rooms/room/kind",
+          "path": "/records/rooms/room/kind",
           "value": "other"
         }
       ]
@@ -509,8 +638,14 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/events/0/sender",
-          "value": null
+          "path": "/events",
+          "value": [
+            {
+              "id": "0",
+              "kind": "agent_message",
+              "text": "{\"sender\": null, \"room\": \"room\", \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
+            }
+          ]
         }
       ]
     },
@@ -519,8 +654,14 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/events/0/room",
-          "value": null
+          "path": "/events",
+          "value": [
+            {
+              "id": "0",
+              "kind": "agent_message",
+              "text": "{\"sender\": \"sender\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
+            }
+          ]
         }
       ]
     },
@@ -532,16 +673,11 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "sender",
-              "response_author": "sender"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"sender\", \"response\": {\"author\": \"sender\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "sender"
         }
       ]
     },
@@ -553,16 +689,11 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "user",
-              "response_author": "user"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"user\", \"response\": {\"author\": \"user\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "sender"
         }
       ]
     },
@@ -571,19 +702,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/complaints/complaint/leadId",
+          "value": "foreign"
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "foreign",
-              "response_author": "foreign"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"foreign\", \"response\": {\"author\": \"foreign\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "foreign"
         }
       ]
     },
@@ -595,16 +725,11 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "sender",
-              "response_author": "foreign"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"sender\", \"response\": {\"author\": \"foreign\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "sender"
         }
       ]
     },
@@ -613,19 +738,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/complaints/complaint/leadId",
+          "value": "foreign"
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "sender",
-              "response_author": "sender"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"sender\", \"response\": {\"author\": \"sender\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "foreign"
         }
       ]
     },
@@ -637,16 +761,11 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": null,
-              "response_author": "sender"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": null, \"response\": {\"author\": \"sender\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/lead_id",
-          "value": "sender"
         }
       ]
     },
@@ -658,10 +777,9 @@
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": null,
-              "responder": "user",
-              "response_author": "user"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": \"user\", \"response\": {\"author\": \"user\"}}"
             }
           ]
         }
@@ -672,19 +790,18 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/complaints/complaint/author",
+          "value": "foreign"
+        },
+        {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "user",
-              "response_author": "user"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"user\", \"response\": {\"author\": \"user\"}}"
             }
           ]
-        },
-        {
-          "path": "/snapshot/complaints/complaint/author",
-          "value": "foreign"
         }
       ]
     },
@@ -693,34 +810,32 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
           "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
           }
         }
       ]
@@ -730,39 +845,37 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
-        },
-        {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
-        },
-        {
-          "path": "/snapshot/agents/sender/deleted",
+          "path": "/records/agents/recipient/isLead",
           "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": 1
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -771,39 +884,29 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
         },
         {
-          "path": "/snapshot/agents/sender/is_lead",
-          "value": false
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -812,39 +915,37 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
         },
         {
-          "path": "/snapshot/agents/sender/parent_id",
+          "path": "/records/agents/sender/parentId",
           "value": "parent"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -853,39 +954,33 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
-        },
-        {
-          "path": "/snapshot/agents/sender/root_id",
+          "path": "/records/agents/sender/rootId",
           "value": "other"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -894,39 +989,37 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
         },
         {
-          "path": "/snapshot/agents/sender/resolved_cwd",
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/cwd",
           "value": "/var/tmp/moved"
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -935,39 +1028,37 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
         },
         {
-          "path": "/snapshot/agents/sender/resolved_cwd",
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/cwd",
           "value": null
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
         }
       ]
     },
@@ -976,39 +1067,20 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
-          }
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
         },
         {
-          "path": "/snapshot/projects",
-          "value": {}
+          "path": "/records/agents/sender/isLead",
+          "value": true
         }
       ]
     },
@@ -1017,43 +1089,47 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
           "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
           }
         },
         {
-          "path": "/snapshot/agents/sender",
+          "path": "/records/event_meta/0",
           "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
-        },
-        {
-          "path": "/snapshot/projects",
-          "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
+            "senderId": "sender"
           }
         },
         {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "followup",
-              "sender_present": true,
-              "sender": "sender"
+              "text": "{\"sender\": \"sender\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -1064,44 +1140,41 @@
       "gate": "authorization",
       "patches": [
         {
-          "path": "/snapshot/agents/recipient",
-          "value": {
-            "id": "recipient",
-            "root_id": "recipient",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
         },
         {
-          "path": "/snapshot/agents/sender",
-          "value": {
-            "id": "sender",
-            "root_id": "sender",
-            "parent_id": null,
-            "is_lead": true,
-            "deleted": false,
-            "resolved_cwd": "/var/tmp/submit-gates-project"
-          }
+          "path": "/records/agents/recipient/isLead",
+          "value": true
         },
         {
-          "path": "/snapshot/projects",
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
           "value": {
-            "/var/tmp/submit-gates-project": {
-              "resolved_path": "/var/tmp/submit-gates-project",
-              "teams": [["recipient", "sender"]]
-            }
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
           }
         },
         {
           "path": "/events",
           "value": [
             {
+              "id": "0",
               "kind": "complaint_response",
-              "complaint_id": "complaint",
-              "responder": "sender",
-              "response_author": "sender"
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": \"complaint\", \"responder\": \"sender\", \"response\": {\"author\": \"sender\"}}"
             }
           ]
         }
@@ -1112,18 +1185,28 @@
       "gate": "authorization",
       "patches": [
         {
+          "path": "/records/event_meta/1",
+          "value": {
+            "senderId": "foreign"
+          }
+        },
+        {
           "path": "/events",
           "value": [
             {
-              "kind": "user_message"
+              "id": "0",
+              "kind": "user_message",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             },
             {
+              "id": "1",
               "kind": "followup",
-              "sender_present": true,
-              "sender": "foreign"
+              "text": "{\"sender\": \"foreign\", \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             },
             {
-              "kind": "user_message"
+              "id": "2",
+              "kind": "user_message",
+              "text": "{\"sender\": null, \"room\": null, \"complaint_id\": null, \"responder\": null, \"response\": {\"author\": null}}"
             }
           ]
         }
@@ -1144,7 +1227,7 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/settings_fixed",
+          "path": "/current/startAttempt/settingsFixed",
           "value": true
         },
         {
@@ -1158,8 +1241,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": null
+          "path": "/current/executionSettingsAccountKey",
+          "remove": true
         },
         {
           "path": "/catalog",
@@ -1172,7 +1255,7 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         }
       ]
@@ -1182,12 +1265,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/effort",
+          "value": "high"
         },
         {
-          "path": "/current/settings/effort",
-          "value": "high"
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1196,12 +1279,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/model",
+          "value": "alias"
         },
         {
-          "path": "/current/settings/model",
-          "value": "alias"
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1210,12 +1293,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/model",
+          "value": "missing"
         },
         {
-          "path": "/current/settings/model",
-          "value": "missing"
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1224,12 +1307,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/model",
+          "value": ""
         },
         {
-          "path": "/current/settings/model",
-          "value": ""
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1238,12 +1321,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/model",
+          "value": " "
         },
         {
-          "path": "/current/settings/model",
-          "value": " "
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1252,12 +1335,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/effort",
+          "value": "extreme"
         },
         {
-          "path": "/current/settings/effort",
-          "value": "extreme"
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1266,12 +1349,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/effort",
+          "value": ""
         },
         {
-          "path": "/current/settings/effort",
-          "value": ""
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1280,12 +1363,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/effort",
+          "value": " "
         },
         {
-          "path": "/current/settings/effort",
-          "value": " "
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1294,12 +1377,21 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
-          "path": "/catalog/models/0/hidden",
-          "value": true
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": true,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": true
+            }
+          ]
         }
       ]
     },
@@ -1308,7 +1400,7 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
@@ -1322,12 +1414,21 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
-          "path": "/catalog/models/0/default_effort",
-          "value": null
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": null,
+              "priority": true
+            }
+          ]
         }
       ]
     },
@@ -1336,12 +1437,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/fastMode",
+          "value": true
         },
         {
-          "path": "/current/settings/fast_mode",
-          "value": true
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1350,16 +1451,25 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
-        },
-        {
-          "path": "/current/settings/fast_mode",
+          "path": "/current/fastMode",
           "value": true
         },
         {
-          "path": "/catalog/models/0/priority",
-          "value": false
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": false
+            }
+          ]
         }
       ]
     },
@@ -1368,7 +1478,7 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
@@ -1383,12 +1493,16 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/catalog/lifetime",
           "value": 0
+        },
+        {
+          "path": "/selection_denial",
+          "value": "catalog-expired"
         }
       ],
       "deviation": "catalog-expired"
@@ -1398,43 +1512,51 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/catalog/account_key",
           "value": "foreign"
+        },
+        {
+          "path": "/selection_denial",
+          "value": "catalog-identity-mismatch"
         }
       ],
-      "deviation": "catalog-account-mismatch"
+      "deviation": "catalog-identity-mismatch"
     },
     {
       "name": "changed-during-read-account_key",
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/accountKey",
+          "value": "foreign"
+        },
+        {
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/observed",
           "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": false
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
             },
-            "pending": null,
-            "settings_fixed": false
+            "executionSettingsAccountKey": "old"
           }
-        },
-        {
-          "path": "/current/account_key",
-          "value": "foreign"
         }
       ]
     },
@@ -1443,28 +1565,32 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/model",
+          "value": "alias"
+        },
+        {
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/observed",
           "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": false
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
             },
-            "pending": null,
-            "settings_fixed": false
+            "executionSettingsAccountKey": "old"
           }
-        },
-        {
-          "path": "/current/settings/model",
-          "value": "alias"
         }
       ]
     },
@@ -1473,28 +1599,32 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/effort",
+          "value": "high"
+        },
+        {
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/observed",
           "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": false
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
             },
-            "pending": null,
-            "settings_fixed": false
+            "executionSettingsAccountKey": "old"
           }
-        },
-        {
-          "path": "/current/settings/effort",
-          "value": "high"
         }
       ]
     },
@@ -1503,28 +1633,32 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
+          "path": "/current/fastMode",
+          "value": true
+        },
+        {
+          "path": "/current/executionSettingsAccountKey",
           "value": "old"
         },
         {
           "path": "/observed",
           "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": false
+            "id": "recipient",
+            "provider": "codex",
+            "accountKey": "account",
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": false,
+            "daybreakEnabled": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 4,
+              "events": ["event"],
+              "settingsFixed": false
             },
-            "pending": null,
-            "settings_fixed": false
+            "executionSettingsAccountKey": "old"
           }
-        },
-        {
-          "path": "/current/settings/fast_mode",
-          "value": true
         }
       ]
     },
@@ -1533,17 +1667,18 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/pending",
+          "path": "/current/pendingSettings",
           "value": {
-            "account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": "high",
-              "native_effort": "high",
-              "fast_mode": false,
-              "daybreak_enabled": false
-            }
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": false,
+            "daybreakEnabled": false
           }
+        },
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": "account"
         }
       ]
     },
@@ -1552,16 +1687,13 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/pending",
+          "path": "/current/pendingSettings",
           "value": {
-            "account_key": null,
-            "settings": {
-              "model": "model",
-              "effort": "high",
-              "native_effort": "high",
-              "fast_mode": false,
-              "daybreak_enabled": false
-            }
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": false,
+            "daybreakEnabled": false
           }
         }
       ]
@@ -1571,17 +1703,18 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/pending",
+          "path": "/current/pendingSettings",
           "value": {
-            "account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": "high",
-              "native_effort": "high",
-              "fast_mode": false,
-              "daybreak_enabled": false
-            }
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": false,
+            "daybreakEnabled": false
           }
+        },
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1590,21 +1723,22 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/pending",
+          "path": "/current/startAttempt/settingsFixed",
+          "value": true
+        },
+        {
+          "path": "/current/pendingSettings",
           "value": {
-            "account_key": "old",
-            "settings": {
-              "model": "model",
-              "effort": "high",
-              "native_effort": "high",
-              "fast_mode": false,
-              "daybreak_enabled": false
-            }
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": false,
+            "daybreakEnabled": false
           }
         },
         {
-          "path": "/current/settings_fixed",
-          "value": true
+          "path": "/current/pendingSettingsAccountKey",
+          "value": "old"
         },
         {
           "path": "/catalog",
@@ -1613,25 +1747,35 @@
       ]
     },
     {
-      "name": "pending-fast-denied",
+      "name": "saved-pending-priority-applies-without-revalidation",
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/pending",
+          "path": "/current/pendingSettings",
           "value": {
-            "account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": true,
-              "daybreak_enabled": false
-            }
+            "model": "model",
+            "effort": null,
+            "nativeEffort": "medium",
+            "fastMode": true,
+            "daybreakEnabled": false
           }
         },
         {
-          "path": "/catalog/models/0/priority",
-          "value": false
+          "path": "/current/pendingSettingsAccountKey",
+          "value": "account"
+        },
+        {
+          "path": "/catalog/models",
+          "value": [
+            {
+              "model": "model",
+              "resolved_model": "alias",
+              "hidden": false,
+              "supported_efforts": ["low", "medium", "high"],
+              "default_effort": "medium",
+              "priority": false
+            }
+          ]
         }
       ]
     },
@@ -1640,12 +1784,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/execution_settings_account_key",
-          "value": "old"
+          "path": "/current/startAttempt/settingsFixed",
+          "value": true
         },
         {
-          "path": "/current/settings_fixed",
-          "value": true
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
         }
       ]
     },
@@ -1654,7 +1798,7 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current/settings/daybreak_enabled",
+          "path": "/current/daybreakEnabled",
           "value": true
         }
       ],
@@ -1671,10 +1815,6 @@
       "patches": [
         {
           "path": "/budget",
-          "value": 0
-        },
-        {
-          "path": "/spent",
           "value": 0
         }
       ],
@@ -1717,10 +1857,6 @@
         {
           "path": "/budget",
           "value": 1
-        },
-        {
-          "path": "/spent",
-          "value": 0
         }
       ],
       "deviation": "budget-policy/coverage-unavailable"
@@ -1762,10 +1898,6 @@
         {
           "path": "/budget",
           "value": 10
-        },
-        {
-          "path": "/spent",
-          "value": 0
         }
       ],
       "deviation": "budget-policy/coverage-unavailable"
@@ -1807,10 +1939,6 @@
         {
           "path": "/budget",
           "value": 9007199254740992
-        },
-        {
-          "path": "/spent",
-          "value": 0
         }
       ],
       "deviation": "budget-policy/coverage-unavailable"
@@ -1852,10 +1980,6 @@
         {
           "path": "/budget",
           "value": 18446744073709551615
-        },
-        {
-          "path": "/spent",
-          "value": 0
         }
       ],
       "deviation": "budget-policy/coverage-unavailable"
@@ -1895,21 +2019,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -1935,21 +2046,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -1975,21 +2077,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2015,21 +2104,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2055,21 +2135,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2095,21 +2162,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2135,21 +2193,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2175,21 +2220,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2215,21 +2251,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2255,21 +2278,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2295,21 +2309,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2335,21 +2336,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2375,21 +2367,8 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "codex"
-          }
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2415,21 +2394,12 @@
       "gate": "execution",
       "patches": [
         {
-          "path": "/current",
-          "value": {
-            "account_key": "account",
-            "execution_settings_account_key": "account",
-            "settings": {
-              "model": "model",
-              "effort": null,
-              "native_effort": "medium",
-              "fast_mode": false,
-              "daybreak_enabled": true
-            },
-            "pending": null,
-            "settings_fixed": false,
-            "provider": "claude"
-          }
+          "path": "/current/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "value": true
         },
         {
           "path": "/catalog/models",
@@ -2469,6 +2439,2037 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "metadata-empty-object",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "metadata-without-sender-key",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {
+              "source": "restart"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "message-text-{",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "{"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message-text-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "[]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message-text-null",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "null"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message-text-\"text\"",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "\"text\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message-text-1",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-{}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-{'senderId': None}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {
+              "senderId": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-{'senderId': ''}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {
+              "senderId": ""
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "followup-metadata-{'senderId': 1}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "followup",
+              "text": "{}"
+            }
+          ]
+        },
+        {
+          "path": "/records/event_meta",
+          "value": {
+            "event": {
+              "senderId": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "lead-fallback-{'complaint_id': 'complaint', 'lead': 'sender', 'response': {'author': 'sender'}}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "complaint_response",
+              "text": "{\"complaint_id\": \"complaint\", \"lead\": \"sender\", \"response\": {\"author\": \"sender\"}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lead-fallback-{'complaint_id': 'complaint', 'lead': 'sender', 'responder': None, 'response': {'author': 'sender'}}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "complaint_response",
+              "text": "{\"complaint_id\": \"complaint\", \"lead\": \"sender\", \"responder\": null, \"response\": {\"author\": \"sender\"}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lead-fallback-{'complaint_id': 'complaint', 'lead': 'foreign', 'responder': 'sender', 'response': {'author': 'sender'}}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "complaint_response",
+              "text": "{\"complaint_id\": \"complaint\", \"lead\": \"foreign\", \"responder\": \"sender\", \"response\": {\"author\": \"sender\"}}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "empty-agent-key-and-id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/",
+          "value": {
+            "id": "",
+            "rootId": "root",
+            "parentId": null,
+            "isLead": false,
+            "deletedAt": null,
+            "cwd": "/var/tmp/submit-gates-project"
+          }
+        },
+        {
+          "path": "/events",
+          "value": [
+            {
+              "id": "event",
+              "kind": "agent_message",
+              "text": "{\"sender\": \"\", \"room\": \"room\"}"
+            }
+          ]
+        },
+        {
+          "path": "/records/rooms/room/members",
+          "value": ["recipient", ""]
+        }
+      ]
+    },
+    {
+      "name": "mismatched-agent-row-id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/sender/id",
+          "value": "renamed"
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "deletedAt-truthiness-True",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-False",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-0",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-1",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-deleted",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": "deleted"
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": []
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-[0]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": [0]
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-{}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": {}
+        }
+      ]
+    },
+    {
+      "name": "deletedAt-truthiness-{'at': 1}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/deletedAt",
+          "value": {
+            "at": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "literal-lead-False",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "literal-lead-0",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "literal-lead-1",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "literal-lead-true",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "name": "literal-lead-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "private-room-missing-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": ["recipient"]
+        }
+      ]
+    },
+    {
+      "name": "private-room-missing-recipient",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": ["sender"]
+        }
+      ]
+    },
+    {
+      "name": "invalid-room-members-None",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "invalid-room-members-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": []
+        }
+      ]
+    },
+    {
+      "name": "invalid-room-members-{}",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": {}
+        }
+      ]
+    },
+    {
+      "name": "invalid-room-members-wrong",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/rooms/room/members",
+          "value": "wrong"
+        }
+      ]
+    },
+    {
+      "name": "invalid-peer-team-id",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/id",
+          "value": null
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-team-name",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/name",
+          "value": false
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-team-members",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": null
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "pending-explicit-null-pin",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        },
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": null
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-without-pin-or-catalog",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-priority-revoked",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        },
+        {
+          "path": "/current/pendingSettingsAccountKey",
+          "value": "account"
+        },
+        {
+          "path": "/catalog/models/0/priority",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "pending-foreign-catalog-ignored",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": true,
+            "daybreakEnabled": false
+          }
+        },
+        {
+          "path": "/catalog/account_key",
+          "value": "foreign"
+        }
+      ]
+    },
+    {
+      "name": "explicit-null-current-pin-revalidates",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "catalog-provenance-home",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/home",
+          "value": "/changed/profile"
+        },
+        {
+          "path": "/selection_denial",
+          "value": "catalog-identity-mismatch"
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "commit-provenance-home",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/commit_profile",
+          "value": {
+            "home": "/changed/profile",
+            "provider": "codex",
+            "generation": 7
+          }
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "catalog-provenance-provider",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/provider",
+          "value": "claude"
+        },
+        {
+          "path": "/selection_denial",
+          "value": "catalog-identity-mismatch"
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "commit-provenance-provider",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/commit_profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "claude",
+            "generation": 7
+          }
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "catalog-provenance-generation",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/catalog/generation",
+          "value": 8
+        },
+        {
+          "path": "/selection_denial",
+          "value": "catalog-identity-mismatch"
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "commit-provenance-generation",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/commit_profile",
+          "value": {
+            "home": "/disposable/catalog",
+            "provider": "codex",
+            "generation": 8
+          }
+        }
+      ],
+      "deviation": "catalog-identity-mismatch"
+    },
+    {
+      "name": "native-effort-absent-falls-back",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "value": "high"
+        },
+        {
+          "path": "/current/nativeEffort",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "native-effort-null-is-explicit",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "value": "high"
+        },
+        {
+          "path": "/current/nativeEffort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "unchanged-absent-optional-fields",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/effort",
+          "remove": true
+        },
+        {
+          "path": "/current/daybreakEnabled",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "fixed-native-effort-and-tier",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/startAttempt/settingsFixed",
+          "value": true
+        },
+        {
+          "path": "/current/fastMode",
+          "value": true
+        },
+        {
+          "path": "/current/nativeEffort",
+          "value": "high"
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-False-None",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": false
+        },
+        {
+          "path": "/settings/effort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-False-high",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": false
+        },
+        {
+          "path": "/settings/effort",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-False-unsupported",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": false
+        },
+        {
+          "path": "/settings/effort",
+          "value": "unsupported"
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-False-",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": false
+        },
+        {
+          "path": "/settings/effort",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-False- ",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": false
+        },
+        {
+          "path": "/settings/effort",
+          "value": " "
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-True-None",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": true
+        },
+        {
+          "path": "/settings/effort",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-True-high",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": true
+        },
+        {
+          "path": "/settings/effort",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-True-unsupported",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": true
+        },
+        {
+          "path": "/settings/effort",
+          "value": "unsupported"
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-True-",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": true
+        },
+        {
+          "path": "/settings/effort",
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "validation-fallback-True- ",
+      "gate": "validation",
+      "patches": [
+        {
+          "path": "/fallback_effort",
+          "value": true
+        },
+        {
+          "path": "/settings/effort",
+          "value": " "
+        }
+      ]
+    },
+    {
+      "name": "invalid-budget--1",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": -1
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-1.5",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 1.5
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-10",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": "10"
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-True",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": true
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-[]",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": []
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-{}",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": {}
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "invalid-budget-18446744073709551616",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "value": 18446744073709551616
+        }
+      ],
+      "deviation": "invalid stored gate input at agent/tokenBudget"
+    },
+    {
+      "name": "budget-field-absent",
+      "gate": "budget",
+      "patches": [
+        {
+          "path": "/budget",
+          "remove": true
+        }
+      ]
+    },
+    {
+      "name": "peer-key-record-id-mismatch",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/agents/sender/id",
+          "value": "renamed"
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "renamed"
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient", "renamed"]
+        }
+      ]
+    },
+    {
+      "name": "peer-project-path-mismatch",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/path",
+          "value": "/var/tmp/other-project"
+        }
+      ]
+    },
+    {
+      "name": "peer-membership-omits-sender",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient", "foreign"]
+        }
+      ]
+    },
+    {
+      "name": "catalog-expired-at-commit",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/executionSettingsAccountKey",
+          "value": "old"
+        },
+        {
+          "path": "/commit_delay",
+          "value": 30
+        }
+      ],
+      "deviation": "catalog-expired"
+    },
+    {
+      "name": "invalid-peer-members-[]",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": []
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-members-['recipient']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient"]
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-members-['recipient', 'recipient']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient", "recipient"]
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-members-['recipient', '']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient", ""]
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "invalid-peer-members-['recipient', 'sender', 'sender']",
+      "gate": "authorization",
+      "patches": [
+        {
+          "path": "/records/agents/recipient/rootId",
+          "value": "recipient"
+        },
+        {
+          "path": "/records/agents/recipient/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/agents/sender/rootId",
+          "value": "sender"
+        },
+        {
+          "path": "/records/agents/sender/isLead",
+          "value": true
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project",
+          "value": {
+            "path": "/var/tmp/submit-gates-project",
+            "peerTeams": [
+              {
+                "id": "0",
+                "name": "peers",
+                "members": ["recipient", "sender"]
+              }
+            ]
+          }
+        },
+        {
+          "path": "/records/projects/~1var~1tmp~1submit-gates-project/peerTeams/0/members",
+          "value": ["recipient", "sender", "sender"]
+        }
+      ],
+      "deviation": "invalid-stored-input"
+    },
+    {
+      "name": "pending-preserves-partial",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "fastMode": true
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-preserves-program",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "cyberAccessProgram": "normal"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-preserves-native-absent",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "effort": "high"
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
+        }
+      ]
+    },
+    {
+      "name": "pending-preserves-native-null",
+      "gate": "execution",
+      "patches": [
+        {
+          "path": "/current/pendingSettings",
+          "value": {
+            "model": "model",
+            "nativeEffort": null
+          }
+        },
+        {
+          "path": "/catalog",
+          "value": null
         }
       ]
     }
