@@ -28,5 +28,115 @@
         "after": "if truthy(item.get(\"afterRestore\")) {"
       }
     ]
+  },
+  {
+    "id": "footer-count-verification",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "|| footer.counts != counts",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "footer-content-hash-verification",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "|| footer.content_sha256 != hex_digest(content_digest.finalize().as_slice())",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "truncated-footer-newline",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if !line.ends_with(b\"\\n\") || footer.is_some() {",
+        "after": "if footer.is_some() {"
+      }
+    ]
+  },
+  {
+    "id": "archive-record-order",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if header.is_none() && !matches!(record, ArchiveRecord::Header { .. }) {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "native-identity-null-check",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "Some(Value::String(value)) => value == expected,",
+        "after": "Some(_) => true,"
+      }
+    ]
+  },
+  {
+    "id": "native-items-view-validation",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "let valid_view = match turn.get(\"itemsView\") {\n            None => true,\n            Some(Value::String(value)) => {\n                matches!(value.as_str(), \"full\" | \"summary\" | \"notLoaded\")\n            }\n            _ => false,\n        };",
+        "after": "let valid_view = true;"
+      }
+    ]
+  },
+  {
+    "id": "native-unmaterialized-requires-error-or-proof",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "&& valid_unmaterialized_error(Some(error), &thread_id) => {}",
+        "after": "&& true => {}"
+      }
+    ]
+  },
+  {
+    "id": "archive-byte-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if actual > MAX_ARCHIVE_BYTES {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "record-byte-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if actual > MAX_RECORD_BYTES {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "record-count-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "if actual > MAX_RECORD_COUNT {",
+        "after": "if false {"
+      }
+    ]
+  },
+  {
+    "id": "descriptor-relative-nofollow-open",
+    "file": "workspaces/runtime/packages/runtime-services/src/portable_history.rs",
+    "edits": [
+      {
+        "before": "OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,",
+        "after": "OFlags::RDONLY | OFlags::CLOEXEC,"
+      }
+    ]
   }
 ]

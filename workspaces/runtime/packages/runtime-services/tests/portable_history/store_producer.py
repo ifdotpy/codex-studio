@@ -60,6 +60,17 @@ with runtime.lock, runtime.db() as db:
         "INSERT INTO runtime_items VALUES(?,?,?,?)",
         (restored["id"], agent["id"], json.dumps(restored), 1.5),
     )
+    for index, after_restore in enumerate(([], {}), start=1):
+        legacy_restored = {
+            "id": f"fixture-restored-empty-{index}",
+            "role": "assistant",
+            "text": f"empty afterRestore fixture {index}",
+            "afterRestore": after_restore,
+        }
+        db.execute(
+            "INSERT INTO runtime_items VALUES(?,?,?,?)",
+            (legacy_restored["id"], agent["id"], json.dumps(legacy_restored), 1.5 + index),
+        )
     db.execute("INSERT INTO runtime_item_fulltext VALUES(?,?)", (item["id"], full_text))
     db.execute(
         "INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)",
