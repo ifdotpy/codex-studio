@@ -17,6 +17,7 @@ mod sync;
 mod sync_documents;
 mod terminals;
 mod transcript;
+pub(crate) mod voice;
 mod work_items;
 mod work_write;
 mod workspace_files;
@@ -47,6 +48,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         monitors::routes(),
         panels::routes(),
         transcript::routes(),
+        voice::routes(),
         work_items::routes(),
         messages::routes(),
         work_write::routes(),

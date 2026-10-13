@@ -81,6 +81,7 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
         })
         .collect();
 
+    let router = router.merge(routes::voice::fallback());
     Ok(with_boundary(router, state))
 }
 
