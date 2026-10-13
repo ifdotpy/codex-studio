@@ -5,40 +5,39 @@ pub use operations::*;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
+    AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
     SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum RenameError {
-    #[error("Unknown managed agent")]
-    UnknownAgent,
+pub enum MutationError {
+    #[error("This creation or request id has different settings")]
+    Conflict,
     #[error("This conversation was deleted")]
     Deleted,
-    #[error("This request id has different content")]
-    Conflict,
+    #[error("Unknown managed agent")]
+    UnknownAgent,
+    #[error("Configure the lead agent")]
+    LeadRequired,
     #[error("A rename request id is required")]
     RequestIdRequired,
     #[error("Not implemented: requires provider-session/title-generation")]
     TitleGenerationUnavailable,
+    #[error("The team changed. Reload before saving")]
+    Stale,
+    #[error("Switch this chat to another account before disabling its current account")]
+    CurrentAccountExcluded,
+    #[error("Wait for this turn to end before changing execution settings")]
+    InFlight,
     #[error("Invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error(transparent)]
     Store(#[from] StoreError),
 }
-
-#[derive(Debug, Error)]
-pub enum CreateError {
-    #[error("This creation id has different settings")]
-    Conflict,
-    #[error("This conversation was deleted")]
-    Deleted,
-    #[error("Invalid stored object {object}/{id}")]
-    InvalidStoredObject { object: &'static str, id: String },
-    #[error(transparent)]
-    Store(#[from] StoreError),
-}
+pub type CreateError = MutationError;
+pub type RenameError = MutationError;
+pub type SettingsError = MutationError;
 
 pub fn new_id() -> Result<String, CreateError> {
     let mut bytes = [0_u8; 16];
@@ -98,7 +97,8 @@ pub fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<
     let mut record = record.clone();
     mode_fields(&mut record);
     let context = crate::sync_entity_context::agent_view_context(transaction, &record)?;
-    crate::sync_views::agent_entity_view(&record, &context).ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))
+    crate::sync_views::agent_entity_view(&record, &context)
+        .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))
 }
 
 pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<(), StoreError> {
@@ -126,7 +126,7 @@ pub fn replay_lead(
     transaction: &Connection,
     request_id: &str,
     signature: &str,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Option<Value>, CreateError> {
     let alias = transaction
         .query_row(
@@ -173,7 +173,7 @@ pub fn replay_agent(
     transaction: &Connection,
     id: &str,
     request: &Value,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Option<Value>, CreateError> {
     let Some(record) = load_agent_value(transaction, id, &validate)? else {
         return Ok(None);
@@ -188,46 +188,91 @@ pub fn replay_agent(
 }
 
 fn load_agent_value(
-    transaction: &Connection,
+    connection: &Connection,
     id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Option<Value>, CreateError> {
-    let raw = transaction
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Option<Value>, MutationError> {
+    load_record(
+        connection,
+        "runtime_agents",
+        "AgentRecordResponse",
+        id,
+        validate,
+    )
+}
+
+fn load_record(
+    connection: &Connection,
+    table: &'static str,
+    schema: &str,
+    id: &str,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Option<Value>, MutationError> {
+    let raw = connection
         .query_row(
-            "SELECT record FROM runtime_agents WHERE id=?1",
+            &format!("SELECT record FROM {table} WHERE id=?1"),
             [id],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(StoreError::from)?;
-    let Some(raw) = raw else { return Ok(None) };
-    let value: Value =
-        serde_json::from_str(&raw).map_err(|_| CreateError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        })?;
-    if value.get("id").and_then(Value::as_str) != Some(id) || !validate(&value) {
-        return Err(CreateError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        });
-    }
-    Ok(Some(value))
+    raw.map(|raw| decode_record(table, schema, id, &raw, validate))
+        .transpose()
 }
 
-fn ensure_project(transaction: &Transaction<'_>, agent: &Value) -> Result<(), StoreError> {
+fn decode_record(
+    table: &'static str,
+    schema: &str,
+    id: &str,
+    raw: &str,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Value, MutationError> {
+    let invalid = || MutationError::InvalidStoredObject {
+        object: table,
+        id: id.to_owned(),
+    };
+    let value: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if value.get("id").and_then(Value::as_str) != Some(id) || !validate(schema, &value) {
+        return Err(invalid());
+    }
+    Ok(value)
+}
+
+fn save_agent(
+    transaction: &Transaction<'_>,
+    record: &Value,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<(), MutationError> {
+    if !validate("AgentRecordResponse", record) {
+        return Err(MutationError::InvalidStoredObject {
+            object: "runtime_agents",
+            id: record["id"].as_str().unwrap_or_default().to_owned(),
+        });
+    }
+    let agent: AgentRecord = serde_json::from_value(record.clone()).map_err(StoreError::from)?;
+    AgentRepository::put(transaction, &agent)?;
+    publish_agent(transaction, record)?;
+    Ok(())
+}
+
+fn ensure_project(
+    transaction: &Transaction<'_>,
+    agent: &Value,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("new lead has no project path".to_owned()))?;
-    let existing = transaction
-        .query_row(
-            "SELECT record FROM runtime_projects WHERE id=?1",
-            [path],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    if existing.is_some() {
+    if load_record(
+        transaction,
+        "runtime_projects",
+        "ProjectMutationRecord",
+        path,
+        validate,
+    )?
+    .is_some()
+    {
         return Ok(());
     }
     let account = agent
@@ -240,10 +285,15 @@ fn ensure_project(transaction: &Transaction<'_>, agent: &Value) -> Result<(), St
         .filter(|value| !value.is_empty())
         .unwrap_or(path);
     let project = json!({"id":path,"path":path,"name":name,"created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,"accountKey":account,"accountRevision":1});
-    transaction.execute(
-        "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-        rusqlite::params![path, serde_json::to_string(&project)?],
-    )?;
+    transaction
+        .execute(
+            "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+            rusqlite::params![
+                path,
+                serde_json::to_string(&project).map_err(StoreError::from)?
+            ],
+        )
+        .map_err(StoreError::from)?;
     SyncDocumentsRepository::put_entity(transaction, "project", path, project, false)?;
     Ok(())
 }
@@ -256,7 +306,7 @@ pub fn create_agent(
     prompt: &str,
     record: Value,
     created: f64,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
     let existing = if record.get("quickCreate").and_then(Value::as_bool) == Some(true) {
         replay_lead(
@@ -273,7 +323,7 @@ pub fn create_agent(
     if let Some(existing) = existing {
         return Ok(existing);
     }
-    if !validate(&record) {
+    if !validate("AgentRecordResponse", &record) {
         return Err(CreateError::InvalidStoredObject {
             object: "runtime_agents",
             id: id.to_owned(),
@@ -297,7 +347,7 @@ pub fn create_agent(
         });
     }
     if record.get("isLead").and_then(Value::as_bool) == Some(true) {
-        ensure_project(transaction, &record)?;
+        ensure_project(transaction, &record, &validate)?;
     }
     AgentRepository::put(transaction, &agent)?;
     publish_agent(transaction, &record)?;
@@ -319,54 +369,15 @@ pub fn create_agent(
     Ok(record)
 }
 
-#[derive(Debug, Error)]
-pub enum SettingsError {
-    #[error("Unknown managed agent")]
-    UnknownAgent,
-    #[error("Configure the lead agent")]
-    LeadRequired,
-    #[error("This conversation was deleted")]
-    Deleted,
-    #[error("This request id has different content")]
-    Conflict,
-    #[error("The team changed. Reload before saving")]
-    Stale,
-    #[error("Switch this chat to another account before disabling its current account")]
-    CurrentAccountExcluded,
-    #[error("Wait for this turn to end before changing execution settings")]
-    InFlight,
-    #[error("Invalid stored object {object}/{id}")]
-    InvalidStoredObject { object: &'static str, id: String },
-    #[error(transparent)]
-    Store(#[from] StoreError),
-}
-
 pub fn update_exclusions(
     transaction: &Transaction<'_>,
     id: &str,
     expected_account: Option<&str>,
     excluded: Option<&[String]>,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, SettingsError> {
-    let mut agent = AgentRepository::get(transaction, &AgentId::from(id))
-        .map_err(|_| SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        })?
-        .ok_or(SettingsError::UnknownAgent)?;
-    let mut record = serde_json::to_value(&agent).map_err(StoreError::from)?;
-    if record.get("id").and_then(Value::as_str) != Some(id) {
-        return Err(SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        });
-    }
-    if !validate(&record) {
-        return Err(SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        });
-    }
+    let mut record =
+        load_agent_value(transaction, id, &validate)?.ok_or(SettingsError::UnknownAgent)?;
     if record
         .get("deletedAt")
         .is_some_and(|value| crate::event_write::truthy(Some(value)))
@@ -404,19 +415,7 @@ pub fn update_exclusions(
         return Err(SettingsError::CurrentAccountExcluded);
     }
     record["excludedAccountKeys"] = json!(excluded);
-    if !validate(&record) {
-        return Err(SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        });
-    }
-    agent =
-        serde_json::from_value(record.clone()).map_err(|_| SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        })?;
-    AgentRepository::put(transaction, &agent)?;
-    publish_agent(transaction, &record)?;
+    save_agent(transaction, &record, &validate)?;
     Ok(record)
 }
 
@@ -426,15 +425,10 @@ pub fn configure_limits(
     id: &str,
     max_agents: Option<i64>,
     token_budget: Option<Option<i64>>,
-    validate: impl Fn(&Value) -> bool,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, SettingsError> {
-    let root = AgentRepository::get(transaction, &AgentId::from(id))
-        .map_err(|_| SettingsError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        })?
-        .ok_or(SettingsError::UnknownAgent)?;
-    let mut root_value = serde_json::to_value(&root).map_err(StoreError::from)?;
+    let mut root_value =
+        load_agent_value(transaction, id, &validate)?.ok_or(SettingsError::UnknownAgent)?;
     if root_value
         .get("parentId")
         .is_some_and(|value| !value.is_null())
@@ -458,17 +452,13 @@ pub fn configure_limits(
         .map_err(StoreError::from)?;
     drop(statement);
     for (agent_id, raw) in records {
-        let mut record: Value =
-            serde_json::from_str(&raw).map_err(|_| SettingsError::InvalidStoredObject {
-                object: "runtime_agents",
-                id: agent_id.clone(),
-            })?;
-        if record.get("id").and_then(Value::as_str) != Some(agent_id.as_str()) {
-            return Err(SettingsError::InvalidStoredObject {
-                object: "runtime_agents",
-                id: agent_id.clone(),
-            });
-        }
+        let mut record = decode_record(
+            "runtime_agents",
+            "AgentRecordResponse",
+            &agent_id,
+            &raw,
+            &validate,
+        )?;
         if agent_id != id && record.get("rootId").and_then(Value::as_str) != Some(id) {
             continue;
         }
@@ -496,22 +486,9 @@ pub fn configure_limits(
             }
             record["tokenBudget"] = team_token_budget.map_or(Value::Null, |value| json!(value));
         }
-        if !validate(&record) {
-            return Err(SettingsError::InvalidStoredObject {
-                object: "runtime_agents",
-                id: agent_id.clone(),
-            });
-        }
-        let stored: AgentRecord = serde_json::from_value(record.clone()).map_err(|_| {
-            SettingsError::InvalidStoredObject {
-                object: "runtime_agents",
-                id: agent_id.clone(),
-            }
-        })?;
-        AgentRepository::put(transaction, &stored)?;
-        publish_agent(transaction, &record)?;
+        save_agent(transaction, &record, &validate)?;
         if agent_id == id {
-            root_value = serde_json::to_value(stored).map_err(StoreError::from)?;
+            root_value = record;
         }
     }
     Ok(json!({
@@ -530,6 +507,7 @@ pub fn rename(
     name: Option<&str>,
     request_id: Option<&str>,
     signature: &str,
+    validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, RenameError> {
     if let Some(request_id) = request_id
         && let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)?
@@ -546,22 +524,9 @@ pub fn rename(
         return Ok(result);
     }
 
-    let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(id)).map_err(|_| {
-        RenameError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        }
-    })?
-    else {
-        return Err(RenameError::UnknownAgent);
-    };
-    if agent.id.0 != id {
-        return Err(RenameError::InvalidStoredObject {
-            object: "runtime_agents",
-            id: id.to_owned(),
-        });
-    }
-    if crate::event_write::truthy(agent.extra.get("deletedAt")) {
+    let mut record =
+        load_agent_value(transaction, id, &validate)?.ok_or(RenameError::UnknownAgent)?;
+    if crate::event_write::truthy(record.get("deletedAt")) {
         return Err(RenameError::Deleted);
     }
     let Some(name) = name else {
@@ -572,18 +537,10 @@ pub fn rename(
         });
     };
 
-    agent
-        .extra
-        .insert("name".to_owned(), Value::String(name.to_owned()));
-    agent
-        .extra
-        .insert("manualName".to_owned(), Value::Bool(true));
-    agent
-        .extra
-        .insert("needsTitle".to_owned(), Value::Bool(false));
-    AgentRepository::put(transaction, &agent)?;
-    let record = serde_json::to_value(&agent).map_err(StoreError::from)?;
-    publish_agent(transaction, &record)?;
+    record["name"] = json!(name);
+    record["manualName"] = json!(true);
+    record["needsTitle"] = json!(false);
+    save_agent(transaction, &record, &validate)?;
 
     let mut result = json!({"id": id, "name": name});
     if let Some(request_id) = request_id {
@@ -632,7 +589,7 @@ mod tests {
             )
             .expect("insert");
         assert!(
-            super::replay_agent(&connection, "agent", &intent, |_| true)
+            super::replay_agent(&connection, "agent", &intent, |_, _| true)
                 .expect("replay")
                 .is_some()
         );
@@ -640,13 +597,13 @@ mod tests {
             let mut changed = intent.clone();
             changed[field] = json!("changed");
             assert!(
-                super::replay_agent(&connection, "agent", &changed, |_| true).is_err(),
+                super::replay_agent(&connection, "agent", &changed, |_, _| true).is_err(),
                 "{field}"
             );
         }
         let mut omitted = intent.clone();
         omitted.as_object_mut().expect("object").remove("maxAgents");
-        assert!(super::replay_agent(&connection, "agent", &omitted, |_| true).is_err());
+        assert!(super::replay_agent(&connection, "agent", &omitted, |_, _| true).is_err());
     }
 
     #[test]
@@ -659,7 +616,7 @@ mod tests {
             )
             .expect("alias");
         assert!(matches!(
-            super::replay_lead(&connection, "alias", "{}", |_| true),
+            super::replay_lead(&connection, "alias", "{}", |_, _| true),
             Err(super::CreateError::InvalidStoredObject {
                 object: "runtime_lead_requests",
                 ..
@@ -683,7 +640,7 @@ mod tests {
             "Start the task",
             record.clone(),
             10.0,
-            |_| true,
+            |_, _| true,
         )
         .expect("record and initial event persist");
         assert_eq!(created["id"], "agent-a");
@@ -724,7 +681,7 @@ mod tests {
             "Start the task",
             record.clone(),
             99.0,
-            |_| true,
+            |_, _| true,
         )
         .expect("same content replays");
         tx.commit().expect("replay transaction commits");
@@ -745,7 +702,12 @@ mod tests {
             .expect("conflict transaction starts");
         let mut changed = record;
         changed["creationIntent"]["name"] = json!("Changed");
-        assert!(create_agent(&tx, "agent-a", "Start the task", changed, 100.0, |_| true).is_err());
+        assert!(
+            create_agent(&tx, "agent-a", "Start the task", changed, 100.0, |_, _| {
+                true
+            })
+            .is_err()
+        );
         drop(tx);
         let after = connection
             .query_row(

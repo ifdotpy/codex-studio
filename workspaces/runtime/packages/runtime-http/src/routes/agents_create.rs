@@ -204,27 +204,22 @@ async fn delete_conversation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Valu
     )))
 }
 fn operation_error(error: OperationError) -> ApiError {
-    use agents_create::{CreateError, RenameError, SettingsError};
+    use agents_create::MutationError;
     let status = match &error {
         OperationError::Unavailable(_)
-        | OperationError::Rename(RenameError::TitleGenerationUnavailable) => {
+        | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
             StatusCode::NOT_IMPLEMENTED
         }
         OperationError::Internal
         | OperationError::Store(_)
-        | OperationError::Create(CreateError::Store(_) | CreateError::InvalidStoredObject { .. })
-        | OperationError::Rename(RenameError::Store(_) | RenameError::InvalidStoredObject { .. })
-        | OperationError::Settings(
-            SettingsError::Store(_) | SettingsError::InvalidStoredObject { .. },
+        | OperationError::Create(
+            MutationError::Store(_) | MutationError::InvalidStoredObject { .. },
         ) => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
     if matches!(
         error,
-        OperationError::Store(_)
-            | OperationError::Create(CreateError::Store(_))
-            | OperationError::Rename(RenameError::Store(_))
-            | OperationError::Settings(SettingsError::Store(_))
+        OperationError::Store(_) | OperationError::Create(MutationError::Store(_))
     ) {
         return ApiError::internal();
     }

@@ -23,10 +23,6 @@ pub enum OperationError {
     #[error(transparent)]
     Create(#[from] CreateError),
     #[error(transparent)]
-    Rename(#[from] RenameError),
-    #[error(transparent)]
-    Settings(#[from] SettingsError),
-    #[error(transparent)]
     Store(#[from] StoreError),
     #[error("Internal server error")]
     Internal,
@@ -109,7 +105,7 @@ fn create(
     }
     let signature = lead_signature(&request.intent, workspace, requested_cwd.as_deref());
     let read = context.store.read()?;
-    let validate = |value: &Value| (context.validate)("AgentRecordResponse", value);
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
     let existing = if draft {
         replay_lead(&read, &id, &signature, validate)?
     } else {
@@ -252,9 +248,13 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
         .transpose()?;
     let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
     let result = context.store.transaction_with_error(|tx| {
-        configure_limits(tx, &request.id, max_agents, request.token_budget, |value| {
-            (context.validate)("AgentRecordResponse", value)
-        })
+        configure_limits(
+            tx,
+            &request.id,
+            max_agents,
+            request.token_budget,
+            |schema, value| (context.validate)(schema, value),
+        )
     })?;
     with_sync_delta(context.store, before, result)
 }
@@ -271,7 +271,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             &request.id,
             request.expected_account.as_deref(),
             request.excluded.as_deref(),
-            |value| (context.validate)("AgentRecordResponse", value),
+            |schema, value| (context.validate)(schema, value),
         )
     })?;
     let projected = projected_response(context.store, &result)?;
@@ -291,9 +291,11 @@ pub fn rename_operation(
     }
     let signature = rename_signature(id, name);
     let before = SyncDocumentsRepository::entity_sequence(&context.store.read()?)?;
-    let result = context
-        .store
-        .transaction_with_error(|tx| rename(tx, id, name, request_id, &signature))?;
+    let result = context.store.transaction_with_error(|tx| {
+        rename(tx, id, name, request_id, &signature, |schema, value| {
+            (context.validate)(schema, value)
+        })
+    })?;
     with_sync_delta(context.store, before, result)
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
@@ -330,20 +332,7 @@ fn account_key(
                 .map(str::to_owned)
         })
         .ok_or_else(|| OperationError::Internal)?;
-    let Some(store) = &Some(context.store) else {
-        return Ok(default);
-    };
-    let connection = store.read().map_err(|_| OperationError::Internal)?;
-    let has_projects: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_projects')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| OperationError::Internal)?;
-    if !has_projects {
-        return Ok(default);
-    }
+    let connection = context.store.read()?;
     let mut statement = connection
         .prepare("SELECT id,record FROM runtime_projects")
         .map_err(|_| OperationError::Internal)?;
@@ -355,30 +344,15 @@ fn account_key(
     let mut selected: Option<(usize, String)> = None;
     for row in rows {
         let (id, raw) = row.map_err(|_| OperationError::Internal)?;
-        let record: Value = serde_json::from_str(&raw).map_err(|_| {
-            OperationError::Create(CreateError::InvalidStoredObject {
-                object: "runtime_projects",
-                id: id.clone(),
-            })
-        })?;
+        let record = decode_record(
+            "runtime_projects",
+            "ProjectMutationRecord",
+            &id,
+            &raw,
+            &|schema, value| (context.validate)(schema, value),
+        )?;
         let project_path = record.get("path").and_then(Value::as_str);
-        let project_account = record
-            .get("accountKey")
-            .filter(|value| !value.is_null())
-            .and_then(Value::as_str);
-        if record.get("id").and_then(Value::as_str) != Some(id.as_str())
-            || !record.get("name").is_some_and(Value::is_string)
-            || !record.get("created").is_some_and(Value::is_number)
-            || record
-                .get("accountKey")
-                .is_some_and(|value| !value.is_null() && !value.is_string())
-            || project_path.is_none()
-        {
-            return Err(OperationError::Create(CreateError::InvalidStoredObject {
-                object: "runtime_projects",
-                id: id.clone(),
-            }));
-        }
+        let project_account = record.get("accountKey").and_then(Value::as_str);
         let path = PathBuf::from(project_path.unwrap_or_default());
         if PathBuf::from(cwd).starts_with(&path)
             && let Some(account) = project_account
