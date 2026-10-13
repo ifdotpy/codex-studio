@@ -237,14 +237,13 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     let now = match SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
-        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .map(|d| d.as_secs_f64())
     {
         Some(v) => v,
         None => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     };
     let result = tokio::task::spawn_blocking(move || {
-        let (owner, probe) = boundary.observe(&request, &address, &logins)?;
-        boundary.handle(&store, &request, &owner, probe.as_ref(), now)
+        boundary.handle_incoming(&store, &request, &address, &logins, now)
     })
     .await;
     match result {
@@ -266,9 +265,12 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
 fn failure(error: AccessError) -> Response {
     let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
     // Stored-object locations are operator diagnostics, not remote response data.
-    let message = match error {
-        AccessError::Refused { message, .. } => message,
-        _ => "The server access operation failed",
-    };
-    error_response(status, message)
+    match error {
+        AccessError::Refused { message, code, .. } => (
+            status,
+            Json(serde_json::json!({"error":message,"code":code})),
+        )
+            .into_response(),
+        _ => error_response(status, "The server access operation failed"),
+    }
 }

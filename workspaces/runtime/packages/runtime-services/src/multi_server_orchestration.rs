@@ -227,7 +227,9 @@ pub fn decide_delivery(
             })?,
         ));
     }
-    if outgoing && snapshot.state == "queued" && snapshot.attempts == 0 {
+    if (!outgoing && snapshot.state == "waiting")
+        || (outgoing && snapshot.state == "queued" && snapshot.attempts == 0)
+    {
         return Ok(DeliveryDecision::Execute);
     }
     Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
@@ -315,7 +317,11 @@ impl OrchestrationDriver {
             let saved=inbox(tx,&envelope.key,now)?;
             let decision=decide_delivery(saved.as_ref(),&signature,None,false)?;
             if matches!(decision,DeliveryDecision::Execute) {
-                tx.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",params![envelope.key,signature,now,principal,envelope.payload.get("actor").and_then(Value::as_str)])?;
+                if saved.is_some() {
+                    tx.execute("UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state='waiting'", [&envelope.key])?;
+                } else {
+                    tx.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",params![envelope.key,signature,now,principal,envelope.payload.get("actor").and_then(Value::as_str)])?;
+                }
             }
             Ok::<_,AccessError>(decision)
         })?;

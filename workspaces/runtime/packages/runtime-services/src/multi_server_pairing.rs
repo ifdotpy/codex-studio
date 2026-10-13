@@ -32,6 +32,7 @@ type IdentitySource = dyn Fn(&RuntimeStore) -> Result<Value, AccessError> + Send
 
 pub struct MultiServerBoundary {
     identity: Arc<IdentitySource>,
+    local_server: String,
     owner: Arc<dyn OwnerLookup>,
     pairing_attempts: Mutex<VecDeque<i64>>,
 }
@@ -48,6 +49,7 @@ impl MultiServerBoundary {
         }
         auth::origin_host(text(&identity, "origin"))?;
         Ok(Self {
+            local_server: text(&identity, "serverId").to_owned(),
             identity: Arc::new(move |_| Ok(identity.clone())),
             owner,
             pairing_attempts: Mutex::new(VecDeque::new()),
@@ -62,7 +64,51 @@ impl MultiServerBoundary {
         self.identity = Arc::new(source);
         self
     }
-    pub fn observe(
+    /// Verify the raw signed request before invoking any host lookup or probe.
+    /// Authorization is repeated against current rows in the write transaction.
+    pub fn handle_incoming(
+        &self,
+        store: &RuntimeStore,
+        request: &SignedRequest,
+        address: &str,
+        logins: &[String],
+        now: f64,
+    ) -> Result<Value, AccessError> {
+        let invite_id = text(request.body(), "inviteId");
+        let (client, invite, auto_pair) = store.read_transaction(|tx| {
+            let client = tx
+                .query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id=?1",
+                    [request.client_id()],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            let invite = tx
+                .query_row(
+                    "SELECT record FROM runtime_access_invites WHERE id=?1",
+                    [invite_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            let auto_pair = tx.query_row(
+                "SELECT auto_pair FROM runtime_access_settings WHERE id=1",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?;
+            Ok((client, invite, auto_pair))
+        })?;
+        let snapshot = AccessSnapshot::from_records(
+            request.client_id(),
+            client.as_deref(),
+            invite_id,
+            invite.as_deref(),
+            auto_pair,
+        )?;
+        auth::verify_before_observe(&snapshot, request, &self.local_server, now)?;
+        let (owner, probe) = self.observe(request, address, logins)?;
+        self.handle_at(store, request, &owner, probe.as_ref(), now)
+    }
+    fn observe(
         &self,
         request: &SignedRequest,
         address: &str,
@@ -120,6 +166,16 @@ impl MultiServerBoundary {
         probe: Option<&Value>,
         now: i64,
     ) -> Result<Value, AccessError> {
+        self.handle_at(store, request, owner, probe, now as f64)
+    }
+    pub fn handle_at(
+        &self,
+        store: &RuntimeStore,
+        request: &SignedRequest,
+        owner: &OwnerObservation,
+        probe: Option<&Value>,
+        now: f64,
+    ) -> Result<Value, AccessError> {
         if !request.is_status() && !request.is_pairing() && !request.is_auto_pairing() {
             return Err(refused(
                 501,
@@ -134,7 +190,7 @@ impl MultiServerBoundary {
                 .map_err(|_| refused(503, "pairing_unavailable", "Pairing is unavailable"))?;
             while attempts
                 .front()
-                .is_some_and(|v| *v <= now.saturating_sub(PAIRING_WINDOW_SECONDS))
+                .is_some_and(|v| *v <= (now as i64).saturating_sub(PAIRING_WINDOW_SECONDS))
             {
                 attempts.pop_front();
             }
@@ -145,7 +201,7 @@ impl MultiServerBoundary {
                     "The server pairing attempt limit is reached",
                 ));
             }
-            attempts.push_back(now);
+            attempts.push_back(now as i64);
         }
         let identity = (self.identity)(store)?;
         auth::schema("ServerIdentityResponse", &identity)?;
@@ -169,7 +225,7 @@ impl MultiServerBoundary {
                 invite.as_deref(),
                 auto_pair,
             )?;
-            let decision = auth::authorize(
+            let decision = auth::authorize_at(
                 &snapshot,
                 request,
                 text(&identity, "serverId"),
@@ -181,7 +237,7 @@ impl MultiServerBoundary {
                 tx,
                 request.client_id(),
                 request.nonce(),
-                now,
+                now as i64,
                 decision.unpaired_attempt,
             )?;
             match nonce {
@@ -226,7 +282,7 @@ fn apply_pair(
     request: &SignedRequest,
     principal: &VerifiedPrincipal,
     identity: &Value,
-    now: i64,
+    now: f64,
 ) -> Result<Value, AccessError> {
     let fingerprint = request.fingerprint();
     let receipt=tx.query_row("SELECT hash,status,record FROM runtime_access_receipts WHERE client=?1 AND request_id=?2",params![request.client_id(),request.request_id()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
@@ -253,7 +309,7 @@ fn apply_pair(
             || (status == "complete"
                 && record["completed"]
                     .as_f64()
-                    .is_some_and(|completed| completed < (now - 7 * 86400) as f64))
+                    .is_some_and(|completed| completed < now - 7.0 * 86400.0))
         {
             return Err(refused(
                 410,
@@ -409,7 +465,7 @@ fn save_receipt(
     request: &SignedRequest,
     fingerprint: &str,
     result: &Value,
-    now: i64,
+    now: f64,
 ) -> Result<(), AccessError> {
     let encoded = crate::remote_transport::canonical_json(result)
         .map_err(|_| refused(503, "receipt_invalid", "The pairing receipt is invalid"))?;
@@ -417,7 +473,7 @@ fn save_receipt(
     tx.execute("INSERT INTO runtime_access_receipts(client,request_id,hash,session,status,record) VALUES(?1,?2,?3,'rust','complete',?4) ON CONFLICT(client,request_id) DO UPDATE SET status='complete',record=excluded.record",params![request.client_id(),request.request_id(),fingerprint,receipt.to_string()])?;
     Ok(())
 }
-fn new_client(request: &SignedRequest, principal: &VerifiedPrincipal, now: i64) -> Value {
+fn new_client(request: &SignedRequest, principal: &VerifiedPrincipal, now: f64) -> Value {
     let server = principal.kind() == "server";
     json!({"id":request.client_id(),"clientId":request.client_id(),"serverId":if server {Some(request.client_id())} else {None},"kind":principal.kind(),"label":text(request.body(),"label"),"origin":if server {Some(text(request.body(),"origin"))}else{None},"publicKey":text(request.body(),"publicKey"),"tailscaleUser":principal.tailscale_user(),"status":"paired","created":now,"lastAccess":if request.is_pairing(){Some(now)}else{None},"revoked":null})
 }

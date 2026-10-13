@@ -12,9 +12,18 @@ pub struct Fixture {
     pub data: Value,
 }
 static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+fn test_directory() -> tempfile::TempDir {
+    let root = std::env::var_os("MULTI_SERVER_TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    tempfile::Builder::new()
+        .prefix("multi-server-")
+        .tempdir_in(root)
+        .expect("isolated fixture root")
+}
 pub fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
-        let root = tempfile::tempdir().expect("isolated fixture root");
+        let root = test_directory();
         let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| {
             let resolver = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../apps/server/src/codex_python.py");
@@ -63,7 +72,7 @@ pub fn fixture() -> &'static Fixture {
 }
 pub fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let template = fixture();
-    let root = tempfile::tempdir().expect("case root");
+    let root = test_directory();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         std::fs::copy(template.root.path().join(name), root.path().join(name))
             .expect("clone prepared Python state");
@@ -137,4 +146,43 @@ pub fn rows(store: &RuntimeStore) -> Value {
         output.insert(table.to_owned(), serde_json::json!(rows));
     }
     Value::Object(output)
+}
+
+/// Counts every host invocation, including attempted auto-pair probes.
+pub struct CountingOwner {
+    pub calls: std::sync::atomic::AtomicUsize,
+    pub probes: std::sync::atomic::AtomicUsize,
+    pub case: Value,
+}
+impl CountingOwner {
+    pub fn new(case: Value) -> Arc<Self> {
+        Arc::new(Self {
+            calls: 0.into(),
+            probes: 0.into(),
+            case,
+        })
+    }
+}
+impl OwnerLookup for CountingOwner {
+    fn observe(
+        &self,
+        address: &str,
+        logins: &[String],
+        origin: Option<&str>,
+    ) -> Result<(OwnerObservation, Option<Value>), AccessError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if origin.is_some() {
+            self.probes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok((
+            OwnerObservation::from_json(
+                address,
+                logins,
+                &fixture().data["status"],
+                &self.case["whois"],
+            )?,
+            self.case.get("probe").cloned(),
+        ))
+    }
 }
