@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Worker base selection and stale-base warnings use isolated Git repos."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import copy
@@ -38,7 +40,7 @@ class WorkerBase(unittest.TestCase):
         self.commit('two')
         self.commit('three')
         self.latest = self.git('rev-parse', 'HEAD')
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.root, f.f.FakeServer)
         self.runtime.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         self.lead = self.runtime.new_lead({'cwd': str(self.root)})
 

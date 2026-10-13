@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """A backend restart preserves an exact unanswered native Claude question."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 from contextlib import closing, contextmanager
@@ -98,7 +100,7 @@ class QuestionSupervisorRecovery(unittest.TestCase):
     def open_runtime(self):
         with patch.object(Runtime, 'schedule', lambda _runtime: None), \
                 patch.object(Runtime, '_restore_startup_supervisor_handles', lambda _runtime: None):
-            return Runtime(self.root, NoNativeServer)
+            return make_runtime(Runtime, self.root, NoNativeServer)
 
     def attach(self, server, connection):
         self.runtime.servers['default'] = server

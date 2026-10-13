@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import difflib
 import json
 import os
@@ -13,11 +15,11 @@ import sys
 import tempfile
 import unittest
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from runtime_test_environment import make_runtime
 
 from codex_runtime import Runtime  # noqa: E402
 
@@ -93,7 +95,7 @@ class RuntimeStateSchemaContract(unittest.TestCase):
             prefix="runtime-state-format-", dir=temporary_root
         )
         self.root = Path(self.temporary.name)
-        self.runtime = QuietRuntime(self.root, lambda *_args, **_kwargs: None)
+        self.runtime = make_runtime(QuietRuntime, self.root, lambda *_args, **_kwargs: None)
 
     def tearDown(self) -> None:
         self.runtime.close()

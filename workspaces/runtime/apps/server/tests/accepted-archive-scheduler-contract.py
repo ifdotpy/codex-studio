@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Archive retries honor durable deadlines and retire existing legacy frames."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 from contextlib import contextmanager
@@ -529,7 +531,7 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
             with patch.object(subprocess, 'Popen', side_effect=AssertionError('No native process may start')):
                 with patch.object(fixture.Runtime, 'paired_access',
                                   return_value=SimpleNamespace(local_server_id='fixture-server')):
-                    runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
+                    runtime = make_runtime(ControlledRuntime, Path(directory), fixture.FakeServer)
                     try:
                         lead = runtime.create({'name': 'Archive restart lead', 'cwd': directory, 'prompt': ''}, draft=True)
                         due = time.time() + 60
@@ -542,7 +544,7 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
                     finally:
                         runtime.close()
                     before = time.monotonic()
-                    runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
+                    runtime = make_runtime(ControlledRuntime, Path(directory), fixture.FakeServer)
                     try:
                         self.assertLess(time.monotonic() - before, 2)
                         runtime.accepted_archive_tick()

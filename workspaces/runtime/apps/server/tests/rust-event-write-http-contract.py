@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import importlib.util
 import json
 import os
@@ -13,9 +15,10 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -37,8 +40,8 @@ def seed_agent(backend) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
     auto_wake = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         agent = runtime.create(
             {
@@ -64,7 +67,7 @@ def seed_agent_with_event_rule(backend) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         agent = runtime.create(
             {
@@ -100,7 +103,7 @@ def seed_remote_agent(backend) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         agent = runtime.create(
             {"name": "Rust remote event fixture", "cwd": str(backend.cwd),
@@ -216,7 +219,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 def schedule(self):
                     pass
 
-            runtime = QuietRuntime(state, _fixture.FakeServer)
+            runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
             revisions_before = self._sync_revisions(state / "canvas.sqlite3")
         try:
             runtime.plan_action(self.agent_id, {"id": plan_body["id"], "version": plan_body["version"], "text": plan_body["text"]})
@@ -304,7 +307,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             def schedule(self):
                 pass
 
-        runtime = QuietRuntime(self.backend.state, _fixture.FakeServer)
+        runtime = make_runtime(QuietRuntime, self.backend, _fixture.FakeServer)
         try:
             from codex_wakeups import pending_batch
 
@@ -373,7 +376,7 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             def schedule(self):
                 pass
 
-        runtime = QuietRuntime(self.backend.state, _fixture.FakeServer)
+        runtime = make_runtime(QuietRuntime, self.backend, _fixture.FakeServer)
         body = {
             "id": "python-annotation-replay",
             "path": "src/main.rs",

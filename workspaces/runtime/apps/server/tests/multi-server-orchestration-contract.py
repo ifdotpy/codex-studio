@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Two isolated Studio runtimes. Paired transport fixture, no live accounts."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 import copy
 from contextlib import contextmanager
 import importlib.util
@@ -54,7 +56,7 @@ class CrossServer(unittest.TestCase):
         for server in ('home', 'remote'):
             folder = self.root / server
             folder.mkdir()
-            runtime = f.ControlledRuntime(folder / 'state', f.f.FakeServer)
+            runtime = make_runtime(f.ControlledRuntime, folder / 'state', f.f.FakeServer)
             runtime.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
             transport = FakeTransport(server, self.network)
             service = MultiServerService(runtime, transport)
@@ -308,7 +310,7 @@ class CrossServer(unittest.TestCase):
         result = self.spawn()
         worker = result['agents'][0]['id']
         self.home.close()
-        runtime = f.ControlledRuntime(self.root / 'home' / 'state', f.f.FakeServer)
+        runtime = make_runtime(f.ControlledRuntime, self.root / 'home' / 'state', f.f.FakeServer)
         runtime.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         transport = FakeTransport('home', self.network)
         service = MultiServerService(runtime, transport)

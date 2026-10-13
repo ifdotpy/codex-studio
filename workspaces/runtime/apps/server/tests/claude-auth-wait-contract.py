@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A local auth probe timeout can continue exact unsubmitted input, without replay."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -203,7 +205,7 @@ class AuthWait(f.ClaudeProvider):
         before = self.receipt()
         old = self.runtime
         old.close()
-        self.runtime = f.f.ControlledRuntime(self.root / 'state', f.MonitorServer)
+        self.runtime = make_runtime(f.f.ControlledRuntime, self.root / 'state', f.MonitorServer)
         self.addCleanup(self.runtime.close)
         self.assertEqual(self.receipt(), before)
         with patch('codex_claude.auth_metadata', side_effect=AssertionError('The receipt is not due')):
@@ -330,7 +332,7 @@ class AuthWait(f.ClaudeProvider):
                     db.execute('UPDATE runtime_usage_resumes SET record=? WHERE id=?',
                                (json.dumps({**saved, **change}), saved['id']))
                 self.runtime.close()
-                self.runtime = f.f.ControlledRuntime(self.root / 'state', f.MonitorServer)
+                self.runtime = make_runtime(f.f.ControlledRuntime, self.root / 'state', f.MonitorServer)
                 self.addCleanup(self.runtime.close)
                 self.assertNotIn('startAttempt', self.runtime.agent(self.agent['id']))
                 self.assertEqual(self.runtime.agent(self.agent['id'])['status'], 'waiting')

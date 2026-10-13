@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Native errors reach Studio without repeating commands or releasing active turns."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -42,7 +44,7 @@ CODES = ['contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
 class NativeErrorContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         self.a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = self.a['id']
@@ -408,7 +410,7 @@ class NativeErrorContract(unittest.TestCase):
         error = self.policy_error()
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         a = self.runtime.agent(self.key)
         self.assertEqual(a['nativeThreadBlock']['error'], error)
         with self.assertRaisesRegex(ValueError, 'another chat'):
@@ -420,7 +422,7 @@ class NativeErrorContract(unittest.TestCase):
         self.runtime.disconnected('default', self.connection)
         self.assertNotEqual(self.runtime.agent(self.key)['error'], error)
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.assertEqual(self.runtime.agent(self.key)['nativeThreadBlock']['error'], error)
         with self.assertRaisesRegex(ValueError, 'another chat'):
             self.runtime.send(self.key, 'Resume')

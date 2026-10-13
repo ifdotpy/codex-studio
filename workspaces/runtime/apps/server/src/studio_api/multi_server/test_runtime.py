@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+from runtime_test_environment import make_runtime
+
 from codex_multi_server import MultiServerService
 
 
@@ -22,7 +24,7 @@ class RuntimeAccessTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="studio-access-runtime-") as directory:
             state = Path(directory)
-            first = Runtime(state, fixture["FakeServer"])
+            first = make_runtime(Runtime, state, fixture["FakeServer"])
             try:
                 service = first.paired_access()
                 self.assertIsInstance(service, MultiServerService)
@@ -35,7 +37,7 @@ class RuntimeAccessTests(unittest.TestCase):
                 self.assertEqual(count, 0)
             finally:
                 first.close()
-            second = Runtime(state, fixture["FakeServer"])
+            second = make_runtime(Runtime, state, fixture["FakeServer"])
             try:
                 self.assertEqual(second.paired_access().local_server_id, server_id)
                 self.assertFalse(second.federation().enabled())

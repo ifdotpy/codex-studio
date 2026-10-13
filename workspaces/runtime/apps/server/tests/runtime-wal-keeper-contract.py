@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Runtime's idle WAL connection preserves per-event FULL commits."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 from server_test_waits import HANG_GUARD_SECONDS
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import fcntl
 from pathlib import Path
@@ -37,7 +39,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
         return Path(str(runtime.db_path) + '-wal')
 
     def runtime(self):
-        runtime = Runtime(self.root, server_factory=object)
+        runtime = make_runtime(Runtime, self.root, server_factory=object)
         self.addCleanup(runtime.close)
         return runtime
 
@@ -90,7 +92,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
     def test_failed_keeper_startup_releases_runtime_lease(self):
         with patch.object(codex_runtime, '_RuntimeWalKeeper', side_effect=OSError('keeper setup failed')):
             with self.assertRaisesRegex(OSError, 'keeper setup failed'):
-                Runtime(self.root, server_factory=object)
+                make_runtime(Runtime, self.root, server_factory=object)
 
         with (self.root / 'runtime.lock').open('a+') as contender:
             fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -163,7 +165,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
 
         def construct_runtime():
             try:
-                Runtime(self.root)
+                make_runtime(Runtime, self.root)
             except BaseException as error:
                 constructor_errors.append(error)
 

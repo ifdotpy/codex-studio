@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Linux image requests fall back through the actual worker creation caller."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
@@ -29,7 +33,7 @@ class LinuxFallback(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
         subprocess.run(['git', '-C', str(self.repo), 'commit', '-qm', 'Base'], check=True)
         (self.repo / 'file').write_text('uncommitted')
-        self.rt = f.ControlledRuntime(self.root / 'state', f.f.FakeServer)
+        self.rt = make_runtime(f.ControlledRuntime, self.root / 'state', f.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         self.addCleanup(patch.stopall)
         patch('codex_worker_workspace.platform.system', return_value='Linux').start()

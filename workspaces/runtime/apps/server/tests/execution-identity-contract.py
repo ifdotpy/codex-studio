@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Execution records use real Runtime callers and temporary state only."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -212,7 +214,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         unknown = self.records(a)[0]
         self.assertNotEqual(unknown['id'], old['id'])
         self.runtime.close()
-        self.runtime = fixture.Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.FakeServer)
         runs = self.records(a)
         pending = next(run for run in runs if run['id'] == unknown['id'])
         previous = next(run for run in runs if run['id'] == old['id'])
@@ -232,7 +234,7 @@ class ExecutionIdentityContract(unittest.TestCase):
             first = self.records(a)[0]
             self.assertEqual(first['attempts'][0]['submission'], 'unsent')
             self.runtime.close()
-        self.runtime = fixture.Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.FakeServer)
         fixture.eventually(lambda: any(attempt['submission'] == 'accepted' for run in self.records(a) for attempt in run['attempts']))
         run = self.records(a)[0]
         self.assertEqual(run['id'], first['id'])
@@ -243,7 +245,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         a = self.lead()
         first = self.records(a)[0]
         self.runtime.close()
-        self.runtime = fixture.Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.FakeServer)
         restored = self.runtime.agent(a['id'])
         run = self.records(a)[0]
         self.assertEqual((run['id'], run['turnId'], run['epoch']), (first['id'], first['turnId'], first['epoch']))

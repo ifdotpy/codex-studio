@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import importlib.util
 import json
 import os
@@ -13,11 +15,11 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing
 from codex_sync_entities import register_functions
 
@@ -31,7 +33,7 @@ def quiet_runtime(state):
     class QuietRuntime(_fixture.Runtime):
         def schedule(self):
             pass
-    return QuietRuntime(state, _fixture.FakeServer)
+    return make_runtime(QuietRuntime, state, _fixture.FakeServer)
 
 
 def fixture_connection(path: Path):

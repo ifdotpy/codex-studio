@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Real source callbacks survive a repair fork without changing the new turn."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -162,7 +166,7 @@ class LateCallback(f.ContextRepair):
         old.servers.clear()
         old.servers.update(self.initial_servers)
         old.close()
-        self.runtime = f.f.ControlledRuntime(self.state, f.f.WorkspaceServer)
+        self.runtime = make_runtime(f.f.ControlledRuntime, self.state, f.f.WorkspaceServer)
         self.initial_servers = dict(self.runtime.servers)
         self.runtime._fast_delivery_enabled = False
         self.runtime.servers['default'] = self.server

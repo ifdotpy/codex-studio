@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Turn rate, provider counts, and zero added SQLite writes. No inference."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import contextlib
 import importlib.util
@@ -443,7 +445,7 @@ class WriteContract(unittest.TestCase):
         measurements = []
         for enabled in (False, True):
             with tempfile.TemporaryDirectory() as directory:
-                runtime = NoScheduleRuntime(Path(directory), fixture.FakeServer)
+                runtime = make_runtime(NoScheduleRuntime, Path(directory), fixture.FakeServer)
                 try:
                     lead = runtime.create({'name': 'Lead', 'cwd': directory, 'prompt': 'Wait'}, defer=True)
                     with runtime.lock, runtime.db() as db:

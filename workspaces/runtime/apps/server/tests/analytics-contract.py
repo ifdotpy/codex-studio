@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Analytics capture uses isolated real Runtime state and a deterministic native server."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import base64
 import importlib.util
@@ -38,7 +40,7 @@ from codex_analytics import payload_size
 class AnalyticsContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.agent = self.runtime.create({'name': 'Analytics lead', 'cwd': self.temp.name, 'prompt': 'Wait'})
         fixture.eventually(lambda: self.runtime.agent(self.agent['id'])['status'] == 'running')
         self.agent = self.runtime.agent(self.agent['id'])
@@ -327,7 +329,7 @@ class AnalyticsContract(unittest.TestCase):
                 fixture.eventually(lambda: self.runtime.closed)
                 self.assertTrue(closer.is_alive())
                 with self.assertRaisesRegex(RuntimeError, 'Another canvas runtime owns'):
-                    Runtime(Path(self.temp.name), fixture.FakeServer)
+                    make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
             finally:
                 release.set()
                 closer.join(HANG_GUARD_SECONDS)
@@ -338,7 +340,7 @@ class AnalyticsContract(unittest.TestCase):
         with self.runtime.db(analytics=True) as db:
             self.assertEqual(db.execute("SELECT value FROM analytics_meta WHERE key='lastBatch'").fetchone()[0], 'done')
         # A new owner is admitted only after the old batch has committed.
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
 
     def test_history_completed_call_filters_by_known_start(self):
         self.event('item/completed', {'startedAt': 100, 'completedAt': 200,
@@ -379,7 +381,7 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(len(self.data(limit=1, export=1)['calls']), 3)
         self.assertEqual(self.data(**{'from': 101, 'to': 102})['pagination']['total'], 2)
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.assertEqual(self.data()['pagination']['total'], 3)
 
     def test_sql_call_page_matches_legacy_filter_and_totals(self):

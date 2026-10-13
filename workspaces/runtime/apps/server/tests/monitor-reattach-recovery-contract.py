@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A surviving child cannot restore a standalone monitor's lost RPC Future."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 from server_test_waits import HANG_GUARD_SECONDS
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from contextlib import contextmanager
 import copy
@@ -368,7 +370,7 @@ class MonitorReattachRecovery(unittest.TestCase):
     def restart(self):
         self.runtime.close()
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
-            self.runtime = Runtime(Path(self.temp.name), f.NoNativeServer)
+            self.runtime = make_runtime(Runtime, Path(self.temp.name), f.NoNativeServer)
         self.addCleanup(self.runtime.close)
         self.runtime.connection_ids['default'] = 'fixture-connection'
 
@@ -566,7 +568,7 @@ class MonitorReattachRecovery(unittest.TestCase):
             original_restore(runtime)
             restores.append(True)
         with patch.object(Runtime, 'schedule', lambda _runtime: None),                 patch.object(Runtime, 'schedule_fast_dispatch', schedule),                 patch.object(Runtime, 'start', start),                 patch.object(Runtime, '_restore_startup_supervisor_handles', restore):
-            self.runtime = Runtime(Path(self.temp.name), f.NoNativeServer)
+            self.runtime = make_runtime(Runtime, Path(self.temp.name), f.NoNativeServer)
         self.addCleanup(self.runtime.close)
         self.assertEqual(restores, [True])
         self.assertEqual((scheduled, starts), ([], []))
@@ -581,7 +583,7 @@ class MonitorReattachRecovery(unittest.TestCase):
             self.runtime.put(db, 'monitors', monitor)
         self.runtime.close()
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
-            self.runtime = Runtime(Path(self.temp.name), f.NoNativeServer)
+            self.runtime = make_runtime(Runtime, Path(self.temp.name), f.NoNativeServer)
         self.addCleanup(self.runtime.close)
         stored = self.stored('monitors', monitor['id'])
         event = self.event(monitor['id'])
@@ -594,7 +596,7 @@ class MonitorWakeIntegration(unittest.TestCase):
     def test_ghost_wakes_child_once_and_final_result_reaches_parent(self):
         with tempfile.TemporaryDirectory(prefix='studio-monitor-wake-') as directory:
             with patch.object(Runtime, 'schedule', lambda _runtime: None):
-                runtime = Runtime(Path(directory), native.FakeServer)
+                runtime = make_runtime(Runtime, Path(directory), native.FakeServer)
             try:
                 runtime._fast_delivery_enabled = False
                 parent = runtime.create({'name': 'Parent', 'cwd': directory, 'prompt': 'Wait'})

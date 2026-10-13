@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """No network or paid model calls. Exercise voice persistence and authority."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import json
 import sqlite3
@@ -118,7 +120,7 @@ class QuietRuntime(ActualRuntime):
             self.changed.wait(.1)
             self.changed.clear()
 with tempfile.TemporaryDirectory() as root:
-    actual = QuietRuntime(root, fixture.FakeServer)
+    actual = make_runtime(QuietRuntime, root, fixture.FakeServer)
     try:
         lead = actual.create({"name": "Voice lead", "cwd": root, "prompt": "Wait for a message"}, defer=True)
         assert lead["isLead"] and lead["role"] == "orchestrator"

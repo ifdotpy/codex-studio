@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Native callbacks retain exact ownership while avoiding full agent decoding."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import ast
 import copy
@@ -39,7 +41,7 @@ class NativeLookup(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.runtime = ControlledRuntime(Path(self.tmp.name), fixture.FakeServer)
+        self.runtime = make_runtime(ControlledRuntime, Path(self.tmp.name), fixture.FakeServer)
         self.addCleanup(self.runtime.close)
         self.connection = patch.object(self.runtime, 'connection_current', return_value=True)
         self.connection.start()
@@ -117,7 +119,7 @@ class NativeLookup(unittest.TestCase):
         with self.runtime.db() as db:
             db.execute('DROP INDEX runtime_agent_native_scope')
         self.runtime.close()
-        self.runtime = ControlledRuntime(Path(self.tmp.name), fixture.FakeServer)
+        self.runtime = make_runtime(ControlledRuntime, Path(self.tmp.name), fixture.FakeServer)
         self.addCleanup(self.runtime.close)
         after = self.runtime.agent(before['id'])
         for field in ('id', 'threadId', 'accountKey', 'epoch', 'status', 'autoWake'):

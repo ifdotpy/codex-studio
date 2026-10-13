@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Regression contracts for durable workspace recovery."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 from concurrent.futures import ThreadPoolExecutor
@@ -123,7 +125,7 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
                     },
                 )
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.WorkspaceServer)
         recovered_preview = self.runtime.checkpoint_preview(worker["id"], checkpoint["id"])
         self.assertEqual(recovered_preview["expectedTree"], preview["expectedTree"])
         self.assertTrue(recovered_preview["canRestore"])
@@ -301,7 +303,7 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
         first_server = server
 
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.WorkspaceServer)
         branch = self.runtime.branch_conversation(lead["id"], request)
         self.assertEqual(branch["forkedFrom"], lead["id"])
         self.assertEqual(branch["accountKey"], "default")

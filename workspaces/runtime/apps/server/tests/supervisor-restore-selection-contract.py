@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Supervisor restore reads current receipts without decoding terminal history."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 from contextlib import contextmanager
@@ -38,7 +40,7 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.native_before = NoNativeServer.calls
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
-            self.runtime = Runtime(Path(self.temp.name), NoNativeServer)
+            self.runtime = make_runtime(Runtime, Path(self.temp.name), NoNativeServer)
         self.addCleanup(self.runtime.close)
         self.runtime.connection_ids['default'] = 'fixture-connection'
         self.owner = self.agent('fixture-owner')
