@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_store::RuntimeStore;
 
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
+
 struct Oracle {
     child: Child,
     input: ChildStdin,
@@ -13,8 +16,8 @@ struct Oracle {
 }
 impl Oracle {
     fn new(scratch: &Path) -> Self {
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .expect("set CODEX_AGENTS_PYTHON to the prepared interpreter (read-only)");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let python = python_test_support::prepared_python(&source);
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(scratch)
