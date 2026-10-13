@@ -71,6 +71,14 @@ pub struct PreparedWrite {
 }
 
 impl PreparedWrite {
+    pub fn message(&self) -> &Value {
+        &self.message
+    }
+
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation_id
+    }
+
     pub fn new(operation_id: OperationId, frame: &Frame) -> Result<Self, AdapterError> {
         let bytes = encode_line(frame).map_err(|_| AdapterError::InvalidConfiguration)?;
         let message =
