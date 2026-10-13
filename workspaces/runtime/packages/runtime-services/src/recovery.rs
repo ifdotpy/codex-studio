@@ -58,8 +58,12 @@ pub enum RecoveryError {
     History(#[from] HistoryError),
     #[error("recovery effect adapter unavailable")]
     EffectsUnavailable,
+    #[error(transparent)]
+    Record(#[from] crate::recovery_policy::InvalidRecoveryRecord),
     #[error("recovery effect transaction failed")]
     CommitFailed,
+    #[error("Not implemented: requires {0}")]
+    Dependency(&'static str),
 }
 /// Integrator supplies the existing lifecycle and transcript writers here.
 /// `apply` must re-read expected agent scope, event statuses and operation
