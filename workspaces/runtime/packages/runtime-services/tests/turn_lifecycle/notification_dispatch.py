@@ -134,6 +134,16 @@ def seed(runtime, case):
                 elif event.get('no_metadata'):
                     db.execute('DELETE FROM runtime_event_meta WHERE id=?', (event_id,))
             db.execute("UPDATE runtime_events SET status='dispatching' WHERE agent='agent'")
+        if case.get('account_only'):
+            db.execute("DELETE FROM runtime_agents")
+            db.execute("DELETE FROM sync_entities WHERE collection='agent'")
+        if case.get('provider_warning'):
+            from codex_provider_versions import monitor
+            warning = dict(id='provider-version:default',accountKey='default',provider='codex',version='1.0',baseline='2.0',message='Upgrade provider',at=1234.5)
+            monitor(runtime).status = lambda: {'warnings':[warning]}
+        else:
+            from codex_provider_versions import monitor
+            monitor(runtime).status = lambda: {'warnings':[]}
         if case.get('workspace'):
             from codex_sync_entities import put as put_entity
             put_entity(db, 'workspace', 'current', runtime.workspace_entity_view(db))
@@ -236,6 +246,10 @@ def transition(runtime, case):
     with patch.object(codex_streaming.threading, 'Timer', ManualTimer), patch.object(time, 'time', lambda:1234.5):
         for index, step in enumerate(case['steps']):
             if step.get('rollback'): continue  # Discarded Rust caller transaction has no committed Python equivalent.
+            if step.get('recover_task'):
+                with runtime.db() as db:
+                    runtime.record_task(db,runtime.agent('agent',db),'item/completed',step['frame']['params'],True)
+                continue
             agent_id = step.get('agent', 'agent')
             frame = copy.deepcopy(step['frame'])
             signature = digest({'agent':agent_id, 'notification':frame})
@@ -264,6 +278,10 @@ def transition(runtime, case):
             if step.get('tick'):
                 runtime._stream_buffer._tick()
         with runtime.db() as db:
+            if case.get('advance_before_flush'):
+                agent = runtime.agent('agent',db)
+                agent['turnId'] = 'replay-turn-2'
+                runtime.put(db,'agents',agent)
             runtime._stream_buffer.flush_locked(db, force=True)
 
 def digest(value):
@@ -285,6 +303,35 @@ def backup(source):
     return target
 
 
+def consume_stream_capture(db, effect):
+    """Reconstruct Python's real StreamBuffer closure from the aggregate port.
+
+    The scratch writer is inert: this exercises the unchanged analytics closure,
+    never the Rust transcript writer or a copy of the analytics correction SQL.
+    """
+    from types import SimpleNamespace
+    metrics, params = effect['stream_metrics'], effect['params']
+    rt = SimpleNamespace(closed=False, connection_current=lambda *_:True,
+        item=lambda *_a,**_k:None, put=lambda *_a,**_k:None, analytics_event=_runtime.analytics_event)
+    stream = codex_streaming.StreamBuffer(rt)
+    key = (effect['account'],effect['connection'],params['threadId'],params.get('turnId'),params['itemId'],effect['method'])
+    batches = []
+    for index, bucket in enumerate(metrics['hours']):
+        first = index == 0
+        batches.append((params['delta'] if first else '',bucket['count'],bucket['encoded_bytes'],
+            effect['at'] if first else bucket['hour'],params,
+            metrics['bytes'] if first else 0,metrics['characters'] if first else 0,metrics['lines'] if first else 0,None))
+    stream.entries[key] = {'base':'','batches':batches}
+    captures = []
+    with sqlite3.connect(':memory:') as scratch:
+        scratch.executescript('CREATE TABLE runtime_agents(id TEXT, record TEXT); CREATE TABLE runtime_items(id TEXT, record TEXT); CREATE TABLE runtime_tasks(id TEXT, record TEXT);')
+        scratch.execute('INSERT INTO runtime_agents VALUES (?,?)',(effect['agent']['id'],json.dumps(effect['agent'])))
+        scratch.execute('INSERT INTO runtime_items VALUES (?,?)',(effect['agent']['id']+':'+params['itemId'],json.dumps({'text':'{}'})))
+        stream.flush_locked(scratch,force=True,analytics_captures=captures)
+    assert len(captures) == 1
+    captures[0](db)
+
+
 def run_case(command, template, runtime_type):
     global _runtime, _pristine, _real_effects
     if command['command'] == 'post_commit':
@@ -292,8 +339,11 @@ def run_case(command, template, runtime_type):
             db.row_factory = sqlite3.Row
             for effect in command['effects']:
                 if effect['kind'] == 'analytics':
-                    _runtime.analytics_event(db, effect['agent'], effect['method'], effect['params'],
-                        at=effect['at'], budget_capture_value=effect['budget_capture_value'])
+                    if 'stream_metrics' in effect:
+                        consume_stream_capture(db, effect)
+                    else:
+                        _runtime.analytics_event(db, effect['agent'], effect['method'], effect['params'],
+                            at=effect['at'], budget_capture_value=effect['budget_capture_value'])
         return analytics_snapshot(pathlib.Path(command['root']) / 'analytics.sqlite3')
     if command['command'] == 'metrics':
         import resource
@@ -308,11 +358,20 @@ def run_case(command, template, runtime_type):
         with _runtime.read_db() as db:
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
+    case = copy.deepcopy(case)
+    if case.get('empty_deltas'):
+        case['steps'] = [copy.deepcopy(case['steps'][0]) for _ in range(case['empty_deltas'])]
+    if case.get('many_streams'):
+        case['steps'] = [dict(frame={'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'replay-turn-1','itemId':f'stream-{i}','delta':'x'}}) for i in range(case['many_streams'])]
+
     runtime.connection_ids = {'default': 'connection-7'}
+    from codex_provider_versions import monitor
+    warnings = [dict(id='provider-version:default',accountKey='default',provider='codex',version='1.0',baseline='2.0',message='Upgrade provider',at=1234.5)] if case.get('provider_warning') else []
+    monitor(runtime).status = lambda: {'warnings':warnings}
     if case.get('analytics_semantics'):
         with sqlite3.connect(template / 'analytics.sqlite3') as source, sqlite3.connect(runtime.analytics_db_path) as target:
             source.backup(target)
-    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace','move') if k in case}, sort_keys=True)
+    key = json.dumps({k:case[k] for k in ('submission','agent','remove','items','related','events','search_phase','corrupt','expect_refusal','receipt_result','assets','workspace','move','account_only','provider_warning') if k in case}, sort_keys=True)
     runtime.close_notification_database()
     runtime.__dict__.pop('_agent_records_cache', None)
     prepared_path = runtime.root.parent / 'prepared.json'
@@ -350,10 +409,11 @@ def run_case(command, template, runtime_type):
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
     runtime.corpus_captures = []
     runtime.corpus_post_commit = []
+    runtime.corpus_analytics_overflow = 0
     if _real_effects:
         from codex_token_rate import token_rates
         def scheduled(captures, *, overflow=0):
-            assert not overflow, 'bounded corpus must not overflow analytics'
+            runtime.corpus_analytics_overflow += overflow
             for operation, args, kwargs, size in captures:
                 if case.get('analytics_semantics'):
                     with sqlite3.connect(runtime.analytics_db_path) as db:
@@ -383,7 +443,7 @@ def run_case(command, template, runtime_type):
     gmtime = time.gmtime
     with patch.object(time, 'gmtime', lambda seconds=None: gmtime(1234.5 if seconds is None else seconds)):
         transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'post_commit': runtime.corpus_post_commit, 'analytics': analytics_snapshot(runtime.analytics_db_path) if case.get('analytics_semantics') else None, 'beforeRefusal': runtime.corpus_before_refusal}
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures, 'post_commit': runtime.corpus_post_commit, 'analytics_overflow':runtime.corpus_analytics_overflow, 'analytics': analytics_snapshot(runtime.analytics_db_path) if case.get('analytics_semantics') else None, 'beforeRefusal': runtime.corpus_before_refusal}
 
 
 def close():

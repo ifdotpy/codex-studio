@@ -22,7 +22,8 @@ mod questions;
 #[path = "notification_dispatch/snapshot.rs"]
 mod snapshot;
 pub use effects::{
-    NotificationDependency, NotificationEffects, NotificationObservation, NotificationPostCommit,
+    NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
+    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
     UnavailableNotificationEffects,
 };
 
@@ -197,7 +198,7 @@ pub struct NotificationDispatchResult {
     pub stream_update: Option<NotificationStreamBuffer>,
     /// Execute only after the caller commits. Discard on rollback/commit failure.
     /// Replay returns an empty list, including after a lost acknowledgement.
-    pub post_commit: Vec<NotificationPostCommit>,
+    pub post_commit: NotificationPublicationBatch,
 }
 
 /// The caller owns the transaction and the connection's stream buffer. Commit
@@ -243,7 +244,7 @@ pub fn dispatch_notification_with_effects(
     let (kind, params, payload) = notification_parts(notification)?;
     let mut before = None;
     let mut fresh = false;
-    let mut post_commit = Vec::new();
+    let mut post_commit = NotificationPublicationBatch::default();
     let result = in_savepoint(transaction, || {
         let outcome = (|| {
             if !observed_at.is_finite()
@@ -433,7 +434,11 @@ pub fn dispatch_notification_with_effects(
                                     &mut next_streams,
                                     TextWriteInput {
                                         agent_id,
-                                        identity,
+                                        account: identity
+                                            .provider_handle
+                                            .strip_prefix("account:")
+                                            .unwrap_or_default(),
+                                        generation: identity.generation,
                                         params: &params,
                                         item_id,
                                         observed_at,
@@ -489,7 +494,11 @@ pub fn dispatch_notification_with_effects(
                                 &mut next_streams,
                                 TextWriteInput {
                                     agent_id,
-                                    identity,
+                                    account: identity
+                                        .provider_handle
+                                        .strip_prefix("account:")
+                                        .unwrap_or_default(),
+                                    generation: identity.generation,
                                     params: &params,
                                     item_id,
                                     observed_at,
@@ -562,7 +571,6 @@ pub fn dispatch_notification_with_effects(
                     next_streams.flush_analytics(&key, agent);
                 }
             }
-            post_commit = next_streams.take_post_commit();
             let mut current = effects.post_commit(
                 before.as_ref(),
                 after.as_ref(),
@@ -583,7 +591,10 @@ pub fn dispatch_notification_with_effects(
                     enrich_association(transaction, agent_id, observation)?;
                 }
             }
-            post_commit.extend(current);
+            for effect in current {
+                next_streams.queue_effect(effect);
+            }
+            post_commit = next_streams.take_post_commit()?;
         }
         Ok(outcome)
     });
@@ -633,6 +644,9 @@ pub fn recover_task_in_transaction(
             Some(previous.clone()),
             None,
         )?;
+        if previous["status"] != "running" {
+            return Ok(());
+        }
         let params = json!({"item":item,"turnId":previous["turnId"]});
         if let Some(task) = items::task_transition(
             snapshot.agent(),
@@ -643,9 +657,91 @@ pub fn recover_task_in_transaction(
             at,
         )? {
             kinds::put_task(tx, &task)?;
+            kinds::write_historical_item(
+                tx,
+                agent["id"]
+                    .as_str()
+                    .ok_or(NotificationDispatchError::InvalidNotification)?,
+                &params,
+                &task,
+                at,
+            )?;
         }
         Ok(())
     })
+}
+
+impl NotificationStreamBuffer {
+    /// Canonical recovered completion without a fabricated delivery or receipt.
+    /// The recovery closure owns this retained/staged account buffer. Persist the
+    /// mutated agent and returned buffer with terminal settlement, then install
+    /// the buffer and publish its ordered batch only after commit.
+    #[allow(dead_code, clippy::too_many_arguments)] // wired by the recovery integrator
+    pub(crate) fn recover_agent_message_in_transaction(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &mut Value,
+        account: &str,
+        generation: u64,
+        turn: &Value,
+        item: &Value,
+        at: f64,
+    ) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
+        let mut next = self.clone();
+        let mut staged_agent = agent.clone();
+        in_savepoint(tx, || {
+            let agent_id = agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::InvalidNotification)?;
+            let item_id = item["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or(NotificationDispatchError::InvalidNotification)?;
+            if !at.is_finite()
+                || at < 0.0
+                || generation == 0
+                || account.is_empty()
+                || item["type"] != "agentMessage"
+                || turn["id"].as_str().is_none_or(str::is_empty)
+                || agent["turnId"] != turn["id"]
+                || item.get("text").is_some_and(|text| !text.is_string())
+            {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+            let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
+            validate_agent(
+                agent,
+                agent_id,
+                &format!("account:{account}"),
+                "item/completed",
+                &params,
+            )?;
+            write_text_notification(
+                tx,
+                &mut staged_agent,
+                &mut next,
+                TextWriteInput {
+                    agent_id,
+                    account,
+                    generation,
+                    params: &params,
+                    item_id,
+                    observed_at: at,
+                    update: TextUpdate::Completed(
+                        item.get("text").and_then(Value::as_str),
+                        item.get("phase"),
+                    ),
+                },
+            )?;
+            if has_questions(item.get("questions")) {
+                questions::completed(tx, &staged_agent, &params, at)?;
+            }
+            update_common_agent_fields(&mut staged_agent, "item/completed", &params, at)?;
+            Ok(())
+        })?;
+        *agent = staged_agent;
+        Ok((next != *self).then_some(next))
+    }
 }
 
 fn command_key(
@@ -685,7 +781,8 @@ enum TextUpdate<'a> {
 
 struct TextWriteInput<'a> {
     agent_id: &'a str,
-    identity: &'a ProviderDeliveryIdentity,
+    account: &'a str,
+    generation: u64,
     params: &'a Value,
     item_id: &'a str,
     observed_at: f64,
@@ -828,7 +925,8 @@ fn write_text_notification(
 ) -> Result<bool, NotificationDispatchError> {
     let TextWriteInput {
         agent_id,
-        identity,
+        account,
+        generation,
         params,
         item_id,
         observed_at,
@@ -845,12 +943,8 @@ fn write_text_notification(
         .filter(|turn| !turn.is_empty())
         .map(str::to_owned);
     let key = StreamKey {
-        account: identity
-            .provider_handle
-            .strip_prefix("account:")
-            .unwrap_or_default()
-            .to_owned(),
-        generation: identity.generation,
+        account: account.to_owned(),
+        generation,
         thread: thread.to_owned(),
         turn: turn.clone(),
         item: item_id.to_owned(),
@@ -1076,6 +1170,11 @@ fn flush_keys(
                 != key.account
         {
             continue;
+        }
+        if agent.get("deletedAt").is_none_or(Value::is_null)
+            && key.method != "item/commandExecution/outputDelta"
+        {
+            streams.flush_analytics(&key, agent);
         }
         if agent.get("deletedAt").is_some_and(|v| !v.is_null())
             || (key.method != "item/commandExecution/outputDelta"
@@ -1499,7 +1598,7 @@ mod tests {
         Ok(result.outcome)
     }
 
-    fn database() -> Connection {
+    pub(super) fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
@@ -1524,7 +1623,7 @@ mod tests {
         connection
     }
 
-    fn frame(value: &Value) -> Frame {
+    pub(super) fn frame(value: &Value) -> Frame {
         let mut bytes = serde_json::to_vec(value).expect("notification serializes");
         bytes.push(b'\n');
         LineDecoder::new()
@@ -2201,3 +2300,7 @@ mod tests {
         assert!(payload["value"]["startAttempt"].get("id").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "notification_dispatch/review_tests.rs"]
+mod review_tests;

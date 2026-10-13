@@ -73,8 +73,46 @@ pub enum NotificationPostCommit {
         observation: NotificationObservation,
         budget_capture_value: Option<u64>,
     },
+    AnalyticsStream {
+        observation: NotificationObservation,
+        metrics: NotificationStreamMetrics,
+    },
     TokenRateStream(NotificationObservation),
     TokenRateAssociation(NotificationObservation),
+}
+
+/// One committed publication unit. `sequence` is monotone per retained account
+/// buffer; it is independent of original provider cursors. Persist this entire
+/// vector with the updated buffer before commit. Recover batches in sequence
+/// order, and effects in vector order. A sink deduplicates (account,sequence,index).
+/// Never recover these values in a hashed effect-ID order.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NotificationPublicationBatch {
+    pub sequence: u64,
+    pub effects: Vec<NotificationPostCommit>,
+    pub analytics_overflow: u64,
+}
+impl NotificationPublicationBatch {
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty() && self.analytics_overflow == 0
+    }
+}
+
+/// Aggregate matching Python StreamBuffer's analytics closure. The consumer
+/// captures `observation` once, then corrects notifications per hour and stream
+/// counters using these totals (without retaining each raw delta).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NotificationStreamMetrics {
+    pub hours: Vec<NotificationHourMetrics>,
+    pub bytes: u64,
+    pub characters: u64,
+    pub lines: u64,
+}
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct NotificationHourMetrics {
+    pub hour: u64,
+    pub count: u64,
+    pub encoded_bytes: u64,
 }
 
 /// Transactional effects only: no provider call, blocking IO, or await here.

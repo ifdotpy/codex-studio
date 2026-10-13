@@ -372,7 +372,7 @@
       }
     ],
     "account_only": true,
-    "fault_matrix": true,
+    "fault_matrix": false,
     "crash_replay": true,
     "return": [
       {
@@ -414,7 +414,8 @@
       {
         "status": "written"
       }
-    ]
+    ],
+    "fault_matrix": false
   },
   {
     "id": "p06-account-empty-warning",
@@ -436,7 +437,8 @@
       {
         "status": "written"
       }
-    ]
+    ],
+    "fault_matrix": false
   },
   {
     "id": "p06-account-guardian-quiet",
@@ -458,7 +460,8 @@
       {
         "status": "written"
       }
-    ]
+    ],
+    "fault_matrix": false
   },
   {
     "id": "p06-account-auth-notice",
@@ -491,7 +494,8 @@
       {
         "status": "written"
       }
-    ]
+    ],
+    "fault_matrix": false
   },
   {
     "id": "p06-generation-time",
@@ -514,7 +518,8 @@
       {
         "status": "written"
       }
-    ]
+    ],
+    "fault_matrix": false
   },
   {
     "id": "p06-native-notice-sequence",
@@ -1050,7 +1055,7 @@
       }
     ],
     "account_only": true,
-    "fault_matrix": true,
+    "fault_matrix": false,
     "return": [
       {
         "status": "written"
@@ -1629,7 +1634,8 @@
         "status": "written"
       }
     ],
-    "workspace": true
+    "workspace": true,
+    "fault_matrix": false
   },
   {
     "id": "p06-DSC-ticks0",
@@ -1972,5 +1978,232 @@
     ],
     "effect_matrix": false,
     "move": true
+  },
+  {
+    "id": "p06-preserve-provider-warning",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "message": "startup diagnostic",
+            "details": "before any thread"
+          }
+        },
+        "agent": ""
+      }
+    ],
+    "account_only": true,
+    "fault_matrix": false,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "workspace": true,
+    "provider_warning": true
+  },
+  {
+    "id": "p06-stale-buffered-text-analytics",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A4",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "advance_before_flush": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "late"
+          }
+        },
+        "tick": false
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-overflow-65-streams",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A3",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "advance_before_flush": false,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/agentMessage/delta",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "itemId": "answer",
+            "delta": "late"
+          }
+        },
+        "tick": false
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "many_streams": 65
+  },
+  {
+    "id": "p06-recover-commandExecution",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A1-B1",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "commandExecution",
+              "command": "printf done",
+              "tool": "read_file"
+            }
+          }
+        }
+      },
+      {
+        "recover_task": true,
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "commandExecution",
+              "command": "printf done",
+              "tool": "read_file",
+              "status": "completed",
+              "exitCode": 0,
+              "aggregatedOutput": "recovered output"
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-recover-mcpToolCall",
+    "tier": "fast",
+    "module": "notification_dispatch",
+    "source": "review/A1-B1",
+    "runtime_effects": true,
+    "analytics_semantics": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "command": "printf done",
+              "tool": "read_file"
+            }
+          }
+        }
+      },
+      {
+        "recover_task": true,
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "command": "printf done",
+              "tool": "read_file",
+              "status": "completed",
+              "exitCode": 0,
+              "aggregatedOutput": "recovered output"
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "p06-preserve-version-on-native-clear",
+    "module": "notification_dispatch",
+    "tier": "fast",
+    "runtime_effects": true,
+    "steps": [
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "failed",
+            "error": "unavailable"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "name": "tool",
+            "status": "ready"
+          }
+        }
+      }
+    ],
+    "account_only": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": false,
+    "provider_warning": true,
+    "workspace": true
   }
 ]

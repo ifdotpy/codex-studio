@@ -437,12 +437,8 @@ const ERROR_MESSAGES: &[(&str, &str)] = &[
     ("default", "Codex reported an error."),
 ];
 pub(crate) fn error_message(error: &Value) -> String {
-    let kind = error["codexErrorInfo"].as_str().or_else(|| {
-        error["codexErrorInfo"]
-            .as_object()
-            .and_then(|o| o.keys().next().map(String::as_str))
-    });
-    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| Some(*k) == kind) {
+    let kind = error_kind(error);
+    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
         return (*message).into();
     }
     error["message"]
@@ -585,7 +581,14 @@ pub(crate) fn account_notice(
             Value::Array(notices) => notices.clone(),
             _ => return Err(super::stored("sync_entities", "workspace:current")),
         };
-        notices.retain(|notice| notice["accountKey"] != account);
+        let version_warnings: Vec<_> = notices
+            .iter()
+            .filter(|notice| notice.get("connectionId").is_none())
+            .cloned()
+            .collect();
+        notices.retain(|notice| {
+            notice.get("connectionId").is_some() && notice["accountKey"] != account
+        });
         let mut stmt = tx.prepare("SELECT id,record FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.connectionId')=?2 ORDER BY rowid").map_err(StoreError::from)?;
         for row in stmt
             .query_map(params![account, connection], |row| {
@@ -606,6 +609,7 @@ pub(crate) fn account_notice(
             }
             notices.push(record);
         }
+        notices.extend(version_warnings);
         SyncDocumentsRepository::patch_entity(
             tx,
             "workspace",
