@@ -20,6 +20,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "provider-session/account-rate-limits",
     "provider-session/model-list",
     "provider-session/app-server",
+    "provider-session/title-generation",
     "resource-policy/read-progress-panel",
     "resource-policy/windows-file-identity",
     "resource-policy/write-progress-layout",
