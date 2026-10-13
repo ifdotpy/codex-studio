@@ -7,13 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-chrono = { version = "=0.4.42", default-features = false, features = ["clock"] }
+chrono = { workspace = true }
 getrandom = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mime_guess = { workspace = true }
-process-wrap = { workspace = true }
 sha2 = { workspace = true }
 studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }
