@@ -957,7 +957,10 @@ use crash_matrix::MATRIX;
 async fn worker_barrier(worker: &AccountHandle) {
     let (reply, done) = oneshot::channel();
     worker.send(AccountCommand::Barrier(reply)).await.unwrap();
-    done.await.expect("worker command barrier");
+    tokio::time::timeout(std::time::Duration::from_secs(120), done)
+        .await
+        .expect("worker command deadline")
+        .expect("worker command barrier");
 }
 
 #[tokio::test(start_paused = true)]
@@ -1476,7 +1479,12 @@ async fn transfer_at_admission(call: usize, interrupt: bool) {
     } else {
         state.wake(&worker).await;
     }
-    state.bridge.faults.paused.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("submission reaches the transfer barrier");
     let agent = state.agent.clone();
     state
         .bridge
