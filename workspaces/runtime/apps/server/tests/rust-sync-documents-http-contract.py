@@ -42,14 +42,14 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             register_functions(db)
             for table, row in (("runtime_agents",actor),("runtime_rooms",room)):
                 db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(row["id"],json.dumps(row)))
-        before=sync_state_snapshot(self.backend.state)
+        before=no_write_snapshot(self.backend.state)
         try:
             for path in ("/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                          "/api/agent-chat?room="+room["id"]):
                 response=self.backend.request("GET",path,headers=self._common_headers())
                 self.assertEqual(response.status,500,response.body)
                 self.assertIn("runtime_agents/"+actor["id"],response.json()["error"])
-                self.assertEqual(sync_state_snapshot(self.backend.state),before)
+                self.assertEqual(no_write_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(self.backend.state/"canvas.sqlite3") as db:
                 register_functions(db)

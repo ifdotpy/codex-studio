@@ -244,14 +244,12 @@ inventory registrations too, each collected in stable name order.
 - No build-script scanner: explicit declarations keep modules visible to Rust tooling.
 - No `automod`: its upstream is archived, and rustfmt skips macro-declared modules.
 
-The fixture schema used by the Python drift guard is captured from a new
-`Runtime` before `Canvas` is initialized. It therefore omits
-`graph_agents`, `graph_edges`, `groups`, `messages`, and `messages_room`, which
-`Canvas.__init__` creates on every real server start. The Python guard is blind
-to changes in those Canvas-owned objects. Recommendation for a future guard
-change: capture the canonical snapshot after full server startup, including
-`Canvas`; keep a separately named Runtime-only fixture only if focused tests
-need it. This slice does not change the Python guard or snapshot.
+The fixture schema used by the Python drift guard is captured from a disposable
+state directory in real startup order: `Canvas(root)` initializes its schema,
+then `Runtime(root)` initializes the runtime schema on the same database files.
+The guard includes Canvas-created `graph_agents`, `graph_edges`, `groups`,
+`messages`, and `messages_room` objects. The explicit temporary root keeps this
+fixture separate from configured live state.
 
 `RuntimeStore::open` verifies the Python-owned core schema, then prepares the
 sync schema family in one immediate transaction, and finally verifies the

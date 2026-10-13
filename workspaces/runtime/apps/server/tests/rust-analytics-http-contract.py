@@ -24,6 +24,7 @@ import json, os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
+from codex_session_names import identity as native_name_identity
 runtime = Runtime(Path(os.environ['CODEX_AGENTS_STATE_DIR']))
 try:
     agent = {{'id':'analytics-contract-agent','rootId':'analytics-contract-agent','epoch':0,
@@ -32,6 +33,9 @@ try:
         'turnId':'analytics-turn','accountKey':'default','accountHistory':[],'model':'fixture-model'}}
     teammate = {{**agent,'id':'analytics-contract-teammate','parentId':agent['id'],
         'rootId':agent['id'],'isLead':False,'name':'Analytics teammate'}}
+    # Idle agents with threads still participate in background name sync.
+    for stored_agent in (agent, teammate):
+        stored_agent['nativeNameSynced'] = native_name_identity(stored_agent)
     with runtime.lock, runtime.db(analytics=True) as db:
         runtime.put(db, 'agents', agent, sync_rooms=False)
         runtime.analytics_agent(db, agent)
@@ -143,7 +147,7 @@ try:
         runtime._analytics_history_record(db,'population-history',population['id'],
             {{'status':'error','agent':population['id'],'error':'fixture error'}})
         monitor = {{'id':'population-monitor','agent':population['id'],'status':'completed',
-                    'created':1101,'finished':1102,'bytes':12,'exitCode':0,'error':None,'timeout_ms':None}}
+                    'created':1101,'finished':1102,'bytes':12,'exitCode':0,'error':None,'timeout_ms':3600000}}
         runtime.put(db, 'monitors', monitor)
         runtime._monitor_exit_event(db, population, monitor, wake=False)
         runtime.put(db, 'requests', {{'id':'population-request','agent':population['id'],'status':'approved'}})
@@ -320,7 +324,21 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
         if self.rust_backend:
             self.assertEqual(stale.status, 501, stale.body[:1000])
-            self.assertIn("usage-policy/session-cost-refresh", stale.body.decode("utf-8"))
+            self.assertIn("costs/pricing-refresh", stale.body.decode("utf-8"))
+            pricing = self.backend.state / "model-pricing" / "models-dev-v1.json"
+            pricing.parent.mkdir(parents=True, exist_ok=True)
+            pricing.write_text(json.dumps({
+                "version": 1,
+                "catalog": {"providers": {
+                    "openai": {"models": {"gpt-test": {"cost": {"input": 1, "output": 1}}}},
+                    "anthropic": {"models": {"claude-sonnet-5-5": {"cost": {"input": 1, "output": 1}}}},
+                }},
+            }))
+            computed = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
+            self.assertEqual(computed.status, 200, computed.body[:1000])
+            self.assertEqual(computed.json()["pricingState"], "ready")
+            self.assertIsNone(computed.json()["totalUSD"])
+            self.assertEqual(computed.json()["unknownModels"], ["fixture-model"])
         else:
             self.assertEqual(stale.status, 200, stale.body[:1000])
 

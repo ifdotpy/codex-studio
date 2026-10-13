@@ -1,0 +1,23 @@
+[
+  { "name": "single", "label": "A", "valid": true },
+  { "name": "unicode", "label": "Café 🦊", "valid": true },
+  { "name": "inner-spaces", "label": "Studio  server", "valid": true },
+  {
+    "name": "length-boundary",
+    "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "valid": true
+  },
+  {
+    "name": "too-long",
+    "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "valid": false
+  },
+  { "name": "empty", "label": "", "valid": false },
+  { "name": "outer-space", "label": " hidden", "valid": false },
+  { "name": "trailing-newline", "label": "hidden\n", "valid": false },
+  { "name": "non-ascii-space", "label": "hidden\u00a0label", "valid": false },
+  { "name": "control", "label": "hidden\u0000label", "valid": false },
+  { "name": "format-character", "label": "hidden\u200blabel", "valid": false },
+  { "name": "null", "label": null, "valid": false },
+  { "name": "number", "label": 42, "valid": false }
+]

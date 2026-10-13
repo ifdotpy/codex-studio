@@ -1,3 +1,6 @@
+#[allow(clippy::duplicate_mod)]
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -189,6 +192,6 @@ fn server_source() -> PathBuf {
 fn python_executable() -> &'static Path {
     static PYTHON: OnceLock<PathBuf> = OnceLock::new();
     PYTHON
-        .get_or_init(|| prepared_python::prepared_python(&server_source()))
+        .get_or_init(|| prepared_python_support::prepared_python(&server_source()))
         .as_path()
 }

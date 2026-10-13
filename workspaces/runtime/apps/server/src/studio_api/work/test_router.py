@@ -5,8 +5,9 @@ from __future__ import annotations
 import unittest
 import json
 import sqlite3
+import tempfile
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -24,6 +25,7 @@ from studio_api.app import QueryContractError
 from studio_api.models import JsonValue
 from studio_api.responses import install_error_response_docs
 from studio_api.work.router import create_router
+from codex_runtime import Runtime
 
 if TYPE_CHECKING:
     from codex_canvas import Canvas
@@ -741,11 +743,7 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.send = Mock(return_value={"id": message_id, "status": "queued"})
         federation = SimpleNamespace(has_room=lambda _: False)
         context.runtime.federation = lambda: federation
-        canvas_db = sqlite3.connect(":memory:", check_same_thread=False)
-        canvas_db.execute("CREATE TABLE messages(id, room, author, text, at, deliveries)")
-        canvas_db.commit()
-        context.canvas.lock = threading.RLock()
-        context.canvas.connect = lambda: canvas_db
+        context.canvas.connect = Mock(side_effect=AssertionError("managed mirror must share Runtime transaction"))
 
         response = make_client(context).post("/api/messages", json={
             "id": message_id, "room": "agent-1", "text": "  hello  ",
@@ -754,11 +752,115 @@ class WorkRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         context.runtime.send.assert_called_once_with(
             "agent-1", "  hello  ", message_id, delivery="queue", assets=[],
+            mirror_user_message=True,
         )
-        mirror = canvas_db.execute("SELECT id,room,author,text FROM messages").fetchone()
-        self.assertEqual(mirror, (message_id, "agent-1", "user", "hello"))
+        context.canvas.connect.assert_not_called()
         runtime_db.close()
-        canvas_db.close()
+
+    def test_managed_message_projection_is_atomic_and_replay_repairs_it(self) -> None:
+        message_id = "message-atomic-1"
+        actor = {
+            "id": "agent-1", "rootId": "agent-1", "epoch": 1,
+            "autoWake": True, "status": "idle",
+        }
+
+        with tempfile.TemporaryDirectory(prefix="managed-message-atomic-") as directory:
+            database = Path(directory) / "canvas.sqlite3"
+            with sqlite3.connect(database) as db:
+                db.executescript("""
+                    CREATE TABLE runtime_events (
+                        id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
+                        status TEXT, at REAL, epoch INTEGER, error TEXT, reserved TEXT
+                    );
+                    CREATE TABLE runtime_event_meta (id TEXT PRIMARY KEY, record TEXT);
+                    CREATE TABLE messages (
+                        id TEXT PRIMARY KEY, room TEXT, author TEXT, text TEXT,
+                        at REAL, deliveries TEXT
+                    );
+                """)
+
+            runtime = Runtime.__new__(Runtime)
+
+            @contextmanager
+            def db_scope():
+                db = sqlite3.connect(database)
+                db.row_factory = sqlite3.Row
+                try:
+                    yield db
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+                finally:
+                    db.close()
+
+            runtime.lock = threading.RLock()
+            runtime.db = db_scope
+            runtime.checked_actor = lambda _db, _key: actor
+            runtime.agent = lambda _key, _db: actor
+            runtime.workspace_blockers = lambda _db, _actor: []
+
+            def enqueue(db, _actor, _kind, text, key):
+                db.execute(
+                    "INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                    (key, "agent-1", "user", text, "pending", 1.0, 1, None, None),
+                )
+                return key
+
+            runtime.enqueue = enqueue
+
+            with (
+                patch("codex_agent_modes.assert_worker_input"),
+                patch("codex_budget.budget_admission"),
+                patch("codex_runtime.assert_native_thread_open"),
+                patch("codex_worker_accounts.require_not_excluded"),
+            ):
+                accepted = Runtime.send(
+                    runtime, "agent-1", "  hello  ", message_id,
+                    manual=False, mirror_user_message=True,
+                )
+                with sqlite3.connect(database) as db:
+                    event = db.execute("SELECT id,text FROM runtime_events").fetchone()
+                    history = db.execute(
+                        "SELECT id,room,author,text,deliveries FROM messages"
+                    ).fetchone()
+                self.assertEqual(accepted, {"id": message_id, "status": "queued"})
+                self.assertEqual(event, (message_id, "hello"))
+                self.assertEqual(history[:4], (message_id, "agent-1", "user", "hello"))
+                self.assertEqual(json.loads(history[4]), {"agent-1": "queued"})
+
+                # A lost response can leave the history projection absent. An
+                # exact replay writes it without inserting another event.
+                with sqlite3.connect(database) as db:
+                    db.execute("DELETE FROM messages WHERE id=?", (message_id,))
+                replay = Runtime.send(
+                    runtime, "agent-1", "hello", message_id,
+                    manual=False, mirror_user_message=True,
+                )
+                self.assertEqual(replay, {"id": message_id, "status": "pending", "error": None})
+                with sqlite3.connect(database) as db:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0], 1)
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+                with self.assertRaisesRegex(ValueError, "different content"):
+                    Runtime.send(
+                        runtime, "agent-1", "changed", message_id,
+                        manual=False, mirror_user_message=True,
+                    )
+
+                # Projection failure rolls back both the event and its metadata.
+                with sqlite3.connect(database) as db:
+                    db.execute("""
+                        CREATE TRIGGER reject_message_projection BEFORE INSERT ON messages
+                        BEGIN SELECT RAISE(ABORT, 'projection rejected'); END
+                    """)
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "projection rejected"):
+                    Runtime.send(
+                        runtime, "agent-1", "second", "message-atomic-2",
+                        manual=False, mirror_user_message=True,
+                    )
+                with sqlite3.connect(database) as db:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0], 1)
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_event_meta").fetchone()[0], 1)
 
     def test_federated_user_message_keeps_existing_service_path(self) -> None:
         message_id = "5ff6719c-18ec-4a53-8abc-d1948652574e"

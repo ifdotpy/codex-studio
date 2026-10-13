@@ -357,7 +357,11 @@ def tick(runtime):
 
 def status(runtime):
     current = monitor(runtime)
-    current.tick(runtime)
+    if runtime.lock.acquire(blocking=False):
+        try:
+            current.tick(runtime)
+        finally:
+            runtime.lock.release()
     result = current.status()
     from codex_provider_upstream_releases import updates_enabled
     if updates_enabled(runtime) is False:

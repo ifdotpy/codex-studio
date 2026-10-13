@@ -11,6 +11,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[5]
 DIFFERENTIAL = ROOT / "workspaces/runtime/apps/server/tests/http_runtime_extractor_differential.py"
@@ -29,6 +30,30 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_split_suite_counts_include_every_unittest_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            log = root / "full.log"
+            content = (
+                "test_first (__main__.First.test_first) ... ok\n"
+                "Ran 1 test in 0.1s\nOK\n"
+                "test_second (__main__.Second.test_second) ... skipped 'fixture'\n"
+                "Ran 1 test in 0.2s\nOK (skipped=1)\n"
+                "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+            )
+            log.write_text(content)
+            process = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
+                "logPath": str(log), "status": "passed", "passed": 2,
+                "failed": 0, "skipped": 1, "exitCode": 0,
+            }))
+            suite = ROOT / "workspaces/runtime/apps/server/tests/test_isolation_contract.py"
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                result = ledger.run_suite(suite, {}, root, [], {})
+                self.assertEqual(len(result["tests"]), 2)
+                log.write_text(content.replace("Ran 1 test in 0.1s", "Ran 2 tests in 0.1s"))
+                with self.assertRaisesRegex(RuntimeError, "result-count mismatch"):
+                    ledger.run_suite(suite, {}, root, [], {})
+
     def test_probe_cases_are_operation_keyed_and_reference_seeded_records(self) -> None:
         documented = set(ledger.operations())
         self.assertLessEqual(set(ledger.PROBE_CASES), documented)
@@ -38,7 +63,7 @@ class LedgerTraceContract(unittest.TestCase):
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
-            "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin",
+            "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
         }
 
         def references(value):
@@ -73,7 +98,6 @@ class LedgerTraceContract(unittest.TestCase):
         for operation in (
             ("GET", "/api/changes"),
             ("GET", "/api/models"),
-            ("GET", "/api/multi-server"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),
@@ -370,6 +394,34 @@ class LedgerTraceContract(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["env"]["CODEX_SERVER_TEST_JOBS"], "1")
             self.assertEqual(observed["passed"], 3)
             self.assertEqual(len(observed["tests"]), 2)
+
+    def test_consumer_reconciles_status_after_interleaved_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log = root / "consumer.log"
+            log.write_text(
+                "test_skipped (__main__.Example.test_skipped) ... skipped 'fixture'\n"
+                "test_passed (__main__.Example.test_passed) ... RuntimeWarning: noisy stderr\n"
+                "test_later_skipped (__main__.Example.test_later_skipped) ... skipped 'fixture'\n"
+                "ok\n"
+                "Ran 3 tests in 0.1s\n"
+                "OK (skipped=2)\n"
+                "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+            )
+            result = {"status": "passed", "passed": 2, "failed": 0, "skipped": 2, "logPath": str(log)}
+            process = SimpleNamespace(stdout=json.dumps(result), stderr="", returncode=0)
+            with patch.object(ledger.subprocess, "run", return_value=process):
+                observed = ledger.run_suite(ledger.TESTS / "fixture.py", {}, root, [], {})
+            self.assertEqual(observed["passed"], 2)
+            self.assertEqual(observed["skipped"], 2)
+            self.assertEqual(
+                [(case["testId"], case["status"]) for case in observed["tests"]],
+                [
+                    ("__main__.Example.test_skipped", "skipped"),
+                    ("__main__.Example.test_passed", "ok"),
+                    ("__main__.Example.test_later_skipped", "skipped"),
+                ],
+            )
 
     def test_unittest_ids_keep_their_class_and_are_not_duplicated(self) -> None:
         cases = ledger.case_results(

@@ -2,7 +2,7 @@
 pub(crate) mod admission;
 pub(crate) mod lifecycle;
 use crate::event_write::truthy;
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
@@ -188,16 +188,25 @@ fn refresh(
             )
             .as_bytes(),
         );
-        if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_server_outbox WHERE id=?1)",
+        let raw: Option<String> = tx.query_row(
+            "SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",
             [key.to_string()],
-            |r| r.get::<_, bool>(0),
-        )? {
-            records::validate(
+            |r| r.get(0),
+        ).optional()?;
+        if let Some(raw) = raw {
+            // The storage boundary validates the complete delivery row. This
+            // consumer only needs its identity, regardless of envelope action.
+            #[derive(serde::Deserialize)]
+            struct LocationOutbox {
+                id: String,
+            }
+            let row: LocationOutbox = serde_json::from_value(records::decode(
                 "runtime_server_outbox",
                 &key.to_string(),
-                json!({"id":key.to_string()}),
-            )?;
+                &raw,
+            )?)
+            .map_err(StoreError::from)?;
+            debug_assert_eq!(row.id, key.to_string());
             return Err(ToolRequestError::RequiresDependency(
                 "multi-server/project-location-receipt",
             ));

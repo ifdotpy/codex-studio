@@ -32,6 +32,17 @@
       "title": "Id",
       "type": "string"
     },
+    "method": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Method"
+    },
     "status": {
       "anyOf": [
         {

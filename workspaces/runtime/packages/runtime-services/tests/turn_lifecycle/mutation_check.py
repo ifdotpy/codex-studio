@@ -70,7 +70,8 @@ def main():
         directory.mkdir(parents=True)
         environment[key] = str(directory)
     environment.update(PATH=f'{environment["CARGO_HOME"]}/bin:/usr/local/bin:/usr/bin:/bin',
-                       CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
+                       CARGO_TARGET_DIR=os.environ.get("CARGO_TARGET_DIR", str(target / "cargo")),
+                       CARGO_BUILD_JOBS="4", CARGO_INCREMENTAL="0",
                        CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     targets = {name: ["--test", name + "_corpus"] for name in tables}

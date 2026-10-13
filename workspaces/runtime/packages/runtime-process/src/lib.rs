@@ -1,5 +1,6 @@
 //! Asynchronous provider adapters, process ports and the supervisor v1 client.
 
+pub mod child_priority;
 mod client;
 mod ports;
 mod protocol;

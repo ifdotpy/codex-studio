@@ -64,6 +64,7 @@ import os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
+from codex_session_names import identity as native_name_identity
 
 runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
 try:
@@ -82,6 +83,8 @@ try:
     )
     with runtime.lock, runtime.db() as db:
         for agent in agents:
+            # autoWake=False does not disable background native-name sync.
+            agent["nativeNameSynced"] = native_name_identity(agent)
             runtime.put(db, "agents", agent, sync_rooms=False)
     checkpoint = runtime.capture_checkpoint({AGENT_ID!r}, "Python fixture")
     print(checkpoint["id"])

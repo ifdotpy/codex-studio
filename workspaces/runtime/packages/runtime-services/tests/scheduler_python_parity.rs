@@ -1,4 +1,7 @@
 use serde_json::{Value, json};
+#[allow(clippy::duplicate_mod)]
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -385,7 +388,7 @@ fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
 }
 
 fn python_executable() -> PathBuf {
-    prepared_python::prepared_python(&server_source())
+    prepared_python_support::prepared_python(&server_source())
 }
 
 fn server_source() -> PathBuf {

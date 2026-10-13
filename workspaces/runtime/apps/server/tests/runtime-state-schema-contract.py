@@ -22,9 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from runtime_test_environment import make_runtime
 
 from codex_runtime import Runtime  # noqa: E402
+from codex_canvas import Canvas  # noqa: E402
 
 
 SNAPSHOT = Path(__file__).with_name("fixtures") / "runtime-state-schema.json"
+UPDATE_SNAPSHOT = os.environ.get("UPDATE_RUNTIME_STATE_SCHEMA_SNAPSHOT") == "1"
 
 
 class QuietRuntime(Runtime):
@@ -95,6 +97,7 @@ class RuntimeStateSchemaContract(unittest.TestCase):
             prefix="runtime-state-format-", dir=temporary_root
         )
         self.root = Path(self.temporary.name)
+        self.canvas = Canvas(root=self.root)
         self.runtime = make_runtime(QuietRuntime, self.root, lambda *_args, **_kwargs: None)
 
     def tearDown(self) -> None:
@@ -104,7 +107,7 @@ class RuntimeStateSchemaContract(unittest.TestCase):
     def test_fresh_runtime_schema_matches_checked_snapshot(self) -> None:
         actual = schema_snapshot(self.runtime)
         encoded = json.dumps(actual, indent=2, sort_keys=True) + "\n"
-        if os.environ.get("UPDATE_RUNTIME_STATE_SCHEMA_SNAPSHOT") == "1":
+        if UPDATE_SNAPSHOT:
             SNAPSHOT.write_text(encoded, encoding="utf-8")
             return
 
@@ -120,6 +123,21 @@ class RuntimeStateSchemaContract(unittest.TestCase):
                 "workspaces/runtime/apps/server/tests/runtime-state-schema-contract.py`.\n"
                 + diff
             )
+
+    def test_canvas_created_objects_are_in_fresh_schema(self) -> None:
+        self.assertEqual(self.canvas.db, self.runtime.db_path)
+        canvas_objects = {
+            (entry["type"], entry["name"])
+            for entry in schema_snapshot(self.runtime)["canvas.sqlite3"]["sqlite_master"]
+            if entry["name"] in {"graph_agents", "graph_edges", "groups", "messages", "messages_room"}
+        }
+        self.assertEqual(canvas_objects, {
+            ("table", "graph_agents"),
+            ("table", "graph_edges"),
+            ("table", "groups"),
+            ("table", "messages"),
+            ("index", "messages_room"),
+        })
 
     def test_independent_sqlite_reader_opens_server_written_state_in_place(self) -> None:
         agent = self.runtime.create({

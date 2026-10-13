@@ -221,6 +221,7 @@ test("Cargo facade failures retain selection, test failure, install guidance and
   writeFileSync(
     cargo,
     `#!/bin/sh
+printf '%s' "$CODEX_NODE" > "$FIXTURE_NODE_CAPTURE"
 case "$FIXTURE_CARGO_MODE" in
   fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
   empty) echo 'error: no tests to run'; exit 4 ;;
@@ -233,10 +234,14 @@ esac
     PATH: process.env.PATH,
     CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
     CODEX_STUDIO_CHECKS_CACHE: process.env.CODEX_STUDIO_CHECKS_CACHE,
+    CODEX_NODE: process.env.CODEX_NODE,
+    FIXTURE_NODE_CAPTURE: process.env.FIXTURE_NODE_CAPTURE,
   };
   process.env.PATH = `${bin}:${original.PATH}`;
   process.env.CARGO_TARGET_DIR = path.join(root, "target");
   process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "logs");
+  const nodeCapture = path.join(root, "codex-node.txt");
+  process.env.FIXTURE_NODE_CAPTURE = nodeCapture;
   const originalWrite = process.stdout.write;
   process.stdout.write = () => true;
   const item = { name: "fixture", ecosystem: "cargo" };
@@ -244,6 +249,7 @@ esac
     process.env.FIXTURE_CARGO_MODE = "empty";
     const empty = await execute(root, item, "missing_case", true);
     assert.equal(empty.exitCode, 1);
+    assert.equal(readFileSync(nodeCapture, "utf8"), process.execPath);
     assert.deepEqual(empty.errors, [
       "nextest found no tests matching this selection",
     ]);
@@ -280,6 +286,11 @@ esac
     else
       process.env.CODEX_STUDIO_CHECKS_CACHE =
         original.CODEX_STUDIO_CHECKS_CACHE;
+    if (original.CODEX_NODE === undefined) delete process.env.CODEX_NODE;
+    else process.env.CODEX_NODE = original.CODEX_NODE;
+    if (original.FIXTURE_NODE_CAPTURE === undefined)
+      delete process.env.FIXTURE_NODE_CAPTURE;
+    else process.env.FIXTURE_NODE_CAPTURE = original.FIXTURE_NODE_CAPTURE;
     delete process.env.FIXTURE_CARGO_MODE;
     rmSync(root, { recursive: true, force: true });
   }

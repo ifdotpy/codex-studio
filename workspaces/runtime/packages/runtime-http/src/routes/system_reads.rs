@@ -66,10 +66,21 @@ async fn directories(
             let client =
                 records::get(&tx, "runtime_access_clients", &server).map_err(ApiError::stored)?;
             if let Some(client) = client {
+                // The table schema has checked the complete access record;
+                // directories consumes only this typed pairing projection.
+                #[derive(serde::Deserialize)]
+                struct AccessSelection {
+                    kind: String,
+                    status: String,
+                    revoked: Option<f64>,
+                }
+                let client: AccessSelection = serde_json::from_value(client).map_err(|_| {
+                    ApiError::stored(records::invalid("runtime_access_clients", &server))
+                })?;
                 return Ok::<bool, ApiError>(
-                    client["kind"] == "server"
-                        && client["status"] == "paired"
-                        && !studio_runtime_services::event_write::truthy(client.get("revoked")),
+                    client.kind == "server"
+                        && client.status == "paired"
+                        && client.revoked.unwrap_or(0.0) == 0.0,
                 );
             }
             if records::get(&tx, "runtime_access_discovered", &server)

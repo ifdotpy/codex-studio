@@ -20,6 +20,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
+from codex_session_names import identity as native_name_identity
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
@@ -59,6 +60,9 @@ def seed_summary_agent(backend) -> str:
             threadId="summary-thread", updated=123.0, created=120.0,
             hostProjectPath=str(backend.cwd), cwd=str(backend.cwd),
         )
+        # A completed agent still participates in background native-name sync.
+        # Seed its settled identity so exact read snapshots have no other writer.
+        agent["nativeNameSynced"] = native_name_identity(agent)
         with runtime.db() as database:
             runtime.put(database, "agents", agent)
         return agent["id"]
@@ -293,7 +297,11 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_paired_revoked_and_discovered_directory_selection(self):
         path=self.backend.state / "canvas.sqlite3"
         for table,identity,record,expected in (("runtime_access_clients","paired",{"kind":"server","status":"paired"},501),("runtime_access_clients","revoked",{"kind":"server","status":"revoked","revoked":1.0},403),("runtime_access_discovered","discovered",{"status":"discovered"},501)):
-            with sqlite3.connect(path) as db:db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(identity,json.dumps({"id":identity,**record})))
+            # Complete storage rows match Python's pairing/discovery writers;
+            # the directory consumer only selects their pairing fields.
+            stored={"id":identity,"clientId":identity,"kind":"server","label":identity,
+                    "created":1.0,"publicKey":"fixture-key",**record}
+            with sqlite3.connect(path) as db:db.execute(f"INSERT INTO {table}(id,record) VALUES(?,?)",(identity,json.dumps(stored)))
             response=self.backend.request("GET","/api/directories?"+urlencode({"server":identity,"path":str(self.root)}),headers=self.headers())
             self.assertEqual(response.status,expected,response.body)
             if identity=="discovered":self.assertIn("discovery-pairing",response.json()["error"])

@@ -12,6 +12,10 @@ import json
 import math
 import os
 from pathlib import Path
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows
+    pwd = None
 import re
 import select
 import shutil
@@ -195,6 +199,7 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/native-error-contract.py": "automated",
     f"{TESTS_REL}/native-release-contract.py": "automated",
     f"{TESTS_REL}/native-safety-contract.py": "automated",
+    f"{TESTS_REL}/portable-history-import-http-contract.py": "automated",
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 HEAVY_SUITES = {
@@ -909,6 +914,17 @@ def is_http_boundary_suite(relative):
     return name == "http-boundary-contract.py" or name.endswith("-http-contract.py")
 
 
+def _is_protected_home_path(value):
+    """Recognize provider-owned home paths without probing their contents."""
+    candidate = os.path.normcase(os.path.abspath(os.path.expanduser(os.fsdecode(value))))
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir) if pwd is not None else Path.home()
+    roots = (
+        os.path.normcase(os.path.abspath(home / ".codex")),
+        os.path.normcase(os.path.abspath(home / ".claude")),
+    )
+    return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
+
+
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment = os.environ.copy()
     isolated_home = temp_root / "home"
@@ -940,7 +956,20 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
         environment[f"GIT_CONFIG_VALUE_{index}"] = value
     # Ordinary suites cannot discover inherited provider programs or selectors.
     # Pin the crypto helper before dropping the caller's tool-cache PATH.
-    node = environment.get("CODEX_NODE") or shutil.which("node")
+    # The caller may run inside Codex with its bundled Node first on PATH.
+    # That installation lives under the protected provider home, where even
+    # executable metadata checks are forbidden in suite processes. Search only
+    # caller PATH entries outside those roots, and reject an explicit pin there.
+    node = environment.get("CODEX_NODE")
+    if node and _is_protected_home_path(node):
+        node = None
+    caller_path = environment.get("PATH", os.defpath)
+    safe_path = os.pathsep.join(
+        entry for entry in caller_path.split(os.pathsep)
+        if entry and not _is_protected_home_path(entry)
+    )
+    if not node:
+        node = shutil.which("node", path=safe_path)
     path_entries = [str(Path(sys.executable).parent), os.defpath]
     if node:
         environment["CODEX_NODE"] = node
@@ -1001,14 +1030,29 @@ def _cleanup_suite_scratch(scratch):
 
 
 def _scratch_holder_report(path):
-    """Name live processes whose working directory or open files are inside path."""
+    """Name holders in our process tree without inspecting unrelated open files."""
     target = os.path.realpath(path)
     holders = {}
+    try:
+        snapshot = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True,
+                                  text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not list our process tree: {error}"
+    parents = {}
+    for line in snapshot.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and all(field.isdigit() for field in fields):
+            parents[int(fields[0])] = int(fields[1])
+    owned = {os.getpid()}
+    while True:
+        children = {pid for pid, parent in parents.items() if parent in owned}
+        if children <= owned:
+            break
+        owned.update(children)
     proc = Path("/proc")
     if proc.is_dir():
-        for entry in proc.iterdir():
-            if not entry.name.isdigit():
-                continue
+        for pid in sorted(owned):
+            entry = proc / str(pid)
             try:
                 links = [entry / "cwd", *(entry / "fd").iterdir()]
             except OSError:
@@ -1029,7 +1073,8 @@ def _scratch_holder_report(path):
         if not lsof:
             return "could not list processes using it: no /proc and no lsof"
         try:
-            listing = subprocess.run([lsof, "-n", "-P", "-F", "pc", "+D", target],
+            listing = subprocess.run([lsof, "-n", "-P", "-F", "pc", "-a", "-p",
+                                      ",".join(map(str, sorted(owned))), "+D", target],
                                      capture_output=True, text=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError) as error:
             return f"could not list processes using it: {error}"

@@ -63,6 +63,10 @@ try:
     deleted["deletedAt"] = 1.0
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", deleted, sync_rooms=False)
+        # These are persisted read fixtures, not live timers that can wake an
+        # agent between the read/refusal snapshots (or invalidate its ETag).
+        for rule in (visible, hidden):
+            rule["status"] = "paused"
         runtime.put(db, "rules", visible, sync_rooms=False)
         runtime.put(db, "rules", ticked, sync_rooms=False)
         runtime.put(db, "rules", hidden, sync_rooms=False)
@@ -79,6 +83,21 @@ finally:
     )
 
 
+def rules_state(backend):
+    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
+        existing = {
+            row[0] for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        return {
+            name: database.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
+            for name in (
+                "runtime_rules", "runtime_monitors", "runtime_agents", "runtime_events", "runtime_event_meta",
+                "runtime_operation_receipts", "sync_entities", "sync_entity_versions",
+            )
+            if name in existing
+        }
 
 
 class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -88,6 +107,21 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend.stop()
         seed_python_rules(cls.backend)
         cls.backend.start()
+        def pause_ticked_rule():
+            with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database, database:
+                record = json.loads(database.execute(
+                    "SELECT record FROM runtime_rules WHERE id='ticked'"
+                ).fetchone()[0])
+                # Python clears lowSince on restart. Preserve coverage of a real
+                # tick, then hold the read fixture before any contract snapshot.
+                if record.get("lowSince") is None:
+                    return False
+                record["status"] = "paused"
+                database.execute(
+                    "UPDATE runtime_rules SET record=? WHERE id='ticked'", (json.dumps(record),),
+                )
+                return True
+        cls.backend.wait_until(pause_ticked_rule, "low-worker read fixture ticked and paused")
         cls.backend.ready_samples.append(cls.backend.ready_seconds or 0)
 
     def _headers(self):
@@ -144,6 +178,29 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(conditional.status, 304, conditional.body[:1000])
         self.assertEqual(conditional.body, b"")
         self.assertEqual(conditional.headers.get("etag"), etag)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_active_check_pause_and_delete_are_named_no_write_refusals(self) -> None:
+        # Rust has no scheduler in this fixture; the monitor proves active-check refusal.
+        backend = self.backend
+        path = backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as db:
+            db.execute("INSERT INTO runtime_monitors(id,record) VALUES(?,?)", (
+                "active-rule-check", json.dumps({"id": "active-rule-check", "agent": "rules-contract-live",
+                                                 "ruleId": "visible", "status": "running"}),
+            ))
+        try:
+            for action in ("pause", "delete"):
+                with self.subTest(action=action):
+                    before = rules_state(backend)
+                    response = backend.request("POST", "/api/rules", headers=self._headers(),
+                                               body={"action": action, "agent": "rules-contract-live", "id": "visible"})
+                    self.assertEqual(response.status, 501, response.body[:1000])
+                    self.assertEqual(response.json()["error"], "Not implemented: requires monitor-driver/active-checks")
+                    self.assertEqual(rules_state(backend), before)
+        finally:
+            with sqlite3.connect(path) as db:
+                db.execute("DELETE FROM runtime_monitors WHERE id='active-rule-check'")
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_rule_is_refused_without_writes(self) -> None:

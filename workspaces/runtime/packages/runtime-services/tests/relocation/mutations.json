@@ -1,0 +1,79 @@
+[
+  {
+    "id": "location_foreign_server",
+    "file": "workspaces/runtime/packages/runtime-services/src/project_locations.rs",
+    "edits": [
+      {
+        "before": "if location[\"serverId\"] != self.outbox.server",
+        "after": "if false"
+      }
+    ],
+    "witness": "malformed_and_foreign_receipts_refuse_without_writes"
+  },
+  {
+    "id": "location_unknown_writes",
+    "file": "workspaces/runtime/packages/runtime-services/src/project_locations.rs",
+    "edits": [
+      {
+        "before": "if receipt[\"outcome\"] == \"unknown\" {",
+        "after": "if false {"
+      }
+    ],
+    "witness": "malformed_and_foreign_receipts_refuse_without_writes"
+  },
+  {
+    "id": "location_revision",
+    "file": "workspaces/runtime/packages/runtime-services/src/project_locations.rs",
+    "edits": [
+      {
+        "before": "json!(revision + 1)",
+        "after": "json!(revision + 2)"
+      }
+    ],
+    "witness": "python_location_and_move_corpus_through_consumers"
+  },
+  {
+    "id": "move_release_active",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_move.rs",
+    "edits": [
+      {
+        "before": "&& phase != \"active\"",
+        "after": "&& phase != \"never\""
+      }
+    ],
+    "witness": "python_location_and_move_corpus_through_consumers"
+  },
+  {
+    "id": "cache_overwrite",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_move.rs",
+    "edits": [
+      {
+        "before": "|| truthy(self.raw.get(\"firstTurnCache\"))",
+        "after": "|| false"
+      }
+    ],
+    "witness": "python_location_and_move_corpus_through_consumers"
+  },
+  {
+    "id": "tool_identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/project_locations.rs",
+    "edits": [
+      {
+        "before": "if Repository::tool(tx, &id)?.as_ref() != Some(record) {",
+        "after": "if false {"
+      }
+    ],
+    "witness": "tool_reconciliation_binds_identity_aliases_and_rolls_back"
+  },
+  {
+    "id": "move_status_generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_move.rs",
+    "edits": [
+      {
+        "before": "receipt.pointer(\"/body/payload/reconciliationGeneration\")\n                != Some(&json!(snapshot.reconciliation_generation()))",
+        "after": "false"
+      }
+    ],
+    "witness": "move_status_ticket_rejects_stale_generation_and_replay"
+  }
+]

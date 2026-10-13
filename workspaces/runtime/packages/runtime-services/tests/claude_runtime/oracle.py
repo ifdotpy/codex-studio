@@ -112,7 +112,7 @@ def case(name, modify=lambda a,t,s,e,c,r: None, turn=False, followup=None):
 
 
 cases=[case("rpc_retry"),case("turn_retry",turn=True)]
-for key,value in [("provider","codex"),("autoWake",False),("status","paused"),("deletedAt",1),("agentArchive",{"archivedAt":1}),("nativeFailureHold",True),("accountTransferId","move"),("workspaceOperation","branch"),("epoch",3),("turnEpoch",4),("threadId","foreign"),("turnId","busy")]:
+for key,value in [("provider","codex"),("autoWake",False),("status","paused"),("deletedAt",1),("agentArchive",{"at":1,"epoch":2}),("nativeFailureHold",True),("accountTransferId","move"),("workspaceOperation","branch"),("epoch",3),("turnEpoch",4),("threadId","foreign"),("turnId","busy")]:
     cases.append(case("agent_"+key,lambda a,t,s,e,c,r,k=key,v=value:a.update({k:v})))
 for key,value in [("submitted",False),("accountKey","foreign"),("connectionId","stale"),("nativeOperationId","foreign"),("events",["one","one"]),("id","foreign"),("action","compact"),("activeAtReservation",True)]:
     cases.append(case("attempt_"+key,lambda a,t,s,e,c,r,k=key,v=value:t.update({k:v})))

@@ -1,0 +1,452 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "TransferMemberRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "archiveInvalidated": {
+          "title": "Archiveinvalidated",
+          "type": "boolean"
+        },
+        "continueAfterTransfer": {
+          "title": "Continueaftertransfer",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "interruptOutcome": {
+          "anyOf": [
+            {
+              "enum": ["acknowledged", "unknown", "rejected"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Interruptoutcome"
+        },
+        "interruptReason": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Interruptreason"
+        },
+        "interruptSubmittedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Interruptsubmittedat"
+        },
+        "lazy": {
+          "title": "Lazy",
+          "type": "boolean"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
+        "nativeMethod": {
+          "anyOf": [
+            {
+              "enum": ["thread/start", "thread/fork"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nativemethod"
+        },
+        "nativeParams": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nativeparams"
+        },
+        "phase": {
+          "enum": [
+            "waiting",
+            "lazy",
+            "reading",
+            "interrupting",
+            "submitted",
+            "lazy_submitted",
+            "ready",
+            "blocked",
+            "unknown",
+            "completed",
+            "left"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Result"
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Settings"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "sourceAccountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Sourceaccountkey",
+          "type": "string"
+        },
+        "sourceThreadId": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sourcethreadid"
+        },
+        "submittedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Submittedat"
+        },
+        "targetConnection": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Targetconnection"
+        },
+        "targetSettings": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Targetsettings"
+        },
+        "transportTicket": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransferTransportTicket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "maxLength": 65536,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Waiting"
+        }
+      },
+      "required": ["phase", "sourceAccountKey"],
+      "title": "TransferMemberRecord",
+      "type": "object"
+    },
+    "TransferRequestIdentity": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "leadId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Leadid",
+          "type": "string"
+        },
+        "scope": {
+          "enum": ["team", "subagents"],
+          "title": "Scope",
+          "type": "string"
+        },
+        "targetAccountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Targetaccountkey",
+          "type": "string"
+        }
+      },
+      "required": ["leadId", "targetAccountKey"],
+      "title": "TransferRequestIdentity",
+      "type": "object"
+    },
+    "TransferTransportTicket": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "account": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Account",
+          "type": "string"
+        },
+        "agent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "connection": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Connection",
+          "type": "string"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "operation": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "request": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Request",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "agent",
+        "epoch",
+        "account",
+        "connection",
+        "request"
+      ],
+      "title": "TransferTransportTicket",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "finishHistory": {
+      "title": "Finishhistory",
+      "type": "boolean"
+    },
+    "id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "leadId": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Leadid",
+      "type": "string"
+    },
+    "members": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TransferMemberRecord"
+      },
+      "maxProperties": 2048,
+      "propertyNames": {
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "title": "Members",
+      "type": "object"
+    },
+    "requests": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TransferRequestIdentity"
+      },
+      "maxProperties": 4096,
+      "propertyNames": {
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "title": "Requests",
+      "type": "object"
+    },
+    "scope": {
+      "enum": ["team", "subagents"],
+      "title": "Scope",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["pending", "completed", "cancelled"],
+      "title": "Status",
+      "type": "string"
+    },
+    "targetAccountKey": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Targetaccountkey",
+      "type": "string"
+    },
+    "targetProvider": {
+      "anyOf": [
+        {
+          "maxLength": 65536,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Targetprovider"
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Updated"
+    }
+  },
+  "required": [
+    "id",
+    "leadId",
+    "targetAccountKey",
+    "status",
+    "created",
+    "members"
+  ],
+  "title": "PersistedAccountTransferRecord",
+  "type": "object"
+}

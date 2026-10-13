@@ -18,7 +18,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_state(backend) -> None:
@@ -301,11 +301,26 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertNotEqual(resumed.json()["fingerprint"], fingerprint)
         self.assertEqual(resumed.json()["fileGeneration"], generation + 1)
 
+    def start_quiescent_backend(self) -> None:
+        # Lifecycle tests resume periodic rules and cancel pending monitors.
+        # Exact no-write proofs need their own owner with no timers or active
+        # monitors; terminal monitors remain available for the input/cancel API.
+        backend = BackendProcess(Path(os.environ["TMPDIR"]))
+        self.addCleanup(backend.close)
+        backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+        seed_state(backend)
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            database.execute("DELETE FROM runtime_rules")
+            database.execute("DELETE FROM runtime_monitors WHERE json_extract(record,'$.status') != 'completed'")
+        backend.start()
+        self.backend = backend
+
     def test_low_worker_idempotence_and_fresh_save_field_set(self) -> None:
+        self.start_quiescent_backend()
         backend = self.backend
         blank_liveness = backend.request("POST", "/api/rules", headers=self.headers(), body={
             "action": "save", "id": "blank-live", "agent": "monitor-contract-agent",
-            "name": "Blank liveness", "kind": "interval", "livenessCommand": "   ",
+            "name": "Blank liveness", "kind": "event", "event": "worker_completed", "livenessCommand": "   ",
         })
         self.assertEqual(blank_liveness.status, 200, blank_liveness.body[:1000])
         self.assertEqual(blank_liveness.json()["livenessCommand"], "")
@@ -408,24 +423,73 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(no_write_snapshot(backend.state), before)
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_monitor_input_and_cancel_remain_unregistered(self) -> None:
+    def test_null_resize_fields_are_refused_without_writes(self) -> None:
+        self.start_quiescent_backend()
+        before = no_write_snapshot(self.backend.state)
+        for name in ("rows", "cols"):
+            response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id": "contract-monitor", name: None})
+            self.assertEqual(response.status, 400, response.body[:1000])
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+                self.assertEqual(response.json()["location"], ["body", name])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_terminal_monitor_cancel_is_idempotent_and_input_is_inactive(self) -> None:
+        self.start_quiescent_backend()
+        before = no_write_snapshot(self.backend.state)
+        for _ in range(2):
+            response = self.backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json(), {"id":"contract-monitor", "status":"completed"})
+        response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id":"contract-monitor", "text":"x"})
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_pending_monitor_cancel_expires_approval_and_records_exit(self) -> None:
         backend = self.backend
-        input_response = backend.request(
-            "POST",
-            "/api/monitor/input",
-            headers=self.headers(),
-            body={"id": "contract-monitor", "text": ""},
-        )
-        cancel_response = backend.request(
-            "POST",
-            "/api/monitor/cancel",
-            headers=self.headers(),
-            body={"id": "contract-monitor"},
-        )
-        for response in (input_response, cancel_response):
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+            original = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
+            actor = db.execute("SELECT record FROM runtime_agents WHERE id='monitor-contract-agent'").fetchone()[0]
+            monitor = json.loads(original)
+            monitor.update(id="pending-cancel", status="approval", epoch=json.loads(actor)["epoch"])
+            db.execute("INSERT INTO runtime_monitors VALUES(?,?)", (monitor["id"], json.dumps(monitor)))
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false')) WHERE id='monitor-contract-agent'")
+            db.execute("INSERT INTO runtime_requests VALUES(?,?)", ("cancel-approval", json.dumps({"id":"cancel-approval","method":"monitor/approve","agent":"monitor-contract-agent","params":{"monitorId":"pending-cancel"},"status":"pending","createdAt":1})))
+        try:
+            response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"pending-cancel"})
+            self.assertEqual(response.status, 200, response.body[:1000])
+            value = response.json()
+            entities = value.pop("_syncEntities", [])
+            after = value.pop("_syncEntitiesAfter", None)
+            self.assertEqual(value, {"id":"pending-cancel","status":"cancelled","cancelRequested":False})
+            self.assertIsInstance(after, int)
+            self.assertIn("entity:monitor:pending-cancel", [entity["id"] for entity in entities])
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                stored = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='pending-cancel'").fetchone()[0])
+                approval = json.loads(db.execute("SELECT record FROM runtime_requests WHERE id='cancel-approval'").fetchone()[0])
+                event = db.execute("SELECT text,status FROM runtime_events WHERE id='monitor:pending-cancel'").fetchone()
+            self.assertEqual(stored["status"], "cancelled")
+            self.assertEqual(approval["status"], "expired")
+            self.assertEqual(json.loads(event[0])["status"], "cancelled")
+            self.assertEqual(event[1], "cancelled")
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                db.execute("UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'", (actor,))
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_running_monitor_cancel_refuses_native_dependency_without_writes(self) -> None:
+        backend = self.backend
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+            old = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
+            db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id='contract-monitor'")
+        try:
+            before = no_write_snapshot(backend.state)
+            response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
             self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json()["error"], "Not implemented")
+            self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/monitor-commands")
+            self.assertEqual(no_write_snapshot(backend.state), before)
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                db.execute("UPDATE runtime_monitors SET record=? WHERE id='contract-monitor'", (old,))
 
 
 if __name__ == "__main__":

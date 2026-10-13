@@ -18,6 +18,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 from studio_api.work.models import ChatRead
+from studio_api.persisted_federation import PersistedFederationRoom
 
 spec=importlib.util.spec_from_file_location("chat_fixture",Path(__file__).with_name("runtime-contract.py"))
 fixture=importlib.util.module_from_spec(spec)
@@ -50,7 +51,11 @@ def seed(backend):
             runtime.put(db,"projects",project)
             from codex_federation import FederationService
             FederationService.ensure_tables(db)
-            federation={"id":"federated","status":"approved","localApproved":True,"remoteApproved":True,"localMembers":[worker["id"],lead["id"],lead["id"]],"remoteMembers":[{"id":"other","name":"Remote"}],"localParticipants":[],"peerId":"peer","peerLabel":"Peer server","name":"Federated room"}
+            federation={"id":"federated","status":"approved","localApproved":True,"remoteApproved":True,"localMembers":[worker["id"],lead["id"],lead["id"]],"remoteMembers":[{"id":"other","role":"agent","name":"Remote"}],"localParticipants":[],"peerId":"peer","peerLabel":"Peer server","name":"Federated room"}
+            # Match the complete storage row written by FederationService.create_room.
+            federation.update(kind="federated", shareNames=True, shareStatus=False,
+                              created=123.0, updated=123.0, sequence=0, remoteSequence=0)
+            PersistedFederationRoom.model_validate(federation)
             db.execute("INSERT INTO runtime_federation_rooms(id,record) VALUES(?,?)",("federated",json.dumps(federation)))
             rooms=[
                 {"id":"ordered","kind":"private","members":[lead["id"],worker["id"]],"customName":""},
@@ -174,7 +179,7 @@ class AgentChatHTTPContract(TimedHTTPContractTest,unittest.TestCase):
         with sqlite3.connect(path) as db:
             original=db.execute("SELECT record FROM runtime_federation_rooms WHERE id='federated'").fetchone()[0]
         try:
-            for person in ({"id":"other"},{"id":"other","name":""}):
+            for person in ({"id":"other","role":"agent"},{"id":"other","role":"agent","name":""}):
                 record=json.loads(original); record["remoteMembers"]=[person]
                 with sqlite3.connect(path) as db:
                     db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id='federated'",(json.dumps(record),))

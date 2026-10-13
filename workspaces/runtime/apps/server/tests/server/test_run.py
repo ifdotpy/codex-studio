@@ -213,6 +213,46 @@ class ServerSuiteRunner(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_suite_children_skip_protected_codex_paths_when_discovering_node(self):
+        import shutil
+        safe_path = os.pathsep.join(
+            entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+            if entry and not RUNNER._is_protected_home_path(entry)
+        )
+        safe_node = shutil.which("node", path=safe_path)
+        self.assertIsNotNone(safe_node, "Node is required for the isolated suite environment")
+        home = Path(RUNNER.pwd.getpwuid(os.getuid()).pw_dir) if RUNNER.pwd is not None else Path.home()
+        protected_home = home / ".codex"
+        protected_node = protected_home / "packages" / "app-server" / "codex-path" / "node"
+        protected_package_path = protected_node.parent
+        protected_arg0_path = protected_home / "tmp" / "arg0" / "codex-arg0fixture"
+        with tempfile.TemporaryDirectory(prefix="server-protected-node-path-") as directory:
+            root = Path(directory)
+            suite_root = root / "suite"
+            suite_root.mkdir()
+            inherited_path = os.pathsep.join(
+                (str(protected_package_path), str(protected_arg0_path), safe_path)
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PATH": inherited_path, "CODEX_NODE": str(protected_node)},
+                clear=True,
+            ):
+                environment = RUNNER._suite_environment(ROOT, suite_root)
+
+            self.assertEqual(environment["CODEX_NODE"], safe_node)
+            self.assertEqual(
+                shutil.which("node", path=environment["PATH"]),
+                str(suite_root / "tools" / "node"),
+            )
+            self.assertNotIn(str(protected_home), environment["PATH"])
+            result = subprocess.run(
+                ["node", "-e", "require('node:crypto').generateKeyPairSync('ed25519')"],
+                env=environment, capture_output=True, text=True,
+                timeout=HANG_GUARD_SECONDS,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_resolved_codex_binary_is_scoped_to_pty_integration_suites(self):
         with tempfile.TemporaryDirectory(prefix="server-codex-bin-scope-") as directory:
             root = Path(directory)
@@ -269,10 +309,10 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/notification-scheduler-contract.py"], "expensive")
         automated = RUNNER.only_category(RUNNER.inventory(), "automated")
-        self.assertEqual(len(automated), 26)
+        self.assertEqual(len(automated), 27)
         self.assertEqual({path for path, _kind in automated}, set(RUNNER.AUTOMATED_SUITES))
         self.assertEqual(sum(kind == "safe" for _path, kind in automated), 16)
-        self.assertEqual(sum(kind == "automated" for _path, kind in automated), 10)
+        self.assertEqual(sum(kind == "automated" for _path, kind in automated), 11)
         self.assertFalse(any(kind == "expensive" for _path, kind in automated))
         self.assertTrue(all(path not in RUNNER.EXPENSIVE_SUITES for path, _kind in automated))
         heavy = RUNNER.only_category(RUNNER.inventory(), "heavy")
@@ -617,6 +657,20 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(skipped_only, [("native.py", "native")])
         self.assertEqual(failures, [])
 
+    def test_scratch_holder_diagnostic_only_reads_our_process_tree(self):
+        snapshot = subprocess.CompletedProcess([], 0, stdout="10 1\n11 10\n12 11\n20 1\n")
+        with (mock.patch.object(RUNNER.os, "getpid", return_value=10),
+              mock.patch.object(RUNNER.subprocess, "run", return_value=snapshot),
+              mock.patch.object(Path, "is_dir", return_value=True),
+              mock.patch.object(Path, "iterdir", return_value=iter(())),
+              mock.patch.object(Path, "read_text", return_value="fixture"),
+              mock.patch.object(RUNNER.os.path, "realpath", return_value="/fixture"),
+              mock.patch.object(RUNNER.os, "readlink", return_value="/fixture") as readlink):
+            report = RUNNER._scratch_holder_report("/fixture")
+        self.assertEqual(readlink.call_args_list, [
+            mock.call(Path(f"/proc/{pid}/cwd")) for pid in (10, 11, 12)])
+        self.assertEqual(report, "processes still using it: 10 (fixture), 11 (fixture), 12 (fixture)")
+
     def test_scratch_cleanup_failure_names_its_holder_and_is_not_a_start_failure(self):
         holders = []
 
@@ -775,6 +829,7 @@ class ServerSuiteRunner(unittest.TestCase):
                   mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
                   mock.patch.object(RUNNER, "_memory_scratch_root", side_effect=memory_root),
                   mock.patch.object(RUNNER, "TEST_TMP_ROOT", disk_root),
+                  mock.patch.object(RUNNER, "TMP_ROOT_OVERRIDE", None),
                   mock.patch.object(RUNNER, "run_process", execute)):
                 runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                     [("one.py", "safe")], set(), 1, 1, execute=execute,

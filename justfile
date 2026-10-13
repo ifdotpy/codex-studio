@@ -49,6 +49,10 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
+[doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
+test-rust-runtime-corpora *args:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace --run-ignored all -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state) | binary(/_corpus$/) | binary(monitor_recovery) | binary(rules_tick_atomic) | binary(costs_differential) | binary(/^account_transfer/) | test(every_scenario_recovers_at_every_bridge_boundary) | binary(/^claude_/) | binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/) | package(studio-process-supervisor) | binary(/^continuation_recovery$/) | binary(/^analytics_history_checkpoint$/) | binary(/^portable_history_python_parity$/) | binary(/^payload_safety_oracle$/)' {{args}}
+
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
@@ -60,6 +64,14 @@ test-server-opt-in category="automated":
 [doc("Run one exact load-class server suite after printing its manual-run conditions.")]
 test-server-load suite="":
     @node {{quote(facade)}} test-server-load {{quote(suite)}}
+
+[doc("Run the isolated 16-worker HTTP message acceptance performance measurement; announce it as a load run.")]
+runtime-load-message-acceptance *args:
+    @node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/message_acceptance.mjs {{args}}
+
+[doc("Run the announced one-tab, 16-worker Runtime callback and UI load profile.")]
+runtime-load-browser-16 *args:
+    @node workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/run.mjs --teams 1 --workers-per-team 16 --rounds 1 --steady-seconds 3 --offered-rate 16 --transports 1 --producer-pool-size 1 {{args}}
 
 [doc("Measure Rust HTTP operations and discovered harness-suite conformance; writes full results beneath XDG_CACHE_HOME.")]
 rust-http-conformance-ledger:
@@ -78,14 +90,6 @@ test-browser-smoke:
 test-heavy:
     @node {{quote(facade)}} test-heavy
 
-[doc("Run the full Rust readiness, lifecycle, notification, preparation and subsystem matrices (manual heavy tier; no load generators).")]
-test-rust-runtime-corpora:
-    @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare|thread_prepare|submit_gates|budget|radio_policy|voice_provider|recovery|catalog_reads)_corpus$/) or test(every_scenario_recovers_at_every_bridge_boundary)'
-
-    @cargo nextest run -p studio-runtime-services -E 'binary(/^claude_/) or binary(/^(recovery_history|recovery_store|task_recovery|supervisor_journal)$/)'
-    @cargo nextest run -p studio-process-supervisor
-
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
@@ -93,3 +97,18 @@ test-rust-runtime-corpora-mutations *args:
 [doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
 test-rust-session-fairness:
     @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
+[doc("Run seeded monitor mutations in an external isolated target directory.")]
+test-rust-monitors-mutations target:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/monitors/mutations.json --filter 'binary(/monitor_(corpus|recovery)/)'
+
+[doc("Run seeded relocation mutations in an external isolated target directory.")]
+test-rust-relocation-mutations target:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/relocation/mutations.json --filter 'binary(relocation_corpus)'
+
+[doc("Run the rules mutation corpus in an isolated target outside the checkout.")]
+test-rust-rules-mutations target *args:
+    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/rules_engine/mutations.json --filter 'binary(rules_engine_corpus) or binary(rules_tick_atomic)' {{args}}
+
+[doc("Run the full isolated continuation corpus and store fault matrix; no provider requests.")]
+test-rust-usage-resume-corpora:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/^continuation_(corpus|recovery)$/)'
