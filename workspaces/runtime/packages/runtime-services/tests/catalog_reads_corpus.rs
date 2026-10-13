@@ -163,12 +163,12 @@ fn python_written_history_and_scripted_provider_match_catalog_projections() {
     let managed = managed_tool_catalog(&catalog).expect("full selected tool inventory");
     assert_eq!(
         managed,
-        json!([{
+        vec![json!({
             "name":"fixture-tool",
             "description":"fixture description",
-        "inputSchema":{"type":"object"},
-        "strict":true
-        }])
+            "inputSchema":{"type":"object"},
+            "strict":true
+        })]
     );
     let mut capabilities = capabilities_base("agent-a", &snapshot, managed, observed, 1234.5);
     apply_capability_result(&mut capabilities, "skills", &expected["skillResponse"]);
