@@ -182,6 +182,42 @@ fn malformed_stored_rows_refuse_without_writes() {
 }
 
 #[test]
+fn capture_rows_bind_request_identity_without_writes() {
+    let data = oracle();
+    let case = &data["capture"][1];
+    let mut db = Connection::open_in_memory().expect("db");
+    db.execute_batch(data["template"].as_str().expect("schema"))
+        .expect("schema");
+    seed(&db, &case["before"]);
+    let raw: String = db
+        .query_row("SELECT record FROM analytics_turns LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .expect("Python row");
+    let row: Value = serde_json::from_str(&raw).expect("record");
+    for field in ["id", "agentId", "threadId", "turnId", "rootId"] {
+        let mut foreign = row.clone();
+        foreign[field] = json!("foreign");
+        db.execute("UPDATE analytics_turns SET record=?", [foreign.to_string()])
+            .expect("foreign identity");
+        let before = actual(&db, &case["before"]);
+        let prepared = PreparedCapture::event(
+            &case["agent"],
+            "turn/completed",
+            &json!({}),
+            20.,
+            200.,
+            CaptureSource::Live,
+        )
+        .expect("request");
+        let tx = db.transaction().expect("transaction");
+        assert!(CaptureSnapshot::load(&tx, prepared).is_err(), "{field}");
+        drop(tx);
+        assert_eq!(actual(&db, &case["before"]), before);
+    }
+}
+
+#[test]
 fn claude_python_and_canonical_rust_rows_replay_without_usage_writes() {
     use studio_runtime_store::analytics_capture::CaptureTable;
     let data = oracle();

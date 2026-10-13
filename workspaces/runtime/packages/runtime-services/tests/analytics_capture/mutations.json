@@ -40,6 +40,10 @@
       {
         "before": "&& anchor_at(&mut reader, offset)? != anchor",
         "after": "&& false && anchor_at(&mut reader, offset)? != anchor"
+      },
+      {
+        "before": "&& sha256_hex(&prefix) != anchor",
+        "after": "&& false && sha256_hex(&prefix) != anchor"
       }
     ]
   },
@@ -84,6 +88,83 @@
       {
         "before": ".map_err(StoreError::SchemaValidation)?\n        {",
         "after": ".map_err(StoreError::SchemaValidation)?\n            && false\n        {"
+      }
+    ]
+  },
+  {
+    "id": "capture-root-binding",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
+    "witness": "capture_rows_bind_request_identity_without_writes",
+    "edits": [
+      {
+        "before": "|| row[\"rootId\"] != meta[\"rootId\"]",
+        "after": "|| false"
+      }
+    ]
+  },
+  {
+    "id": "capture-turn-binding",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
+    "witness": "capture_rows_bind_request_identity_without_writes",
+    "edits": [
+      {
+        "before": "if row[\"turnId\"] != meta[\"turnId\"] {",
+        "after": "if false && row[\"turnId\"] != meta[\"turnId\"] {"
+      }
+    ]
+  },
+  {
+    "id": "capture-key-binding",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/analytics_capture.rs",
+    "witness": "capture_rows_bind_request_identity_without_writes",
+    "edits": [
+      {
+        "before": "if value[\"id\"].as_str() != Some(id) {",
+        "after": "if false && value[\"id\"].as_str() != Some(id) {"
+      }
+    ]
+  },
+  {
+    "id": "consumed-range-proof",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+    "witness": "changed_consumed_range_is_refused_before_any_effect",
+    "edits": [
+      {
+        "before": "proof.validate()?;",
+        "after": "let _ = proof;"
+      }
+    ]
+  },
+  {
+    "id": "discovery-prefix",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history/discovery.rs",
+    "witness": "discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules",
+    "edits": [
+      {
+        "before": "s.starts_with(\"rollout-\") && s.ends_with(\".jsonl\")",
+        "after": "s.ends_with(\".jsonl\")"
+      }
+    ]
+  },
+  {
+    "id": "discovery-symlink",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history/discovery.rs",
+    "witness": "discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules",
+    "edits": [
+      {
+        "before": "if kind.is_dir() {",
+        "after": "if entry.path().is_dir() {"
+      }
+    ]
+  },
+  {
+    "id": "discovery-round",
+    "file": "workspaces/runtime/packages/runtime-services/src/analytics_history/discovery.rs",
+    "witness": "collector_shares_discovery_between_actors_until_next_round",
+    "edits": [
+      {
+        "before": "if !self.profiles.contains_key(&profile) {",
+        "after": "if true || !self.profiles.contains_key(&profile) {"
       }
     ]
   }

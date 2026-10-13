@@ -9,6 +9,11 @@ use crate::analytics_capture::{
 };
 use crate::analytics_rollout::{RolloutAction, RolloutContext};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+mod read_proof;
+use read_proof::ReadProof;
+mod discovery;
+pub use discovery::DiscoveryRound;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -21,7 +26,7 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_BATCH_BYTES: usize = 1024 * 1024;
 pub const MAX_BATCH_RECORDS: usize = 128;
 const ANCHOR_BYTES: u64 = 256;
-const MAX_DISCOVERY_ENTRIES: usize = 65_536;
+
 #[derive(Debug, Error)]
 pub enum HistoryError {
     #[error(transparent)]
@@ -32,6 +37,8 @@ pub enum HistoryError {
     Read,
     #[error("analytics history checkpoint advanced concurrently")]
     StaleCheckpoint,
+    #[error("analytics history file changed while reading; checkpoint retained")]
+    ChangedDuringRead,
     #[error("analytics history collection cancelled")]
     Cancelled,
     #[error("Not implemented: requires analytics-history/budget-capture")]
@@ -63,9 +70,12 @@ impl Default for BatchLimits {
 /// Budget receipts must be idempotent by provider response/counter identity.
 /// A failure aborts the batch before its analytics cursor is acknowledged.
 /// The sink verifies current agent/account/epoch ownership in its own writer
-/// transaction, then calls `budget_service::capture` with History source. Its
-/// captured collection time supplies `now`; a replay must reuse the charge
-/// identity. Analytics and budget databases cannot share a SQLite commit.
+/// transaction, then calls `budget_service::capture` with History source and
+/// CURRENT durable agent ownership, not the supplied historical agent copy.
+/// Historical response/turn IDs remain in params; collection time supplies now.
+/// A replay must reuse the durable charge identity. The integrator must test
+/// the real sink across lost acknowledgements, failures and stale batches;
+/// analytics and budget databases cannot share a SQLite commit.
 pub trait HistoryBudgetSink {
     fn capture(&self, agent: &Value, params: &Value, at: f64) -> Result<(), HistoryError>;
 }
@@ -119,6 +129,7 @@ pub struct HistoryBatch {
     captures: Vec<PreparedCapture>,
     budget: Vec<(Value, Value, f64)>,
     advanced: bool,
+    read_proof: Option<ReadProof>,
 }
 impl HistoryBatch {
     pub fn checkpoint(&self) -> &Value {
@@ -128,11 +139,15 @@ impl HistoryBatch {
         self.advanced
     }
     pub fn commit(
-        self,
+        mut self,
         store: &RuntimeStore,
         budget: &dyn HistoryBudgetSink,
         now: f64,
     ) -> Result<Vec<ResponseRateAssociation>, HistoryError> {
+        // Re-read only before entering either writer or invoking budget effects.
+        if let Some(proof) = &mut self.read_proof {
+            proof.validate()?;
+        }
         for (agent, params, at) in &self.budget {
             budget.capture(agent, params, *at)?;
         }
@@ -178,6 +193,22 @@ pub fn collect_one(
     cancel: &AtomicBool,
     budget: &dyn HistoryBudgetSink,
 ) -> Result<bool, HistoryError> {
+    let path = if agent["provider"] == "claude" {
+        RolloutPath::Missing
+    } else {
+        discover(profile, text(&agent["threadId"]), cancel)?
+    };
+    collect_path(store, agent, profile, (path, limits), now, cancel, budget)
+}
+fn collect_path(
+    store: &RuntimeStore,
+    agent: Value,
+    profile: &Path,
+    selection: (RolloutPath, BatchLimits),
+    now: f64,
+    cancel: &AtomicBool,
+    budget: &dyn HistoryBudgetSink,
+) -> Result<bool, HistoryError> {
     let key = format!(
         "{}:{}:{}",
         text(&agent["id"]),
@@ -192,12 +223,7 @@ pub fn collect_one(
     let previous = Repo::read(&read, CaptureTable::History, &key)?;
     drop(read);
     let snapshot = HistorySnapshot::from_records(agent, previous)?;
-    let path = if snapshot.agent["provider"] == "claude" {
-        RolloutPath::Missing
-    } else {
-        discover(profile, text(&snapshot.agent["threadId"]), cancel)?
-    };
-    let batch = prepare(snapshot, profile, path, limits, now, cancel)?;
+    let batch = prepare(snapshot, profile, selection.0, selection.1, now, cancel)?;
     let advanced = batch.advanced();
     batch.commit(store, budget, now)?;
     Ok(advanced || budget_advanced)
@@ -217,42 +243,9 @@ pub fn discover(
     thread: &str,
     cancel: &AtomicBool,
 ) -> Result<RolloutPath, HistoryError> {
-    let mut directories = vec![profile.join("sessions"), profile.join("archived_sessions")];
-    let mut matches = Vec::new();
-    let mut entries = 0;
-    while let Some(directory) = directories.pop() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(HistoryError::Cancelled);
-        }
-        let read = match fs::read_dir(directory) {
-            Ok(v) => v,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Ok(RolloutPath::Unreadable),
-        };
-        for entry in read {
-            entries += 1;
-            if entries > MAX_DISCOVERY_ENTRIES {
-                return Err(HistoryError::DiscoveryLimit);
-            }
-            let entry = entry.map_err(|_| HistoryError::Read)?;
-            let kind = entry.file_type().map_err(|_| HistoryError::Read)?;
-            if kind.is_dir() {
-                directories.push(entry.path());
-            } else if entry.file_name().to_str().is_some_and(|s| {
-                s.starts_with("rollout-") && s.ends_with(&format!("-{thread}.jsonl"))
-            }) {
-                matches.push(entry.path());
-                if matches.len() > 1 {
-                    return Ok(RolloutPath::Ambiguous);
-                }
-            }
-        }
-    }
-    Ok(matches
-        .pop()
-        .map(RolloutPath::Found)
-        .unwrap_or(RolloutPath::Missing))
+    DiscoveryRound::default().resolve(profile, thread, cancel)
 }
+
 pub fn prepare(
     mut snapshot: HistorySnapshot,
     profile: &Path,
@@ -392,6 +385,21 @@ pub fn prepare(
         increment(&mut snapshot.state, "filesystemRemapCount", 1)?;
     }
     snapshot.state["filesystemIdentity"] = identity;
+    let range_start = offset.saturating_sub(ANCHOR_BYTES);
+    reader
+        .seek(SeekFrom::Start(range_start))
+        .map_err(|_| HistoryError::Read)?;
+    let mut prefix = vec![0; (offset - range_start) as usize];
+    reader
+        .read_exact(&mut prefix)
+        .map_err(|_| HistoryError::Read)?;
+    if let Some(anchor) = snapshot.state["anchor"].as_str()
+        && sha256_hex(&prefix) != anchor
+    {
+        return Err(HistoryError::ChangedDuringRead);
+    }
+    let mut digest = Sha256::new();
+    digest.update(&prefix);
     reader
         .seek(SeekFrom::Start(offset))
         .map_err(|_| HistoryError::Read)?;
@@ -428,6 +436,7 @@ pub fn prepare(
             break;
         }
         let start = offset + consumed;
+        digest.update(&line);
         consumed += line.len() as u64;
         count += 1;
         let record = match serde_json::from_slice::<Value>(&line) {
@@ -513,6 +522,13 @@ pub fn prepare(
         captures,
         budget,
         advanced: consumed > 0,
+        read_proof: Some(ReadProof::new(
+            reader.into_inner(),
+            path,
+            range_start,
+            offset + consumed - range_start,
+            digest.finalize().into(),
+        )),
     })
 }
 fn increment(state: &mut Value, key: &str, count: u64) -> Result<(), HistoryError> {
@@ -539,6 +555,7 @@ fn refused(mut snapshot: HistorySnapshot, status: &str, error: Option<&str>) -> 
         captures: vec![],
         budget: vec![],
         advanced: false,
+        read_proof: None,
     }
 }
 fn bounded_line(reader: &mut BufReader<File>) -> Result<Vec<u8>, HistoryError> {
@@ -560,12 +577,12 @@ fn anchor_at(reader: &mut BufReader<File>, offset: u64) -> Result<String, Histor
     Ok(sha256_hex(&bytes))
 }
 #[cfg(unix)]
-fn filesystem_identity(info: &fs::Metadata) -> Value {
+pub(super) fn filesystem_identity(info: &fs::Metadata) -> Value {
     use std::os::unix::fs::MetadataExt;
     json!([info.dev(), info.ino()])
 }
 #[cfg(not(unix))]
-fn filesystem_identity(_: &fs::Metadata) -> Value {
+pub(super) fn filesystem_identity(_: &fs::Metadata) -> Value {
     Value::Null
 }
 fn inherited_threads(agent: &Value) -> Vec<String> {
@@ -670,8 +687,16 @@ pub struct HistoryClock {
 #[derive(Default)]
 pub struct HistoryCollector {
     pub schedule: crate::analytics_history_schedule::HistorySchedule,
+    discovery: DiscoveryRound,
+    visited: std::collections::BTreeSet<String>,
 }
 impl HistoryCollector {
+    /// Start each caller-owned timer/notification round with a fresh shared scan.
+    /// An idle selection or revisiting an actor also closes the previous round.
+    pub fn begin_round(&mut self) {
+        self.discovery = DiscoveryRound::default();
+        self.visited.clear();
+    }
     pub fn step(
         &mut self,
         store: &RuntimeStore,
@@ -682,14 +707,25 @@ impl HistoryCollector {
         budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
         let Some(agent) = self.schedule.next(actors, clock.monotonic)?.cloned() else {
+            self.begin_round();
             return Ok(false);
         };
+        if self.visited.len() >= actors.len() || self.visited.contains(text(&agent["id"])) {
+            self.begin_round();
+        }
+        self.visited.insert(text(&agent["id"]).to_owned());
         let home = profile(agent["accountKey"].as_str().unwrap_or("default"))?;
-        let advanced = collect_one(
+        let path = if agent["provider"] == "claude" {
+            RolloutPath::Missing
+        } else {
+            self.discovery
+                .resolve(&home, text(&agent["threadId"]), cancel)?
+        };
+        let advanced = collect_path(
             store,
             agent.clone(),
             &home,
-            BatchLimits::default(),
+            (path, BatchLimits::default()),
             clock.observed_at,
             cancel,
             budget,
