@@ -119,6 +119,43 @@ class RateContract(unittest.TestCase):
             self.assertFalse(rates._publication_dirty)
             self.assertFalse(rates._publication_scheduled)
 
+    def test_missing_hub_retries_quietly_until_resource_publication_is_available(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=[None, True]) as publish, \
+                    self.assertNoLogs('codex_token_rate', level='ERROR'):
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                DeferredTimer.instances[0].fire()
+
+                self.assertEqual(publish.call_count, 1)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                self.assertEqual(DeferredTimer.instances[1].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+                self.assertTrue(rates._publication_dirty)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(publish.call_count, 2)
+            self.assertFalse(rates._publication_dirty)
+            self.assertFalse(rates._publication_scheduled)
+
     def test_workspace_publication_coalesces_events_into_latest_bounded_snapshot(self):
         class DeferredTimer:
             instances = []

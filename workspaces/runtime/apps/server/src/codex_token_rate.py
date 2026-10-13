@@ -203,6 +203,7 @@ class TokenRates:
         self._publication_timer = None
         self._publication_dirty = False
         self._publication_scheduled = False
+        self._publication_failure_logged = False
 
     def _publish_if_changed(self):
         if self.state_dir is None:
@@ -243,6 +244,7 @@ class TokenRates:
         # Keep the scheduling lock out of snapshotting, serialization and hub
         # publication so event producers can mark a newer snapshot dirty.
         published = False
+        failure_message = None
         try:
             with self.lock:
                 current = self.workspace_snapshot()
@@ -259,19 +261,28 @@ class TokenRates:
                 snapshot = TokenRateSnapshot(rates=rates, teams=teams)
                 from studio_api.sync.resources.hub import publish_token_rates
 
-                if not publish_token_rates(self.state_dir, snapshot):
-                    raise RuntimeError('token-rate resource hub did not accept the snapshot')
-                self._last_published_snapshot = current
-                published = True
-        except Exception:
-            logging.getLogger(__name__).exception('Unable to publish token-rate snapshot')
+                result = publish_token_rates(self.state_dir, snapshot)
+                if result is True:
+                    self._last_published_snapshot = current
+                    published = True
+                elif result is False:
+                    failure_message = 'resource hub rejected the snapshot'
+        except Exception as error:
+            failure_message = str(error)
 
         with self._publication_lock:
+            should_log_failure = bool(failure_message) and not self._publication_failure_logged
+            if should_log_failure:
+                self._publication_failure_logged = True
+            if published:
+                self._publication_failure_logged = False
             if not published:
                 self._publication_dirty = True
             if not self._publication_dirty:
                 self._publication_scheduled = False
                 return
+        if should_log_failure:
+            logging.getLogger(__name__).error('Unable to publish token-rate snapshot: %s', failure_message)
         # Retain one scheduled worker while new events arrive. A failed publish
         # retries at a fixed interval, bounding both memory and retry frequency.
         delay = (TOKEN_RATE_PUBLICATION_DELAY_SECONDS if published
