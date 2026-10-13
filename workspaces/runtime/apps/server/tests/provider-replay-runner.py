@@ -63,6 +63,16 @@ class ProviderReplay(unittest.TestCase):
 
     def claude_transport(self, root, fixture_path):
         source = CLAUDE_BRIDGE_ROOT
+        # The replay keeps the real bridge and its pinned schema packages.
+        dependencies = ("zod", "@modelcontextprotocol/sdk")
+        missing = [str(source / "node_modules" / name) for name in dependencies
+                   if not (source / "node_modules" / name).is_dir()]
+        if missing:
+            self.fail(
+                "Test environment: the Claude bridge dependencies are not installed: "
+                + ", ".join(missing)
+                + ". Run `pnpm install --frozen-lockfile` at the repository root. "
+                "CI runs it in .github/actions/fast-tier-setup before the server suites.")
         bridge_root = root / "claude-bridge"
         bridge_root.mkdir()
         for module in source.glob("*.mjs"):
@@ -96,12 +106,10 @@ class ProviderReplay(unittest.TestCase):
               };
             }
         '''))
-        zod_target = bridge_root / "node_modules" / "zod"
-        zod_target.symlink_to(source / "node_modules" / "zod", target_is_directory=True)
-        mcp_sdk_target = bridge_root / "node_modules" / "@modelcontextprotocol" / "sdk"
-        mcp_sdk_target.parent.mkdir(parents=True)
-        mcp_sdk_target.symlink_to(source / "node_modules" / "@modelcontextprotocol" / "sdk",
-                                  target_is_directory=True)
+        for name in dependencies:
+            target = bridge_root / "node_modules" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source / "node_modules" / name, target_is_directory=True)
         node = shutil.which("node")
         self.assertIsNotNone(node, "Node.js is required to replay the real Claude bridge")
         env = dict(os.environ)
