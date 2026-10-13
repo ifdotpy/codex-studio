@@ -1,4 +1,6 @@
 //! Complete Python-written rows through the transaction adapter, without providers.
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{
@@ -18,9 +20,9 @@ struct Oracle {
 }
 impl Oracle {
     fn new() -> Self {
-        let mut child = Command::new(
-            std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared isolated Python"),
-        )
+        let mut child = Command::new(python_test_support::prepared_python(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budget/oracle.py"))
         .stdin(Stdio::piped())

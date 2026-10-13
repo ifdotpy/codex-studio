@@ -1,8 +1,12 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::Value;
 use studio_runtime_services::claude_login::{LoginSnapshot, validate_code, verification_url};
 #[test]
 fn python_receipt_writer_code_once_and_validation() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated interpreter");
+    let python = python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = std::process::Command::new(python)
         .arg("-B")
         .arg(concat!(

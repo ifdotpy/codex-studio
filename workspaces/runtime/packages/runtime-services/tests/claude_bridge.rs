@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     account_driver::{AuthMetadata, AuthStatus},
@@ -5,17 +7,18 @@ use studio_runtime_services::{
 };
 #[test]
 fn python_launch_plans_and_explicit_recovery_holds() {
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("valid fixture"))
-            .args([
-                "-B",
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/claude_runtime/bridge_oracle.py"
-                ),
-            ])
-            .output()
-            .expect("valid fixture");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .args([
+        "-B",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_runtime/bridge_oracle.py"
+        ),
+    ])
+    .output()
+    .expect("valid fixture");
     assert!(
         output.status.success(),
         "{}",
@@ -85,9 +88,9 @@ fn bridge_source_fingerprint_and_generation_compatibility_are_conservative() {
     ] {
         std::fs::write(root.path().join(name), body).expect("fixture source");
     }
-    let output = std::process::Command::new(
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"),
-    )
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
     .args([
         "-B",
         concat!(

@@ -1,4 +1,6 @@
 #![allow(clippy::unwrap_used)]
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_providers::supervisor_v1::{
@@ -25,8 +27,9 @@ fn template(corpus: bool) -> tempfile::TempDir {
 }
 fn template_mode(mode: &str) -> tempfile::TempDir {
     let root = disposable_root();
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .expect("set CODEX_AGENTS_PYTHON to isolated prepared Python");
+    let python = python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let mut command = Command::new(python);
     command
         .arg("-B")

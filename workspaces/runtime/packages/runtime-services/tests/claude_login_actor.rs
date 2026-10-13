@@ -1,5 +1,7 @@
 #[path = "claude_runtime/login_fixture.rs"]
 mod fixture;
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use fixture::*;
 use std::sync::atomic::Ordering;
 use studio_runtime_services::claude_login::ports::LoginReceipts;
@@ -400,9 +402,9 @@ exit 0
 }
 
 fn oracle(args: &[&str]) -> serde_json::Value {
-    let output = std::process::Command::new(
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"),
-    )
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
     .args([
         "-B",
         concat!(

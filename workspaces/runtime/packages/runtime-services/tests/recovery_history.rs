@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, time::Instant};
 use studio_runtime_services::{
@@ -237,9 +239,9 @@ fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion() {
 
 #[test]
 fn complete_history_outputs_and_calls_match_python() {
-    let output = std::process::Command::new(
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("valid recovery fixture"),
-    )
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
     .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/history_oracle.py"))
     .output()
     .expect("valid recovery fixture");
@@ -335,14 +337,12 @@ fn exact_start_requires_unique_complete_client_receipt() {
 
 #[test]
 fn legacy_start_matches_python_complete_history() {
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
-            .arg(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/recovery/start_oracle.py"),
-            )
-            .output()
-            .expect("oracle");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/start_oracle.py"))
+    .output()
+    .expect("oracle");
     assert!(
         output.status.success(),
         "{}",

@@ -1,10 +1,13 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::Value;
 use std::{path::Path, process::Command};
 use studio_runtime_services::recovery_policy::{RecoverySnapshot, native_operations_settled};
 #[test]
 fn python_written_eligibility_corpus() {
-    let python =
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared isolated Python required");
+    let python = python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let result = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/oracle.py"))
         .output()

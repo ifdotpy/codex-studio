@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
@@ -361,7 +363,9 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
     } else {
         tempfile::tempdir().expect("temporary voice state root")
     };
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let python = python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let template = root.path().join("python-template");
     let state = root.path().join("state");
     let codex_home = root.path().join("codex-home");

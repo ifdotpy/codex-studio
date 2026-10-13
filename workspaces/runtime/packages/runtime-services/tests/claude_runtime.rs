@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::Value;
 use std::process::Command;
 use studio_runtime_services::claude_input_recovery::{
@@ -6,7 +8,9 @@ use studio_runtime_services::claude_input_recovery::{
 
 #[test]
 fn python_written_claude_rejection_corpus() {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON").expect("set isolated Python");
+    let python = python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = Command::new(python)
         .arg("-B")
         .arg(concat!(

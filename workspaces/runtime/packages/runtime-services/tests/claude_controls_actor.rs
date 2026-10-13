@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_services::claude_controls::{
@@ -50,21 +52,22 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
     let cwd = root.path().join("cwd");
     std::fs::create_dir(&template).expect("valid fixture");
     std::fs::create_dir(&cwd).expect("valid fixture");
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("valid fixture"))
-            .args([
-                "-B",
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/claude_runtime/controls_oracle.py"
-                ),
-                "--store-template",
-            ])
-            .arg(&template)
-            .arg("--cwd")
-            .arg(&cwd)
-            .output()
-            .expect("valid fixture");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .args([
+        "-B",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_runtime/controls_oracle.py"
+        ),
+        "--store-template",
+    ])
+    .arg(&template)
+    .arg("--cwd")
+    .arg(&cwd)
+    .output()
+    .expect("valid fixture");
     assert!(
         output.status.success(),
         "{}",
@@ -240,21 +243,22 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
     let cwd = root.path().join("cwd");
     std::fs::create_dir(&template).expect("valid fixture");
     std::fs::create_dir(&cwd).expect("valid fixture");
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("valid fixture"))
-            .args([
-                "-B",
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/claude_runtime/controls_oracle.py"
-                ),
-                "--store-template",
-            ])
-            .arg(&template)
-            .arg("--cwd")
-            .arg(&cwd)
-            .output()
-            .expect("valid fixture");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .args([
+        "-B",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/claude_runtime/controls_oracle.py"
+        ),
+        "--store-template",
+    ])
+    .arg(&template)
+    .arg("--cwd")
+    .arg(&cwd)
+    .output()
+    .expect("valid fixture");
     assert!(
         output.status.success(),
         "{}",

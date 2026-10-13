@@ -1,10 +1,12 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::task_recovery::{TaskRecoveryDecision, TaskRecoverySnapshot};
 #[test]
 fn exact_task_receipts_match_python_and_unknown_local_outcomes_override_native() {
-    let result = std::process::Command::new(
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared Python required"),
-    )
+    let result = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
     .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
     .output()
     .expect("valid recovery fixture");
@@ -135,9 +137,9 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
             Ok(true)
         }
     }
-    let output = std::process::Command::new(
-        std::env::var_os("CODEX_AGENTS_PYTHON").expect("valid recovery fixture"),
-    )
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
     .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
     .output()
     .expect("valid recovery fixture");
@@ -252,14 +254,12 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
             Ok(true)
         }
     }
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
-            .arg(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/recovery/task_oracle.py"),
-            )
-            .output()
-            .expect("oracle");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
+    .output()
+    .expect("oracle");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
     let case = &cases[0];
@@ -298,14 +298,15 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
 
 #[test]
 fn native_task_proofs_match_real_python_reader() {
-    let output =
-        std::process::Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
-            .arg(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/recovery/native_task_oracle.py"),
-            )
-            .output()
-            .expect("oracle");
+    let output = std::process::Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/recovery/native_task_oracle.py"),
+    )
+    .output()
+    .expect("oracle");
     assert!(
         output.status.success(),
         "{}",

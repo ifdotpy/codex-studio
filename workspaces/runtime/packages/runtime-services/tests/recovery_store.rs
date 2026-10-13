@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod python_test_support;
 use serde_json::json;
 use std::{fs, path::Path, process::Command, sync::OnceLock};
 use studio_runtime_services::{
@@ -17,11 +19,7 @@ fn scope() -> ConnectionScope {
 }
 fn fixture() -> tempfile::TempDir {
     fn temporary() -> tempfile::TempDir {
-        let base = if Path::new("/dev/shm").is_dir() {
-            std::path::PathBuf::from("/dev/shm")
-        } else {
-            std::env::temp_dir()
-        };
+        let base = std::env::temp_dir();
         tempfile::Builder::new()
             .prefix("cs-rust-turn-recovery-")
             .tempdir_in(base)
@@ -30,9 +28,9 @@ fn fixture() -> tempfile::TempDir {
     static TEMPLATE: OnceLock<Vec<(std::ffi::OsString, Vec<u8>)>> = OnceLock::new();
     let template = TEMPLATE.get_or_init(|| {
         let root = temporary();
-        let result = Command::new(
-            std::env::var_os("CODEX_AGENTS_PYTHON").expect("prepared Python required"),
-        )
+        let result = Command::new(python_test_support::prepared_python(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/state.py"))
         .arg(root.path())
         .output()
@@ -275,10 +273,12 @@ fn recovery_transaction_restart_matrix() {
 }
 
 fn oracle(name: &str) -> Vec<serde_json::Value> {
-    let output = Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("Python"))
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/recovery/{name}.py")))
-        .output()
-        .expect("oracle");
+    let output = Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/recovery/{name}.py")))
+    .output()
+    .expect("oracle");
     assert!(
         output.status.success(),
         "{}",
