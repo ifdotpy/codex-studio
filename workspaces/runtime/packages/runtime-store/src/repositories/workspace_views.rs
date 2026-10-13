@@ -1,8 +1,8 @@
-use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as SqlValue};
+use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
 use serde_json::Value;
 
 use crate::StoreResult;
-use crate::records::get_json_record;
+use crate::records::{AgentId, AgentRecord, Table, TaskId, TaskRecord};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTaskRow {
@@ -14,33 +14,29 @@ pub struct WorkspaceViewsRepository;
 
 impl WorkspaceViewsRepository {
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        get_json_record(connection, "runtime_tasks", id)
+        Ok(Table::<TaskRecord>::new(connection)
+            .get(&TaskId::from(id))?
+            .map(|record| record.value().clone()))
     }
 
-    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        get_json_record(connection, "runtime_agents", id)
+    pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
+        Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
     pub fn agent_ids(connection: &Connection) -> StoreResult<Vec<String>> {
-        Ok(connection
-            .prepare("SELECT id FROM runtime_agents")?
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?)
+        Ok(Table::<AgentRecord>::new(connection)
+            .list()?
+            .into_iter()
+            .map(|record| record.id().as_ref().to_owned())
+            .collect())
     }
 
-    pub fn first_invalid_task_identity(connection: &Connection) -> StoreResult<Option<String>> {
-        Ok(connection
-            .query_row(
-                "SELECT id FROM runtime_tasks WHERE CASE WHEN json_valid(record)=0 THEN 1 \
-                 ELSE json_type(record,'$.id') IS NOT 'text' \
-                 OR json_extract(record,'$.id') IS NOT id \
-                 OR json_type(record,'$.agent') IS NOT 'text' END LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?)
+    pub fn validate_task_records(connection: &Connection) -> StoreResult<()> {
+        Table::<TaskRecord>::new(connection).list()?;
+        Ok(())
     }
 
+    /// The composite cursor remains specialized because it orders by two JSON timestamps.
     pub fn task_page(
         connection: &Connection,
         agent_ids: &[String],
@@ -97,7 +93,6 @@ impl WorkspaceViewsRepository {
         args.push(SqlValue::Integer(
             i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
         ));
-        // Bind each predicate's values in the same order as its placeholders.
         let mut statement = connection.prepare(&sql)?;
         statement
             .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))?
