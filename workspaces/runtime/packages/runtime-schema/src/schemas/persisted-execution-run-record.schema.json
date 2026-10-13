@@ -27,9 +27,10 @@
       "title": "Created"
     },
     "epoch": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
       "title": "Epoch",
-      "type": "integer",
-      "x-safe-integer": "unsigned"
+      "type": "integer"
     },
     "id": {
       "title": "Id",

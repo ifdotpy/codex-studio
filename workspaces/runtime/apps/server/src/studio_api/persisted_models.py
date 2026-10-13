@@ -160,7 +160,7 @@ class PersistedExecutionRunRecord(ContractModel):
     id: StrictStr
     agent: StrictStr
     accountKey: StrictStr
-    epoch: SafeInt
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
     status: StrictStr
     created: StrictFloat | StrictInt
     threadId: StrictStr | None = None

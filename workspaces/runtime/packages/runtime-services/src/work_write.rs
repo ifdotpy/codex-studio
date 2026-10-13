@@ -17,7 +17,6 @@ use thiserror::Error;
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct CreateWork {
-    pub actor_id: String,
     pub title: String,
     pub description: String,
     pub owner: Option<String>,
@@ -45,10 +44,6 @@ pub enum WorkMutation {
         version: Option<i64>,
         reason: String,
     },
-    ByAgent {
-        actor_id: String,
-        action: Box<WorkMutation>,
-    },
     Cancel {
         task_id: String,
         version: Option<i64>,
@@ -57,7 +52,6 @@ pub enum WorkMutation {
 }
 
 pub struct SubmitWork {
-    pub actor_id: Option<String>,
     pub task_id: String,
     pub version: Option<i64>,
     pub result: String,
@@ -74,7 +68,6 @@ pub struct ClaimWork {
 }
 
 pub struct AcceptWork {
-    pub actor_id: Option<String>,
     pub task_id: String,
     pub version: Option<i64>,
     pub reason: String,
@@ -128,7 +121,30 @@ pub fn write(
     signature: &str,
     command: WorkWrite,
 ) -> Result<WorkWriteResult, WorkWriteError> {
+    write_internal(tx, agent_id, None, request_id, signature, command)
+}
+
+fn write_internal(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    actor_id: Option<&str>,
+    request_id: Option<&str>,
+    signature: &str,
+    command: WorkWrite,
+) -> Result<WorkWriteResult, WorkWriteError> {
     let agent = event_write::checked_agent(tx, agent_id)?;
+    let actor = if let Some(actor_id) = actor_id {
+        let actor = event_write::checked_agent(tx, actor_id)?;
+        if actor.root_id != agent.root_id {
+            return Err(Error::InvalidRequest("Actor belongs to another team").into());
+        }
+        if !event_write::truthy(actor.extra.get("autoWake")) {
+            return Err(Error::InvalidRequest("The caller is stopped").into());
+        }
+        Some(actor)
+    } else {
+        None
+    };
     if let Some(record) = event_write::read_receipt(
         tx,
         request_id,
@@ -159,14 +175,30 @@ pub fn write(
     }
     match command {
         WorkWrite::Create(input) => {
-            create(tx, &agent, input, request_id, signature).map_err(Into::into)
+            if let Some(actor) = &actor
+                && (actor.id != actor.root_id || agent.id != agent.root_id)
+            {
+                return Err(Error::InvalidRequest("Only the lead can create work").into());
+            }
+            create(
+                tx,
+                &agent,
+                input,
+                actor_id.unwrap_or(&agent.id.0),
+                request_id,
+                signature,
+            )
+            .map_err(Into::into)
         }
         WorkWrite::Mutate(input) => {
-            mutate(tx, &agent, input, request_id, signature).map_err(Into::into)
+            if let Some(actor) = &actor {
+                authorize_mutation(tx, &agent, actor, &input)?;
+            }
+            mutate(tx, &agent, input, actor_id, request_id, signature).map_err(Into::into)
         }
-        WorkWrite::Claim(input) => claim(tx, &agent, input, request_id, signature),
-        WorkWrite::Submit(input) => submit(tx, &agent, input, request_id, signature),
-        WorkWrite::Accept(input) => accept(tx, &agent, input, request_id, signature),
+        WorkWrite::Claim(input) => claim(tx, &agent, input, actor_id, request_id, signature),
+        WorkWrite::Submit(input) => submit(tx, &agent, input, actor_id, request_id, signature),
+        WorkWrite::Accept(input) => accept(tx, &agent, input, actor_id, request_id, signature),
     }
 }
 
@@ -179,78 +211,16 @@ pub fn write_as_agent(
     signature: &str,
     command: WorkActorWrite,
 ) -> Result<WorkActorResult, Error> {
-    let selected = event_write::checked_agent(tx, agent_id)?;
-    let actor = event_write::checked_agent(tx, actor_id)?;
-    if selected.root_id != actor.root_id {
-        return Err(Error::InvalidRequest("Actor belongs to another team"));
-    }
-    if !event_write::truthy(actor.extra.get("autoWake")) {
-        return Err(Error::InvalidRequest("The caller is stopped"));
-    }
-    if let Some(record) = event_write::read_receipt(
-        tx,
-        request_id,
-        signature,
-        "runtime_work",
-        request_id.unwrap_or(agent_id),
-        |value| {
-            value
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
-        },
-    )? {
-        return Ok(WorkActorResult {
-            record,
-            event_inserted: false,
-        });
-    }
-    let result = match command {
-        WorkActorWrite::Create(mut input) => {
-            if actor.id != actor.root_id {
-                return Err(Error::InvalidRequest(
-                    "Only the lead can change work assignments",
-                ));
-            }
-            input.actor_id = actor_id.to_owned();
-            create(tx, &selected, input, request_id, signature)?
-        }
-        WorkActorWrite::Mutate(action) => {
-            match &action {
-                WorkMutation::Update { .. } | WorkMutation::Reject { .. } => {
-                    if actor.id != actor.root_id {
-                        return Err(Error::InvalidRequest(
-                            "Only the lead can change work assignments",
-                        ));
-                    }
-                }
-                WorkMutation::Cancel { task_id, .. } => {
-                    let work = WorkItemsRepository::work_record(tx, task_id)?
-                        .ok_or(Error::InvalidRequest("Unknown work item"))?;
-                    if actor.id != actor.root_id
-                        && work.get("createdBy").and_then(Value::as_str) != Some(actor_id)
-                    {
-                        return Err(Error::InvalidRequest(
-                            "Only the lead or task creator can cancel this task",
-                        ));
-                    }
-                }
-                WorkMutation::ByAgent { .. } => {
-                    return Err(Error::InvalidRequest("Invalid request"));
-                }
-            }
-            mutate(
-                tx,
-                &selected,
-                WorkMutation::ByAgent {
-                    actor_id: actor_id.to_owned(),
-                    action: Box::new(action),
-                },
-                request_id,
-                signature,
-            )?
-        }
+    let command = match command {
+        WorkActorWrite::Create(input) => WorkWrite::Create(input),
+        WorkActorWrite::Mutate(input) => WorkWrite::Mutate(input),
     };
+    let result = write_internal(tx, agent_id, Some(actor_id), request_id, signature, command)
+        .map_err(|error| match error {
+            WorkWriteError::Event(error) => error,
+            WorkWriteError::Store(error) => Error::Store(error),
+            WorkWriteError::NotImplemented(_) => Error::InvalidRequest("Invalid request"),
+        })?;
     Ok(WorkActorResult {
         record: result.record,
         event_inserted: result.event_inserted,
@@ -266,131 +236,170 @@ pub fn write_action_as_agent(
     signature: &str,
     command: WorkWrite,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    let selected = event_write::checked_agent(tx, agent_id)?;
     let actor = event_write::checked_agent(tx, actor_id)?;
-    if selected.root_id != actor.root_id {
-        return Err(Error::InvalidRequest("Actor belongs to another team").into());
-    }
     if !event_write::truthy(actor.extra.get("autoWake")) {
         return Err(Error::InvalidRequest("The caller is stopped").into());
     }
-    match command {
-        WorkWrite::Create(input) => write_as_agent(
-            tx,
-            agent_id,
-            actor_id,
-            request_id,
-            signature,
-            WorkActorWrite::Create(input),
-        )
-        .map(|result| WorkWriteResult {
-            record: result.record,
-            event_inserted: result.event_inserted,
-            artifact: None,
-        })
-        .map_err(Into::into),
-        WorkWrite::Mutate(input) => write_as_agent(
-            tx,
-            agent_id,
-            actor_id,
-            request_id,
-            signature,
-            WorkActorWrite::Mutate(input),
-        )
-        .map(|result| WorkWriteResult {
-            record: result.record,
-            event_inserted: result.event_inserted,
-            artifact: None,
-        })
-        .map_err(Into::into),
-        WorkWrite::Claim(input) => {
-            write(tx, agent_id, request_id, signature, WorkWrite::Claim(input))
+    write_internal(tx, agent_id, Some(actor_id), request_id, signature, command)
+}
+
+fn authorize_mutation(
+    tx: &Transaction<'_>,
+    selected: &AgentRecord,
+    actor: &AgentRecord,
+    mutation: &WorkMutation,
+) -> Result<(), Error> {
+    match mutation {
+        WorkMutation::Update { .. } | WorkMutation::Reject { .. } => {
+            if actor.id != actor.root_id {
+                return Err(Error::InvalidRequest(
+                    "Only the lead can change work assignments",
+                ));
+            }
         }
-        WorkWrite::Submit(mut input) => {
-            input.actor_id = Some(actor_id.to_owned());
-            write(
-                tx,
-                agent_id,
-                request_id,
-                signature,
-                WorkWrite::Submit(input),
-            )
-        }
-        WorkWrite::Accept(mut input) => {
-            input.actor_id = Some(actor_id.to_owned());
-            write(
-                tx,
-                agent_id,
-                request_id,
-                signature,
-                WorkWrite::Accept(input),
-            )
+        WorkMutation::Cancel { task_id, .. } => {
+            let work = WorkItemsRepository::work_record(tx, task_id)?
+                .ok_or(Error::InvalidRequest("Unknown work item"))?;
+            if actor.id != actor.root_id
+                && work.get("createdBy").and_then(Value::as_str) != Some(actor.id.0.as_str())
+            {
+                return Err(Error::InvalidRequest(
+                    "Only the lead or task creator can cancel this task",
+                ));
+            }
         }
     }
+    if selected.root_id != actor.root_id {
+        return Err(Error::InvalidRequest("Actor belongs to another team"));
+    }
+    Ok(())
 }
 
 /// Run the filesystem half after the transaction commits. A same-identity retry
 /// recreates a missing artifact and rejects a conflicting file.
 pub fn write_result_artifact(artifact: &ResultArtifact) -> Result<(), std::io::Error> {
+    #[cfg(not(unix))]
+    {
+        let _ = artifact;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "safe result artifact writes require directory-relative filesystem operations",
+        ));
+    }
+    #[cfg(unix)]
+    write_result_artifact_at(artifact)
+}
+
+#[cfg(unix)]
+fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Error> {
+    use rustix::fs::{AtFlags, Mode, OFlags, linkat, mkdirat, openat, unlinkat};
+
     let root = fs::canonicalize(&artifact.state_dir)?;
     let relative = artifact
         .path
         .strip_prefix(&artifact.state_dir)
         .map_err(|_| std::io::Error::other("invalid result artifact path"))?;
-    let path = root.join(relative);
-    let mut parent = root.clone();
-    for component in relative
+    let parent_path = relative
         .parent()
-        .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?
-        .components()
-    {
-        parent.push(component);
-        match fs::symlink_metadata(&parent) {
-            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            }
-            Ok(_) => {
-                return Err(std::io::Error::other(
-                    "result artifact path is not a directory",
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    let mut builder = fs::DirBuilder::new();
-                    builder.mode(0o700).create(&parent)?;
+        .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?;
+    let mut parent = fs::File::open(root)?;
+    for component in parent_path.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(std::io::Error::other("invalid result artifact path"));
+        };
+        let open_directory = || {
+            openat(
+                &parent,
+                name,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map(fs::File::from)
+        };
+        match open_directory() {
+            Ok(directory) => parent = directory,
+            Err(error) if error == rustix::io::Errno::NOENT => {
+                match mkdirat(&parent, name, Mode::from_raw_mode(0o700)) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(error) => return Err(error.into()),
                 }
-                #[cfg(not(unix))]
-                fs::create_dir(&parent)?;
+                parent = open_directory().map_err(std::io::Error::from)?;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     }
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".result-")
-        .tempfile_in(parent)?;
-    temporary.write_all(artifact.body.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    match temporary.persist_noclobber(&path) {
-        Ok(_) => Ok(()),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = fs::symlink_metadata(&path)?;
-            if !metadata.file_type().is_file() || metadata.len() > artifact.body.len() as u64 {
-                return Err(std::io::Error::other("saved task result file is invalid"));
+    let file_name = relative
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("invalid result artifact path"))?;
+    let mut temporary_file = None;
+    let mut temporary_name = String::new();
+    for _ in 0..32 {
+        temporary_name = format!(
+            ".result-{}-{}.tmp",
+            std::process::id(),
+            GENERATED_WORK_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        match openat(
+            &parent,
+            temporary_name.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        ) {
+            Ok(file) => {
+                temporary_file = Some(fs::File::from(file));
+                break;
             }
-            let mut saved = Vec::with_capacity(artifact.body.len());
-            fs::File::open(&path)?
-                .take(artifact.body.len() as u64 + 1)
-                .read_to_end(&mut saved)?;
-            if saved == artifact.body.as_bytes() {
-                Ok(())
+            Err(error) if error == rustix::io::Errno::EXIST => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut temporary_file = temporary_file
+        .ok_or_else(|| std::io::Error::other("could not allocate result artifact temporary"))?;
+    temporary_file.write_all(artifact.body.as_bytes())?;
+    temporary_file.sync_all()?;
+    drop(temporary_file);
+    let result = match linkat(
+        &parent,
+        temporary_name.as_str(),
+        &parent,
+        file_name,
+        AtFlags::empty(),
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::EXIST => {
+            let existing = openat(
+                &parent,
+                file_name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map(fs::File::from)
+            .map_err(std::io::Error::from)?;
+            if !existing.metadata()?.is_file()
+                || existing.metadata()?.len() > artifact.body.len() as u64
+            {
+                Err(std::io::Error::other("saved task result file is invalid"))
             } else {
-                Err(std::io::Error::other(
-                    "saved task result file differs from its committed record",
-                ))
+                let mut saved = Vec::with_capacity(artifact.body.len());
+                existing
+                    .take(artifact.body.len() as u64 + 1)
+                    .read_to_end(&mut saved)?;
+                if saved == artifact.body.as_bytes() {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        "saved task result file differs from its committed record",
+                    ))
+                }
             }
         }
-        Err(error) => Err(error.error),
+        Err(error) => Err(error.into()),
+    };
+    let cleanup = unlinkat(&parent, temporary_name.as_str(), AtFlags::empty());
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error.into()),
     }
 }
 
@@ -756,6 +765,7 @@ fn create(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
     input: CreateWork,
+    actor_id: &str,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, Error> {
@@ -784,7 +794,7 @@ fn create(
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
         "owner": owner, "dependencies": dependencies, "status": status,
         "created": event_write::unix_time()?, "updated": event_write::unix_time()?, "version": 1,
-        "results": [], "decisions": [], "createdBy": input.actor_id,
+        "results": [], "decisions": [], "createdBy": actor_id,
     });
     let view = single_view(tx, &work)?;
     assignment_needed(agent, owner, true, is_ready(&view))?;
@@ -803,13 +813,10 @@ fn mutate(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
     mutation: WorkMutation,
+    actor_id: Option<&str>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, Error> {
-    let (mutation, actor_id) = match mutation {
-        WorkMutation::ByAgent { actor_id, action } => (*action, Some(actor_id)),
-        mutation => (mutation, None),
-    };
     let (task_id, expected) = match &mutation {
         WorkMutation::Update {
             task_id, version, ..
@@ -820,7 +827,6 @@ fn mutate(
         | WorkMutation::Reject {
             task_id, version, ..
         } => (task_id.clone(), *version),
-        WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
     };
     let mut work = WorkItemsRepository::work_record(tx, &task_id)?
         .ok_or(Error::InvalidRequest("Unknown work item"))?;
@@ -921,7 +927,7 @@ fn mutate(
             }
             push_decision(
                 &mut work,
-                json!({"decision":"cancel", "reason":reason, "by":actor_id.as_deref().unwrap_or(&agent.id.0), "owner":owner, "created":event_write::unix_time()?}),
+                json!({"decision":"cancel", "reason":reason, "by":actor_id.unwrap_or(&agent.id.0), "owner":owner, "created":event_write::unix_time()?}),
             )?;
             work["status"] = json!("cancelled");
             work["owner"] = Value::Null;
@@ -932,8 +938,7 @@ fn mutate(
                     &task_id,
                     "The task was cancelled before delivery",
                 )?;
-                if (actor_id.is_none() || actor_id.as_deref() != Some(owner_id))
-                    && let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
+                if let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
                     && live_recipient(&recipient)
                 {
                     wake |= event_write::enqueue_recovery_event(
@@ -969,7 +974,7 @@ fn mutate(
                 }
                 let recipient = AgentRepository::get(tx, &AgentId::from(owner_id))?
                     .ok_or_else(|| invalid("runtime_agents", owner_id))?;
-                if actor_id.as_deref() != Some(owner_id) {
+                if actor_id != Some(owner_id) {
                     wake |= event_write::enqueue_recovery_event(
                         tx,
                         &recipient,
@@ -983,11 +988,10 @@ fn mutate(
             WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
             push_decision(
                 &mut work,
-                json!({"resultId":result_id,"decision":"reject","reason":reason,"by":actor_id.as_deref().unwrap_or("user"),"created":event_write::unix_time()?}),
+                json!({"resultId":result_id,"decision":"reject","reason":reason,"by":actor_id.unwrap_or("user"),"created":event_write::unix_time()?}),
             )?;
             work["status"] = json!("ready");
         }
-        WorkMutation::ByAgent { .. } => return Err(Error::InvalidRequest("Invalid request")),
     }
 
     work["version"] = json!(version + 1);
@@ -1006,11 +1010,12 @@ fn claim(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
     input: ClaimWork,
+    actor_id: Option<&str>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
-    let claimant = event_write::checked_agent(tx, &input.claimant_id)?;
+    let claimant = event_write::checked_agent(tx, actor_id.unwrap_or(&input.claimant_id))?;
     if claimant.root_id != agent.root_id {
         return Err(Error::InvalidRequest("Claimant belongs to another team").into());
     }
@@ -1040,6 +1045,7 @@ fn submit(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
     input: SubmitWork,
+    actor_id: Option<&str>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
@@ -1047,11 +1053,7 @@ fn submit(
         return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
-    if input
-        .actor_id
-        .as_deref()
-        .is_some_and(|actor| work["owner"].as_str() != Some(actor))
-    {
+    if actor_id.is_some_and(|actor| work["owner"].as_str() != Some(actor)) {
         return Err(Error::InvalidRequest("Only the assigned worker can submit its result").into());
     }
     let submitter_id = work["owner"].as_str().unwrap_or(&agent.id.0);
@@ -1086,7 +1088,7 @@ fn submit(
         .cloned()
         .ok_or_else(|| invalid("runtime_work", &input.task_id))?;
     let mut event_inserted = false;
-    if input.actor_id.as_deref() != Some(agent.root_id.0.as_str()) {
+    if actor_id != Some(agent.root_id.0.as_str()) {
         let lead = AgentRepository::get(tx, &agent.root_id)?
             .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
         let result_id = result["id"]
@@ -1115,14 +1117,11 @@ fn accept(
     tx: &Transaction<'_>,
     agent: &AgentRecord,
     input: AcceptWork,
+    actor_id: Option<&str>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    if input
-        .actor_id
-        .as_deref()
-        .is_some_and(|actor| actor != agent.root_id.0)
-    {
+    if actor_id.is_some_and(|actor| actor != agent.root_id.0) {
         return Err(Error::InvalidRequest("Only the lead can accept or reject a result").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
@@ -1147,7 +1146,7 @@ fn accept(
             dependency_statuses: &statuses,
         },
         &input.reason,
-        input.actor_id.as_deref().unwrap_or("user"),
+        actor_id.unwrap_or("user"),
         now,
     )?;
     let result_id = updated["decisions"]
@@ -1176,7 +1175,10 @@ fn accept(
     }
     WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
     let mut event_inserted = false;
-    if work["owner"].as_str() == Some(agent.root_id.0.as_str()) {
+    if let Some(owner_id) = work["owner"].as_str()
+        && owner_id != actor_id.unwrap_or("")
+        && (actor_id.is_some() || owner_id == agent.root_id.0)
+    {
         event_inserted |= event_write::enqueue_recovery_event(
             tx,
             &root,
@@ -1438,6 +1440,456 @@ fn invalid(object: &'static str, id: &str) -> Error {
     Error::InvalidStoredObject {
         object,
         id: id.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::{ResultArtifact, write_result_artifact};
+    use std::fs;
+
+    #[cfg(unix)]
+    #[test]
+    fn result_artifact_writer_is_anchored_to_open_directory_handles() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary root opens");
+        let state = temporary.path().join("state");
+        let outside = temporary.path().join("outside");
+        fs::create_dir_all(&state).expect("state directory creates");
+        fs::create_dir_all(&outside).expect("outside directory creates");
+        let artifact_path = state.join("results/task/result-1.md");
+        let artifact = ResultArtifact {
+            state_dir: state.clone(),
+            path: artifact_path.clone(),
+            body: "committed result".to_owned(),
+        };
+        write_result_artifact(&artifact).expect("safe artifact writes");
+        assert_eq!(
+            fs::read(&artifact_path).expect("artifact reads"),
+            b"committed result"
+        );
+
+        fs::remove_dir_all(state.join("results")).expect("result tree removes");
+        symlink(&outside, state.join("results")).expect("outside symlink creates");
+        let escaped = ResultArtifact {
+            state_dir: state,
+            path: artifact_path,
+            body: "must stay contained".to_owned(),
+        };
+        assert!(write_result_artifact(&escaped).is_err());
+        assert!(!outside.join("task/result-1.md").exists());
+    }
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::{
+        AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
+        write_action_as_agent, write_as_agent,
+    };
+    use rusqlite::Connection;
+    use serde_json::{Value, json};
+    use studio_runtime_store::WorkItemsRepository;
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection.execute_batch(
+            "CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+             CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
+        ).expect("work tables create");
+        for agent in [
+            json!({"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+            json!({"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_agents VALUES (?1,?2)",
+                    rusqlite::params![agent["id"].as_str().expect("id"), agent.to_string()],
+                )
+                .expect("agent row inserts");
+        }
+        connection
+    }
+
+    fn insert_work(connection: &Connection, work: &Value) {
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES (?1,?2)",
+                rusqlite::params![work["id"].as_str().expect("work id"), work.to_string()],
+            )
+            .expect("work row inserts");
+    }
+
+    fn work(id: &str, owner: Option<&str>, status: &str, results: Value) -> Value {
+        json!({"id":id,"rootId":"lead","owner":owner,"status":status,"title":id,
+            "description":"","created":1.0,"updated":1.0,"version":2,
+            "dependencies":[],"results":results,"decisions":[],"createdBy":"worker"})
+    }
+
+    #[test]
+    fn actor_claim_overrides_the_selected_payload_claimant() {
+        let mut connection = database();
+        insert_work(&connection, &work("claim", None, "ready", json!([])));
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "worker",
+            None,
+            "claim-as-worker",
+            WorkWrite::Claim(ClaimWork {
+                task_id: "claim".to_owned(),
+                version: Some(2),
+                claimant_id: "lead".to_owned(),
+            }),
+        )
+        .expect("actor claim succeeds");
+        assert_eq!(result.record["owner"], "worker");
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn actor_create_rejects_a_nonlead_selected_agent_without_writing() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "worker",
+            "lead",
+            None,
+            "create-with-worker-selected",
+            WorkWrite::Create(CreateWork {
+                title: "must be refused".to_owned(),
+                description: String::new(),
+                owner: None,
+                status: None,
+                dependencies: Vec::new(),
+            }),
+        );
+        assert!(matches!(result, Err(WorkWriteError::Event(_))));
+        let count: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_work", [], |row| row.get(0))
+            .expect("work count reads");
+        assert_eq!(count, 0);
+        tx.rollback().expect("transaction rolls back");
+    }
+
+    #[test]
+    fn nonlead_actor_cannot_change_assignments_through_actor_api() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("unauthorized-update", Some("worker"), "running", json!([])),
+        );
+        let before = WorkItemsRepository::work_record(&connection, "unauthorized-update")
+            .expect("stored work reads")
+            .expect("work exists");
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_as_agent(
+            &tx,
+            "lead",
+            "worker",
+            None,
+            "worker-assignment-update",
+            WorkActorWrite::Mutate(WorkMutation::Update {
+                task_id: "unauthorized-update".to_owned(),
+                version: Some(2),
+                title: None,
+                description: None,
+                owner: Some(Some("lead".to_owned())),
+                status: None,
+                dependencies: None,
+            }),
+        );
+        assert!(result.is_err());
+        let after = WorkItemsRepository::work_record(&tx, "unauthorized-update")
+            .expect("stored work reads")
+            .expect("work exists");
+        assert_eq!(after, before);
+        tx.rollback().expect("transaction rolls back");
+    }
+
+    #[test]
+    fn actor_owner_cancel_notifies_the_owner_itself() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("cancel", Some("worker"), "running", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "worker",
+            None,
+            "cancel-as-owner",
+            WorkWrite::Mutate(WorkMutation::Cancel {
+                task_id: "cancel".to_owned(),
+                version: Some(2),
+                reason: "stop".to_owned(),
+            }),
+        )
+        .expect("owner cancellation succeeds");
+        assert_eq!(result.record["status"], "cancelled");
+        let event: (String, String) = tx
+            .query_row(
+                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("self notification exists");
+        assert_eq!(
+            event,
+            (
+                "work-decision:cancel:cancel".to_owned(),
+                "worker".to_owned()
+            )
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn lead_actor_cancelling_worker_owned_work_notifies_that_worker() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("lead-cancel", Some("worker"), "running", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "cancel-worker-as-lead",
+            WorkWrite::Mutate(WorkMutation::Cancel {
+                task_id: "lead-cancel".to_owned(),
+                version: Some(2),
+                reason: "stop".to_owned(),
+            }),
+        )
+        .expect("lead cancellation succeeds");
+        assert_eq!(result.record["decisions"][0]["by"], "lead");
+        let event: (String, String) = tx
+            .query_row(
+                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("worker decision notification exists");
+        assert_eq!(
+            event,
+            ("work-decision:lead-cancel:cancel".into(), "worker".into())
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn lead_actor_accepting_its_own_result_does_not_self_notify() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work(
+                "accept",
+                Some("lead"),
+                "review",
+                json!([
+                    {"id":"result-1","agent":"lead","text":"done","checks":"checked","revision":"abc1234","files":[]}
+                ]),
+            ),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "accept-as-lead",
+            WorkWrite::Accept(AcceptWork {
+                task_id: "accept".to_owned(),
+                version: Some(2),
+                reason: "verified".to_owned(),
+            }),
+        )
+        .expect("lead acceptance succeeds");
+        assert_eq!(result.record["status"], "accepted");
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE kind='work_decision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("decision event count reads");
+        assert_eq!(count, 0);
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn lead_actor_rejecting_its_own_result_does_not_self_notify() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work(
+                "reject-own",
+                Some("lead"),
+                "review",
+                json!([{"id":"result-own","agent":"lead","text":"done","checks":"checked","revision":"abc1234","files":[]}]),
+            ),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "reject-own-as-lead",
+            WorkWrite::Mutate(WorkMutation::Reject {
+                task_id: "reject-own".to_owned(),
+                version: Some(2),
+                reason: "needs changes".to_owned(),
+            }),
+        )
+        .expect("lead rejection succeeds");
+        assert_eq!(result.record["decisions"][0]["by"], "lead");
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE kind='work_decision'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("decision event count reads");
+        assert_eq!(count, 0);
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn lead_actor_rejecting_worker_result_notifies_worker() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work(
+                "reject-worker",
+                Some("worker"),
+                "review",
+                json!([{"id":"result-worker","agent":"worker","text":"done","checks":"checked","revision":"abc1234","files":[]}]),
+            ),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "reject-worker-as-lead",
+            WorkWrite::Mutate(WorkMutation::Reject {
+                task_id: "reject-worker".to_owned(),
+                version: Some(2),
+                reason: "needs changes".to_owned(),
+            }),
+        )
+        .expect("lead rejection succeeds");
+        assert_eq!(result.record["decisions"][0]["by"], "lead");
+        let event: (String, String) = tx
+            .query_row(
+                "SELECT id,agent FROM runtime_events WHERE kind='work_decision'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("worker decision notification exists");
+        assert_eq!(
+            event,
+            ("work-decision:reject-worker:2".into(), "worker".into())
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn actor_submit_records_worker_and_notifies_the_lead() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("submit", Some("worker"), "running", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "worker",
+            None,
+            "submit-as-worker",
+            WorkWrite::Submit(super::SubmitWork {
+                task_id: "submit".to_owned(),
+                version: Some(2),
+                result: "done".to_owned(),
+                checks: "checked".to_owned(),
+                revision: "abc1234".to_owned(),
+                files: vec![],
+                state_dir: std::env::temp_dir(),
+            }),
+        )
+        .expect("worker submission succeeds");
+        assert_eq!(result.record["results"][0]["agent"], "worker");
+        let event: (String, String, String) = tx
+            .query_row(
+                "SELECT id,agent,kind FROM runtime_events WHERE kind='work_review'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("lead review notification exists");
+        assert_eq!(event.1, "lead");
+        assert_eq!(event.2, "work_review");
+        assert_eq!(
+            event.0,
+            format!(
+                "work-result:{}",
+                result.record["results"][0]["id"]
+                    .as_str()
+                    .expect("result ID")
+            )
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn lead_actor_submitting_its_own_work_does_not_create_a_review_event() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("lead-submit", Some("lead"), "running", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let result = write_action_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "submit-as-lead",
+            WorkWrite::Submit(super::SubmitWork {
+                task_id: "lead-submit".to_owned(),
+                version: Some(2),
+                result: "done".to_owned(),
+                checks: "checked".to_owned(),
+                revision: "abc1234".to_owned(),
+                files: vec![],
+                state_dir: std::env::temp_dir(),
+            }),
+        )
+        .expect("lead submission succeeds");
+        assert_eq!(result.record["results"][0]["agent"], "lead");
+        let count: i64 = tx
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE kind='work_review'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("review event count reads");
+        assert_eq!(count, 0);
+        tx.commit().expect("transaction commits");
     }
 }
 

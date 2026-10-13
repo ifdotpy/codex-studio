@@ -297,6 +297,20 @@ fn enqueue(
     recovery: bool,
 ) -> Result<bool, EventWriteError> {
     let auto_wake = agent_auto_wake(agent)?;
+    if recovery && recovery_pending(agent) {
+        let event = QueueEvent {
+            id: QueueEventId::from(id.as_str()),
+            agent: AgentId::from(agent.id.0.as_str()),
+            kind: kind.to_owned(),
+            text,
+            status: "pending".to_owned(),
+            created,
+            epoch: agent.epoch,
+            turn_id: None,
+            error: None,
+        };
+        return Ok(EventWriteRepository::insert_event(transaction, &event)?);
+    }
     let event = QueueEvent {
         id: QueueEventId::from(id.as_str()),
         agent: AgentId::from(agent.id.0.as_str()),
@@ -498,7 +512,9 @@ fn invalid_stored(object: &'static str, id: &str) -> EventWriteError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnnotationWrite, EventWriteError, PlanWrite, annotate, save_plan};
+    use super::{
+        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_recovery_event, save_plan,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
     use studio_runtime_store::{
@@ -566,6 +582,48 @@ mod tests {
             Err(EventWriteError::Conflict(_))
         ));
         assert_eq!(counts(&connection), before_replay);
+    }
+
+    #[test]
+    fn recovery_pending_event_is_stored_without_queue_or_timing_metadata() {
+        let mut connection = database();
+        let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
+            .expect("agent reads")
+            .expect("agent exists");
+        agent
+            .extra
+            .insert("moveImportPending".to_owned(), json!(true));
+        AgentRepository::put(&connection, &agent).expect("recovery state writes");
+        let inserted = with_transaction(&mut connection, |transaction| {
+            enqueue_recovery_event(
+                transaction,
+                &agent,
+                "work-result:recovery".to_owned(),
+                "work_review",
+                "{}".to_owned(),
+                1.0,
+            )
+        })
+        .expect("recovery event stores");
+        assert!(inserted);
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id='work-result:recovery'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("recovery event reads");
+        assert_eq!(status, "pending");
+        let metadata_count: i64 = connection
+            .query_row("SELECT count(*) FROM runtime_event_meta", [], |row| {
+                row.get(0)
+            })
+            .expect("event metadata count reads");
+        assert_eq!(metadata_count, 0);
+        let persisted_agent = AgentRepository::get(&connection, &AgentId::from("a"))
+            .expect("agent reads")
+            .expect("agent exists");
+        assert_eq!(persisted_agent.status, AgentStatus::Idle);
     }
 
     #[test]

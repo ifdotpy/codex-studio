@@ -15,7 +15,7 @@ process-wrap = { workspace = true }
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["fs"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mime_guess = { workspace = true }

@@ -43,7 +43,6 @@ pub(crate) async fn work_action(
     let signature = work_items::work_request_signature(&agent, &body)?;
     let command = match action {
         "create" => WorkWrite::Create(CreateWork {
-            actor_id: agent.clone(),
             title: required_text(&body, "title")?,
             description: optional_text(&body, "description")?.unwrap_or_default(),
             owner: body.get("owner").and_then(Value::as_str).map(str::to_owned),
@@ -84,7 +83,6 @@ pub(crate) async fn work_action(
                 .unwrap_or_else(|| agent.clone()),
         }),
         "submit" => WorkWrite::Submit(SubmitWork {
-            actor_id: None,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             result: required_text(&body, "result")?,
@@ -94,7 +92,6 @@ pub(crate) async fn work_action(
             state_dir: state.state_dir.clone().into(),
         }),
         "accept" => WorkWrite::Accept(AcceptWork {
-            actor_id: None,
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             reason: required_text(&body, "result")?,

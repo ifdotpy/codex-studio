@@ -501,6 +501,19 @@ mod tests {
         assert!(
             !validate("PersistedExecutionRunRecord", &invalid_attempt).expect("schema validates")
         );
+        for epoch in [json!(-1), json!(9_007_199_254_740_992_i64)] {
+            let mut invalid_epoch = json!({
+                "id":"run-1","agent":"agent-1","accountKey":"default",
+                "epoch":epoch,"status":"running","created":1.0
+            });
+            assert!(
+                !validate("PersistedExecutionRunRecord", &invalid_epoch).expect("schema validates")
+            );
+            invalid_epoch["epoch"] = json!(0);
+            assert!(
+                validate("PersistedExecutionRunRecord", &invalid_epoch).expect("schema validates")
+            );
+        }
     }
 
     #[test]
