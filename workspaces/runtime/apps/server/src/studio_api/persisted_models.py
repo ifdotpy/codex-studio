@@ -91,7 +91,7 @@ class PersistedPlanRecord(ContractModel):
     id: StrictStr
     rootId: StrictStr
     text: StrictStr
-    version: Annotated[SafeInt, Field(ge=0, json_schema_extra={"minimum": 0})]
+    version: Annotated[SafeInt, Field(ge=0)]
     updated: SafeInt | StrictFloat | None
     steps: list[JsonValue] = Field(default_factory=list)
     native: dict[StrictStr, JsonValue] | None = None

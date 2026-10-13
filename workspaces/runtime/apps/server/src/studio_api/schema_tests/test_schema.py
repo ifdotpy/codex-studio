@@ -142,7 +142,11 @@ class SchemaContractTests(unittest.TestCase):
         max_agents = properties["maxAgents"]
         assert isinstance(max_agents, dict)
         self.assertIn("default", max_agents)
-        self.assertIsNone(max_agents["default"])
+        self.assertEqual(max_agents["default"], 64)
+        token_budget = properties["tokenBudget"]
+        assert isinstance(token_budget, dict)
+        self.assertIn("default", token_budget)
+        self.assertIsNone(token_budget["default"])
 
     def test_constraint_diff_ignores_documentation_defaults(self) -> None:
         self.assertEqual(
