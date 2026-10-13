@@ -49,12 +49,14 @@ pub fn git_out(git_dir: &Path, args: &[&str]) -> Result<String> {
 /// Who can read the git object store: the objects are the project history too. When everyone
 /// may read the project the store is 0755; otherwise 0750 for root, plus an access list (POSIX
 /// ACL) with read access for the users and groups with a role of reader or more, and the owners
-/// of lines on this machine.
+/// of lines on this machine. Only the store folder decides: everything below it is readable by
+/// whoever enters it (`open_content`).
 pub fn sync_store_access(repo: &Repo) -> Result<()> {
     let s = store(repo);
     if !s.join("objects").is_dir() {
         return Ok(());
     }
+    open_content(&s)?;
     let (everyone, users, groups) = repo.policy().readers();
     if everyone {
         std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o755))?;
@@ -71,6 +73,37 @@ pub fn sync_store_access(repo: &Repo) -> Result<()> {
     let gids: std::collections::BTreeSet<u32> = groups.into_iter().collect();
     std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o750))?;
     set_acl(&s, &uids.into_iter().collect::<Vec<_>>(), &gids.into_iter().collect::<Vec<_>>())
+}
+
+/// `core.sharedRepository` of the store: git makes its files 0644 (objects 0444) and its folders
+/// 0755, whatever the umask of the service (0077 in a systemd unit).
+const SHARED: &str = "0644";
+
+/// Make everything below the store folder readable for those who may enter the folder: the
+/// readers use the objects through the `alternates` of their lines. git keeps new files readable
+/// (`core.sharedRepository`); a store without that setting, written under the umask of the
+/// service by an earlier layr, gets read access for its folders and files once.
+fn open_content(s: &Path) -> Result<()> {
+    if git_out(s, &["config", "--get", "core.sharedRepository"]).map(|v| v.trim() == SHARED).unwrap_or(false) {
+        return Ok(());
+    }
+    let mut modes = Vec::new();
+    fsutil::walk(s, "", &mut |rel, m| {
+        let add = match m.ftype {
+            fsutil::FType::Dir => 0o055,
+            fsutil::FType::File => 0o044,
+            _ => 0,
+        };
+        if m.mode & add != add {
+            modes.push((rel.to_string(), m.mode | add));
+        }
+        Ok(true)
+    })?;
+    for (rel, mode) in modes {
+        std::fs::set_permissions(s.join(rel), std::fs::Permissions::from_mode(mode))?;
+    }
+    git_out(s, &["config", "core.sharedRepository", SHARED])?;
+    Ok(())
 }
 
 fn acl_entry(buf: &mut Vec<u8>, tag: u16, perm: u16, id: u32) {
@@ -105,7 +138,8 @@ fn remove_acl(path: &Path) -> Result<()> {
 pub fn init_store(repo: &Repo) -> Result<PathBuf> {
     let s = store(repo);
     if !has_store(repo) {
-        let out = Command::new("git").args(["init", "--bare", "-q", "-b", "main"]).arg(&s).output()?;
+        let shared = format!("--shared={SHARED}");
+        let out = Command::new("git").args(["init", "--bare", "-q", "-b", "main", &shared]).arg(&s).output()?;
         if !out.status.success() {
             bail!("git init failed: {}", String::from_utf8_lossy(&out.stderr));
         }
@@ -883,4 +917,63 @@ pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testenv::{sh, TestFs};
+    use std::process::Command;
+
+    /// Run git as `user` (not root) with the given arguments; true if it succeeds.
+    fn git_as(user: &str, args: &[&str]) -> bool {
+        let out =
+            Command::new("runuser").args(["-u", user, "--", "git"]).args(args).env("HOME", "/nonexistent").output().unwrap();
+        if !out.status.success() {
+            eprintln!("git {args:?} as {user}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        out.status.success()
+    }
+
+    /// git writes the project store as root, with the umask of the service unit (0077). Line
+    /// owners read its objects through the `alternates` of their `.git` folder; a user without
+    /// a role does not get past the store folder. A store of an earlier layr is repaired.
+    #[test]
+    fn line_owners_read_the_git_store() {
+        let Some(t) = TestFs::new("git-store") else { return };
+        let u1 = t.user("layr-u1");
+        t.user("layr-admin");
+        t.user("layr-u2");
+        let src = t.dir.join("src");
+        t.write(&src, "a.txt", "a\n");
+        let s = src.to_str().unwrap();
+        assert!(sh(&["git", "-C", s, "init", "-q", "-b", "main"]) && sh(&["git", "-C", s, "add", "."]));
+        assert!(sh(&["git", "-C", s, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "first"]));
+        t.ok(0, &[], &["init", "p", "--from", s, "--owner", "layr-admin", "-q"]);
+        let project = [("LAYR_PROJECT", "p")];
+        t.ok(0, &project, &["access", "grant", "layr-u1", "writer"]);
+        t.ok(u1, &project, &["branch", "-q", "a1", "main"]);
+        let a1 = t.line("p", "a1");
+        let line = a1.to_str().unwrap();
+        assert!(git_as("layr-u1", &["-C", line, "log", "--oneline"]), "a line owner reads the history");
+        // An object that root writes later.
+        let store = t.root.join("projects/p/git");
+        let blob = t.dir.join("blob");
+        std::fs::write(&blob, "later\n").unwrap();
+        let oid = super::git_out(&store, &["hash-object", "-w", blob.to_str().unwrap()]).unwrap();
+        let oid = oid.trim();
+        assert!(git_as("layr-u1", &["-C", line, "cat-file", "-e", oid]), "a line owner reads a later object");
+        // A user without a role does not.
+        let head = store.join("HEAD");
+        assert!(!sh(&["runuser", "-u", "layr-u2", "--", "cat", head.to_str().unwrap()]));
+        // The store of an earlier layr: only its folder was open to the readers.
+        let st = store.to_str().unwrap();
+        let earlier = format!("chmod -R go-rwx {st}/* && git --git-dir={st} config --unset core.sharedRepository; true");
+        assert!(sh(&["sh", "-c", &earlier]));
+        assert!(!git_as("layr-u1", &["-C", line, "log", "--oneline"]));
+        let ctx = t.ctx(0, &project, Box::new(std::io::sink()));
+        let repo = crate::repo::Repo::open(&ctx, "p").unwrap();
+        super::sync_store_access(&repo).unwrap();
+        assert!(git_as("layr-u1", &["-C", line, "log", "--oneline"]), "the store of an earlier layr is repaired");
+        assert!(!sh(&["runuser", "-u", "layr-u2", "--", "cat", head.to_str().unwrap()]));
+    }
 }
