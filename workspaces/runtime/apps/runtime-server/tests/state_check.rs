@@ -51,7 +51,7 @@ db.close()
     assert_eq!(tables.len(), 37);
     let names: std::collections::BTreeSet<_> = tables
         .iter()
-        .map(|table| table["table"].as_str().unwrap())
+        .map(|table| table["table"].as_str().expect("table name is a string"))
         .collect();
     assert_eq!(names.len(), tables.len(), "one report per table");
     assert!(
