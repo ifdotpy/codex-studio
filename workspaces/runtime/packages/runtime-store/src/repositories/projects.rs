@@ -189,7 +189,7 @@ impl ProjectsRepository {
                     true,
                 )?;
             }
-            let room_object: bool = transaction.query_row(
+            let room_table: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_rooms')",
                 [], |row| row.get(0),
             )?;
