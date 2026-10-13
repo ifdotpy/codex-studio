@@ -14,7 +14,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_analytics(backend) -> None:
@@ -242,16 +242,12 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_refusals_preserve_analytics_rows(self) -> None:
         import sqlite3
-        def snapshot():
-            with sqlite3.connect(f"file:{self.backend.state / 'analytics.sqlite3'}?mode=ro", uri=True) as db:
-                return {table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
-                        for table in ("analytics_usage", "analytics_items", "analytics_turns", "analytics_limits")}
-        before = snapshot()
+        before = no_write_snapshot(self.backend.state)
         for query in ("from_time=200&to_time=100", "view=message-info&scope=team&item=analytics-response"):
             response = self.backend.request("GET", "/api/analytics?agent=analytics-contract-agent&" + query,
                                             headers=self._headers())
             self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(snapshot(), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def _headers(self):
         return {"Origin": self.backend.origin or "",

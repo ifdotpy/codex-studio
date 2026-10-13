@@ -20,7 +20,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_records(backend) -> None:
@@ -133,20 +133,6 @@ finally:
     )
 
 
-def state_snapshot(state):
-    with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        tables = [
-            row[0]
-            for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
-        ]
-        return {
-            table: sorted(
-                database.execute(f'SELECT * FROM "{table}"').fetchall(), key=repr
-            )
-            for table in tables
-        }
 
 
 class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -173,20 +159,20 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         return self.backend.request("POST", path, body=body, headers=self._headers())
 
     def _unchanged_error(self, path, body, status, error):
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         response = self._post(path, body)
         self.assertEqual(response.status, status, response.body[:1000])
         self.assertEqual(response.json()["error"], error)
-        self.assertEqual(state_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         return response
 
     def test_defer_and_state_only_delete_commit_and_replay(self) -> None:
-        before_noop = state_snapshot(self.backend.state)
+        before_noop = no_write_snapshot(self.backend.state)
         no_change = self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": False}
         )
         self.assertEqual(no_change.status, 200, no_change.body[:1000])
-        self.assertEqual(state_snapshot(self.backend.state), before_noop)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_noop)
         deferred = self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
         )
@@ -194,21 +180,21 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(deferred.json()["id"], "questions-write-defer")
         self.assertEqual(deferred.json()["status"], "pending")
         self.assertTrue(deferred.json()["deferred"])
-        before_replay = state_snapshot(self.backend.state)
+        before_replay = no_write_snapshot(self.backend.state)
         self.assertEqual(self._post(
             "/api/questions/defer", {"id": "questions-write-defer", "deferred": True}
         ).status, 200)
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
         deleted = self._post("/api/questions/delete", {"id": "questions-write-delete"})
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
         self.assertEqual(deleted.json()["id"], "questions-write-delete")
         self.assertEqual(deleted.json()["status"], "deleted")
-        before_replay = state_snapshot(self.backend.state)
+        before_replay = no_write_snapshot(self.backend.state)
         self.assertEqual(self._post(
             "/api/questions/delete", {"id": "questions-write-delete"}
         ).status, 200)
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
     def test_provider_delivery_refusals_and_invalid_state_write_nothing(self) -> None:
         self._unchanged_error(
@@ -321,22 +307,22 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(receipts, 0)
 
-        replay_before = state_snapshot(self.backend.state)
+        replay_before = no_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead",
             "text": "Please fix the issue",
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json(), record)
-        self.assertEqual(state_snapshot(self.backend.state), replay_before)
+        self.assertEqual(no_write_snapshot(self.backend.state), replay_before)
 
-        changed_before = state_snapshot(self.backend.state)
+        changed_before = no_write_snapshot(self.backend.state)
         changed = self._post("/api/complaints", {
             "id": "migrated-submit", "lead": "questions-write-lead", "text": "Changed",
         })
         self.assertEqual(changed.status, 400, changed.body[:1000])
         self.assertEqual(changed.json()["error"], "This complaint id has different content")
-        self.assertEqual(state_snapshot(self.backend.state), changed_before)
+        self.assertEqual(no_write_snapshot(self.backend.state), changed_before)
         migrated = self._post("/api/complaints", {
             "id": "migrated-submit", "lead": "questions-write-lead", "text": "Original",
         })
@@ -345,7 +331,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(migrated.json()["status"], "resolved")
 
     def test_python_response_receipt_replay_and_missing_author_are_read_only(self) -> None:
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "action": "respond", "id": "migrated-response-request",
             "lead": "questions-write-lead",
@@ -354,7 +340,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["version"], 2)
-        self.assertEqual(state_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         self._unchanged_error("/api/complaints", {
             "action": "respond", "id": "migrated-response-request",
             "lead": "different-lead",
@@ -389,12 +375,12 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 WHEN NEW.id LIKE 'complaint:%'
                 BEGIN SELECT RAISE(ABORT, 'injected event failure'); END
             """)
-        before = state_snapshot(self.backend.state)
+        before = no_write_snapshot(self.backend.state)
         response = self._post("/api/complaints", {
             "id": "rollback-submit", "lead": "questions-write-lead", "text": "Rollback",
         })
         self.assertIn(response.status, (400, 500), response.body[:1000])
-        self.assertEqual(state_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DROP TRIGGER reject_question_complaint_event")
 
@@ -413,14 +399,14 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT count(*) FROM runtime_events WHERE id=?", ("complaint:" + record["id"],)
             ).fetchone()[0]
         self.assertEqual(count, 1)
-        before_replay = state_snapshot(self.backend.state)
+        before_replay = no_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead",
             "text": "  Please fix the issue  ",
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], record["id"])
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
         self._unchanged_error("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead", "text": "Changed"
         }, 400, "This complaint id has different content")
@@ -439,7 +425,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ("complaint-response:user:questions-write-response",),
             ).fetchone()
         self.assertEqual(event, ("complaint_response", "pending"))
-        before_replay = state_snapshot(self.backend.state)
+        before_replay = no_write_snapshot(self.backend.state)
         repeated = self._post("/api/complaints", {
             "action": "respond", "id": "questions-write-response",
             "complaint_id": "questions-write-existing", "text": "  Fixed  ",
@@ -448,7 +434,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         self.assertEqual(repeated.json()["version"], reply.json()["version"])
         self.assertEqual(repeated.json()["responses"], reply.json()["responses"])
-        self.assertEqual(state_snapshot(self.backend.state), before_replay)
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
         self._unchanged_error("/api/complaints", {
             "action": "respond", "id": "questions-write-stale",
             "complaint_id": "questions-write-existing", "text": "Stale",

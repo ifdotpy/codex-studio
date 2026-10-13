@@ -22,7 +22,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import BackendProcess, HTTPTransportError
+from http_backend_harness import BackendProcess, HTTPTransportError, no_write_snapshot
 
 
 AGENT_ID = "checkpoints-contract-agent"
@@ -101,25 +101,6 @@ finally:
     return completed.stdout.strip().splitlines()[-1]
 
 
-def database_snapshot(state: Path) -> tuple[object, ...]:
-    with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        snapshots = []
-        for table in (
-            "runtime_agents",
-            "runtime_checkpoints",
-            "runtime_workspace_operations",
-            "runtime_tasks",
-            "sync_entities",
-        ):
-            columns = (
-                "collection,id,seq,hash,payload,deleted"
-                if table == "sync_entities"
-                else "id,record"
-            )
-            snapshots.append(
-                (table, database.execute(f'SELECT {columns} FROM "{table}" ORDER BY id').fetchall())
-            )
-        return tuple(snapshots)
 
 
 def checkpoint_refs(workspace: Path) -> set[str]:
@@ -279,7 +260,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
     def test_preview_reads_python_written_checkpoint_without_database_writes(self) -> None:
         backend = self.backend
         (self.workspace / "tracked.txt").write_text("edited workspace\n", encoding="utf-8")
-        before = database_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST",
             "/api/checkpoint/preview",
@@ -293,7 +274,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertIn("base checkpoint", preview["patch"])
         self.assertEqual(preview["truncated"], False)
         self.assertEqual(preview["canRestore"], not is_rust_backend())
-        self.assertEqual(database_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_legacy_reservations_without_operation_rows_recover(self) -> None:
         backend = self.backend
@@ -383,7 +364,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
             with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
                 database.execute(insert_sql, (row_id, record))
                 database.commit()
-            before = (database_snapshot(backend.state), checkpoint_refs(self.workspace))
+            before = (no_write_snapshot(backend.state), checkpoint_refs(self.workspace))
             try:
                 response = backend.request(
                     "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
@@ -391,7 +372,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 self.assertEqual(response.status, 500, response.body[:1000])
                 self.assertEqual(response.json()["error"], expected_error)
                 self.assertEqual(
-                    (database_snapshot(backend.state), checkpoint_refs(self.workspace)), before
+                    (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
                 )
             finally:
                 with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
@@ -520,7 +501,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertEqual(captured.status, 200, captured.body[:1000])
         checkpoint_id = captured.json()["id"]
         large_file.write_text("new\n" * 40_000, encoding="utf-8")
-        before = database_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST",
             "/api/checkpoint/preview",
@@ -532,11 +513,11 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertTrue(preview["truncated"])
         self.assertEqual(len(preview["patch"]), 300_000)
         self.assertEqual(preview["diff"], preview["patch"])
-        self.assertEqual(database_snapshot(backend.state), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_refusals_do_not_write_database_or_checkpoint_refs(self) -> None:
         backend = self.backend
-        before = (database_snapshot(backend.state), checkpoint_refs(self.workspace))
+        before = (no_write_snapshot(backend.state), checkpoint_refs(self.workspace))
         cases = (
             (
                 "/api/checkpoint",
@@ -551,7 +532,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
             response = backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 400, (path, response.body[:1000]))
             self.assertEqual(
-                (database_snapshot(backend.state), checkpoint_refs(self.workspace)), before
+                (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
             )
 
     @unittest.skipUnless(is_rust_backend(), "Stored Git option validation belongs to Rust")
@@ -570,7 +551,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 (json.dumps(checkpoint), self.initial_checkpoint_id),
             )
             database.commit()
-        before = database_snapshot(backend.state)
+        before = no_write_snapshot(backend.state)
         try:
             response = backend.request(
                 "POST",
@@ -580,7 +561,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
             )
             self.assertEqual(response.status, 500, response.body[:1000])
             self.assertFalse(marker.exists())
-            self.assertEqual(database_snapshot(backend.state), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
                 database.execute(
@@ -591,7 +572,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
 
     @unittest.skipUnless(is_rust_backend(), "Provider and execution 501s belong to Rust")
     def test_provider_and_execution_dependencies_return_named_501_without_writes(self) -> None:
-        before = (database_snapshot(self.backend.state), checkpoint_refs(self.workspace))
+        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
         cases = (
             (
                 "/api/branch",
@@ -623,7 +604,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
             self.assertEqual(response.status, 501, (path, response.body[:1000]))
             self.assertEqual(response.json()["error"], error)
             self.assertEqual(
-                (database_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+                (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
             )
 
     def test_crash_after_update_ref_leaves_dangling_ref_and_recovers_on_startup(self) -> None:

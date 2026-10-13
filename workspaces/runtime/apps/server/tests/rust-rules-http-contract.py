@@ -19,7 +19,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_python_rules(backend) -> None:
@@ -79,21 +79,6 @@ finally:
     )
 
 
-def rules_state(backend):
-    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
-        existing = {
-            row[0] for row in database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
-        return {
-            name: database.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
-            for name in (
-                "runtime_rules", "runtime_agents", "runtime_events", "runtime_event_meta",
-                "runtime_operation_receipts", "sync_entities", "sync_entity_versions",
-            )
-            if name in existing
-        }
 
 
 class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -121,7 +106,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         for index, at in enumerate(values):
             with self.subTest(at=at):
-                before = rules_state(self.backend)
+                before = no_write_snapshot(self.backend.state)
                 response = self.backend.request(
                     "POST", "/api/rules",
                     body={
@@ -131,7 +116,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     headers=self._headers(),
                 )
                 self.assertEqual(response.status, 400, response.body[:1000])
-                self.assertEqual(rules_state(self.backend), before)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_get_rules_reads_python_written_state_and_filters_deleted_agents(self) -> None:
         response = self.backend.request("GET", "/api/rules", headers=self._headers())
@@ -174,12 +159,12 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "UPDATE runtime_rules SET record=? WHERE id='visible'",
                 (json.dumps(invalid),),
             )
-        before = rules_state(backend)
+        before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
             self.assertEqual(response.status, 500, response.body[:1000])
             self.assertEqual(response.json()["error"], "Invalid stored object rules/visible")
-            self.assertEqual(rules_state(backend), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(database_path) as database:
                 database.execute(
@@ -202,7 +187,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "UPDATE runtime_agents SET record=? WHERE id=?",
                 (json.dumps(invalid), agent_id),
             )
-        before = rules_state(backend)
+        before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
             self.assertEqual(response.status, 500, response.body[:1000])
@@ -210,7 +195,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 response.json()["error"],
                 f"Invalid stored object agents/{agent_id}",
             )
-            self.assertEqual(rules_state(backend), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(database_path) as database:
                 database.execute(

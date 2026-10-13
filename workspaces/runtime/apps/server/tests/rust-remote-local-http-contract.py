@@ -15,7 +15,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 FEDERATION_TABLES = (
@@ -37,17 +37,6 @@ ACCESS_TABLES = (
 )
 
 
-def table_snapshot(state: Path, tables: tuple[str, ...]) -> dict[str, list[tuple]]:
-    with sqlite3.connect(state / "canvas.sqlite3") as database:
-        existing = {
-            row[0]
-            for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-        return {
-            table: database.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
-            for table in tables
-            if table in existing
-        }
 
 
 class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -202,7 +191,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(approved.json()["queued"],3)
 
     def test_federation_unknown_peer_refusal_does_not_write(self) -> None:
-        before = table_snapshot(self.backend.state, FEDERATION_TABLES)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
             "/api/federation",
@@ -213,10 +202,10 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.status, 400, response.body[:1000])
         else:
             self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(table_snapshot(self.backend.state, FEDERATION_TABLES), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_federation_invitation_refusal_does_not_write_or_contact_peer(self) -> None:
-        before = table_snapshot(self.backend.state, FEDERATION_TABLES)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
             "/api/federation",
@@ -228,7 +217,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertIn("tailscale-identity", response.json()["error"])
         else:
             self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(table_snapshot(self.backend.state, FEDERATION_TABLES), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_audit_reads_empty_local_state(self) -> None:
         response = self.backend.request(
@@ -277,7 +266,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.skipTest("Python runtime owns the existing identity writer")
         identity_path = self.backend.state / "multi-server" / "identity.json"
         identity_before = identity_path.read_bytes()
-        state_before = table_snapshot(self.backend.state, ACCESS_TABLES)
+        state_before = no_write_snapshot(self.backend.state)
         for path, body in (
             (
                 "/api/multi-server",
@@ -291,13 +280,13 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response = self.backend.request("POST", path, body=body, headers=self.headers())
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("remote-transport/identity-write", response.json()["error"])
-            self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), state_before)
+            self.assertEqual(no_write_snapshot(self.backend.state), state_before)
             self.assertEqual(identity_path.read_bytes(), identity_before)
 
     def test_multi_server_invite_refusal_names_missing_dependencies_without_writes(self) -> None:
         if not self.rust_backend:
             self.skipTest("Python runtime owns the existing invite writer")
-        before = table_snapshot(self.backend.state, ACCESS_TABLES)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
             "/api/multi-server",
@@ -306,10 +295,10 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(response.status, 501, response.body[:1000])
         self.assertIn("federation-credentials/private-key", response.json()["error"])
-        self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_pair_refusal_does_not_write_or_contact_another_server(self) -> None:
-        before = table_snapshot(self.backend.state, ACCESS_TABLES)
+        before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
             "/api/multi-server/v1/pair",
@@ -330,7 +319,7 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertIn("signed-server-requests",response.json()["error"])
         else:
             self.assertEqual(response.status, 403, response.body[:1000])
-        self.assertEqual(table_snapshot(self.backend.state, ACCESS_TABLES), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 
 if __name__ == "__main__":

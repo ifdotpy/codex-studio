@@ -18,7 +18,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 
 
 def seed_state(backend) -> None:
@@ -97,12 +97,6 @@ finally:
     )
 
 
-def persisted_state(backend):
-    with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-        return (
-            database.execute("SELECT id,record FROM runtime_rules ORDER BY rowid").fetchall(),
-            database.execute("SELECT id,record FROM runtime_monitors ORDER BY rowid").fetchall(),
-        )
 
 
 def update_rule(backend, key: str, **fields) -> None:
@@ -113,11 +107,6 @@ def update_rule(backend, key: str, **fields) -> None:
         database.execute("UPDATE runtime_rules SET record=? WHERE id=?", (json.dumps(record), key))
 
 
-def stored_low_rule(database: sqlite3.Connection) -> dict[str, object]:
-    """Return the stored rule without the worker count the rules tick owns."""
-    record = json.loads(database.execute("SELECT record FROM runtime_rules WHERE id='low-rule'").fetchone()[0])
-    record.pop("activeWorkers", None)
-    return record
 
 
 class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -329,11 +318,11 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(saved.status, 200, saved.body[:1000])
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             update_rule(backend, "low-rule", lowSince=123.5, alerted=True)
-            before = stored_low_rule(database)
+            before = no_write_snapshot(backend.state)
         repeated = backend.request("POST", "/api/rules", headers=self.headers(), body=low)
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            self.assertEqual(stored_low_rule(database), before)
+            self.assertEqual(no_write_snapshot(backend.state), before)
             database.execute("UPDATE runtime_rules SET record=json_set(record,'$.restartCheck',json('{\"epoch\":0,\"checks\":0,\"monitorId\":\"stale\"}'),'$.error','old','$.previousOutcome','old','$.lowSince',123,'$.alerted',json('true'),'$.minimumWorkers',4) WHERE id='low-rule'")
         interval = {
             "action": "save", "id": "low-rule", "agent": "monitor-contract-agent",
@@ -401,7 +390,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_active_rule_check_refusal_is_named_and_writes_nothing(self) -> None:
         backend = self.backend
-        before = persisted_state(backend)
+        before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST",
             "/api/rules",
@@ -417,7 +406,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response.json()["error"],
             "Not implemented: requires monitor-driver/active-checks",
         )
-        self.assertEqual(persisted_state(backend), before)
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_monitor_input_and_cancel_remain_unregistered(self) -> None:

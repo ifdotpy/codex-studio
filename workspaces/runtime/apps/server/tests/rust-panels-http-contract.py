@@ -18,7 +18,7 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from codex_progress import provision_progress
 
 
@@ -330,13 +330,13 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "UPDATE runtime_profiles SET record=? WHERE id='python-profile'",
                         (invalid_record,),
                     )
-                before = profile_rows(state)
+                before = no_write_snapshot(state)
                 refused = self.backend.request("GET", "/api/profiles", headers=self.headers())
                 self.assertEqual(refused.status, 500, refused.body[:1000])
                 self.assertEqual(
                     refused.json()["error"], "Invalid stored object profiles/python-profile",
                 )
-                self.assertEqual(profile_rows(state), before)
+                self.assertEqual(no_write_snapshot(state), before)
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:
                 database.execute(
@@ -353,7 +353,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute(
                 "UPDATE runtime_profiles SET record='{' WHERE id='python-profile'"
             )
-        before = profile_rows(state)
+        before = no_write_snapshot(state)
         try:
             refused = self.backend.request(
                 "POST",
@@ -365,7 +365,7 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(
                 refused.json()["error"], "Invalid stored object profiles/python-profile",
             )
-            self.assertEqual(profile_rows(state), before)
+            self.assertEqual(no_write_snapshot(state), before)
         finally:
             with sqlite3.connect(state / "canvas.sqlite3") as database:
                 database.execute(
