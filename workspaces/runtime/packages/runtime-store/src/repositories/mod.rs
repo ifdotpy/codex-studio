@@ -8,6 +8,7 @@ pub(crate) mod monitors;
 pub(crate) mod profiles;
 pub(crate) mod questions_reads;
 pub(crate) mod queue_write;
+pub(crate) mod remote_transport;
 pub(crate) mod rules;
 pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
@@ -39,6 +40,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
     &workspace_files::REQUIREMENTS,
+    &remote_transport::REQUIREMENTS,
 ];
 
 #[cfg(test)]

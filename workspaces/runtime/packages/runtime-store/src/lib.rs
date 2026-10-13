@@ -7,6 +7,7 @@ mod schema;
 pub use schema::sha256_hex;
 
 pub use repositories::account_state;
+pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
