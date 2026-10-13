@@ -35,7 +35,7 @@ class LedgerTraceContract(unittest.TestCase):
         fixture_keys = {
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
-            "layoutRevision", "emptyQueueRevision", "queueIds", "question",
+            "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin",
@@ -330,6 +330,26 @@ class LedgerTraceContract(unittest.TestCase):
         finally:
             differential._EXPECTED_STATUS_DIFFERENCES.clear()
             differential._EXPECTED_STATUS_DIFFERENCES.update(old)
+
+    def test_consumer_counts_all_runner_slices(self) -> None:
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            log = root / "consumer.log"
+            log.write_text(
+                "test_one (__main__.Example.test_one) ... ok\n"
+                "Ran 1 test in 0.1s\n"
+                "test_two (__main__.Example.test_two) ... ok\n"
+                "Ran 1 test in 0.1s\n"
+                "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)\n"
+            )
+            result = {"status":"passed", "passed":3, "failed":0, "skipped":0, "logPath":str(log)}
+            process = SimpleNamespace(stdout=json.dumps(result), stderr="", returncode=0)
+            with patch.object(ledger.subprocess, "run", return_value=process) as run:
+                observed = ledger.run_suite(ledger.TESTS / "fixture.py", {}, root, [], {})
+            self.assertEqual(run.call_args.kwargs["env"]["CODEX_SERVER_TEST_JOBS"], "1")
+            self.assertEqual(observed["passed"], 3)
+            self.assertEqual(len(observed["tests"]), 2)
 
     def test_unittest_ids_keep_their_class_and_are_not_duplicated(self) -> None:
         cases = ledger.case_results(

@@ -42,9 +42,6 @@ MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
     "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
         "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
     },
-    "workspaces/runtime/apps/server/tests/sync-http-contract.py": {
-        "__main__.SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once": {"operation": "GET /api/messages/receipts", "service": "event-driver/message-receipts", "reason": "Voice replay checks the unavailable event-driver/message-receipts endpoint."},
-    },
 }
 
 # These tests need provider turn execution, but no current route declares that
@@ -111,7 +108,7 @@ def validate_missing_service_exclusions(
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/agent-chat"): {
-        "primary": {"query": {"room": "$room"}, "expected": "501"},
+        "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -200,11 +197,17 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/checkpoints"): {
         "primary": {"query": {"agent": "$agent"}},
     },
+    ("GET", "/api/diagnostics"): {
+        "primary": {"expected": "501", "assert_no_write": True},
+    },
+    ("GET", "/api/directories"): {
+        "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
+    },
     ("GET", "/api/messages"): {
         "primary": {"query": {"room": "$room"}},
     },
     ("GET", "/api/messages/receipts"): {
-        "primary": {"query": {"agent": "$agent", "ids": "$message"}, "expected": "501", "assert_no_write": True},
+        "primary": {"query": {"agent": "$agent", "ids": "[]"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/panel"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -234,7 +237,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/tool-requests"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent", "request_id": "$toolReceipt"}, "expected": "2xx", "assert_no_write": True},
+        "additional": [{"name": "list", "query": {"agent": "$agent"}, "query_omit": ["request_id"], "expected": "2xx", "assert_no_write": True}],
     },
     ("GET", "/api/transcript"): {
         "primary": {"query": {"id": "$agent"}, "expected": "501"},
@@ -523,7 +527,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "2xx"}},
     ("POST", "/api/servers/orchestration"): {"primary": {"body": {"requestId": "ledger-orchestration", "action": "ledger-probe", "payload": {}}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
@@ -569,6 +573,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/voice/approvals"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/record"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession", "event_id": "ledger-event", "kind": "event", "text": "ledger"}, "replace_body": True, "expected": "2xx"},
+    },
+    ("POST", "/api/tool-requests/cancel"): {
+        "primary": {"body": {"agent": "$agent", "request_id": "$toolCancel"}, "expected": "2xx"},
     },
     ("POST", "/api/voice/records"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/status"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
@@ -864,6 +871,17 @@ try:
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "agents", image_agent, sync_rooms=False)
+        runtime.put(db, "tool_requests", {{
+            "id": "ledger-tool-receipt", "agent": {agent_id!r},
+            "tool": "orchestration_peers", "stage": "completed", "outcome": "applied",
+            "created": now, "updated": now, "finished": now,
+            "result": {{"success": True, "contentItems": []}},
+        }})
+        runtime.put(db, "tool_requests", {{
+            "id": "ledger-tool-cancel", "agent": {agent_id!r},
+            "tool": "orchestration_peers", "stage": "queued", "outcome": "pending",
+            "created": now, "updated": now,
+        }})
         runtime.capacity_save(db, agent, cancel_retry)
         runtime.capacity_save(db, agent, retry_retry)
         runtime.usage_resume_save(db, agent, disable_resume)
@@ -1055,6 +1073,8 @@ finally:
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
         "claudeAccount": "claude-ledger",
+        "toolReceipt": "ledger-tool-receipt",
+        "toolCancel": "ledger-tool-cancel",
     }
 
 
@@ -1645,6 +1665,8 @@ def run_suite(
     trace_path = trace_root / f"{path.stem}.jsonl"
     suite_environment = environment.copy()
     suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    # Preserve complete unittest records and HTTP attribution across runner output.
+    suite_environment["CODEX_SERVER_TEST_JOBS"] = "1"
     skipped_for_service = missing_service_tests_for_suite(relative)
     if skipped_for_service:
         suite_environment["STUDIO_HTTP_LEDGER_SKIP_TESTS"] = json.dumps({
@@ -1685,13 +1707,14 @@ def run_suite(
         "failed": sum(case["status"] in {"fail", "error"} for case in cases),
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
-    ran_summary = re.search(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
+    ran_summaries = re.findall(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
+    ran_count = sum(map(int, ran_summaries))
     suite_summary = re.search(
         r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
         log_text,
     )
     structured_failed_suites = len(re.findall(r"^FAIL .*failing IDs:", log_text, re.MULTILINE))
-    if ran_summary is None or suite_summary is None:
+    if not ran_summaries or suite_summary is None:
         raise RuntimeError(f"consumer result summary missing in {relative}")
     expected_reported_counts = {
         "passed": observed_counts["passed"] + int(suite_summary.group(1)),
@@ -1702,13 +1725,13 @@ def run_suite(
     }
     reported_counts = {name: result.get(name, 0) or 0 for name in expected_reported_counts}
     if (
-        sum(observed_counts.values()) != int(ran_summary.group(1))
+        sum(observed_counts.values()) != ran_count
         or expected_reported_counts != reported_counts
     ):
         raise RuntimeError(
             f"consumer result-count mismatch in {relative}: "
             f"parsed={observed_counts}, reported={reported_counts}, "
-            f"expected-reported={expected_reported_counts}, ran={ran_summary.group(1)}"
+            f"expected-reported={expected_reported_counts}, ran={ran_count}"
         )
     requests: list[dict[str, Any]] = []
     if trace_path.exists():
