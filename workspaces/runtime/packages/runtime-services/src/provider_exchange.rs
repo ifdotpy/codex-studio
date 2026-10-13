@@ -1,6 +1,13 @@
 //! One bounded, short-lived provider session shared by one-off consumers.
 
-use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    path::Path,
+    pin::Pin,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use studio_runtime_process::{
     Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
@@ -12,6 +19,33 @@ use crate::provider_session_task::{SessionHandle, SessionTaskConfig, SessionTask
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_CHILDREN: usize = 4;
+static ADMISSION: LazyLock<AdmissionPool> = LazyLock::new(|| AdmissionPool::new(MAX_CHILDREN));
+
+/// Shared admission limit for every one-off provider child, including model refreshes.
+pub(crate) struct AdmissionPool(Arc<tokio::sync::Semaphore>);
+
+impl AdmissionPool {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self(Arc::new(tokio::sync::Semaphore::new(limit)))
+    }
+
+    pub(crate) fn try_admit(&self) -> Option<ExchangeAdmission> {
+        self.0
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .map(|permit| ExchangeAdmission { _permit: permit })
+    }
+}
+
+pub(crate) struct ExchangeAdmission {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+pub(crate) fn try_admit() -> Option<ExchangeAdmission> {
+    ADMISSION.try_admit()
+}
 
 pub(crate) type ExchangeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + Send + 'a>>;
 
@@ -24,6 +58,22 @@ pub(crate) struct ExchangeSpec {
 
 /// Launch one provider process, run one bounded consumer exchange, then reap it.
 pub(crate) async fn run<T, F>(
+    executable: Option<&Path>,
+    home: &str,
+    isolated: bool,
+    spec: ExchangeSpec,
+    exchange: F,
+) -> Result<T, ()>
+where
+    T: Send,
+    F: for<'a> FnOnce(&'a mut SessionHandle, Instant) -> ExchangeFuture<'a, T> + Send,
+{
+    let admission = try_admit().ok_or(())?;
+    run_admitted(admission, executable, home, isolated, spec, exchange).await
+}
+
+pub(crate) async fn run_admitted<T, F>(
+    _admission: ExchangeAdmission,
     executable: Option<&Path>,
     home: &str,
     isolated: bool,
@@ -63,7 +113,7 @@ where
                 max_output_bytes: MAX_OUTPUT_BYTES,
             },
         );
-        run_with_factory(factory, launch, started, spec, exchange).await
+        run_with_factory_admitted(_admission, factory, launch, started, spec, exchange).await
     }
     #[cfg(not(unix))]
     {
@@ -72,7 +122,26 @@ where
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn run_with_factory<T, F>(
+    factory: Arc<dyn ProviderTaskFactory>,
+    launch: ProviderLaunchSpec,
+    started: Instant,
+    spec: ExchangeSpec,
+    exchange: F,
+) -> Result<T, ()>
+where
+    T: Send,
+    F: for<'a> FnOnce(&'a mut SessionHandle, Instant) -> ExchangeFuture<'a, T> + Send,
+{
+    // Scripted sessions use an isolated pool so concurrently running tests cannot
+    // consume the production process budget; the pool's bound has its own burst test.
+    let admission = AdmissionPool::new(MAX_CHILDREN).try_admit().ok_or(())?;
+    run_with_factory_admitted(admission, factory, launch, started, spec, exchange).await
+}
+
+pub(crate) async fn run_with_factory_admitted<T, F>(
+    _admission: ExchangeAdmission,
     factory: Arc<dyn ProviderTaskFactory>,
     launch: ProviderLaunchSpec,
     started: Instant,
@@ -122,4 +191,50 @@ where
         return Err(());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdmissionPool;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[tokio::test]
+    async fn burst_admission_never_exceeds_shared_child_bound() {
+        let pool = Arc::new(AdmissionPool::new(super::MAX_CHILDREN));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let (release, _) = tokio::sync::watch::channel(false);
+        let barrier = Arc::new(tokio::sync::Barrier::new(super::MAX_CHILDREN + 1));
+        let mut tasks = Vec::new();
+        for _ in 0..64 {
+            let pool = Arc::clone(&pool);
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            let mut release = release.subscribe();
+            let barrier = Arc::clone(&barrier);
+            tasks.push(tokio::spawn(async move {
+                let Some(_admission) = pool.try_admit() else {
+                    return;
+                };
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(count, Ordering::SeqCst);
+                barrier.wait().await;
+                while !*release.borrow() {
+                    if release.changed().await.is_err() {
+                        break;
+                    }
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        barrier.wait().await;
+        assert_eq!(maximum.load(Ordering::SeqCst), super::MAX_CHILDREN);
+        release.send(true).expect("release admissions");
+        for task in tasks {
+            task.await.expect("admission task");
+        }
+    }
 }

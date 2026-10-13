@@ -20,7 +20,6 @@ use studio_runtime_process::{
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
 
-const MAX_REFRESHES: usize = 4;
 const CATALOG_TTL: Duration = Duration::from_secs(300);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CATALOG_PAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -64,7 +63,6 @@ struct CatalogInner {
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
-    slots: Arc<tokio::sync::Semaphore>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     stop: Shutdown,
 }
@@ -127,7 +125,6 @@ impl ModelCatalogService {
             cache: Mutex::new(HashMap::new()),
             next_generation: Mutex::new(0),
             on_change,
-            slots: Arc::new(tokio::sync::Semaphore::new(MAX_REFRESHES)),
             tasks: Mutex::new(Vec::new()),
             stop: Shutdown::default(),
         }))
@@ -169,7 +166,7 @@ impl ModelCatalogService {
                 }
             }
             let stale = cache.get(&cache_key).and_then(|entry| entry.value.clone());
-            let Ok(permit) = self.0.slots.clone().try_acquire_owned() else {
+            let Some(permit) = provider_exchange::try_admit() else {
                 return stale.map_or(CatalogRead::Pending, CatalogRead::Ready);
             };
             // A changed home/provider replaces the same account's former entry.
@@ -203,10 +200,14 @@ impl ModelCatalogService {
         }
         tasks.retain(|task| !task.is_finished());
         tasks.push(tokio::spawn(async move {
-            let _permit = permit;
-            let result =
-                read_provider_catalog(executable.as_deref(), &home, account != "default", stop)
-                    .await;
+            let result = read_provider_catalog(
+                permit,
+                executable.as_deref(),
+                &home,
+                account != "default",
+                stop,
+            )
+            .await;
             if let Some(inner) = service.upgrade() {
                 store_result(&inner, &cache_key, generation, result);
             }
@@ -279,12 +280,14 @@ fn store_result(
 }
 
 async fn read_provider_catalog(
+    admission: provider_exchange::ExchangeAdmission,
     executable: Option<&std::path::Path>,
     home: &str,
     isolated: bool,
     stop: Shutdown,
 ) -> Result<Value, ()> {
-    provider_exchange::run(
+    provider_exchange::run_admitted(
+        admission,
         executable,
         home,
         isolated,
@@ -788,60 +791,25 @@ mod tests {
         );
     }
     #[tokio::test(start_paused = true)]
-    async fn refresh_budget_cache_pruning_and_shutdown_are_bounded() {
-        let service = ModelCatalogService::new(Some(
-            "/var/tmp/cs-rust-account-worker/missing-provider".into(),
-        ));
-        let permits = service
-            .0
-            .slots
-            .clone()
-            .acquire_many_owned(MAX_REFRESHES as u32)
-            .await
-            .expect("catalog resource check");
+    async fn cache_pruning_and_shutdown_are_bounded() {
+        let service = ModelCatalogService::new(None);
         for account in 0..100 {
-            assert_eq!(
-                service
-                    .read(&account.to_string(), "/var/tmp", "codex", false)
-                    .await,
-                CatalogRead::Pending
-            );
-        }
-        assert!(
             service
                 .0
                 .cache
                 .lock()
                 .expect("catalog resource check")
-                .is_empty()
-        );
-        assert!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .is_empty()
-        );
-        drop(permits);
-        for account in 0..MAX_REFRESHES {
-            assert_eq!(
-                service
-                    .read(&account.to_string(), "/var/tmp", "codex", false)
-                    .await,
-                CatalogRead::Pending
-            );
+                .insert(
+                    (account.to_string(), "/var/tmp".into(), "codex".into()),
+                    CacheEntry {
+                        generation: 1,
+                        value: Some(json!({"models":[]})),
+                        expires_at: Some(Instant::now() + CATALOG_TTL),
+                        error: false,
+                        pending: false,
+                    },
+                );
         }
-        assert_eq!(service.0.slots.available_permits(), 0);
-        assert_eq!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .len(),
-            MAX_REFRESHES
-        );
         service.retain_accounts(&[json!({"id":"0","home":"/var/tmp","provider":"codex"})]);
         assert_eq!(
             service
@@ -853,15 +821,6 @@ mod tests {
             1
         );
         service.shutdown().await.expect("catalog resource check");
-        assert_eq!(service.0.slots.available_permits(), MAX_REFRESHES);
-        assert!(
-            service
-                .0
-                .tasks
-                .lock()
-                .expect("catalog resource check")
-                .is_empty()
-        );
         assert_eq!(
             service.read("new", "/var/tmp", "codex", false).await,
             CatalogRead::Unavailable

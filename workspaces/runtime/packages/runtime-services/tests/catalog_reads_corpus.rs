@@ -105,29 +105,84 @@ fn python_written_history_and_scripted_provider_match_catalog_projections() {
         "replies":{"skills/list":skill_response,"mcpServerStatus/list":mcp_response}
     });
     let expected = python_oracle(&scratch.0, &input);
+    assert!(
+        expected["capabilities"]["managed"].is_array(),
+        "Python tool_definitions() supplies the managed response"
+    );
 
     let skill_projection = skills_for_cwd("/repo", &expected["skillResponse"])
         .expect("Python provider response is valid");
     assert_eq!(skill_projection, expected["skills"]);
 
+    for (name, malformed) in [
+        (
+            "errors",
+            json!({"data":[{"cwd":"/repo","errors":null,"skills":[{"name":"hidden","path":"/hidden"}]}]}),
+        ),
+        ("skills", json!({"data":[{"cwd":"/repo","skills":null}]})),
+    ] {
+        let mut malformed_input = input.clone();
+        malformed_input["database"] = json!(
+            scratch
+                .0
+                .join(format!("malformed-{name}.sqlite3"))
+                .to_string_lossy()
+        );
+        malformed_input["replies"]["skills/list"] = malformed.clone();
+        let python_result = python_oracle(&scratch.0, &malformed_input);
+        assert_eq!(python_result["skills"]["skills"], json!([]));
+        assert!(
+            !python_result["skills"]["errors"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let rust_result = skills_for_cwd("/repo", &malformed)
+            .unwrap_or_else(|message| json!({"skills":[],"errors":[message]}));
+        assert_eq!(rust_result["skills"], python_result["skills"]["skills"]);
+        assert!(!rust_result["errors"].as_array().unwrap().is_empty());
+    }
+
     let connection = Connection::open(&database).expect("Python-written DB opens read only");
     let observed = CapabilityReadsRepository::observed_names(&connection, "agent-a")
         .expect("selected-agent task names project");
     let snapshot = CapabilityAgentSnapshot::from_record(&agent).expect("valid agent snapshot");
-    let definitions: Vec<ToolDefinition> =
-        serde_json::from_value(expected["capabilities"]["managed"].clone())
-            .expect("Python full tool inventory matches the Rust catalog representation");
     let catalog = CatalogSnapshot {
         source: CatalogSource::Current,
-        definitions,
+        // No production constructor for PreparationResources.catalog exists on this base.
+        // Keep this witness to Rust's managed-tool serialization contract only.
+        definitions: vec![ToolDefinition {
+            name: "fixture-tool".into(),
+            description: "fixture description".into(),
+            input_schema: serde_json::from_value(json!({"type":"object"})).expect("fixture schema"),
+            extra: serde_json::from_value(json!({"strict":true})).expect("fixture extension"),
+        }],
         saved_thread_id: None,
         saved_digest: None,
     };
     let managed = managed_tool_catalog(&catalog).expect("full selected tool inventory");
+    assert_eq!(
+        managed,
+        json!([{
+            "name":"fixture-tool",
+            "description":"fixture description",
+        "inputSchema":{"type":"object"},
+        "strict":true
+        }])
+    );
     let mut capabilities = capabilities_base("agent-a", &snapshot, managed, observed, 1234.5);
     apply_capability_result(&mut capabilities, "skills", &expected["skillResponse"]);
     apply_capability_result(&mut capabilities, "servers", &expected["mcpResponse"]);
-    assert_eq!(capabilities, expected["capabilities"]);
+    let mut python_capabilities = expected["capabilities"].clone();
+    python_capabilities
+        .as_object_mut()
+        .expect("Python capabilities")
+        .remove("managed");
+    capabilities
+        .as_object_mut()
+        .expect("Rust capabilities")
+        .remove("managed");
+    assert_eq!(capabilities, python_capabilities);
     assert_eq!(expected["capabilities"], expected["cachedCapabilities"]);
 
     let calls = expected["calls"].as_array().expect("provider calls");

@@ -24,5 +24,19 @@
     "witnesses": [
       "scripted_cancel_does_not_terminate_a_different_process_for_the_same_item"
     ]
+  },
+  {
+    "id": "CR3",
+    "description": "cancel-a-different-item-with-a-reused-process-id",
+    "file": "workspaces/runtime/packages/runtime-services/src/catalog_reads.rs",
+    "edits": [
+      {
+        "before": "entry.get(\"itemId\").and_then(Value::as_str) == Some(item_id.as_str())",
+        "after": "true"
+      }
+    ],
+    "witnesses": [
+      "scripted_cancel_refuses_a_different_item_with_the_same_process_id"
+    ]
   }
 ]
