@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use std::time::Instant;
@@ -32,6 +32,11 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
+enum ReadBody {
+    Json(Value),
+    Export(Vec<u8>),
+}
+
 async fn analytics_read(
     State(state): State<HttpState>,
     query: QueryParams,
@@ -57,36 +62,40 @@ async fn analytics_read(
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    if export {
-        let body = tokio::task::spawn_blocking(move || analytics::export(&store, &options))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_analytics_error)?;
-        let mut response = Response::new(Body::from(body));
-        *response.status_mut() = StatusCode::OK;
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json; charset=utf-8"),
-        );
-        response.headers_mut().insert(
-            header::CONTENT_DISPOSITION,
-            HeaderValue::from_static("attachment; filename=\"codex-studio-analytics.json\""),
-        );
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        response.headers_mut().insert(
-            "x-content-type-options",
-            HeaderValue::from_static("nosniff"),
-        );
-        return Ok(response);
-    }
-    let result = tokio::task::spawn_blocking(move || analytics::read(&store, &options))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_analytics_error)?;
-    let mut response =
-        Json(super::generated_json::<crate::generated::AnalyticsResponse>(result)?).into_response();
+    let result = tokio::task::spawn_blocking(move || {
+        let value = analytics::read(&store, &options)?;
+        if export {
+            Ok(ReadBody::Export(serde_json::to_vec(&value)?))
+        } else {
+            Ok(ReadBody::Json(value))
+        }
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_analytics_error)?;
+    let mut response = match result {
+        ReadBody::Json(value) => {
+            Json(super::generated_json::<crate::generated::AnalyticsResponse>(value)?)
+                .into_response()
+        }
+        ReadBody::Export(body) => {
+            let mut response = Response::new(Body::from(body));
+            for (name, value) in [
+                (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"codex-studio-analytics.json\"",
+                ),
+                (header::CACHE_CONTROL, "no-store"),
+                (HeaderName::from_static("x-content-type-options"), "nosniff"),
+            ] {
+                response
+                    .headers_mut()
+                    .insert(name, HeaderValue::from_static(value));
+            }
+            response
+        }
+    };
     if timing {
         let value = format!(
             "analytics-total;dur={:.3}",
@@ -112,30 +121,21 @@ async fn session_cost(
         tokio::task::spawn_blocking(move || analytics::persisted_session_cost(&store, &agent))
             .await
             .map_err(|_| ApiError::internal())?
-            .map_err(|error| match error {
-                analytics::SessionCostError::RefreshRequired => {
-                    dependency_error("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-                }
-                other => map_session_cost_error(other),
-            })?;
-    let Some(value) = value else {
-        return Err(dependency_error(
-            "GET",
-            "/api/session-cost",
-            &SESSION_COST_DEPENDENCIES,
-        ));
-    };
+            .map_err(map_analytics_error)?;
+    let value = value.ok_or_else(cost_dependency)?;
     Ok(Json(super::generated_json::<
         crate::generated::SessionCostResponse,
     >(value)?))
 }
 
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
+fn cost_dependency() -> ApiError {
+    dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
+        .unwrap_or_else(|_| ApiError::internal())
 }
 
 fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
     match error {
+        analytics::AnalyticsError::RefreshRequired => cost_dependency(),
         analytics::AnalyticsError::InvalidRequest(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
@@ -153,29 +153,6 @@ fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
         analytics::AnalyticsError::Read(_)
         | analytics::AnalyticsError::Sqlite(_)
         | analytics::AnalyticsError::Serialization(_) => ApiError::internal(),
-    }
-}
-
-fn map_session_cost_error(error: analytics::SessionCostError) -> ApiError {
-    match error {
-        analytics::SessionCostError::UnknownAgent => {
-            ApiError::new(StatusCode::BAD_REQUEST, "Unknown chat")
-        }
-        analytics::SessionCostError::RefreshRequired => {
-            dependency_error("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-        }
-        analytics::SessionCostError::InvalidStored(object) => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {object}"),
-        ),
-        analytics::SessionCostError::InvalidStoredRow { table, id } => ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored object {table}/{id}"),
-        ),
-        analytics::SessionCostError::Json(_) => ApiError::internal(),
-        analytics::SessionCostError::Read(_) | analytics::SessionCostError::Sqlite(_) => {
-            ApiError::internal()
-        }
     }
 }
 

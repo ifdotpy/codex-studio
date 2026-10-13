@@ -1,16 +1,13 @@
 //! Read-only analytics projections over the Python runtime's persisted rows.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::RuntimeStore;
-use crate::{python_json_compact, sha256_hex};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, params_from_iter, types::Value as SqlValue,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use thiserror::Error;
 
 const TOKEN_FIELDS: [&str; 6] = [
@@ -82,6 +79,8 @@ fn read_only_uri(path: &Path) -> Result<String, AnalyticsStoreError> {
 
 #[derive(Debug, Error)]
 pub enum AnalyticsError {
+    #[error("Not implemented: requires usage-policy/session-cost-refresh")]
+    RefreshRequired,
     #[error("Invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("Invalid stored object {0}")]
@@ -117,48 +116,11 @@ pub struct AnalyticsOptions {
     pub timing: Option<String>,
 }
 
-/// Produce the route's JSON representation using one read-only SQLite snapshot.
-pub fn read(store: &RuntimeStore, options: &AnalyticsOptions) -> Result<Value, AnalyticsError> {
-    let scope = options.scope.as_deref().unwrap_or("agent");
-    if !matches!(scope, "agent" | "team" | "all") {
-        return Err(AnalyticsError::InvalidRequest("Unknown analytics scope"));
-    }
-    if let (Some(start), Some(end)) = (options.from, options.to)
-        && start > end
-    {
-        return Err(AnalyticsError::InvalidRequest(
-            "Analytics start is after end",
-        ));
-    }
-    let repo = AnalyticsRepository::new(store.root());
-    let mut db = repo.open_read_only()?;
-    let transaction = db.transaction()?;
-    let value = match options.view.as_deref() {
-        Some("detail") => detail(&transaction, options, scope)?,
-        Some("turn-errors") => turn_errors(&transaction, options, scope)?,
-        Some("message-info") if scope != "agent" => {
-            return Err(AnalyticsError::InvalidRequest(
-                "Select one agent for message metadata",
-            ));
-        }
-        Some("message-info") => message_info(&transaction, store.root(), options)?,
-        Some(_) => return Err(AnalyticsError::InvalidRequest("Unknown analytics view")),
-        None => rollup(&transaction, options, scope)?,
-    };
-    transaction.commit()?;
-    Ok(value)
-}
-
-pub fn export(store: &RuntimeStore, options: &AnalyticsOptions) -> Result<Vec<u8>, AnalyticsError> {
-    let value = read(store, options)?;
-    Ok(serde_json::to_vec(&value)?)
-}
-
-fn rollup(
+pub fn rollup<'a>(
     db: &Connection,
-    options: &AnalyticsOptions,
-    scope: &str,
-) -> Result<Value, AnalyticsError> {
+    options: &'a AnalyticsOptions,
+    scope: &'a str,
+) -> Result<AnalyticsResponse<'a>, AnalyticsError> {
     let agent_id = options.agent.as_deref();
     let (root, mut agents) = selected_agents(db, options, scope, false)?;
     let limit = options.limit.unwrap_or(50).clamp(1, 500);
@@ -188,7 +150,7 @@ fn rollup(
         0,
     )?;
     timeline.reverse();
-    let chart = chart_rows(db, &billable, options.export)?;
+    let chart = chart_rows(db, &billable)?;
     let usage_totals = usage_grouped(db, &usage_filter, "''")?
         .remove("")
         .unwrap_or_default();
@@ -557,7 +519,7 @@ fn rollup(
             },
         },
     };
-    Ok(serde_json::to_value(response)?)
+    Ok(response)
 }
 
 #[derive(serde::Serialize)]
@@ -630,7 +592,7 @@ struct Tool {
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AnalyticsResponse<'a> {
+pub struct AnalyticsResponse<'a> {
     version: u8,
     generated_at: f64,
     filters: AnalyticsFiltersResponse<'a>,
@@ -647,7 +609,7 @@ struct AnalyticsResponse<'a> {
     rate_limits: Vec<RateLimit>,
     turns: Vec<Value>,
     timeline: Vec<Value>,
-    chart_buckets: Vec<Value>,
+    pub chart_buckets: Vec<Value>,
     timeline_total: usize,
     provisional_usage: Vec<Value>,
     calls: Vec<Value>,
@@ -926,11 +888,7 @@ fn observed_counts(db: &Connection, filter: &ScopeFilter) -> Result<(i64, i64), 
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?)
 }
-fn chart_rows(
-    db: &Connection,
-    filter: &ScopeFilter,
-    export: bool,
-) -> Result<Vec<Value>, AnalyticsError> {
+fn chart_rows(db: &Connection, filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
     let sql = format!("SELECT id,record FROM (SELECT id,record,at,seq,
         ROW_NUMBER() OVER(PARTITION BY CAST(at/3600 AS INTEGER) ORDER BY json_extract(record,'$.last.totalTokens')*1.0/json_extract(record,'$.modelContextWindow') DESC,at,seq) AS rank
         FROM analytics_usage {} AND at>=0 AND json_extract(record,'$.modelContextWindow')!=0 AND json_extract(record,'$.last.totalTokens') IS NOT NULL)
@@ -941,39 +899,9 @@ fn chart_rows(
         params_from_iter(&filter.params),
         "analytics_usage",
     )?;
-    let mut buckets: HashMap<i64, Value> = HashMap::new();
-    let mut width = 3600.0;
-    for point in points {
-        let bucket = (number_at(&point, "at").unwrap_or_default() / width) as i64;
-        if buckets
-            .get(&bucket)
-            .is_none_or(|old| context_percent(old) < context_percent(&point))
-        {
-            buckets.insert(bucket, point);
-        }
-        if !export && buckets.len() > 500 {
-            width *= 2.0;
-            let mut compacted: HashMap<i64, Value> = HashMap::new();
-            for point in buckets.into_values() {
-                let key = (number_at(&point, "at").unwrap_or_default() / width) as i64;
-                if compacted
-                    .get(&key)
-                    .is_none_or(|old| context_percent(old) < context_percent(&point))
-                {
-                    compacted.insert(key, point);
-                }
-            }
-            buckets = compacted;
-        }
-    }
-    let mut points: Vec<_> = buckets.into_values().collect();
-    points.sort_by(|a, b| {
-        number_at(a, "at")
-            .partial_cmp(&number_at(b, "at"))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
     Ok(points)
 }
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct CaptureErrors {
     count: u64,
@@ -1335,25 +1263,6 @@ fn string_default(row: &Value, key: &str, default: &str) -> String {
         .unwrap_or(default)
         .to_owned()
 }
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(v)) => *v,
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0) != 0.0,
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
-}
-fn number_at(row: &Value, key: &str) -> Option<f64> {
-    row.get(key)
-        .and_then(Value::as_f64)
-        .filter(|n| n.is_finite() && *n >= 0.0)
-}
-fn context_percent(row: &Value) -> Option<f64> {
-    Some(row.pointer("/last/totalTokens")?.as_f64()? / row.get("modelContextWindow")?.as_f64()?)
-        .filter(|n| n.is_finite())
-}
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum DetailPage {
@@ -1367,7 +1276,7 @@ enum DetailPage {
         pagination: AnalyticsPagination,
     },
 }
-fn detail(
+pub fn detail(
     db: &Connection,
     options: &AnalyticsOptions,
     scope: &str,
@@ -1419,196 +1328,6 @@ fn detail(
     Ok(serde_json::to_value(page)?)
 }
 
-fn turn_errors(
-    db: &Connection,
-    options: &AnalyticsOptions,
-    scope: &str,
-) -> Result<Value, AnalyticsError> {
-    if scope != "agent" || options.thread.as_deref().unwrap_or_default().is_empty() {
-        return Err(AnalyticsError::InvalidRequest(
-            "Select one thread and up to 120 turns",
-        ));
-    }
-    let agent = options.agent.as_deref().unwrap_or_default();
-    let known: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM canvas.runtime_agents WHERE id=?1) OR EXISTS(SELECT 1 FROM analytics_agents WHERE id=?1)",
-        [agent], |r| r.get(0)
-    )?;
-    if !known {
-        return Err(AnalyticsError::UnknownAgent);
-    }
-    let list: Vec<_> = options
-        .turns
-        .as_deref()
-        .unwrap_or_default()
-        .split(',')
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    if list.is_empty() || list.len() > 120 || list.iter().any(|s| s.is_empty()) {
-        return Err(AnalyticsError::InvalidRequest(
-            "Select one thread and up to 120 turns",
-        ));
-    }
-    let keys: Vec<_> = list
-        .iter()
-        .map(|turn| {
-            format!(
-                "{}:{}:{}",
-                options.agent.as_deref().unwrap_or_default(),
-                options.thread.as_deref().unwrap_or_default(),
-                turn
-            )
-        })
-        .collect();
-    let placeholders = vec!["?"; keys.len()].join(",");
-    let sql = format!("SELECT record FROM analytics_turns WHERE id IN ({placeholders})");
-    let fields = ["agentId", "threadId", "turnId", "status", "error"];
-    let rows = records(
-        db,
-        &sql,
-        params_from_iter(keys.into_iter().map(SqlValue::Text)),
-        "analytics_turns",
-    )?;
-    let projected: Vec<_> = rows.iter().map(|row| project(row, &fields)).collect();
-    Ok(json!({"turns":projected}))
-}
-
-fn message_info(
-    db: &Connection,
-    root: &Path,
-    options: &AnalyticsOptions,
-) -> Result<Value, AnalyticsError> {
-    let agent = options.agent.as_deref().unwrap_or_default();
-    let item_id = options.item.as_deref().unwrap_or_default();
-    if item_id.is_empty() || item_id.len() > 512 {
-        return Err(AnalyticsError::InvalidRequest("Select a message item"));
-    }
-    let known:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM analytics_agents WHERE id=?1) OR EXISTS(SELECT 1 FROM canvas.runtime_agents WHERE id=?1)",[agent],|r|r.get(0))?;
-    if !known {
-        return Err(AnalyticsError::UnknownAgent);
-    }
-    let mut result = Map::new();
-    let mut item_query=db.prepare("SELECT record FROM analytics_items WHERE agent=?1 AND json_extract(record,'$.itemId')=?2 AND (?3 IS NULL OR thread=?3) LIMIT 2")?;
-    let found: Vec<String> = item_query
-        .query_map(rusqlite::params![agent, item_id, options.thread], |r| {
-            r.get(0)
-        })?
-        .collect::<Result<_, _>>()?;
-    let item = if found.len() == 1 {
-        Some(parse_object(&found[0], "analytics_items")?)
-    } else {
-        None
-    };
-    let mut thread = options.thread.clone();
-    let mut turn_id = options.turn.clone();
-    let item = if let Some(item) = item.filter(|i| {
-        i.get("type").and_then(Value::as_str) == Some("agentMessage")
-            && turn_id
-                .as_deref()
-                .is_none_or(|t| i.get("turnId").and_then(Value::as_str) == Some(t))
-    }) {
-        thread = item
-            .get("threadId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        turn_id = item
-            .get("turnId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if let Some(at) = item
-            .get("finishedAt")
-            .filter(|v| !v.is_null())
-            .or_else(|| item.get("startedAt"))
-            .or_else(|| item.get("at"))
-        {
-            result.insert("at".into(), at.clone());
-        }
-        Some(item)
-    } else {
-        None
-    };
-    let Some(turn_id) = turn_id else {
-        return Ok(Value::Object(result));
-    };
-    let mut turn_query=db.prepare("SELECT record FROM analytics_turns WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND (?3 IS NULL OR json_extract(record,'$.threadId')=?3) LIMIT 2")?;
-    let found: Vec<String> = turn_query
-        .query_map(rusqlite::params![agent, turn_id, thread], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
-    if found.len() != 1 {
-        return Ok(Value::Object(result));
-    }
-    let turn = parse_object(&found[0], "analytics_turns")?;
-    thread = turn
-        .get("threadId")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let mut runs=db.prepare("SELECT record FROM runtime_execution_runs WHERE agent=?1 AND thread IS ?2 AND turn=?3 LIMIT 2")?;
-    let run_rows: Vec<String> = runs
-        .query_map(rusqlite::params![agent, thread, turn_id], |r| r.get(0))?
-        .collect::<Result<_, _>>()?;
-    if run_rows.len() == 1 {
-        let run = parse_object(&run_rows[0], "runtime_execution_runs")?;
-        result.insert(
-            "runId".into(),
-            run.get("id").cloned().unwrap_or(Value::Null),
-        );
-        if let Some(id) = run.get("rootAttemptId") {
-            result.insert("attemptId".into(), id.clone());
-        }
-    }
-    for field in ["model", "effort", "accountKey"] {
-        if let Some(v) = turn.get(field).filter(|v| truthy(Some(v))) {
-            result.insert(field.into(), v.clone());
-        }
-    }
-    if let Some(account_key) = result.get("accountKey").and_then(Value::as_str) {
-        let path = root.join("registry.json");
-        if let Ok(raw) = fs::read(path)
-            && let Ok(registry) = serde_json::from_slice::<Value>(&raw)
-            && let Some(account) = registry.pointer(&format!("/accounts/{account_key}"))
-        {
-            if let Some(label) = account.get("label") {
-                result.insert("accountLabel".into(), label.clone());
-            }
-            if account.is_object() {
-                result.insert(
-                    "provider".into(),
-                    account.get("provider").cloned().unwrap_or(json!("codex")),
-                );
-            }
-        }
-    }
-    if let Some(duration) = turn
-        .get("nativeDurationMs")
-        .or_else(|| turn.get("durationMs"))
-    {
-        result.insert("turnDurationMs".into(), duration.clone());
-    }
-    let response = message_usage(
-        db,
-        agent,
-        thread.as_deref(),
-        &turn_id,
-        item_id,
-        item.as_ref(),
-        &turn,
-    )?;
-    if let Some(response) = response {
-        if let Some(model) = response.get("model").filter(|v| truthy(Some(v))) {
-            result.insert("model".into(), model.clone());
-        }
-        if let Some(tokens) = response
-            .get("requestUsage")
-            .or_else(|| response.get("last"))
-        {
-            result.insert("tokens".into(), tokens.clone());
-        }
-    }
-    result.retain(|_, value| !value.is_null());
-    Ok(Value::Object(result))
-}
-
 fn parse_object(raw: &str, table: &'static str) -> Result<Value, AnalyticsError> {
     let value: Value =
         serde_json::from_str(raw).map_err(|_| AnalyticsError::InvalidStoredObject(table))?;
@@ -1617,62 +1336,84 @@ fn parse_object(raw: &str, table: &'static str) -> Result<Value, AnalyticsError>
     }
     Ok(value)
 }
-fn message_usage(
+pub fn message_item(
+    db: &Connection,
+    agent: &str,
+    item: &str,
+    thread: Option<&str>,
+) -> Result<Option<Value>, AnalyticsError> {
+    unique_record(
+        db,
+        "SELECT record FROM analytics_items WHERE agent=?1 AND json_extract(record,'$.itemId')=?2 AND (?3 IS NULL OR thread=?3) LIMIT 2",
+        rusqlite::params![agent, item, thread],
+        "analytics_items",
+    )
+}
+pub fn message_turn(
+    db: &Connection,
+    agent: &str,
+    turn: &str,
+    thread: Option<&str>,
+) -> Result<Option<Value>, AnalyticsError> {
+    unique_record(
+        db,
+        "SELECT record FROM analytics_turns WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND (?3 IS NULL OR json_extract(record,'$.threadId')=?3) LIMIT 2",
+        rusqlite::params![agent, turn, thread],
+        "analytics_turns",
+    )
+}
+pub fn message_run(
+    db: &Connection,
+    agent: &str,
+    turn: &str,
+    thread: Option<&str>,
+) -> Result<Option<Value>, AnalyticsError> {
+    unique_record(
+        db,
+        "SELECT record FROM runtime_execution_runs WHERE agent=?1 AND thread IS ?2 AND turn=?3 LIMIT 2",
+        rusqlite::params![agent, thread, turn],
+        "runtime_execution_runs",
+    )
+}
+fn unique_record<P: rusqlite::Params>(
+    db: &Connection,
+    sql: &str,
+    params: P,
+    table: &'static str,
+) -> Result<Option<Value>, AnalyticsError> {
+    let rows: Vec<String> = query(db, sql, params, |r| r.get(0))?;
+    if rows.len() == 1 {
+        Ok(Some(parse_object(&rows[0], table)?))
+    } else {
+        Ok(None)
+    }
+}
+pub fn message_usage(
     db: &Connection,
     agent: &str,
     thread: Option<&str>,
     turn: &str,
-    item_id: &str,
-    item: Option<&Value>,
-    turn_record: &Value,
-) -> Result<Option<Value>, AnalyticsError> {
-    let usage = raw_records(
+    response: Option<&str>,
+) -> Result<Vec<Value>, AnalyticsError> {
+    raw_records(
         db,
-        "SELECT record FROM analytics_usage WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND json_extract(record,'$.responseId') IS NOT NULL LIMIT 2",
-        rusqlite::params![agent, thread, turn],
+        "SELECT record FROM analytics_usage WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND json_extract(record,'$.responseId') IS NOT NULL AND (?4 IS NULL OR json_extract(record,'$.responseId')=?4) LIMIT 2",
+        rusqlite::params![agent, thread, turn, response],
         "analytics_usage",
-    )?;
-    let exact = raw_records(
-        db,
-        "SELECT record FROM analytics_usage WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND json_extract(record,'$.responseId')=?4 LIMIT 2",
-        rusqlite::params![agent, thread, turn, item_id],
-        "analytics_usage",
-    )?;
-    if exact.len() == 1 {
-        return Ok(exact.into_iter().next());
-    }
-    if item.is_none()
-        || usage.len() != 1
-        || !matches!(
-            turn_record.get("status").and_then(Value::as_str),
-            Some("completed" | "failed" | "interrupted")
-        )
-    {
-        return Ok(None);
-    }
-    let all: i64 = db.query_row(
-        "SELECT COUNT(*) FROM analytics_usage WHERE agent=?1 AND thread IS ?2 AND turn=?3",
-        rusqlite::params![agent, thread, turn],
-        |r| r.get(0),
-    )?;
-    if all != 1 {
-        return Ok(None);
-    }
-    let messages = raw_records(
-        db,
-        "SELECT record FROM analytics_items WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND type='agentMessage' LIMIT 2",
-        rusqlite::params![agent, thread, turn],
-        "analytics_items",
-    )?;
-    let tool:Option<i64>=db.query_row("SELECT 1 FROM analytics_items WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND is_tool=1 LIMIT 1",rusqlite::params![agent,thread,turn],|r|r.get(0)).optional()?;
-    if tool.is_none()
-        && messages.len() == 1
-        && messages[0].get("itemId").and_then(Value::as_str) == Some(item_id)
-    {
-        Ok(usage.into_iter().next())
-    } else {
-        Ok(None)
-    }
+    )
+}
+pub fn unambiguous_message(
+    db: &Connection,
+    agent: &str,
+    thread: Option<&str>,
+    turn: &str,
+    item: &str,
+) -> Result<bool, AnalyticsError> {
+    Ok(db.query_row("SELECT
+        (SELECT COUNT(*) FROM analytics_usage WHERE agent=?1 AND thread IS ?2 AND turn=?3)=1 AND
+        NOT EXISTS(SELECT 1 FROM analytics_items WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND is_tool=1) AND
+        (SELECT COUNT(*)=1 AND MIN(json_extract(record,'$.itemId'))=?4 FROM analytics_items WHERE agent=?1 AND thread IS ?2 AND turn=?3 AND type='agentMessage')",
+        rusqlite::params![agent,thread,turn,item],|r|r.get(0))?)
 }
 fn raw_records<P: rusqlite::Params>(
     db: &Connection,
@@ -1693,139 +1434,8 @@ fn raw_records<P: rusqlite::Params>(
         .collect()
 }
 
-/// Return a signature-checked estimate persisted by the Python refresh worker.
-/// `None` means the caller must answer the declared refresh dependency.
-pub fn persisted_session_cost(
-    store: &RuntimeStore,
-    agent_id: &str,
-) -> Result<Option<Value>, SessionCostError> {
-    if !store.root().join("analytics.sqlite3").is_file() {
-        return Err(SessionCostError::RefreshRequired);
-    }
-    let repo = AnalyticsRepository::new(store.root());
-    let mut db = repo.open_read_only()?;
-    let tx = db.transaction()?;
-    let agent = tx
-        .query_row(
-            "SELECT record FROM analytics_agents WHERE id=?1",
-            [agent_id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?;
-    let record = if let Some(raw) = agent {
-        serde_json::from_str::<Value>(&raw)
-            .map_err(|_| SessionCostError::InvalidStored("analytics_agents"))?
-    } else {
-        let raw = tx
-            .query_row(
-                "SELECT record FROM canvas.runtime_agents WHERE id=?1",
-                [agent_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-            .ok_or(SessionCostError::UnknownAgent)?;
-        serde_json::from_str::<Value>(&raw)
-            .map_err(|_| SessionCostError::InvalidStored("runtime_agents"))?
-    };
-    let root = record
-        .get("rootId")
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .unwrap_or(agent_id)
-        .to_owned();
-    let members = cost_agents(&tx, agent_id, &root)?;
-    if members.iter().any(|(_, r)| has_claude_history(r)) {
-        tx.commit()?;
-        return Ok(None);
-    }
-    let usage = usage_signature(&tx, &root)?;
-    let cost = cost_projection_signature(&tx, &root, store.root())?;
-    let agents_sig = hash_json(&agent_signature_json(&members))?;
-    let claude_sig = hash_json(&json!({"configs":[],"files":[]}))?;
-    let pricing_sig = pricing_signature(store.root());
-    tx.commit()?;
-    let source = json!({"usage":usage,"pricingSignature":pricing_sig,"agentsSignature":agents_sig,"claudeSignature":claude_sig,"costProjection":cost});
-    let digest = sha256_hex(root.as_bytes());
-    let cache_path = store
-        .root()
-        .join("session-costs")
-        .join(format!("cost-{digest}.json"));
-    let Ok(raw) = fs::read(&cache_path) else {
-        return Ok(None);
-    };
-    let Ok(saved) = serde_json::from_slice::<Value>(&raw) else {
-        return Ok(None);
-    };
-    if saved.get("version").and_then(Value::as_i64) != Some(2)
-        || saved.get("rootId").and_then(Value::as_str) != Some(&root)
-        || saved.get("source") != Some(&source)
-        || saved
-            .get("source")
-            .and_then(Value::as_object)
-            .is_none_or(|m| m.len() != source.as_object().map_or(0, Map::len))
-    {
-        return Ok(None);
-    }
-    let Some(cached_at) = saved.get("cachedAt").and_then(Value::as_f64) else {
-        return Ok(None);
-    };
-    let Some(mut result) = saved
-        .get("result")
-        .filter(|v| valid_cost_result(v, &root))
-        .cloned()
-    else {
-        return Ok(None);
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    result["cacheAgeSeconds"] = json!(((now - cached_at).max(0.0) * 10.0).round() / 10.0);
-    result["refreshing"] = json!(false);
-    Ok(Some(result))
-}
-
-#[derive(Debug, Error)]
-pub enum SessionCostError {
-    #[error("Not implemented: requires usage-policy/session-cost-refresh")]
-    RefreshRequired,
-    #[error("Unknown chat")]
-    UnknownAgent,
-    #[error("Invalid stored object {0}")]
-    InvalidStored(&'static str),
-    #[error("Invalid stored object {table}/{id}")]
-    InvalidStoredRow { table: &'static str, id: String },
-    #[error("session-cost read failed: {0}")]
-    Read(#[from] AnalyticsStoreError),
-    #[error("SQLite read failed: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("Invalid cache JSON")]
-    Json(#[from] serde_json::Error),
-}
-fn valid_cost_result(v: &Value, root: &str) -> bool {
-    v.is_object()
-        && v.get("rootId").and_then(Value::as_str) == Some(root)
-        && v.get("pricingState").and_then(Value::as_str) == Some("ready")
-        && v.get("unknownModels").is_some_and(Value::is_array)
-        && v.get("pricedSamples").and_then(Value::as_i64).is_some()
-        && v.get("estimated").and_then(Value::as_bool).is_some()
-        && v.pointer("/breakdown/providers")
-            .is_some_and(Value::is_object)
-        && v.pointer("/breakdown/models").is_some_and(Value::is_object)
-        && v.get("totalUSD")
-            .is_some_and(|x| x.is_null() || x.is_number())
-}
-fn has_claude_history(record: &Value) -> bool {
-    record.get("provider").and_then(Value::as_str) == Some("claude")
-        || record
-            .get("accountHistory")
-            .and_then(Value::as_array)
-            .is_some_and(|a| {
-                a.iter()
-                    .any(|h| h.get("provider").and_then(Value::as_str) == Some("claude"))
-            })
-}
-fn cost_agents(
+pub type SessionCostError = AnalyticsError;
+pub fn cost_agents(
     db: &Connection,
     agent: &str,
     root: &str,
@@ -1834,7 +1444,7 @@ fn cost_agents(
     let mut out = Vec::new();
     for (id, raw) in rows {
         let v: Value = serde_json::from_str(&raw)
-            .map_err(|_| SessionCostError::InvalidStored("analytics_agents"))?;
+            .map_err(|_| SessionCostError::InvalidStoredObject("analytics_agents"))?;
         if id == root || v.get("rootId").and_then(Value::as_str) == Some(root) {
             out.push((id, v));
         }
@@ -1847,15 +1457,15 @@ fn cost_agents(
                 |r| r.get::<_, String>(0),
             )
             .optional()?
-            .ok_or(SessionCostError::UnknownAgent)?;
+            .ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
         let v: Value = serde_json::from_str(&raw)
-            .map_err(|_| SessionCostError::InvalidStored("runtime_agents"))?;
+            .map_err(|_| SessionCostError::InvalidStoredObject("runtime_agents"))?;
         out.push((agent.into(), v));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
-fn usage_signature(db: &Connection, root: &str) -> Result<Value, SessionCostError> {
+pub fn usage_signature(db: &Connection, root: &str) -> Result<UsageState, SessionCostError> {
     let max: i64 = if table_exists(db, "analytics_usage")? {
         db.query_row(
             "SELECT COALESCE(MAX(seq),0) FROM analytics_usage WHERE root=?1",
@@ -1876,32 +1486,42 @@ fn usage_signature(db: &Connection, root: &str) -> Result<Value, SessionCostErro
     } else {
         0
     };
-    Ok(json!({"maxSeq":max,"generation":generation}))
+    Ok(UsageState {
+        max_seq: max,
+        generation,
+    })
 }
-fn cost_projection_signature(
+pub fn cost_projection(
     db: &Connection,
-    chat_root: &str,
-    state_root: &Path,
-) -> Result<Option<Value>, SessionCostError> {
+    root: &str,
+) -> Result<Option<(String, i64, i64)>, SessionCostError> {
     if !table_exists(db, "analytics_cost_state_v1")?
         || !table_exists(db, "analytics_cost_roots_v1")?
     {
         return Ok(None);
     }
-    let Some((token,revision,floor))=db.query_row("SELECT token,COALESCE((SELECT revision FROM analytics_cost_roots_v1 WHERE root=?1),0),COALESCE((SELECT floor FROM analytics_cost_roots_v1 WHERE root=?1),0) FROM analytics_cost_state_v1 WHERE singleton=1",[chat_root],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).optional()? else{return Ok(None)};
-    let meta = fs::metadata(state_root.join("analytics.sqlite3")).ok();
-    let identity = file_identity(meta);
-    Ok(Some(json!([token, revision, identity, floor])))
+    Ok(db.query_row("SELECT token,COALESCE((SELECT revision FROM analytics_cost_roots_v1 WHERE root=?1),0),COALESCE((SELECT floor FROM analytics_cost_roots_v1 WHERE root=?1),0) FROM analytics_cost_state_v1 WHERE singleton=1",[root],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?)
 }
-#[cfg(unix)]
-fn file_identity(meta: Option<std::fs::Metadata>) -> Value {
-    use std::os::unix::fs::MetadataExt;
-    meta.map(|m| json!([m.dev(), m.ino()]))
-        .unwrap_or(Value::Null)
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UsageState {
+    max_seq: i64,
+    generation: i64,
 }
-#[cfg(not(unix))]
-fn file_identity(_: Option<std::fs::Metadata>) -> Value {
-    Value::Null
+pub fn cost_root(db: &Connection, agent: &str) -> Result<String, SessionCostError> {
+    let (table,raw): (String,String) = db.query_row("SELECT 'analytics_agents',record FROM analytics_agents WHERE id=?1 UNION ALL SELECT 'runtime_agents',record FROM canvas.runtime_agents WHERE id=?1 LIMIT 1",[agent],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(SessionCostError::InvalidRequest("Unknown chat"))?;
+    let table = if table == "analytics_agents" {
+        "analytics_agents"
+    } else {
+        "runtime_agents"
+    };
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| SessionCostError::InvalidStoredObject(table))?;
+    Ok(record["rootId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(agent)
+        .into())
 }
 fn table_exists(db: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
     let (schema, table) = name.split_once('.').unwrap_or(("main", name));
@@ -1913,66 +1533,27 @@ fn table_exists(db: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
         |r| r.get(0),
     )
 }
-fn agent_signature_json(agents: &[(String, Value)]) -> Value {
-    let fields = [
-        "rootId",
-        "accountKey",
-        "provider",
-        "threadId",
-        "accountHistory",
-    ];
-    let mut rows = agents
-        .iter()
-        .map(|(id, r)| {
-            let mut item = Map::new();
-            for field in fields {
-                item.insert(field.into(), r.get(field).cloned().unwrap_or(Value::Null));
-            }
-            json!([id, item])
-        })
-        .collect::<Vec<_>>();
-    rows.sort_by(|a, b| a[0].as_str().cmp(&b[0].as_str()));
-    Value::Array(rows)
+#[derive(serde::Serialize)]
+struct TurnErrors {
+    turns: Vec<Value>,
 }
-fn pricing_signature(root: &Path) -> Value {
-    let path = root.join("model-pricing/models-dev-v1.json");
-    let Ok(raw) = fs::read(path) else {
-        return Value::Null;
-    };
-    let Ok(artifact) = serde_json::from_slice::<Value>(&raw) else {
-        return Value::Null;
-    };
-    if artifact.get("version").and_then(Value::as_i64) != Some(1) {
-        return Value::Null;
+pub fn require_agent(db: &Connection, agent: &str) -> Result<(), AnalyticsError> {
+    let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM analytics_agents WHERE id=?1) OR EXISTS(SELECT 1 FROM canvas.runtime_agents WHERE id=?1)",[agent],|r|r.get(0))?;
+    if known {
+        Ok(())
+    } else {
+        Err(AnalyticsError::UnknownAgent)
     }
-    let Some(catalog) = artifact.get("catalog").filter(|value| valid_catalog(value)) else {
-        return Value::Null;
-    };
-    hash_json(catalog).map(Value::String).unwrap_or(Value::Null)
 }
-fn valid_catalog(value: &Value) -> bool {
-    let Some(providers) = value.get("providers").and_then(Value::as_object) else {
-        return false;
-    };
-    ["openai", "anthropic"].into_iter().all(|provider| {
-        providers
-            .get(provider)
-            .and_then(|value| value.get("models"))
-            .and_then(Value::as_object)
-            .is_some_and(|models| {
-                models.values().any(|model| {
-                    let Some(cost) = model.get("cost") else {
-                        return false;
-                    };
-                    ["input", "output"].into_iter().all(|field| {
-                        cost.get(field)
-                            .and_then(Value::as_f64)
-                            .is_some_and(|amount| amount.is_finite() && amount >= 0.0)
-                    })
-                })
-            })
-    })
-}
-fn hash_json(value: &Value) -> Result<String, serde_json::Error> {
-    Ok(sha256_hex(python_json_compact(value).as_bytes()))
+pub fn turn_errors(db: &Connection, keys: Vec<String>) -> Result<Value, AnalyticsError> {
+    let rows =
+        ScopeFilter::new()
+            .members("id", keys)
+            .page(db, "analytics_turns", "rowid", -1, 0)?;
+    Ok(serde_json::to_value(TurnErrors {
+        turns: rows
+            .iter()
+            .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
+            .collect(),
+    })?)
 }
