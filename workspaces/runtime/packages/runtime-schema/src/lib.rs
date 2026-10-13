@@ -64,6 +64,14 @@ const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.s
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (
+        "https://codex-studio.invalid/budget-capture.schema.json",
+        include_bytes!("schemas/budget-capture.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/budget-history.schema.json",
+        include_bytes!("schemas/budget-history.schema.json"),
+    ),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
     (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
@@ -72,6 +80,18 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (TASK_RECORD_URI, TASK_RECORD),
     (PLAN_RECORD_URI, PLAN_RECORD),
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
+    (
+        "https://codex-studio.invalid/persisted-budget-agent.schema.json",
+        include_bytes!("schemas/persisted-budget-agent.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        include_bytes!("schemas/persisted-budget-state.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-usage.schema.json",
+        include_bytes!("schemas/persisted-budget-usage.schema.json"),
+    ),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
@@ -132,6 +152,8 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
+        "runtime_budget" => "PersistedBudgetState",
+        "runtime_budget_usage" => "PersistedBudgetUsage",
         "runtime_requests" => "PersistedRequestRecord",
         "runtime_complaints" => "PersistedComplaintRecord",
         "runtime_checkpoints" => "PersistedCheckpointRecord",
@@ -206,6 +228,14 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         validators.insert(name.to_owned(), validator);
     }
     for (name, uri) in [
+        (
+            "BudgetCapture",
+            "https://codex-studio.invalid/budget-capture.schema.json",
+        ),
+        (
+            "BudgetHistory",
+            "https://codex-studio.invalid/budget-history.schema.json",
+        ),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
@@ -213,6 +243,18 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedTaskRecord", TASK_RECORD_URI),
         ("PersistedPlanRecord", PLAN_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
+        (
+            "PersistedBudgetAgent",
+            "https://codex-studio.invalid/persisted-budget-agent.schema.json",
+        ),
+        (
+            "PersistedBudgetState",
+            "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        ),
+        (
+            "PersistedBudgetUsage",
+            "https://codex-studio.invalid/persisted-budget-usage.schema.json",
+        ),
         ("PersistedRequestRecord", REQUEST_RECORD_URI),
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
         ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),
