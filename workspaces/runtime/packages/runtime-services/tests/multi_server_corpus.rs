@@ -439,7 +439,7 @@ fn python_receipt_states_preserve_completed_results_and_uncertainty() {
             assert_eq!(saved, "complete");
         } else {
             assert_eq!(
-                replay.err().expect("refused").status(),
+                replay.expect_err("refused").status(),
                 if state == "malformed" { 503 } else { 410 }
             );
             assert_eq!(rows(&store), before, "refusal is atomic");
@@ -474,8 +474,7 @@ fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
                 None,
                 now,
             )
-            .err()
-            .expect("capacity refusal");
+            .expect_err("capacity refusal");
         assert_eq!(error.status(), 429);
         assert_eq!(rows(&store), before, "rate refusal must not commit writes");
     }
