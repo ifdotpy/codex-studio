@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--full", action="store_true", help="also measure full matrices")
     parser.add_argument("--allow-survivors", action="store_true", help="record a pre-hardening baseline")
     parser.add_argument("--only", help="comma-separated mutation IDs")
+    parser.add_argument("--manifest", type=Path, default=Path(__file__).with_name("mutations.json"))
+    parser.add_argument("--filter", default="binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[6]
     target = args.target.resolve()
@@ -35,7 +37,7 @@ def main():
             # Fresh mtimes invalidate a cached mutant left by any previous run.
             # copy2 can make pristine sources older than the mutant artifact.
             shutil.copy(source, destination)
-    mutations = json.loads(Path(__file__).with_name("mutations.json").read_text())
+    mutations = json.loads(args.manifest.read_text())
     assert len({m["id"] for m in mutations}) == len(mutations), "duplicate mutation ID"
     if args.only:
         wanted = set(args.only.split(","))
@@ -56,7 +58,7 @@ def main():
                        CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
-               "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/) or test(account_worker)"]
+               args.filter]
     results = []
 
     def run(identity, tier):
