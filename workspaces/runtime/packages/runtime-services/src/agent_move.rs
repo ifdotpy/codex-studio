@@ -1,6 +1,6 @@
 //! Durable move/teleport observations and conservative recovery decisions.
 //! Native import, activation and transport remain gated until their drivers exist.
-use crate::event_write::truthy;
+use crate::event_write::{request_signature, truthy};
 pub use crate::relocation::RelocationError as MoveError;
 use crate::relocation::{checked, identity, invalid, timestamp};
 use serde::Deserialize;
@@ -88,6 +88,12 @@ impl MoveSnapshot {
             .fields
             .deadline
             .unwrap_or(self.fields.created + DEADLINE_SECONDS)
+    }
+    /// Bind a status observation to the exact persisted source state that requested it.
+    /// The paired driver puts this value in payload.reconciliationGeneration when
+    /// admitting the status ticket in the same transaction that reads this snapshot.
+    pub fn reconciliation_generation(&self) -> String {
+        request_signature(&self.raw)
     }
     pub fn status(&self, actor: &str, local_server: &str) -> Result<Value, MoveError> {
         if self.agent != actor {
@@ -272,6 +278,8 @@ pub fn release_untransferred(
         let receipt = studio_runtime_store::ProjectLocationsRepository::outbox(tx, status_ticket)?
             .ok_or(MoveError::Refused("Unknown move status ticket"))?;
         if receipt["server"] != row["server"]
+            || receipt.pointer("/body/payload/reconciliationGeneration")
+                != Some(&json!(snapshot.reconciliation_generation()))
             || receipt["state"] != "complete"
             || receipt.pointer("/body/requestId") != Some(&json!(status_ticket))
             || receipt.pointer("/body/action") != Some(&json!("move_status"))

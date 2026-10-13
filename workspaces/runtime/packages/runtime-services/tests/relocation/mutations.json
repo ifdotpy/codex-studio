@@ -64,5 +64,16 @@
       }
     ],
     "witness": "tool_reconciliation_binds_identity_aliases_and_rolls_back"
+  },
+  {
+    "id": "move_status_generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/agent_move.rs",
+    "edits": [
+      {
+        "before": "receipt.pointer(\"/body/payload/reconciliationGeneration\")\n                != Some(&json!(snapshot.reconciliation_generation()))",
+        "after": "false"
+      }
+    ],
+    "witness": "move_status_ticket_rejects_stale_generation_and_replay"
   }
 ]
