@@ -204,6 +204,22 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             await self.guest.call("status", {"operationId": "owned", "agentId": "other"}, "other")
         self.assertEqual(caught.exception.code, "forbidden")
 
+    async def test_retirement_requires_token_and_build_identity(self):
+        params = {"buildId": self.host.build_id, "pid": os.getpid()}
+        denied = await self.host.request({"id": "retire-auth", "method": "service.retire", "params": params, "token": "b" * 64})
+        self.assertEqual(denied["error"]["code"], "forbidden")
+        wrong = await self.host.request({"id": "retire-build", "method": "service.retire",
+            "params": {**params, "buildId": "old"}, "token": "a" * 64})
+        self.assertEqual(wrong["error"]["code"], "id_conflict")
+        self.assertFalse(self.host.retiring)
+        health = await self.host.request({"id": "health", "method": "health", "token": "a" * 64})
+        self.assertEqual((health["result"]["buildId"], health["result"]["busy"]), (self.host.build_id, False))
+        retired = await self.host.request({"id": "retire", "method": "service.retire", "params": params, "token": "a" * 64})
+        self.assertEqual(retired["result"]["state"], "retiring")
+        refused = await self.host.request({"id": "after-retire", "method": "status",
+            "params": {"operationId": "x", "agentId": "agent"}, "token": "a" * 64})
+        self.assertEqual(refused["error"]["code"], "busy")
+
     async def test_slots_are_exclusive(self):
         for operation in ("a", "b"):
             await self.guest.call("acquire", {"operationId": operation, "agentId": "agent", "projectId": "project", "linePath": str(self.line)}, "acquire")

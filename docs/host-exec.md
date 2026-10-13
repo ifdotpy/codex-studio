@@ -54,6 +54,16 @@ The Mac slot gets a new generation, so failed guest staging is never used again.
 A failure to forget the old guest slot appears in the error. A lost response to
 the run request keeps the lease for inspection.
 
+The Mac service is a separate process, so it keeps its code after an app update.
+Its health reports a code build hash fixed at its start. Each VM start compares
+it with the installed build and replaces an idle service of another build: the
+old service accepts an authenticated retire request and stops. A running command
+or request keeps the old service, and the start reports the reason; a later start
+replaces it. A service from before build hashes has no retire request: Studio
+stops it when it has no command child process. Receipts, tokens, leases, and
+unknown outcomes stay in the same state folder. `host-exec-bootstrap.py` checks
+this with real service processes.
+
 ## Slots and source changes
 
 By default, each project has four Mac slots and a 20 GiB disk budget. A project

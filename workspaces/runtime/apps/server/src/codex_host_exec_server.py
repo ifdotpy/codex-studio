@@ -22,6 +22,7 @@ import time
 from typing import Any, TYPE_CHECKING
 
 from codex_layout import VM_GUEST_ROOT
+from codex_host_exec import service_build_id
 
 # The host side shares the frame protocol with the guest (mypy finds it through mypy_path).
 sys.path.insert(0, str(VM_GUEST_ROOT))
@@ -97,6 +98,11 @@ class HostService:
         # Sorted manifests during paging, by operation and area.
         self.pages: dict[str, list[tuple[str, Any]]] = {}
         self.clients = 0
+        # The code build at start. Studio replaces an idle service of another build (codex_host_exec.py).
+        self.build_id = service_build_id()
+        self.reading = 0
+        self.retiring = False
+        self.stopped = asyncio.Event()
 
     def close(self) -> None:
         self.db.close()
@@ -676,6 +682,11 @@ class HostService:
             self.children.pop(identity, None)
             self.commands.pop(identity, None)
 
+    def busy(self) -> bool:
+        """Work of this process that a stop would cut. Older unknown outcomes and pending receipts
+        stay in the state folder, and the next service reports them the same way."""
+        return self.retiring or bool(self.commands or self.active or self.children or self.reading)
+
     async def request(self, request: dict[str, Any]) -> dict[str, Any]:
         identity: Any = request.get("id")
         try:
@@ -686,10 +697,22 @@ class HostService:
             require(isinstance(method, str) and isinstance(params, dict), "Invalid request")
             digest = hashlib.sha256(json.dumps([method, params], sort_keys=True, allow_nan=False).encode()).hexdigest()
             if method == "health":
-                return {"id": identity, "result": {"protocol": 1}}
+                return {"id": identity, "result": {"protocol": 1, "buildId": self.build_id, "pid": os.getpid(),
+                    "activeCommands": len(self.commands), "activeRequests": len(self.active), "busy": self.busy()}}
+            require(not self.retiring, "The host_exec service is retiring", "busy")
+            if method == "service.retire":
+                require(params.get("buildId") == self.build_id and params.get("pid") == os.getpid(),
+                        "The service build or process differs", "id_conflict")
+                require(not self.busy(), "The host_exec service has a running command or request", "busy")
+                self.retiring = True
+                return {"id": identity, "result": {"state": "retiring", "buildId": self.build_id, "pid": os.getpid()}}
             readonly = method in {"status", "manifest", "attach", "read", "result.manifest"}
             if readonly:
-                return {"id": identity, "result": await self.dispatch(method, params)}
+                self.reading += 1
+                try:
+                    return {"id": identity, "result": await self.dispatch(method, params)}
+                finally:
+                    self.reading -= 1
             saved = self.db.execute("SELECT digest,response FROM receipts WHERE id=?", (identity,)).fetchone()
             if saved:
                 require(saved[0] == digest, "The request ID has different content", "id_conflict")
@@ -739,6 +762,9 @@ class HostService:
         finally:
             self.clients -= 1
             writer.close()
+            if self.retiring:
+                # The service stops after the retire answer; the server waits for open connections.
+                self.stopped.set()
 
 
 async def serve(state: Path) -> None:
@@ -749,7 +775,8 @@ async def serve(state: Path) -> None:
     path.chmod(0o600)
     try:
         async with server:
-            await server.serve_forever()
+            # A retire request ends this service; Studio then starts the current build.
+            await service.stopped.wait()
     finally:
         for child in list(service.children.values()):
             await service.terminate(child)
