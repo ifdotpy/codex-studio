@@ -4,6 +4,10 @@
 //! validates the resulting document, and atomically persists it while holding
 //! the driver's mutex. Credential material is never retained in this module.
 
+#[cfg(test)]
+#[path = "../tests/support/prepared_python.rs"]
+mod prepared_python_test_support;
+
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
 use crate::event_write::python_strip;
 use base64::Engine as _;
@@ -1752,35 +1756,9 @@ exit 0
         }
     }
 
-    fn isolated_python(fixture: &Path) -> PathBuf {
-        if let Some(path) = env::var_os("CODEX_AGENTS_PYTHON") {
-            return PathBuf::from(path);
-        }
+    fn isolated_python(_fixture: &Path) -> PathBuf {
         let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let home = fixture.join("python-home");
-        let cache = env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| fixture.join("python-cache"));
-        let temp = fixture.join("python-tmp");
-        for directory in [&home, &cache, &temp] {
-            fs::create_dir_all(directory).expect("create disposable Python environment");
-        }
-        let output = Command::new("python3")
-            .arg(server.join("codex_python.py"))
-            .env("HOME", &home)
-            .env("XDG_CACHE_HOME", &cache)
-            .env("TMPDIR", &temp)
-            .output()
-            .expect("resolve isolated runtime interpreter");
-        assert!(
-            output.status.success(),
-            "isolated Python missing; run install-cli.py"
-        );
-        PathBuf::from(
-            String::from_utf8(output.stdout)
-                .expect("interpreter path UTF-8")
-                .trim(),
-        )
+        super::prepared_python_test_support::prepared_python(&server)
     }
 
     fn registry(home: &Path) -> Vec<u8> {

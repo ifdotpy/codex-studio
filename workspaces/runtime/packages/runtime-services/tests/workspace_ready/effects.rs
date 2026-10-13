@@ -1,3 +1,5 @@
+#[path = "../support/prepared_python.rs"]
+mod prepared_python_support;
 use super::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -198,7 +200,9 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("UTF-8 Git")
 }
 fn oracle(root: &Path, request: Value) -> Value {
-    let python = crate::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/turn_lifecycle/workspace_ready_oracle.py");
     for name in ["home", "codex", "claude"] {

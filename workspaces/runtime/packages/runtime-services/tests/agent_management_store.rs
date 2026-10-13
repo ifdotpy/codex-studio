@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
@@ -50,10 +52,12 @@ fn template(root: &Path) {
     }
 }
 fn cases() -> Vec<Value> {
-    let output = Command::new(studio_runtime_services::agents_create::prepared_python())
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py"))
-        .output()
-        .expect("oracle");
+    let output = Command::new(prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py"))
+    .output()
+    .expect("oracle");
     assert!(
         output.status.success(),
         "{}",

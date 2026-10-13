@@ -1,4 +1,7 @@
 //! Python-produced snapshots exercised through the transaction consumer interfaces.
+
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
@@ -17,7 +20,9 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary oracle root");
         let template = root.path().join("template");
-        let python = studio_runtime_services::agents_create::prepared_python();
+        let python = prepared_python_support::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let output = Command::new(python)
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
             .arg(&template)
@@ -681,11 +686,13 @@ fn relocation_process_stop_child() {
 
 #[test]
 fn oracle_guard_rejects_content_and_metadata_before_io() {
-    let output = Command::new(studio_runtime_services::agents_create::prepared_python())
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
-        .arg("--guard-self-test")
-        .output()
-        .expect("guard self-test starts");
+    let output = Command::new(prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
+    .arg("--guard-self-test")
+    .output()
+    .expect("guard self-test starts");
     assert!(
         output.status.success(),
         "{}",

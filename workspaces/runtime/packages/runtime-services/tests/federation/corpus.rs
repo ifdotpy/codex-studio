@@ -1,3 +1,5 @@
+#[path = "../support/prepared_python.rs"]
+mod prepared_python_support;
 use crate::{
     federation_delivery as delivery, federation_effects as effects, remote_transport as transport,
 };
@@ -24,7 +26,9 @@ impl Corpus {
             None => tempfile::tempdir(),
         }
         .expect("isolated fixture scratch directory");
-        let python = crate::agents_create::prepared_python();
+        let python = prepared_python_support::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/federation/oracle.py");
         let result = Command::new(python)
             .arg(script)

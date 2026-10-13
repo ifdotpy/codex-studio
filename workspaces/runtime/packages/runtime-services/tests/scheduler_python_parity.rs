@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -478,23 +480,7 @@ fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
 }
 
 fn python_executable() -> PathBuf {
-    if let Some(python) = std::env::var_os("CODEX_AGENTS_PYTHON") {
-        return python.into();
-    }
-    let output = Command::new("python3")
-        .arg(server_source().join("codex_python.py"))
-        .output()
-        .expect("python resolver starts");
-    assert!(
-        output.status.success(),
-        "python resolver succeeds: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    PathBuf::from(
-        String::from_utf8(output.stdout)
-            .expect("resolved interpreter is UTF-8")
-            .trim(),
-    )
+    prepared_python_support::prepared_python(&server_source())
 }
 
 fn server_source() -> PathBuf {

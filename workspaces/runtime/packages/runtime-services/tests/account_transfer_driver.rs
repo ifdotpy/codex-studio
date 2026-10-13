@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -18,11 +20,13 @@ fn template() -> &'static Path {
     ROOT.get_or_init(|| {
         let root =
             std::env::temp_dir().join(format!("account-transfer-template-{}", std::process::id()));
-        let output = Command::new(studio_runtime_services::agents_create::prepared_python())
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/template.py"))
-            .arg(&root)
-            .output()
-            .expect("Python template");
+        let output = Command::new(prepared_python_support::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/template.py"))
+        .arg(&root)
+        .output()
+        .expect("Python template");
         assert!(
             output.status.success(),
             "{}",

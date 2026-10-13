@@ -1,4 +1,7 @@
 //! Complete differential outputs from real Python transfer methods.
+
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 use studio_runtime_services::account_transfer::{
@@ -23,7 +26,9 @@ fn read(case: &Value) -> Snapshot {
 }
 #[test]
 fn python_transfer_actions_restart_and_projection() {
-    let python = studio_runtime_services::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
         .output()
@@ -223,7 +228,9 @@ fn request_replay_is_bound_to_lead_destination_and_scope() {
 
 #[test]
 fn selection_matches_real_python_method() {
-    let python = studio_runtime_services::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = Command::new(python)
         .arg(
             Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -286,7 +293,9 @@ fn selection_holds_pending_resume_without_changing_agent() {
 
 #[test]
 fn python_written_legacy_truthy_deleted_at_row_is_readable() {
-    let python = studio_runtime_services::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let output = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
         .output()

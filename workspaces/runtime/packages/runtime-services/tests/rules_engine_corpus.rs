@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -7,7 +9,9 @@ use studio_runtime_services::rules_engine::{
 };
 
 fn python() -> PathBuf {
-    studio_runtime_services::agents_create::prepared_python()
+    prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    )
 }
 fn oracle() -> Vec<Value> {
     let mut command = Command::new(python());

@@ -1,5 +1,7 @@
 #[path = "monitors/fixtures.rs"]
 mod fixtures;
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     monitor_output::MonitorOutput,

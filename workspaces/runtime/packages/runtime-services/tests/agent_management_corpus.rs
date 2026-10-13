@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_services::agent_management::{
@@ -5,7 +7,9 @@ use studio_runtime_services::agent_management::{
 };
 
 fn corpus() -> Vec<Value> {
-    let python = studio_runtime_services::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py");
     let output = Command::new(python)
         .arg(path)

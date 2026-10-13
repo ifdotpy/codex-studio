@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
 use studio_runtime_services::{
@@ -17,7 +19,9 @@ fn identity() -> ConnectionIdentity {
     }
 }
 fn corpus(state: Option<&std::path::Path>) -> Value {
-    let python = studio_runtime_services::agents_create::prepared_python();
+    let python = prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let mut command = Command::new(python);
     command.arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/context_repair/oracle.py"));
     if let Some(state) = state {

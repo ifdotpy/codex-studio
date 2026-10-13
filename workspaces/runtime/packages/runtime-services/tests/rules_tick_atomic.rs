@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
@@ -25,7 +27,9 @@ struct Template(TempDir);
 impl Template {
     fn new() -> Self {
         let root = temporary_state();
-        let python = studio_runtime_services::agents_create::prepared_python();
+        let python = prepared_python_support::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
         let output = Command::new(python)
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"))
             .arg("--template")

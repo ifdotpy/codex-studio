@@ -1,3 +1,5 @@
+#[path = "support/prepared_python.rs"]
+mod prepared_python_support;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -12,7 +14,7 @@ fn server_source() -> PathBuf {
 
 fn python() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
-    PATH.get_or_init(studio_runtime_services::agents_create::prepared_python)
+    PATH.get_or_init(|| prepared_python_support::prepared_python(&server_source()))
         .clone()
 }
 
