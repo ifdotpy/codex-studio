@@ -109,6 +109,14 @@ class PersistedToolRequestRecord(_OpenPersistedRecord):
     operationResult: dict[StrictStr, JsonValue] | None = None
 
 
+class PersistedToolAlias(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    agent: StrictStr
+    alias: StrictStr
+    request: StrictStr
+
+
 class PersistedToolContent(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -456,35 +464,36 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
-    "persisted-access-record.schema.json": PersistedAccessRecord,
-    "persisted-sync-entity.schema.json": PersistedSyncEntity,
-    "persisted-chat-message.schema.json": PersistedChatMessage,
-    "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
-    "persisted-project-record.schema.json": PersistedProjectRecord,
-    "persisted-room-record.schema.json": PersistedRoomRecord,
-    "persisted-operation-result.schema.json": PersistedOperationResult,
-    "persisted-execution-record.schema.json": PersistedExecutionRecord,
-    "persisted-tool-result.schema.json": PersistedToolResult,
-    "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-access-record.schema.json": PersistedAccessRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
-    "persisted-task-record.schema.json": PersistedTaskRecord,
-    "persisted-plan-record.schema.json": PersistedPlanRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
-    "persisted-request-record.schema.json": PersistedRequestRecord,
-    "persisted-complaint-record.schema.json": PersistedComplaintRecord,
+    "persisted-chat-message.schema.json": PersistedChatMessage,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
+    "persisted-complaint-record.schema.json": PersistedComplaintRecord,
+    "persisted-execution-record.schema.json": PersistedExecutionRecord,
+    "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
+    "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-monitor-record.schema.json": PersistedMonitorRecord,
+    "persisted-operation-result.schema.json": PersistedOperationResult,
+    "persisted-plan-record.schema.json": PersistedPlanRecord,
+    "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "persisted-project-record.schema.json": PersistedProjectRecord,
+    "persisted-request-record.schema.json": PersistedRequestRecord,
+    "persisted-room-record.schema.json": PersistedRoomRecord,
+    "persisted-rule-record.schema.json": PersistedRuleRecord,
+    "persisted-sync-entity.schema.json": PersistedSyncEntity,
+    "persisted-task-record.schema.json": PersistedTaskRecord,
     "persisted-terminal-record.schema.json": PersistedTerminalRecord,
+    "persisted-tool-alias.schema.json": PersistedToolAlias,
+    "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,
+    "persisted-tool-result.schema.json": PersistedToolResult,
+    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
-    "persisted-rule-record.schema.json": PersistedRuleRecord,
-    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
-    "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
-    "persisted-profile-record.schema.json": PersistedProfileRecord,
-    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
-    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
+    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
+    "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,
     "workspace-checkpoint-agent-record.schema.json": WorkspaceCheckpointAgentRecord,
     "workspace-checkpoint-history-record.schema.json": WorkspaceCheckpointHistoryRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
