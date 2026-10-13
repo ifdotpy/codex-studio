@@ -76,11 +76,32 @@ separate. `multi-server/identity.json` stores `privateKey` as PKCS#8 PEM
 `runtime_federation_identity` row with `id='local'` stores the same PEM formats
 in `privateKey` and `publicKey`, with `stateId` and `label`. Federation response
 wrappers are verified with the paired Ed25519 key; multi-server responses retain
-Python's optional `serverId` and `publicKey` identity checks. TLS uses platform
-trust roots, while the signed protocol identity provides peer authentication.
+Python's optional `serverId` and `publicKey` identity checks. Rust requires an
+Ed25519 SubjectPublicKeyInfo algorithm identifier for stored and paired public
+keys, which is stricter than Python's multi-server response field comparison.
+Signature text uses strict, padded standard Base64. Federation response state is
+checked when the caller supplies an expected state; a missing or null state is
+accepted when there is no expected state.
+
+Python's HTTPS clients use normal system CA trust and hostname verification;
+they do not pin TLS certificates. Rust uses the platform verifier for the same
+system roots. Peer identity is checked at the signed protocol layer with the
+paired Ed25519 key. Multi-server identity-file loading returns the named
+`UnsupportedPlatform` error on Windows.
+
+The runtime-server binary does not install a `log` backend. ureq and
+ureq-proto emit their wire traces through the `log` facade, so those records are
+discarded in this binary; the service does not install or add a logging backend.
+If a backend is added later, its target filters must exclude `ureq` and
+`ureq_proto` because their trace output can contain request and response data.
+
 The transport explicitly selects rustls' `ring` crypto provider through ureq's
 `unversioned_rustls_crypto_provider` API. That API is unstable; the workspace
 pins ureq to `=3.4.2` to keep this call aligned with the supported configuration.
+ureq uses `rustls-no-provider` plus `platform-verifier`, so the lock file omits
+the otherwise enabled `webpki-roots` bundle. The platform verifier brings
+`rustls-platform-verifier`, `rustls-native-certs`, `openssl-probe` and
+platform-specific certificate support crates into the lock graph.
 
 ## Account registry and limits read contract
 

@@ -7,18 +7,18 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use rustls_pki_types::{PrivatePkcs8KeyDer, SubjectPublicKeyInfoDer, pem::PemObject};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use spki::{ObjectIdentifier, SubjectPublicKeyInfoRef};
 use std::fmt;
 use std::fs::OpenOptions;
-use std::io::{Read, Take};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
-use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError};
+use crate::event_write::python_json;
+use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
@@ -39,6 +39,10 @@ pub enum RemoteTransportError {
     InvalidIdentity,
     #[error("remote identity storage is unavailable or unsafe")]
     IdentityStorage,
+    #[error("remote identity loading is unsupported on Windows")]
+    UnsupportedPlatform,
+    #[error("invalid stored object {table}/{key}")]
+    InvalidStoredObject { table: &'static str, key: String },
     #[error("remote signature is invalid")]
     InvalidSignature,
     #[error("remote request nonce is invalid or outside the replay window")]
@@ -49,6 +53,10 @@ pub enum RemoteTransportError {
     ExchangeUnknown,
     #[error("remote peer response is invalid")]
     InvalidResponse,
+    #[error("remote peer refused the signed request")]
+    PeerRejected,
+    #[error("remote request identity was reused with different content")]
+    RequestConflict,
     #[error("remote peer response exceeds the size limit")]
     ResponseTooLarge,
     #[error("remote transport state operation failed")]
@@ -84,7 +92,7 @@ impl RemoteIdentity {
         private_key_pem: &[u8],
         public_key_pem: String,
     ) -> RemoteTransportResult<Self> {
-        if id.is_empty() || id.len() > 128 || label.is_empty() || label.chars().count() > 80 {
+        if validate_identifier(&id).is_err() || label.is_empty() || label.chars().count() > 80 {
             return Err(RemoteTransportError::InvalidIdentity);
         }
         let key_der = PrivatePkcs8KeyDer::from_pem_slice(private_key_pem)
@@ -127,74 +135,100 @@ impl RemoteIdentity {
 
 /// Read Python's existing `multi-server/identity.json` without creating or replacing it.
 pub fn load_multi_server_identity(state_root: &Path) -> RemoteTransportResult<RemoteIdentity> {
-    let directory = state_root.join("multi-server");
-    let path = directory.join("identity.json");
-    reject_symlink(&directory)?;
-    let directory_metadata =
-        std::fs::symlink_metadata(&directory).map_err(|_| RemoteTransportError::IdentityStorage)?;
-    if !directory_metadata.is_dir() {
-        return Err(RemoteTransportError::IdentityStorage);
-    }
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if directory_metadata.permissions().mode() & 0o077 != 0 {
+        let _ = state_root;
+        return Err(RemoteTransportError::UnsupportedPlatform);
+    }
+    #[cfg(not(windows))]
+    {
+        let directory = state_root.join("multi-server");
+        let path = directory.join("identity.json");
+        reject_symlink(&directory)?;
+        let directory_metadata = std::fs::symlink_metadata(&directory)
+            .map_err(|_| RemoteTransportError::IdentityStorage)?;
+        if !directory_metadata.is_dir() {
             return Err(RemoteTransportError::IdentityStorage);
         }
-    }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if directory_metadata.permissions().mode() & 0o077 != 0 {
+                return Err(RemoteTransportError::IdentityStorage);
+            }
+        }
 
-    reject_symlink(&path)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    set_no_follow(&mut options)?;
-    let file = options
-        .open(&path)
-        .map_err(|_| RemoteTransportError::IdentityStorage)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| RemoteTransportError::IdentityStorage)?;
-    if !metadata.is_file() || metadata.len() > MAX_IDENTITY_BYTES as u64 {
-        return Err(RemoteTransportError::IdentityStorage);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
+        reject_symlink(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        set_no_follow(&mut options)?;
+        let file = options
+            .open(&path)
+            .map_err(|_| RemoteTransportError::IdentityStorage)?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| RemoteTransportError::IdentityStorage)?;
+        if !metadata.is_file() || metadata.len() > MAX_IDENTITY_BYTES as u64 {
             return Err(RemoteTransportError::IdentityStorage);
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(RemoteTransportError::IdentityStorage);
+            }
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        let mut bounded = file.take((MAX_IDENTITY_BYTES + 1) as u64);
+        bounded
+            .read_to_end(&mut bytes)
+            .map_err(|_| RemoteTransportError::IdentityStorage)?;
+        if bytes.len() > MAX_IDENTITY_BYTES {
+            return Err(RemoteTransportError::IdentityStorage);
+        }
+        let record: StoredMultiServerIdentity = serde_json::from_slice(&bytes).map_err(|_| {
+            RemoteTransportError::InvalidStoredObject {
+                table: "multi-server/identity.json",
+                key: "serverId".to_owned(),
+            }
+        })?;
+        let id = record.server_id;
+        RemoteIdentity::from_key_fields(
+            id.clone(),
+            record.label,
+            record.private_key.as_bytes(),
+            record.public_key,
+        )
+        .map_err(|_| RemoteTransportError::InvalidStoredObject {
+            table: "multi-server/identity.json",
+            key: id,
+        })
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    let mut bounded = file.take((MAX_IDENTITY_BYTES + 1) as u64);
-    bounded
-        .read_to_end(&mut bytes)
-        .map_err(|_| RemoteTransportError::IdentityStorage)?;
-    if bytes.len() > MAX_IDENTITY_BYTES {
-        return Err(RemoteTransportError::IdentityStorage);
-    }
-    let record: StoredMultiServerIdentity =
-        serde_json::from_slice(&bytes).map_err(|_| RemoteTransportError::InvalidIdentity)?;
-    RemoteIdentity::from_key_fields(
-        record.server_id,
-        record.label,
-        record.private_key.as_bytes(),
-        record.public_key,
-    )
 }
 
 /// Load the Python federation identity row (`id='local'`) without changing it.
 pub fn load_federation_identity(store: &RuntimeStore) -> RemoteTransportResult<RemoteIdentity> {
-    let connection = store.read()?;
-    let Some(record) = RemoteTransportRepository::federation_identity(&connection)? else {
-        return Err(RemoteTransportError::InvalidIdentity);
+    const TABLE: &str = "runtime_federation_identity";
+    const KEY: &str = "local";
+    let invalid = || RemoteTransportError::InvalidStoredObject {
+        table: TABLE,
+        key: KEY.to_owned(),
+    };
+    let connection = store.read().map_err(|_| invalid())?;
+    let Some(record) =
+        RemoteTransportRepository::federation_identity(&connection).map_err(|_| invalid())?
+    else {
+        return Err(invalid());
     };
     let identity: StoredFederationIdentity =
-        serde_json::from_str(&record).map_err(|_| RemoteTransportError::InvalidIdentity)?;
+        serde_json::from_str(&record).map_err(|_| invalid())?;
     RemoteIdentity::from_key_fields(
         identity.state_id,
         identity.label,
         identity.private_key.as_bytes(),
         identity.public_key,
     )
+    .map_err(|_| invalid())
 }
 
 #[derive(serde::Deserialize)]
@@ -240,10 +274,18 @@ pub struct MultiServerRequest<'a> {
 
 /// Python multi-server protocol: newline-delimited UTF-8 fields and a lowercase SHA-256 body hash.
 pub fn multi_server_signing_bytes(input: MultiServerSigningInput<'_>) -> Vec<u8> {
-    let digest = hex_lower(&Sha256::digest(input.body));
+    let method = input.method.to_ascii_uppercase();
+    multi_server_signing_bytes_normalized(MultiServerSigningInput {
+        method: &method,
+        ..input
+    })
+}
+
+fn multi_server_signing_bytes_normalized(input: MultiServerSigningInput<'_>) -> Vec<u8> {
+    let digest = sha256_hex(input.body);
     format!(
         "{MULTI_SERVER_DOMAIN}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{digest}",
-        input.method.to_ascii_uppercase(),
+        input.method,
         input.target,
         input.server_id,
         input.client_id,
@@ -260,14 +302,23 @@ pub fn multi_server_request_fingerprint(
     url: &str,
     body: &[u8],
 ) -> RemoteTransportResult<String> {
+    let method = method.to_ascii_uppercase();
+    multi_server_request_fingerprint_normalized(&method, url, body)
+}
+
+fn multi_server_request_fingerprint_normalized(
+    method: &str,
+    url: &str,
+    body: &[u8],
+) -> RemoteTransportResult<String> {
     let target = canonical_request_target(url)?;
     let mut input = Vec::with_capacity(method.len() + target.len() + body.len() + 2);
-    input.extend_from_slice(method.to_ascii_uppercase().as_bytes());
+    input.extend_from_slice(method.as_bytes());
     input.push(b'\n');
     input.extend_from_slice(target.as_bytes());
     input.push(b'\n');
     input.extend_from_slice(body);
-    Ok(hex_lower(&Sha256::digest(input)))
+    Ok(sha256_hex(&input))
 }
 
 /// Python federation protocol: raw JSON bytes are signed with the exact method and path.
@@ -280,7 +331,7 @@ pub fn federation_signing_bytes(
 ) -> Vec<u8> {
     format!(
         "{FEDERATION_DOMAIN}\n{method}\n{path}\n{timestamp}\n{nonce}\n{}",
-        hex_lower(&Sha256::digest(body))
+        sha256_hex(body)
     )
     .into_bytes()
 }
@@ -291,22 +342,34 @@ pub fn multi_server_signed_headers(
     request: &MultiServerRequest<'_>,
     now: i64,
 ) -> RemoteTransportResult<Vec<(String, String)>> {
-    validate_nonce(request.nonce, request.timestamp, now)?;
+    let method = request.method.to_ascii_uppercase();
+    multi_server_signed_headers_normalized(identity, request, &method, now)
+}
+
+fn multi_server_signed_headers_normalized(
+    identity: &RemoteIdentity,
+    request: &MultiServerRequest<'_>,
+    method: &str,
+    now: i64,
+) -> RemoteTransportResult<Vec<(String, String)>> {
+    validate_multi_server_nonce(request.nonce, request.timestamp, now)?;
     validate_identifier(request.server_id)?;
     validate_identifier(&identity.id)?;
     validate_identifier(request.request_id)?;
     let timestamp = request.timestamp.to_string();
     let target = canonical_request_target(request.url)?;
-    let signature = identity.sign(&multi_server_signing_bytes(MultiServerSigningInput {
-        method: request.method,
-        target: &target,
-        server_id: request.server_id,
-        client_id: &identity.id,
-        timestamp: &timestamp,
-        nonce: request.nonce,
-        request_id: request.request_id,
-        body: request.body,
-    }));
+    let signature = identity.sign(&multi_server_signing_bytes_normalized(
+        MultiServerSigningInput {
+            method,
+            target: &target,
+            server_id: request.server_id,
+            client_id: &identity.id,
+            timestamp: &timestamp,
+            nonce: request.nonce,
+            request_id: request.request_id,
+            body: request.body,
+        },
+    ));
     Ok(vec![
         ("X-Studio-Client".to_owned(), identity.id.clone()),
         ("X-Studio-Server".to_owned(), request.server_id.to_owned()),
@@ -330,7 +393,7 @@ pub fn federation_signed_headers(
     body: &[u8],
     now: i64,
 ) -> RemoteTransportResult<Vec<(String, String)>> {
-    validate_nonce(nonce, timestamp, now)?;
+    validate_federation_nonce(nonce, timestamp, now)?;
     let path = canonical_request_target(url)?;
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
@@ -358,7 +421,7 @@ pub fn federation_message_signing_bytes(envelope: &Value) -> RemoteTransportResu
 
 /// Canonical compact JSON compatible with `json.dumps(sort_keys=True, ensure_ascii=False)`.
 pub fn canonical_json(value: &Value) -> RemoteTransportResult<String> {
-    serde_json::to_string(value).map_err(|_| RemoteTransportError::InvalidInput)
+    Ok(python_json(value))
 }
 
 pub fn verify_signature(
@@ -385,8 +448,7 @@ pub fn verify_multi_server_response(
     expected_public_key: &str,
 ) -> RemoteTransportResult<Value> {
     ed25519_public_key(expected_public_key)?;
-    let response: Value =
-        serde_json::from_slice(response_body).map_err(|_| RemoteTransportError::InvalidResponse)?;
+    let response = parse_exact_json(response_body)?;
     let object = response
         .as_object()
         .ok_or(RemoteTransportError::InvalidResponse)?;
@@ -437,6 +499,20 @@ fn ed25519_public_key(public_key_pem: &str) -> RemoteTransportResult<Vec<u8>> {
 
 /// Verify the federation server's signed response wrapper.
 pub fn verify_federation_response(
+    wrapper: &[u8],
+    expected_public_key: &str,
+    expected_state_id: Option<&str>,
+    now: i64,
+) -> RemoteTransportResult<Value> {
+    verify_federation_response_value(
+        &parse_exact_json(wrapper)?,
+        expected_public_key,
+        expected_state_id,
+        now,
+    )
+}
+
+fn verify_federation_response_value(
     wrapper: &Value,
     expected_public_key: &str,
     expected_state_id: Option<&str>,
@@ -445,11 +521,11 @@ pub fn verify_federation_response(
     let object = wrapper
         .as_object()
         .ok_or(RemoteTransportError::InvalidResponse)?;
-    let state_id = object
-        .get("stateId")
-        .and_then(Value::as_str)
-        .ok_or(RemoteTransportError::InvalidResponse)?;
-    if expected_state_id.is_some_and(|expected| expected != state_id) {
+    let state_value = object.get("stateId").cloned().unwrap_or(Value::Null);
+    if !state_value.is_null() && !state_value.is_string() {
+        return Err(RemoteTransportError::InvalidResponse);
+    }
+    if expected_state_id.is_some_and(|expected| state_value.as_str() != Some(expected)) {
         return Err(RemoteTransportError::InvalidSignature);
     }
     let timestamp = object
@@ -463,7 +539,7 @@ pub fn verify_federation_response(
         .get("nonce")
         .and_then(Value::as_str)
         .ok_or(RemoteTransportError::InvalidResponse)?;
-    validate_nonce(nonce, timestamp, now)?;
+    validate_federation_nonce(nonce, timestamp, now)?;
     let result = object
         .get("result")
         .filter(|value| value.is_object())
@@ -473,7 +549,7 @@ pub fn verify_federation_response(
         .and_then(Value::as_str)
         .ok_or(RemoteTransportError::InvalidSignature)?;
     let proof = serde_json::json!({
-        "stateId": state_id,
+        "stateId": state_value,
         "timestamp": timestamp,
         "nonce": nonce,
         "result": result
@@ -487,12 +563,271 @@ pub fn verify_federation_response(
     Ok(result.clone())
 }
 
-pub fn validate_nonce(nonce: &str, timestamp: i64, now: i64) -> RemoteTransportResult<()> {
+fn parse_exact_json(bytes: &[u8]) -> RemoteTransportResult<Value> {
+    reject_unrepresentable_integer_tokens(bytes)?;
+    serde_json::from_slice(bytes).map_err(|_| RemoteTransportError::InvalidResponse)
+}
+
+fn reject_unrepresentable_integer_tokens(bytes: &[u8]) -> RemoteTransportResult<()> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'"' {
+            offset += 1;
+            while offset < bytes.len() {
+                match bytes[offset] {
+                    b'\\' => offset = (offset + 2).min(bytes.len()),
+                    b'"' => {
+                        offset += 1;
+                        break;
+                    }
+                    _ => offset += 1,
+                }
+            }
+            continue;
+        }
+        if bytes[offset] == b'-' || bytes[offset].is_ascii_digit() {
+            let start = offset;
+            while offset < bytes.len()
+                && (bytes[offset].is_ascii_digit()
+                    || matches!(bytes[offset], b'-' | b'+' | b'.' | b'e' | b'E'))
+            {
+                offset += 1;
+            }
+            let token = &bytes[start..offset];
+            if !token.iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
+                let representable = if token.first() == Some(&b'-') {
+                    std::str::from_utf8(token)
+                        .ok()
+                        .and_then(|text| text.parse::<i64>().ok())
+                        .is_some()
+                } else {
+                    std::str::from_utf8(token)
+                        .ok()
+                        .and_then(|text| text.parse::<u64>().ok())
+                        .is_some()
+                };
+                if !representable {
+                    return Err(RemoteTransportError::InvalidResponse);
+                }
+            }
+            continue;
+        }
+        offset += 1;
+    }
+    Ok(())
+}
+
+pub fn validate_multi_server_nonce(
+    nonce: &str,
+    timestamp: i64,
+    now: i64,
+) -> RemoteTransportResult<()> {
     if timestamp.abs_diff(now) > CLOCK_SKEW_SECONDS as u64
         || nonce.len() != 32
         || !nonce
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(RemoteTransportError::InvalidNonce);
+    }
+    Ok(())
+}
+
+pub struct MultiServerExchangeInput<'a> {
+    pub server_id: &'a str,
+    pub method: &'a str,
+    pub url: &'a str,
+    pub request_id: &'a str,
+    pub timestamp: i64,
+    pub nonce: &'a str,
+    pub body: &'a [u8],
+    pub expected_public_key: &'a str,
+    pub timeout: Duration,
+}
+
+/// Reserve, send at most once, verify and durably complete one multi-server exchange.
+pub fn exchange_multi_server(
+    store: &RuntimeStore,
+    identity: &RemoteIdentity,
+    input: &MultiServerExchangeInput<'_>,
+    now: i64,
+) -> RemoteTransportResult<Value> {
+    exchange_multi_server_with(
+        store,
+        identity,
+        input,
+        now,
+        |method, url, headers, body, timeout, limit| {
+            SignedHttpClient::exchange(method, url, headers, body, timeout, limit)
+        },
+    )
+}
+
+fn exchange_multi_server_with(
+    store: &RuntimeStore,
+    identity: &RemoteIdentity,
+    input: &MultiServerExchangeInput<'_>,
+    now: i64,
+    exchange: impl FnOnce(
+        &str,
+        &str,
+        &[(&str, &str)],
+        &[u8],
+        Duration,
+        usize,
+    ) -> RemoteTransportResult<HttpResponse>,
+) -> RemoteTransportResult<Value> {
+    validate_multi_server_nonce(input.nonce, input.timestamp, now)?;
+    validate_identifier(input.server_id)?;
+    validate_identifier(input.request_id)?;
+    ed25519_public_key(input.expected_public_key)?;
+    let method = input.method.to_ascii_uppercase();
+    validate_exchange_arguments(
+        &method,
+        input.url,
+        input.body,
+        input.timeout,
+        MAX_RESPONSE_BYTES,
+    )?;
+    let target = canonical_request_target(input.url)?;
+    let fingerprint = multi_server_request_fingerprint_normalized(&method, input.url, input.body)?;
+    let reserved = store.transaction_with(|transaction| {
+        RemoteTransportRepository::reserve_multi_server_request(
+            transaction,
+            input.server_id,
+            input.request_id,
+            &fingerprint,
+            now as f64,
+        )
+        .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
+    })?;
+    match reserved {
+        studio_runtime_store::OutboundReservation::Complete(value) => {
+            let bytes =
+                serde_json::to_vec(&value).map_err(|_| RemoteTransportError::InvalidResponse)?;
+            return verify_multi_server_response(
+                &bytes,
+                input.server_id,
+                input.expected_public_key,
+            )
+            .map_err(|_| RemoteTransportError::InvalidStoredObject {
+                table: "runtime_access_outbound",
+                key: format!("{}/{}", input.server_id, input.request_id),
+            });
+        }
+        studio_runtime_store::OutboundReservation::Redacted => {
+            return Ok(serde_json::json!({"outcome":"redacted"}));
+        }
+        studio_runtime_store::OutboundReservation::Unknown => {
+            return Err(RemoteTransportError::ExchangeUnknown);
+        }
+        studio_runtime_store::OutboundReservation::New => {}
+    }
+
+    let request = MultiServerRequest {
+        server_id: input.server_id,
+        method: &method,
+        url: input.url,
+        request_id: input.request_id,
+        timestamp: input.timestamp,
+        nonce: input.nonce,
+        body: input.body,
+    };
+    let headers = multi_server_signed_headers_normalized(identity, &request, &method, now)?;
+    let mut headers = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<Vec<_>>();
+    headers.push(("Accept-Encoding", "identity"));
+    if !input.body.is_empty() {
+        headers.push(("Content-Type", "application/json"));
+    }
+    let response = exchange(
+        &method,
+        input.url,
+        &headers,
+        input.body,
+        input.timeout,
+        MAX_RESPONSE_BYTES,
+    )?;
+    if (300..400).contains(&response.status) {
+        return Err(RemoteTransportError::InvalidResponse);
+    }
+    if !(200..300).contains(&response.status) {
+        return Err(RemoteTransportError::PeerRejected);
+    }
+    let value =
+        verify_multi_server_response(&response.body, input.server_id, input.expected_public_key)?;
+    if matches!(
+        value.get("outcome").and_then(Value::as_str),
+        Some("pending" | "unknown")
+    ) {
+        return Ok(value);
+    }
+
+    let invitation_response = method == "POST"
+        && target == "/api/multi-server"
+        && serde_json::from_slice::<Value>(input.body)
+            .ok()
+            .and_then(|body| {
+                body.get("action")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("create_invite");
+    store.transaction_with(|transaction| {
+        if invitation_response {
+            RemoteTransportRepository::redact_multi_server_request(
+                transaction,
+                input.server_id,
+                input.request_id,
+                &fingerprint,
+                now as f64,
+            )
+        } else {
+            RemoteTransportRepository::complete_multi_server_request(
+                transaction,
+                input.server_id,
+                input.request_id,
+                &fingerprint,
+                &value,
+                now as f64,
+            )
+        }
+        .map_err(|error| map_outbound_error(error, input.server_id, input.request_id))
+    })?;
+    Ok(value)
+}
+
+fn map_outbound_error(
+    error: StoreError,
+    server_id: &str,
+    request_id: &str,
+) -> RemoteTransportError {
+    match &error {
+        StoreError::SchemaMismatch(message)
+            if message.contains("conflicts with stored content") =>
+        {
+            RemoteTransportError::RequestConflict
+        }
+        StoreError::SchemaMismatch(message) if message.contains("runtime_access_outbound") => {
+            RemoteTransportError::InvalidStoredObject {
+                table: "runtime_access_outbound",
+                key: format!("{server_id}/{request_id}"),
+            }
+        }
+        _ => RemoteTransportError::Store(error),
+    }
+}
+
+pub fn validate_federation_nonce(
+    nonce: &str,
+    timestamp: i64,
+    now: i64,
+) -> RemoteTransportResult<()> {
+    if timestamp.abs_diff(now) > CLOCK_SKEW_SECONDS as u64
+        || !(16..=128).contains(&nonce.chars().count())
     {
         return Err(RemoteTransportError::InvalidNonce);
     }
@@ -512,16 +847,29 @@ pub fn consume_federation_nonce(
     timestamp: i64,
     now: i64,
 ) -> RemoteTransportResult<()> {
-    validate_nonce(nonce, timestamp, now)?;
-    let accepted = store.transaction_with(|transaction| {
-        RemoteTransportRepository::consume_federation_nonce(transaction, peer_id, nonce, now)
-            .map_err(RemoteTransportError::from)
-    })?;
-    if accepted {
-        Ok(())
-    } else {
-        Err(RemoteTransportError::Replay)
-    }
+    validate_federation_nonce(nonce, timestamp, now)?;
+    store.transaction_with(|transaction| {
+        let accepted = RemoteTransportRepository::consume_federation_nonce(
+            transaction,
+            peer_id,
+            nonce,
+            timestamp,
+            now,
+        )?;
+        if accepted {
+            Ok(())
+        } else {
+            Err(RemoteTransportError::Replay)
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MultiServerPairingContext {
+    Paired,
+    Pairing,
+    AutoPairing,
+    Recovery,
 }
 
 pub fn consume_multi_server_nonce(
@@ -530,17 +878,26 @@ pub fn consume_multi_server_nonce(
     nonce: &str,
     timestamp: i64,
     now: i64,
+    pairing: MultiServerPairingContext,
 ) -> RemoteTransportResult<()> {
-    validate_nonce(nonce, timestamp, now)?;
-    let accepted = store.transaction_with(|transaction| {
-        RemoteTransportRepository::consume_access_nonce(transaction, client_id, nonce, now)
-            .map_err(RemoteTransportError::from)
-    })?;
-    if accepted {
-        Ok(())
-    } else {
-        Err(RemoteTransportError::Replay)
-    }
+    validate_multi_server_nonce(nonce, timestamp, now)?;
+    store.transaction_with(|transaction| {
+        let accepted = RemoteTransportRepository::consume_access_nonce(
+            transaction,
+            client_id,
+            nonce,
+            now,
+            matches!(
+                pairing,
+                MultiServerPairingContext::Pairing | MultiServerPairingContext::AutoPairing
+            ),
+        )?;
+        if accepted {
+            Ok(())
+        } else {
+            Err(RemoteTransportError::Replay)
+        }
+    })
 }
 
 pub struct HttpResponse {
@@ -560,15 +917,7 @@ impl SignedHttpClient {
         timeout: Duration,
         response_limit: usize,
     ) -> RemoteTransportResult<HttpResponse> {
-        if body.len() > MAX_REQUEST_BYTES
-            || response_limit == 0
-            || response_limit > MAX_RESPONSE_BYTES
-            || timeout.is_zero()
-            || timeout > Duration::from_secs(120)
-        {
-            return Err(RemoteTransportError::InvalidInput);
-        }
-        validate_https_url(url)?;
+        validate_exchange_arguments(method, url, body, timeout, response_limit)?;
         let tls = TlsConfig::builder()
             .provider(TlsProvider::Rustls)
             .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
@@ -586,6 +935,25 @@ impl SignedHttpClient {
     }
 }
 
+fn validate_exchange_arguments(
+    method: &str,
+    url: &str,
+    body: &[u8],
+    timeout: Duration,
+    response_limit: usize,
+) -> RemoteTransportResult<()> {
+    if body.len() > MAX_REQUEST_BYTES
+        || response_limit == 0
+        || response_limit > MAX_RESPONSE_BYTES
+        || timeout.is_zero()
+        || timeout > Duration::from_secs(120)
+        || method.parse::<ureq::http::Method>().is_err()
+    {
+        return Err(RemoteTransportError::InvalidInput);
+    }
+    validate_https_url(url)
+}
+
 fn exchange_with_agent(
     agent: &ureq::Agent,
     method: &str,
@@ -601,21 +969,20 @@ fn exchange_with_agent(
     let request = request
         .body(body.to_vec())
         .map_err(|_| RemoteTransportError::InvalidInput)?;
-    let response = agent
-        .run(request)
-        .map_err(|_| RemoteTransportError::ExchangeUnknown)?;
+    let response = agent.run(request).map_err(|error| match error {
+        ureq::Error::BodyExceedsLimit(_) => RemoteTransportError::ResponseTooLarge,
+        _ => RemoteTransportError::ExchangeUnknown,
+    })?;
     let status = response.status().as_u16();
-    let mut reader: Take<_> = response
+    let response_body = response
         .into_body()
-        .into_reader()
-        .take(response_limit as u64 + 1);
-    let mut response_body = Vec::new();
-    reader
-        .read_to_end(&mut response_body)
-        .map_err(|_| RemoteTransportError::ExchangeUnknown)?;
-    if response_body.len() > response_limit {
-        return Err(RemoteTransportError::ResponseTooLarge);
-    }
+        .into_with_config()
+        .limit(response_limit as u64)
+        .read_to_vec()
+        .map_err(|error| match error {
+            ureq::Error::BodyExceedsLimit(_) => RemoteTransportError::ResponseTooLarge,
+            _ => RemoteTransportError::ExchangeUnknown,
+        })?;
     Ok(HttpResponse {
         status,
         body: response_body,
@@ -623,9 +990,7 @@ fn exchange_with_agent(
 }
 
 fn validate_https_url(url: &str) -> RemoteTransportResult<()> {
-    let uri = url
-        .parse::<ureq::http::Uri>()
-        .map_err(|_| RemoteTransportError::InvalidInput)?;
+    let uri = parse_https_url(url)?;
     let authority = uri.authority().ok_or(RemoteTransportError::InvalidInput)?;
     if uri.scheme_str() != Some("https")
         || authority.as_str().contains('@')
@@ -637,11 +1002,23 @@ fn validate_https_url(url: &str) -> RemoteTransportResult<()> {
     Ok(())
 }
 
-fn canonical_request_target(url: &str) -> RemoteTransportResult<String> {
-    validate_https_url(url)?;
+fn parse_https_url(url: &str) -> RemoteTransportResult<ureq::http::Uri> {
     let uri = url
         .parse::<ureq::http::Uri>()
         .map_err(|_| RemoteTransportError::InvalidInput)?;
+    let authority = uri.authority().ok_or(RemoteTransportError::InvalidInput)?;
+    if uri.scheme_str() != Some("https")
+        || authority.as_str().contains('@')
+        || uri.path_and_query().is_none()
+        || url.contains('#')
+    {
+        return Err(RemoteTransportError::InvalidInput);
+    }
+    Ok(uri)
+}
+
+fn canonical_request_target(url: &str) -> RemoteTransportResult<String> {
+    let uri = parse_https_url(url)?;
     Ok(uri
         .path_and_query()
         .map_or_else(|| "/".to_owned(), |value| value.as_str().to_owned()))
@@ -650,6 +1027,7 @@ fn canonical_request_target(url: &str) -> RemoteTransportResult<String> {
 fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
     if value.is_empty()
         || value.len() > 128
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
@@ -657,16 +1035,6 @@ fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
         return Err(RemoteTransportError::InvalidInput);
     }
     Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    encoded
 }
 
 fn reject_symlink(path: &Path) -> RemoteTransportResult<()> {
@@ -696,11 +1064,6 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(0x0000_0100); // O_NOFOLLOW
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
-    }
     #[cfg(not(any(
         target_os = "linux",
         target_os = "macos",
@@ -709,7 +1072,6 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
         target_os = "openbsd",
         target_os = "netbsd",
         target_os = "dragonfly",
-        windows
     )))]
     {
         let _ = options;
@@ -721,16 +1083,19 @@ fn set_no_follow(options: &mut OpenOptions) -> RemoteTransportResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MultiServerRequest, MultiServerSigningInput, RemoteIdentity, canonical_json,
-        ed25519_public_key, federation_message_signing_bytes, federation_signed_headers,
-        federation_signing_bytes, load_multi_server_identity, multi_server_request_fingerprint,
-        multi_server_signed_headers, multi_server_signing_bytes, new_nonce, validate_https_url,
+        MultiServerExchangeInput, MultiServerRequest, MultiServerSigningInput, RemoteIdentity,
+        canonical_json, ed25519_public_key, federation_message_signing_bytes,
+        federation_signed_headers, federation_signing_bytes, load_multi_server_identity,
+        multi_server_request_fingerprint, multi_server_signed_headers, multi_server_signing_bytes,
+        new_nonce, validate_federation_nonce, validate_https_url, validate_multi_server_nonce,
         verify_federation_response, verify_multi_server_response, verify_signature,
     };
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use ring::signature::{ED25519, UnparsedPublicKey};
     use serde_json::json;
+    use std::path::PathBuf;
+    use studio_runtime_store::{RemoteTransportRepository, RuntimeStore};
 
     const SEED: [u8; 32] = [
         0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
@@ -797,6 +1162,66 @@ mod tests {
             spki_pem(),
         )
         .expect("fixed RFC Ed25519 fixture loads")
+    }
+
+    fn runtime_store_fixture() -> (PathBuf, RuntimeStore) {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let root = std::env::temp_dir().join(format!(
+            "studio-remote-transport-store-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("temporary state directory creates");
+        let snapshot: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../apps/server/tests/fixtures/runtime-state-schema.json"
+        ))
+        .expect("committed state schema parses");
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            let path = root.join(name);
+            let connection =
+                studio_runtime_store::Connection::open(path).expect("fixture database opens");
+            connection
+                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+                .expect("fixture pragmas apply");
+            let mut statements = snapshot[name]["sqlite_master"]
+                .as_array()
+                .expect("fixture schema entries")
+                .iter()
+                .filter_map(|entry| {
+                    Some((
+                        entry["type"].as_str()?,
+                        entry["name"].as_str()?,
+                        entry["sql"].as_str()?,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            statements.sort_by_key(|(kind, _, _)| match *kind {
+                "table" => 0,
+                "index" => 1,
+                "view" => 2,
+                _ => 3,
+            });
+            for (_, name, sql) in statements {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                        [name],
+                        |row| row.get(0),
+                    )
+                    .expect("fixture schema lookup");
+                if !exists {
+                    connection
+                        .execute_batch(sql)
+                        .expect("schema object creates");
+                }
+            }
+        }
+        let store = RuntimeStore::open(Some(&root)).expect("schema fixture opens");
+        (root, store)
     }
 
     #[test]
@@ -988,8 +1413,13 @@ mod tests {
             "signature":signed_response
         });
         assert_eq!(
-            verify_federation_response(&wrapper, &spki_pem(), Some("peer-state"), 1_700_000_000)
-                .expect("signed federation response verifies"),
+            verify_federation_response(
+                &serde_json::to_vec(&wrapper).expect("response wrapper serializes"),
+                &spki_pem(),
+                Some("peer-state"),
+                1_700_000_000,
+            )
+            .expect("signed federation response verifies"),
             json!({"ok":true})
         );
         assert_eq!(
@@ -1006,6 +1436,312 @@ mod tests {
                 .0,
             "X-Studio-Federation-State"
         );
+    }
+
+    #[test]
+    fn python_produced_federation_vectors_verify_with_shared_canonical_json() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/remote-transport-python-vectors.json"
+        ))
+        .expect("review's Python-generated vectors parse");
+        let public_key = vectors["public"].as_str().expect("fixture public key");
+        for case in vectors["responses"].as_array().expect("response list") {
+            let name = case["name"].as_str().expect("vector name");
+            let wrapper = &case["wrapper"];
+            let proof = json!({
+                "stateId":wrapper["stateId"],
+                "timestamp":wrapper["timestamp"],
+                "nonce":wrapper["nonce"],
+                "result":wrapper["result"]
+            });
+            let canonical = canonical_json(&proof).expect("Python response proof canonicalizes");
+            verify_signature(
+                public_key,
+                format!("studio-federation-response-v1\n{canonical}").as_bytes(),
+                wrapper["signature"]
+                    .as_str()
+                    .expect("Python response signature"),
+            )
+            .expect("Python-produced response signature verifies over shared canonical bytes");
+            let expected_state = if name == "null_state" || name == "short_nonce" {
+                None
+            } else {
+                Some("peer")
+            };
+            let wire = serde_json::to_vec(wrapper).expect("Python response wrapper serializes");
+            let verified =
+                super::verify_federation_response(&wire, public_key, expected_state, 1_700_000_000);
+            if name == "short_nonce" {
+                assert!(matches!(
+                    verified,
+                    Err(super::RemoteTransportError::InvalidNonce)
+                ));
+            } else {
+                assert!(verified.is_ok(), "Python-produced {name} envelope verifies");
+            }
+        }
+
+        let signatures = vectors["signatures"].as_array().expect("signature list");
+        for case in signatures {
+            let signature = case["signature"].as_str().expect("signature value");
+            let accepted = verify_signature(public_key, b"", signature).is_ok();
+            assert_eq!(
+                accepted,
+                case["name"] == "standard",
+                "signature encoding policy for {}",
+                case["name"]
+            );
+        }
+
+        let canonical = vectors["canonical"].as_array().expect("canonical list");
+        for case in &canonical[..2] {
+            let wire = case["wire"].as_str().expect("canonical wire value");
+            let parsed: serde_json::Value = serde_json::from_str(wire).expect("float JSON parses");
+            assert_eq!(canonical_json(&parsed).expect("float canonicalizes"), wire);
+        }
+        assert!(super::parse_exact_json(br#"{"n":18446744073709551617}"#).is_err());
+        assert!(super::parse_exact_json(br#"{"text":"18446744073709551617","n":1e+16}"#).is_ok());
+        assert!(
+            super::verify_federation_response(
+                &serde_json::to_vec(&vectors["responses"][3]["wrapper"])
+                    .expect("null state wrapper serializes"),
+                public_key,
+                Some("peer"),
+                1_700_000_000
+            )
+            .is_err(),
+            "null state cannot match an expected federation state"
+        );
+        let mut missing_state = vectors["responses"][3]["wrapper"].clone();
+        missing_state
+            .as_object_mut()
+            .expect("fixture wrapper is an object")
+            .remove("stateId");
+        assert!(
+            super::verify_federation_response(
+                &serde_json::to_vec(&missing_state).expect("missing state wrapper serializes"),
+                public_key,
+                None,
+                1_700_000_000,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn federation_identifiers_use_python_first_character_rule() {
+        assert!(super::validate_identifier("a_server-1").is_ok());
+        assert!(super::validate_identifier(".server").is_err());
+        assert!(super::validate_identifier("_server").is_err());
+        assert!(super::validate_identifier(":server").is_err());
+        assert!(super::validate_identifier("-server").is_err());
+    }
+
+    #[test]
+    fn refusal_rolls_back_nonce_cleanup_through_the_service_transaction() {
+        let (root, store) = runtime_store_fixture();
+        let now = 1_700_000_000_i64;
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a','stale',?1)",
+                    [now - 1_000],
+                )?;
+                for index in 0..240 {
+                    transaction.execute(
+                        "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a',?1,?2)",
+                        rusqlite::params![format!("recent-{index}"), now],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("fixture rows commit");
+        assert!(matches!(
+            super::consume_federation_nonce(
+                &store,
+                "peer-a",
+                "incoming-federation-nonce",
+                now,
+                now,
+            ),
+            Err(super::RemoteTransportError::Replay)
+        ));
+        let connection = store.read().expect("read transaction opens");
+        let stale: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM runtime_federation_nonces WHERE nonce='stale'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stale row count reads");
+        assert_eq!(stale, 1, "rate refusal rolled back stale-row cleanup");
+        drop(connection);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale',?1)",
+                    [now - 1_000],
+                )?;
+                for index in 0..1_280 {
+                    transaction.execute(
+                        "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES(?1,?2,?3)",
+                        rusqlite::params![format!("unpaired-{index}"), format!("{index:032}"), now],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("unpaired cap fixture rows commit");
+        assert!(matches!(
+            super::consume_multi_server_nonce(
+                &store,
+                "new-client",
+                "abcdefghijklmnopqrstuvwxyz012345",
+                now,
+                now,
+                super::MultiServerPairingContext::Pairing,
+            ),
+            Err(super::RemoteTransportError::Replay)
+        ));
+        let connection = store.read().expect("multi-server stale row reads");
+        let stale: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("multi-server stale-row count reads");
+        assert_eq!(stale, 1, "pairing-limit refusal rolled back cleanup");
+        drop(connection);
+        drop(store);
+        std::fs::remove_dir_all(root).expect("temporary state is removed");
+    }
+
+    #[test]
+    fn invalid_stored_federation_identity_names_its_table_and_primary_key() {
+        let (root, store) = runtime_store_fixture();
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_federation_identity(id,record) VALUES('local','{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("malformed identity fixture commits");
+        let error = super::load_federation_identity(&store).expect_err("malformed key is refused");
+        assert!(matches!(
+            error,
+            super::RemoteTransportError::InvalidStoredObject {
+                table: "runtime_federation_identity",
+                key
+            } if key == "local"
+        ));
+        drop(store);
+        std::fs::remove_dir_all(root).expect("temporary state is removed");
+    }
+
+    #[test]
+    fn exchange_service_replays_saved_receipt_and_never_sends_unknown_after_restart() {
+        let (root, store) = runtime_store_fixture();
+        let identity = identity();
+        let public_key = spki_pem();
+        let body = br#"{"action":"rename_server","label":"fixture"}"#;
+        let input = MultiServerExchangeInput {
+            server_id: "server-peer",
+            method: "post",
+            url: "https://peer.example/api/multi-server",
+            request_id: "request-a",
+            timestamp: 1_700_000_000,
+            nonce: "abcdefghijklmnopqrstuvwxyz012345",
+            body,
+            expected_public_key: &public_key,
+            timeout: std::time::Duration::from_secs(2),
+        };
+        let response = serde_json::to_vec(&json!({
+            "serverId":"server-peer",
+            "publicKey":public_key,
+            "renamed":true
+        }))
+        .expect("fixture response serializes");
+        let mut sends = 0;
+        let first = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &input,
+            1_700_000_000,
+            |method, _, _, _, _, _| {
+                assert_eq!(
+                    method, "POST",
+                    "one normalized method reaches the transport"
+                );
+                sends += 1;
+                Ok(super::HttpResponse {
+                    status: 200,
+                    body: response.clone(),
+                })
+            },
+        )
+        .expect("new exchange verifies and completes");
+        drop(store);
+
+        let store = RuntimeStore::open(Some(&root)).expect("saved receipt opens after restart");
+        let replay = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &input,
+            1_700_000_000,
+            |_, _, _, _, _, _| {
+                sends += 1;
+                Err(super::RemoteTransportError::ExchangeUnknown)
+            },
+        )
+        .expect("saved result is replayed without transport");
+        assert_eq!(first, replay);
+        assert_eq!(sends, 1);
+        drop(store);
+
+        let store =
+            RuntimeStore::open(Some(&root)).expect("unknown reservation opens after restart");
+        let fingerprint =
+            super::multi_server_request_fingerprint("POST", input.url, br#"{"other":"body"}"#)
+                .expect("unknown fixture fingerprint computes");
+        store
+            .transaction(|transaction| {
+                RemoteTransportRepository::reserve_multi_server_request(
+                    transaction,
+                    "server-peer",
+                    "unknown-request",
+                    &fingerprint,
+                    1_700_000_000.0,
+                )?;
+                Ok(())
+            })
+            .expect("unknown reservation commits");
+        drop(store);
+        let store = RuntimeStore::open(Some(&root)).expect("unknown receipt reopens");
+        let unknown_input = MultiServerExchangeInput {
+            request_id: "unknown-request",
+            body: br#"{"other":"body"}"#,
+            ..input
+        };
+        let result = super::exchange_multi_server_with(
+            &store,
+            &identity,
+            &unknown_input,
+            1_700_000_000,
+            |_, _, _, _, _, _| {
+                sends += 1;
+                Err(super::RemoteTransportError::ExchangeUnknown)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(super::RemoteTransportError::ExchangeUnknown)
+        ));
+        assert_eq!(sends, 1, "unknown request identity is never sent again");
+        drop(store);
+        std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
     #[test]
@@ -1031,8 +1767,11 @@ mod tests {
     fn nonce_and_https_url_validation_are_fail_closed() {
         let nonce = new_nonce().expect("OS randomness available");
         assert_eq!(nonce.len(), 32);
-        assert!(super::validate_nonce(&nonce, 1_000, 1_000).is_ok());
-        assert!(super::validate_nonce("short", 1_000, 1_000).is_err());
+        assert!(validate_multi_server_nonce(&nonce, 1_000, 1_000).is_ok());
+        assert!(validate_multi_server_nonce("short", 1_000, 1_000).is_err());
+        assert!(validate_federation_nonce("!non-url-safe-federation!", 1_000, 1_000).is_ok());
+        assert!(validate_federation_nonce("short", 1_000, 1_000).is_err());
+        assert!(validate_federation_nonce(&"n".repeat(129), 1_000, 1_000).is_err());
         assert!(validate_https_url("https://peer.example/api").is_ok());
         assert!(validate_https_url("http://peer.example/api").is_err());
         assert!(validate_https_url("https://user@peer.example/api").is_err());
@@ -1120,5 +1859,101 @@ mod tests {
         server.join().expect("loopback test server exits");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"ok");
+    }
+
+    #[test]
+    fn signed_exchange_enforces_deadline_and_body_bounds_before_network() {
+        use super::{
+            MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, RemoteTransportError, SignedHttpClient,
+        };
+        use std::time::Duration;
+
+        assert!(matches!(
+            SignedHttpClient::exchange(
+                "GET",
+                "https://peer.example/api",
+                &[],
+                b"",
+                Duration::ZERO,
+                1
+            ),
+            Err(RemoteTransportError::InvalidInput)
+        ));
+        assert!(matches!(
+            SignedHttpClient::exchange(
+                "GET",
+                "https://peer.example/api",
+                &[],
+                b"",
+                Duration::from_secs(121),
+                1
+            ),
+            Err(RemoteTransportError::InvalidInput)
+        ));
+        let oversized_request = vec![0; MAX_REQUEST_BYTES + 1];
+        assert!(matches!(
+            SignedHttpClient::exchange(
+                "POST",
+                "https://peer.example/api",
+                &[],
+                &oversized_request,
+                Duration::from_secs(1),
+                1,
+            ),
+            Err(RemoteTransportError::InvalidInput)
+        ));
+        assert!(matches!(
+            SignedHttpClient::exchange(
+                "GET",
+                "https://peer.example/api",
+                &[],
+                b"",
+                Duration::from_secs(1),
+                MAX_RESPONSE_BYTES + 1,
+            ),
+            Err(RemoteTransportError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn bounded_ureq_body_reader_refuses_oversized_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        let address = listener.local_addr().expect("loopback port is available");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test request connects");
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).expect("request reads");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n123456789",
+                )
+                .expect("oversized body writes");
+        });
+        let config = ureq::Agent::config_builder()
+            .https_only(false)
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_global(Some(Duration::from_secs(2)))
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let error = super::exchange_with_agent(
+            &agent,
+            "GET",
+            &format!("http://{address}/oversized"),
+            &[],
+            b"",
+            8,
+        )
+        .err()
+        .expect("ureq body limit rejects the ninth byte");
+        server.join().expect("loopback server exits");
+        assert!(matches!(
+            error,
+            super::RemoteTransportError::ResponseTooLarge
+        ));
     }
 }

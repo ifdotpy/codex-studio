@@ -1,0 +1,68 @@
+{
+  "public": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=\n-----END PUBLIC KEY-----\n",
+  "responses": [
+    {
+      "name": "normal",
+      "wrapper": {
+        "stateId": "peer",
+        "timestamp": 1700000000,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "result": { "ok": true },
+        "signature": "BPR/bJNrC+lH72K7zxBOmsCrYihlhVEC33LU2tY1iSVGTcLxQXvNBMX37P5RLEPDxwnWi9DSkHd/q/3rqLGyCw=="
+      }
+    },
+    {
+      "name": "float",
+      "wrapper": {
+        "stateId": "peer",
+        "timestamp": 1700000000,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "result": { "duration": 1e-6 },
+        "signature": "99fZYhCVAPuk+v0N1F+yKGaO/RWXCd/wMmXS57y/4ghPkQ35fcwGK3NCqnb0TWh7AbhWMJ7ubCQV2cb+KV8BBw=="
+      }
+    },
+    {
+      "name": "short_nonce",
+      "wrapper": {
+        "stateId": "peer",
+        "timestamp": 1700000000,
+        "nonce": "x",
+        "result": { "ok": true },
+        "signature": "ozZRzbROmEZW5bOkiTRgwUxDrQbQV6P/MgzfGXQDmJCcB3ufFTEvUvCoQbRcTSy5ePZlHpO5g8e9oz+KgazYBA=="
+      }
+    },
+    {
+      "name": "null_state",
+      "wrapper": {
+        "stateId": null,
+        "timestamp": 1700000000,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "result": { "ok": true },
+        "signature": "dzAc2fpei9Y3+R6eXUrmNW57ppbMyJb+VMDfrmB3pgcTLdaUDyMZAqhL8bja5TBEbEzdFfKt8dyO9ix/34wRBQ=="
+      }
+    }
+  ],
+  "signatures": [
+    {
+      "name": "standard",
+      "signature": "5VZDAMNgrHKQhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc+bRr0lv18FlbviRlUUFDjnoQCw=="
+    },
+    {
+      "name": "unpadded",
+      "signature": "5VZDAMNgrHKQhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc+bRr0lv18FlbviRlUUFDjnoQCw"
+    },
+    {
+      "name": "whitespace",
+      "signature": "5VZDAMNgrHKQ\nhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc+bRr0lv18FlbviRlUUFDjnoQCw=="
+    },
+    {
+      "name": "urlsafe",
+      "signature": "5VZDAMNgrHKQhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc-bRr0lv18FlbviRlUUFDjnoQCw=="
+    }
+  ],
+  "canonical": [
+    { "wire": "{\"x\":1e-06}" },
+    { "wire": "{\"x\":1e+16}" },
+    { "wire": "{\"x\":18446744073709551617}" }
+  ]
+}
