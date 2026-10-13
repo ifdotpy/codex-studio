@@ -14,6 +14,8 @@ pub enum Boundary {
     AfterEvent,
     BeforeMetadata,
     AfterMetadata,
+    BeforeEffectRead,
+    AfterEffectRead,
     BeforeEffect,
     AfterEffect,
     BeforeCommit,
@@ -102,6 +104,21 @@ fn apply(
     for effect in &d.effects {
         fault.at(Boundary::BeforeEffect)?;
         if let Effect::Followup { id, text } = effect {
+            fault.at(Boundary::BeforeEffectRead)?;
+            let prior = studio_runtime_store::QueueEventRepository::get(
+                tx,
+                &studio_runtime_store::QueueEventId::from(id.as_str()),
+            )?;
+            fault.at(Boundary::AfterEffectRead)?;
+            if prior.is_some_and(|e| {
+                e.agent.0 != snapshot.agent_id()
+                    || e.epoch != snapshot.agent["epoch"].as_i64().unwrap_or(-1)
+                    || e.kind != "followup"
+                    || e.text != *text
+            }) {
+                return Err(ContinuationError::Invalid("/events/identity".into()));
+            }
+
             let agent = serde_json::from_value(snapshot.agent.clone())
                 .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
             crate::event_write::enqueue_event(

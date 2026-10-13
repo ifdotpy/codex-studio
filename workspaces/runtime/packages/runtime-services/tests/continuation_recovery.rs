@@ -82,6 +82,8 @@ fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
         Boundary::AfterSnapshot,
         Boundary::BeforeRecord,
         Boundary::AfterRecord,
+        Boundary::BeforeEffectRead,
+        Boundary::AfterEffectRead,
         Boundary::BeforeEffect,
         Boundary::AfterEffect,
         Boundary::BeforeAgent,
@@ -168,5 +170,24 @@ fn changed_task_worker_hold_refuses_without_any_write() {
             "event-driver/permanent-worker-hold"
         ))
     ));
+    assert_eq!(read(&store), before);
+}
+
+#[test]
+fn foreign_followup_identity_refuses_and_rolls_back() {
+    let template = template();
+    let root = clone_template(template.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    store.transaction(|tx|{tx.execute("INSERT INTO runtime_events VALUES('usage-resume:resume','foreign','followup','foreign payload','pending',1.0,2,NULL,NULL)",[])?;Ok(())}).expect("foreign event");
+    let before = read(&store);
+    let result = continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Usage,
+        Some("resume"),
+        1000.0,
+        |s| usage_resume::tick(s, &observation(), 1000.0),
+    );
+    assert!(matches!(result,Err(ContinuationError::Invalid(ref at)) if at=="/events/identity"));
     assert_eq!(read(&store), before);
 }
