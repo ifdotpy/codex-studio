@@ -536,8 +536,9 @@
         "version": {
           "anyOf": [
             {
-              "type": "integer",
-              "x-safe-integer": "unsigned"
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
             },
             {
               "type": "null"
