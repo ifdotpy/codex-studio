@@ -23,6 +23,7 @@ pub mod claude_bridge;
 pub mod claude_controls;
 pub mod claude_input_recovery;
 pub mod claude_login;
+pub mod claude_runtime;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod event_write;
