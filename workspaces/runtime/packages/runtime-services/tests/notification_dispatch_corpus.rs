@@ -62,10 +62,34 @@ impl Drop for State {
         fs::remove_dir_all(&self.0).expect("remove disposable states");
     }
 }
+// The budget owner's decision is independently captured from the real Python
+// call. This corpus owns notification rows; budget's corpus owns its ledger.
+struct CapturedEffects<'a>(&'a Value);
+impl studio_runtime_services::notification_dispatch::NotificationEffects for CapturedEffects<'_> {
+    fn capture_usage(
+        &self,
+        _tx: &studio_runtime_store::Transaction<'_>,
+        agent: &mut Value,
+        params: &Value,
+        _at: f64,
+    ) -> Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> {
+        let capture = self
+            .0
+            .as_array()
+            .expect("captured budget calls")
+            .iter()
+            .find(|c| c["params"] == *params)
+            .expect("real Python capture");
+        agent["tokensUsed"] = capture["tokensUsed"].clone();
+        agent["tokenUsageAccounting"] = capture["tokenUsageAccounting"].clone();
+        Ok(())
+    }
+}
 fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
     use studio_runtime_providers::LineDecoder;
     use studio_runtime_services::notification_dispatch::{
-        NotificationStreamBuffer, ProviderDeliveryIdentity, dispatch_notification,
+        NotificationStreamBuffer, ProviderDeliveryIdentity,
+        dispatch_notification_with_effects as dispatch_notification,
     };
     if case["submission"] == true {
         use studio_runtime_services::notification_dispatch::{
@@ -123,6 +147,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         assert!(deleted_replay.is_err());
         return Ok(json!([result]));
     }
+    let effects = CapturedEffects(prepared);
     let mut results = Vec::new();
     let mut streams = NotificationStreamBuffer::default();
     for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
@@ -143,7 +168,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             let refusal = store.transaction_with(|tx| {
                 tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
                 let before = raw_rows(tx);
-                let refusal = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5).expect_err("late failure must reach the service caller");
+                let refusal = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects).expect_err("late failure must reach the service caller");
                 assert_eq!(before, raw_rows(tx), "service leaked rows after caller caught its error");
                 assert_eq!(streams, original_streams, "service leaked stream state");
                 tx.execute_batch("DROP TRIGGER corpus_late_failure; INSERT INTO corpus_caller VALUES ('caller committed');")?;
@@ -161,9 +186,37 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 .expect("unrelated caller work committed");
             return Err(refusal);
         }
+        if case["fault_matrix"] == true && std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
+        {
+            for table in [
+                "runtime_agents",
+                "runtime_items",
+                "runtime_tasks",
+                "runtime_requests",
+                "runtime_plans",
+                "runtime_compactions",
+                "sync_entities",
+                "runtime_operation_receipts",
+            ] {
+                for phase in ["BEFORE", "AFTER"] {
+                    for operation in ["INSERT", "UPDATE", "DELETE"] {
+                        let failed: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
+                            tx.execute_batch(&format!("CREATE TEMP TRIGGER notification_failpoint {phase} {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'notification failpoint'); END;")).expect("failpoint trigger");
+                            let before = raw_rows(tx);
+                            let result = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects);
+                            tx.execute_batch("DROP TRIGGER notification_failpoint;").expect("drop failpoint");
+                            if table == "runtime_operation_receipts" && operation == "INSERT" { assert!(result.is_err(), "receipt failpoint must be exercised"); }
+                            if result.is_err() { assert_eq!(before, raw_rows(tx), "{phase} {operation} {table}: caught failure leaked writes"); }
+                            Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
+                        });
+                        assert!(failed.is_err());
+                    }
+                }
+            }
+        }
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            rolled = Some(dispatch_notification(tx, agent_id, store.root().to_str().expect("state path"), &streams, &identity, &frame, 1234.5)?);
+            rolled = Some(dispatch_notification(tx, agent_id, store.root().to_str().expect("state path"), &streams, &identity, &frame, 1234.5, &effects)?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         });
         assert!(rollback.is_err());
@@ -180,6 +233,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     &identity,
                     &frame,
                     1234.5,
+                    &effects,
                 )
             })
             .map_err(|e| e.to_string())?;
@@ -199,6 +253,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     &identity,
                     &frame,
                     9876.0,
+                    &effects,
                 )?;
                 assert_eq!(before, tx.total_changes(), "replay wrote SQLite");
                 assert!(replay.stream_update.is_none(), "replay changed buffer");
@@ -221,7 +276,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .remove(0);
         store.transaction_with(|tx| {
             let before = tx.total_changes();
-            assert!(matches!(dispatch_notification(tx,agent_id,store.root().to_str().expect("path"),&streams,&identity,&conflict,1234.5), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
+            assert!(matches!(dispatch_notification(tx,agent_id,store.root().to_str().expect("path"),&streams,&identity,&conflict,1234.5,&effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
             assert_eq!(before,tx.total_changes());
             Ok::<_,studio_runtime_store::StoreError>(())
         }).map_err(|e|e.to_string())?;
@@ -514,7 +569,12 @@ fn corpus(full: bool) {
                 continue;
             }
         };
-        let first = apply(&store, case, &expected["before"]["prepared"]);
+        let prepared = if case["submission"] == true {
+            &expected["before"]["prepared"]
+        } else {
+            &expected["captures"]
+        };
+        let first = apply(&store, case, prepared);
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
             assert_eq!(value, &case["return"], "{id}: entry-point result");
@@ -524,10 +584,8 @@ fn corpus(full: bool) {
             let fixture = rust.parent().expect("parent").join("replay.json");
             fs::write(
                 &fixture,
-                serde_json::to_vec(
-                    &json!({"root":rust,"case":case,"prepared":expected["before"]["prepared"]}),
-                )
-                .expect("fixture"),
+                serde_json::to_vec(&json!({"root":rust,"case":case,"prepared":prepared}))
+                    .expect("fixture"),
             )
             .expect("fixture file");
             let child = Command::new(std::env::current_exe().expect("test executable"))

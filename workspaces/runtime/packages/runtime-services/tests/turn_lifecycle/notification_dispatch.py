@@ -17,7 +17,7 @@ import codex_runtime
 import codex_streaming
 from codex_runtime import Runtime
 
-TABLES = ('runtime_budget', 'runtime_budget_usage', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
+TABLES = ('runtime_plans', 'runtime_compactions', 'runtime_tasks', 'runtime_agents', 'runtime_items', 'runtime_item_fulltext',
           'runtime_events', 'runtime_event_meta', 'runtime_operation_receipts',
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
@@ -40,7 +40,7 @@ def snapshot(root):
             for key, entry in _runtime._stream_buffer.entries.items():
                 account, connection, thread, turn, item, method = key
                 base = entry['base']
-                if base is None or method != 'item/agentMessage/delta':
+                if base is None or method not in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
                     continue
                 agent = db.execute("SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?", (thread,)).fetchone()
                 if agent is None:
@@ -50,6 +50,11 @@ def snapshot(root):
                 record = json.loads(saved[0]) if saved else {}
                 full = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?', (item_id,)).fetchone()
                 visible = full[0] if record.get('truncated') and full else record.get('text', '')
+                if method == 'item/commandExecution/outputDelta':
+                    try:
+                        visible = (json.loads(visible).get('aggregatedOutput') or '')[-12000:]
+                    except (ValueError, TypeError, AttributeError):
+                        visible = ''
                 if base == visible:
                     continue
                 stream_key = dict(account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
@@ -232,15 +237,13 @@ def transition(runtime, case):
                 outcome = {'status':'ignored','reason':'deleted-agent'}
             elif params.get('turnId') and params['turnId'] != agent.get('turnId'):
                 outcome = {'status':'ignored','reason':'stale-turn-item'}
-            if step.get('declared_unhandled', case.get('declared_unhandled')):
-                reason = step.get('declared_unhandled', case.get('declared_unhandled'))
-                outcome = {'status':'unhandled','kind':frame['method'],'reason':reason}
-                counter = agent.setdefault('unhandledNotifications', {}).setdefault(frame['method'], {'count':0,'reasons':{}})
-                counter['count'] += 1
-                counter['reasons'][reason] = counter['reasons'].get(reason, 0) + 1
-                with runtime.db() as db: runtime.put(db,'agents',agent)
-            else:
-                runtime.notification(frame, 'default', 'connection-' + str(generation))
+            runtime.notification(frame, 'default', 'connection-' + str(generation))
+            if frame['method'] == 'thread/tokenUsage/updated':
+                updated = runtime.agent(agent_id)
+                runtime.corpus_captures.append({'params': params, 'tokensUsed': updated['tokensUsed'],
+                                                'tokenUsageAccounting': updated['tokenUsageAccounting']})
+            if step.get('required_service'):
+                outcome = {'status': 'requiresservice', 'service': step['required_service']}
             identity = {'providerHandle': 'account:default', 'generation': generation, 'cursor': step.get('cursor', index + 1)}
             with runtime.db() as db:
                 runtime.save_receipt(db, 'provider-notification:' + digest(identity), digest({'agent':agent_id, 'notification':frame}), outcome)
@@ -317,8 +320,9 @@ def run_case(command, template, runtime_type):
     assert snapshot(rust) == before, 'pre-states differ'
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True
+    runtime.corpus_captures = []
     transition(runtime, case)
-    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root)}
+    return {'before':before, 'after':snapshot(runtime.root), 'pythonRoot':str(runtime.root), 'captures': runtime.corpus_captures}
 
 
 def close():

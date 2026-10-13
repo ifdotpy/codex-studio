@@ -9236,90 +9236,6 @@
         }
       }
     ],
-    "deviation": "token-usage-partials",
-    "expected_differences": [
-      {
-        "path": "/runtime_agents/0/record/tokenUsageAccounting",
-        "python": "provisional",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "token-usage-partials"
-      },
-      {
-        "path": "/runtime_agents/0/record/tokensUsed",
-        "python": 42,
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "token-usage-partials"
-      },
-      {
-        "path": "/runtime_agents/0/record/unhandledNotifications",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "thread/tokenUsage/updated": {
-            "count": 1,
-            "reasons": {
-              "agent-move/cache-capture-not-ported": 1,
-              "analytics/token-rate-observation-not-ported": 1,
-              "usage-policy/budget-capture": 1
-            }
-          }
-        },
-        "rustPresent": true,
-        "deviation": "token-usage-partials"
-      },
-      {
-        "path": "/runtime_budget/0",
-        "python": {
-          "id": "agent",
-          "record": {
-            "after": 0,
-            "ambiguousNotices": [],
-            "before": 0,
-            "counter": 42,
-            "created": "<time>",
-            "cutoff": 1234.5,
-            "faults": [],
-            "floor": 0,
-            "historicalNotices": 0,
-            "lastAmount": 42,
-            "noticeAt": 1234.5,
-            "noticeSpent": 42,
-            "spent": 42,
-            "thread": "thread"
-          }
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "token-usage-partials"
-      },
-      {
-        "path": "/runtime_budget_usage/0",
-        "python": {
-          "agent": "agent",
-          "at": "<time>",
-          "id": "500ed2a36bbe745c984949cc5805c8b1c85bfdb847b511a8121b401746b94d18",
-          "kind": "notice",
-          "tokens": 42
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "token-usage-partials"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/tokensUsed",
-        "python": 42,
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "token-usage-partials"
-      }
-    ],
     "tier": "fast",
     "return": [
       {
@@ -9352,158 +9268,10 @@
         }
       }
     ],
-    "deviation": "questions-service/async-question",
-    "expected_differences": [
-      {
-        "path": "/runtime_agents/0/record/unhandledNotifications",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "item/completed": {
-            "count": 1,
-            "reasons": {
-              "questions-service/async-question": 1
-            }
-          }
-        },
-        "rustPresent": true,
-        "deviation": "questions-service/async-question"
-      },
-      {
-        "path": "/runtime_requests/0",
-        "python": {
-          "id": "agent:question:answer",
-          "record": {
-            "agent": "agent",
-            "createdAt": "<time>",
-            "epoch": 1,
-            "id": "agent:question:answer",
-            "method": "agent/asyncQuestion",
-            "params": {
-              "questions": [
-                {
-                  "id": "0",
-                  "isSecret": false,
-                  "multiSelect": false,
-                  "options": [
-                    {
-                      "label": "A"
-                    },
-                    {
-                      "label": "B"
-                    }
-                  ],
-                  "question": "Choice?"
-                }
-              ]
-            },
-            "status": "pending",
-            "turnId": "replay-turn-1"
-          }
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "questions-service/async-question"
-      },
-      {
-        "path": "/sync_entities/2",
-        "python": {
-          "collection": "request",
-          "deleted": 0,
-          "hash": "903770706faba9ce1ae7850427fcb29dcb65f9d67c22d53ce694c65716f947ce",
-          "id": "agent:question:answer",
-          "payload": {
-            "collection": "request",
-            "id": "agent:question:answer",
-            "value": {
-              "agent": "agent",
-              "createdAt": "<time>",
-              "epoch": 1,
-              "id": "agent:question:answer",
-              "method": "agent/asyncQuestion",
-              "params": {
-                "questions": [
-                  {
-                    "id": "0",
-                    "isSecret": false,
-                    "multiSelect": false,
-                    "options": [
-                      {
-                        "label": "A"
-                      },
-                      {
-                        "label": "B"
-                      }
-                    ],
-                    "question": "Choice?"
-                  }
-                ]
-              },
-              "status": "pending",
-              "turnId": "replay-turn-1"
-            }
-          },
-          "seq": "<revision>"
-        },
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "questions-service/async-question"
-      }
-    ],
     "tier": "fast",
     "return": [
       {
         "status": "written"
-      }
-    ]
-  },
-  {
-    "id": "unhandled-turn-started",
-    "module": "notification_dispatch",
-    "steps": [
-      {
-        "frame": {
-          "method": "turn/started",
-          "params": {
-            "threadId": "thread"
-          }
-        }
-      }
-    ],
-    "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "unhandled-notification-kinds",
-    "tier": "heavy",
-    "return": [
-      {
-        "kind": "turn/started",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
-      }
-    ]
-  },
-  {
-    "id": "unhandled-turn-completed",
-    "module": "notification_dispatch",
-    "steps": [
-      {
-        "frame": {
-          "method": "turn/completed",
-          "params": {
-            "threadId": "thread"
-          }
-        }
-      }
-    ],
-    "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "unhandled-notification-kinds",
-    "tier": "heavy",
-    "return": [
-      {
-        "kind": "turn/completed",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
       }
     ]
   },
@@ -9520,14 +9288,10 @@
         }
       }
     ],
-    "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "turn/plan/updated",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9544,14 +9308,10 @@
         }
       }
     ],
-    "declared_unhandled": "turn-lifecycle-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "turn/diff/updated",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9568,14 +9328,10 @@
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "serverRequest/resolved",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9587,19 +9343,18 @@
         "frame": {
           "method": "item/commandExecution/outputDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/commandExecution/outputDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9611,19 +9366,18 @@
         "frame": {
           "method": "item/reasoning/textDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/reasoning/textDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9635,19 +9389,18 @@
         "frame": {
           "method": "item/reasoning/summaryTextDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/reasoning/summaryTextDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9664,14 +9417,10 @@
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/autoApprovalReview/started",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9688,14 +9437,10 @@
         }
       }
     ],
-    "declared_unhandled": "approval-question-or-non-text-item-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/autoApprovalReview/completed",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9712,14 +9457,10 @@
         }
       }
     ],
-    "declared_unhandled": "provider-error-state-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "error",
-        "reason": "provider-error-state-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9736,14 +9477,10 @@
         }
       }
     ],
-    "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "model/safetyBuffering/updated",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9760,14 +9497,10 @@
         }
       }
     ],
-    "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "model/verification",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9784,14 +9517,10 @@
         }
       }
     ],
-    "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "modelProvider/authRecoveryStarted",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9808,14 +9537,10 @@
         }
       }
     ],
-    "declared_unhandled": "provider-notice-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "modelProvider/authRecoveryCompleted",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9832,14 +9557,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "warning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9856,14 +9577,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "guardianWarning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9880,14 +9597,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "configWarning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9904,14 +9617,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "deprecationNotice",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9928,14 +9637,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "mcpServer/startupStatus/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9952,14 +9657,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "mcpServer/oauthLogin/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -9976,14 +9677,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "autoApprovalReview/strictReviewRequired",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10000,14 +9697,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "hook/started",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10024,14 +9717,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "hook/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10045,17 +9734,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "accounts/login-completed"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "account/login/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/login-completed"
       }
     ]
   },
@@ -10069,17 +9756,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "accounts/refresh"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "account/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/refresh"
       }
     ]
   },
@@ -10093,17 +9778,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "accounts/rate-limits"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "account/rateLimits/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/rate-limits"
       }
     ]
   },
@@ -10117,17 +9800,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "monitors/output"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "command/exec/outputDelta",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "monitors/output"
       }
     ]
   },
@@ -10141,17 +9822,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "analytics/token-rate"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "provider/generationStarted",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "analytics/token-rate"
       }
     ]
   },
@@ -10165,17 +9844,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "turn-recovery/thread-unloaded"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/closed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "turn-recovery/thread-unloaded"
       }
     ]
   },
@@ -10192,14 +9869,10 @@
         }
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/status/changed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10213,17 +9886,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/item/started",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10237,17 +9908,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/item/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10261,17 +9930,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/transcript/delta",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10285,17 +9952,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/transcript/done",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10309,17 +9974,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/sdp",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10333,17 +9996,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/error",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10357,17 +10018,15 @@
           "params": {
             "threadId": "thread"
           }
-        }
+        },
+        "required_service": "voice/realtime"
       }
     ],
-    "declared_unhandled": "notification-kind-not-ported",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "thread/realtime/closed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       }
     ]
   },
@@ -10390,14 +10049,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10420,14 +10075,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10450,14 +10101,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10480,14 +10127,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10510,14 +10153,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10540,14 +10179,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10570,14 +10205,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10600,14 +10231,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10630,14 +10257,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10660,14 +10283,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10690,14 +10309,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10720,14 +10335,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10750,14 +10361,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10780,14 +10387,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10810,14 +10413,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10840,14 +10439,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10870,14 +10465,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10900,14 +10491,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10930,14 +10517,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -10960,14 +10543,10 @@
         }
       }
     ],
-    "declared_unhandled": "non-text-provider-item",
-    "deviation": "unhandled-notification-kinds",
     "tier": "heavy",
     "return": [
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -11126,30 +10705,11 @@
     "steps": [
       {
         "frame": {
-          "method": "turn/started",
-          "params": {
-            "threadId": "thread"
-          }
-        },
-        "declared_unhandled": "turn-lifecycle-not-ported"
-      },
-      {
-        "frame": {
-          "method": "turn/completed",
-          "params": {
-            "threadId": "thread"
-          }
-        },
-        "declared_unhandled": "turn-lifecycle-not-ported"
-      },
-      {
-        "frame": {
           "method": "turn/plan/updated",
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "turn-lifecycle-not-ported"
+        }
       },
       {
         "frame": {
@@ -11157,8 +10717,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "turn-lifecycle-not-ported"
+        }
       },
       {
         "frame": {
@@ -11166,35 +10725,40 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
           "method": "item/commandExecution/outputDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
           "method": "item/reasoning/textDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
           "method": "item/reasoning/summaryTextDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "delta": "chunk",
+            "itemId": "answer",
+            "turnId": "replay-turn-1"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
@@ -11202,8 +10766,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
@@ -11211,8 +10774,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "approval-question-or-non-text-item-not-ported"
+        }
       },
       {
         "frame": {
@@ -11220,8 +10782,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "provider-error-state-not-ported"
+        }
       },
       {
         "frame": {
@@ -11229,8 +10790,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "provider-notice-not-ported"
+        }
       },
       {
         "frame": {
@@ -11238,8 +10798,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "provider-notice-not-ported"
+        }
       },
       {
         "frame": {
@@ -11247,8 +10806,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "provider-notice-not-ported"
+        }
       },
       {
         "frame": {
@@ -11256,8 +10814,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "provider-notice-not-ported"
+        }
       },
       {
         "frame": {
@@ -11265,8 +10822,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11274,8 +10830,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11283,8 +10838,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11292,8 +10846,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11301,8 +10854,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11310,8 +10862,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11319,8 +10870,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11328,8 +10878,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11337,8 +10886,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11347,7 +10895,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "accounts/login-completed"
       },
       {
         "frame": {
@@ -11356,7 +10904,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "accounts/refresh"
       },
       {
         "frame": {
@@ -11365,7 +10913,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "accounts/rate-limits"
       },
       {
         "frame": {
@@ -11374,7 +10922,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "monitors/output"
       },
       {
         "frame": {
@@ -11383,7 +10931,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "analytics/token-rate"
       },
       {
         "frame": {
@@ -11392,7 +10940,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "turn-recovery/thread-unloaded"
       },
       {
         "frame": {
@@ -11400,8 +10948,7 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "declared_unhandled": "notification-kind-not-ported"
+        }
       },
       {
         "frame": {
@@ -11410,7 +10957,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11419,7 +10966,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11428,7 +10975,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11437,7 +10984,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11446,7 +10993,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11455,7 +11002,7 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
@@ -11464,37 +11011,35 @@
             "threadId": "thread"
           }
         },
-        "declared_unhandled": "notification-kind-not-ported"
+        "required_service": "voice/realtime"
       },
       {
         "frame": {
           "method": "item/started",
           "params": {
             "threadId": "thread",
-            "turnId": "replay-turn-1",
             "item": {
               "id": "answer",
-              "type": "userMessage",
-              "text": "text"
-            }
+              "text": "text",
+              "type": "userMessage"
+            },
+            "turnId": "replay-turn-1"
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
           "method": "item/completed",
           "params": {
             "threadId": "thread",
-            "turnId": "replay-turn-1",
             "item": {
               "id": "answer",
-              "type": "userMessage",
-              "text": "text"
-            }
+              "text": "text",
+              "type": "userMessage"
+            },
+            "turnId": "replay-turn-1"
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11508,8 +11053,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11523,8 +11067,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11538,8 +11081,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11553,8 +11095,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11568,8 +11109,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11583,8 +11123,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11598,8 +11137,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11613,8 +11151,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11628,8 +11165,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11643,8 +11179,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11658,8 +11193,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11673,8 +11207,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11688,8 +11221,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11703,8 +11235,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11718,8 +11249,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11733,8 +11263,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11748,8 +11277,7 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       },
       {
         "frame": {
@@ -11763,15 +11291,11 @@
               "text": "text"
             }
           }
-        },
-        "declared_unhandled": "non-text-provider-item"
+        }
       }
     ],
-    "deviation": "unhandled-notification-kinds",
-    "reason": "Each module-table kind has its explicit counter; the corresponding Python side effects are outside this service. Full matrix also seeds each notice independently.",
+    "reason": "Every notification executes the real Python dispatcher; absent Rust services have typed named outcomes.",
     "covers": [
-      "unhandled-turn-started",
-      "unhandled-turn-completed",
       "unhandled-turn-plan-updated",
       "unhandled-turn-diff-updated",
       "unhandled-serverRequest-resolved",
@@ -11831,294 +11355,185 @@
     ],
     "return": [
       {
-        "kind": "turn/started",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "turn/completed",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "turn/plan/updated",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "turn/diff/updated",
-        "reason": "turn-lifecycle-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "serverRequest/resolved",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/commandExecution/outputDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/reasoning/textDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/reasoning/summaryTextDelta",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/autoApprovalReview/started",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/autoApprovalReview/completed",
-        "reason": "approval-question-or-non-text-item-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "error",
-        "reason": "provider-error-state-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "model/safetyBuffering/updated",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "model/verification",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "modelProvider/authRecoveryStarted",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "modelProvider/authRecoveryCompleted",
-        "reason": "provider-notice-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "warning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "guardianWarning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "configWarning",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "deprecationNotice",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "mcpServer/startupStatus/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "mcpServer/oauthLogin/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "autoApprovalReview/strictReviewRequired",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "hook/started",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/login-completed"
       },
       {
-        "kind": "hook/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/refresh"
       },
       {
-        "kind": "account/login/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "accounts/rate-limits"
       },
       {
-        "kind": "account/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "monitors/output"
       },
       {
-        "kind": "account/rateLimits/updated",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "analytics/token-rate"
       },
       {
-        "kind": "command/exec/outputDelta",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "turn-recovery/thread-unloaded"
       },
       {
-        "kind": "provider/generationStarted",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "thread/closed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/status/changed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/item/started",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/item/completed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/transcript/delta",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/transcript/done",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/sdp",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "requiresservice",
+        "service": "voice/realtime"
       },
       {
-        "kind": "thread/realtime/error",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "thread/realtime/closed",
-        "reason": "notification-kind-not-ported",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       },
       {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
-      },
-      {
-        "kind": "item/started",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
-      },
-      {
-        "kind": "item/completed",
-        "reason": "non-text-provider-item",
-        "status": "unhandled"
+        "status": "written"
       }
     ]
   },
@@ -12886,5 +12301,1082 @@
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
     "tier": "fast",
     "return": null
+  },
+  {
+    "id": "native-notice-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "details": "Details",
+            "message": "A warning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "guardianWarning",
+          "params": {
+            "message": "Automatic approval review approved (safe)",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "configWarning",
+          "params": {
+            "summary": "Configuration warning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "deprecationNotice",
+          "params": {
+            "message": "Deprecated option",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/startupStatus/updated",
+          "params": {
+            "error": "Stopped",
+            "name": "Tool",
+            "status": "failed",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "mcpServer/oauthLogin/completed",
+          "params": {
+            "error": "Login failed",
+            "name": "Tool",
+            "success": false,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "autoApprovalReview/strictReviewRequired",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryStarted",
+          "params": {
+            "message": "Restoring sign-in",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "modelProvider/authRecoveryCompleted",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/safetyBuffering/updated",
+          "params": {
+            "showBufferingUi": true,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/safetyBuffering/updated",
+          "params": {
+            "showBufferingUi": false,
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "model/verification",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "verifications": ["trustedAccessForCyber"]
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/started",
+          "params": {
+            "review": {
+              "status": "inProgress"
+            },
+            "reviewId": "review",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/completed",
+          "params": {
+            "review": {
+              "status": "approved"
+            },
+            "reviewId": "review",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/autoApprovalReview/completed",
+          "params": {
+            "review": {
+              "rationale": "Review needed",
+              "status": "denied"
+            },
+            "reviewId": "denied",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/started",
+          "params": {
+            "run": {
+              "entries": [
+                {
+                  "kind": "context",
+                  "text": "hidden"
+                },
+                {
+                  "kind": "warning",
+                  "text": "one"
+                },
+                {
+                  "kind": "warning",
+                  "text": "hidden two"
+                }
+              ],
+              "eventName": "beforeTool",
+              "id": "hook"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/completed",
+          "params": {
+            "run": {
+              "entries": [],
+              "id": "hook",
+              "status": "completed"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/started",
+          "params": {
+            "run": {
+              "id": "hook"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "hook/completed",
+          "params": {
+            "run": {
+              "entries": [],
+              "id": "failed-hook",
+              "status": "failed",
+              "statusMessage": "Blocked"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "message": "Retry"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "willRetry": true
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/reasoning/textDelta",
+          "params": {
+            "delta": "reasoning",
+            "itemId": "reasoning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "codexErrorInfo": "activeTurnNotSteerable",
+              "message": "Cannot steer"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "error",
+          "params": {
+            "error": {
+              "codexErrorInfo": "misalignmentPolicyViolation",
+              "message": "Policy"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "willRetry": true
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": true
+  },
+  {
+    "id": "question-repeat-completion",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "q",
+              "questions": [
+                {
+                  "multiSelect": true,
+                  "options": [
+                    "A",
+                    {
+                      "description": "Option B",
+                      "label": "B"
+                    }
+                  ],
+                  "title": "Choice?"
+                },
+                {
+                  "isSecret": true,
+                  "title": "Secret?"
+                }
+              ],
+              "text": "Choose",
+              "type": "agentMessage"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "q",
+              "questions": [
+                {
+                  "options": ["C"],
+                  "title": "Changed title ignored"
+                }
+              ],
+              "text": "Choose again",
+              "type": "agentMessage"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ],
+    "fault_matrix": true
+  },
+  {
+    "id": "resolve-exact-native-request",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "serverRequest/resolved",
+          "params": {
+            "requestId": 17,
+            "threadId": "thread"
+          }
+        }
+      }
+    ],
+    "agent": {
+      "status": "approval",
+      "autoWake": true
+    },
+    "related": [
+      {
+        "table": "requests",
+        "record": {
+          "id": "approval",
+          "agent": "agent",
+          "rpcId": 17,
+          "accountKey": "default",
+          "connectionId": "connection-7",
+          "params": {
+            "threadId": "thread"
+          },
+          "status": "uncertain"
+        }
+      },
+      {
+        "table": "requests",
+        "record": {
+          "id": "foreign",
+          "agent": "agent",
+          "rpcId": 17,
+          "accountKey": "default",
+          "connectionId": "connection-6",
+          "params": {
+            "threadId": "thread"
+          },
+          "status": "blocked"
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
+  },
+  {
+    "id": "command-output-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "hello",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": " world",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "exitCode": 0,
+              "id": "command",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "late",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "ignored",
+        "reason": "closed-stream"
+      }
+    ],
+    "fault_matrix": true
+  },
+  {
+    "id": "notification-malformed-agent-activeTools",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/checked-snapshot",
+    "tier": "full",
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "activeTools",
+        "value": {}
+      }
+    ],
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "threadId": "thread",
+            "message": "must not commit"
+          }
+        }
+      }
+    ],
+    "expect_refusal": "invalid stored object runtime_agents:agent",
+    "return": []
+  },
+  {
+    "id": "notification-malformed-agent-nativeSafetyBuffering",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/checked-snapshot",
+    "tier": "fast",
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "nativeSafetyBuffering",
+        "value": []
+      }
+    ],
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "threadId": "thread",
+            "message": "must not commit"
+          }
+        }
+      }
+    ],
+    "expect_refusal": "invalid stored object runtime_agents:agent",
+    "return": []
+  },
+  {
+    "id": "notification-malformed-agent-events",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/checked-snapshot",
+    "tier": "full",
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "events",
+        "value": "wrong"
+      }
+    ],
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "threadId": "thread",
+            "message": "must not commit"
+          }
+        }
+      }
+    ],
+    "expect_refusal": "invalid stored object runtime_agents:agent",
+    "return": []
+  },
+  {
+    "id": "notification-malformed-agent-compactions",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/checked-snapshot",
+    "tier": "full",
+    "corrupt": [
+      {
+        "table": "runtime_agents",
+        "id": "agent",
+        "field": "compactions",
+        "value": -1
+      }
+    ],
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "threadId": "thread",
+            "message": "must not commit"
+          }
+        }
+      }
+    ],
+    "expect_refusal": "invalid stored object runtime_agents:agent",
+    "return": []
+  },
+  {
+    "id": "notification-rollback-deviation-questions",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/transaction-boundary",
+    "tier": "full",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "answer",
+              "questions": [
+                {
+                  "options": ["A", "B"],
+                  "title": "Choice?"
+                }
+              ],
+              "text": "Choose",
+              "type": "agentMessage"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "late_failure": true,
+    "expect_refusal": "SQLite operation failed: injected late failure",
+    "return": []
+  },
+  {
+    "id": "notification-rollback-native-notice-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/transaction-boundary",
+    "tier": "full",
+    "steps": [
+      {
+        "frame": {
+          "method": "warning",
+          "params": {
+            "details": "Details",
+            "message": "A warning",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "late_failure": true,
+    "expect_refusal": "SQLite operation failed: injected late failure",
+    "return": []
+  },
+  {
+    "id": "notification-rollback-command-output-sequence",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/transaction-boundary",
+    "tier": "full",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "late_failure": true,
+    "expect_refusal": "SQLite operation failed: injected late failure",
+    "return": []
+  },
+  {
+    "id": "command-restarted-after-flush",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "hello",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        },
+        "tick": true
+      },
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": " world",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "exitCode": 0,
+              "id": "command",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "late",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "ignored",
+        "reason": "closed-stream"
+      }
+    ]
+  },
+  {
+    "id": "command-output-character-bound",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "item": {
+              "command": "printf hello",
+              "id": "command",
+              "processId": "pid",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        },
+        "tick": true
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": " world",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "exitCode": 0,
+              "id": "command",
+              "type": "commandExecution"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/commandExecution/outputDelta",
+          "params": {
+            "delta": "late",
+            "itemId": "command",
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "ignored",
+        "reason": "closed-stream"
+      }
+    ]
+  },
+  {
+    "id": "child-question-complaint",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "item": {
+              "id": "q",
+              "questions": [
+                {
+                  "multiSelect": true,
+                  "options": [
+                    "A",
+                    {
+                      "description": "Option B",
+                      "label": "B"
+                    }
+                  ],
+                  "title": "Choice?"
+                },
+                {
+                  "isSecret": true,
+                  "title": "Secret?"
+                }
+              ],
+              "text": "Choose",
+              "type": "agentMessage"
+            },
+            "threadId": "thread",
+            "turnId": "replay-turn-1"
+          }
+        }
+      }
+    ],
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ],
+    "agent": {
+      "isLead": false,
+      "rootId": "lead",
+      "name": "Worker"
+    },
+    "related": [
+      {
+        "table": "agents",
+        "record": {
+          "id": "lead",
+          "rootId": "lead",
+          "isLead": true,
+          "epoch": 1,
+          "status": "idle",
+          "autoWake": false,
+          "name": "Lead"
+        }
+      }
+    ]
+  },
+  {
+    "id": "failed-tool-completion",
+    "module": "notification_dispatch",
+    "source": "notification-kinds/real-python",
+    "tier": "fast",
+    "steps": [
+      {
+        "frame": {
+          "method": "item/started",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "startedAtMs": 100,
+            "completedAtMs": null,
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "tool": "read_file",
+              "status": "running",
+              "error": null
+            }
+          }
+        }
+      },
+      {
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "thread",
+            "turnId": "replay-turn-1",
+            "startedAtMs": 100,
+            "completedAtMs": 175,
+            "item": {
+              "id": "tool",
+              "type": "mcpToolCall",
+              "tool": "read_file",
+              "status": "failed",
+              "error": {
+                "message": "Unavailable"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   }
 ]

@@ -1,0 +1,80 @@
+[
+  {
+    "id": "NK1",
+    "description": "native-notice-sequence",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/notices.rs",
+    "edits": [
+      {
+        "before": "            decision.item = hook(kind, params, previous_item);",
+        "after": "            decision.item = None; // seeded omission of native hook transcript"
+      }
+    ],
+    "witnesses": ["native-notice-sequence"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK2",
+    "description": "question-repeat-completion",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/questions.rs",
+    "edits": [
+      {
+        "before": "    if agent[\"isLead\"] == true {",
+        "after": "    if agent[\"isLead\"] == false {"
+      }
+    ],
+    "witnesses": ["question-repeat-completion"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK3",
+    "description": "resolve-exact-native-request",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/questions.rs",
+    "edits": [
+      {
+        "before": "            && record[\"connectionId\"] == format!(\"connection-{generation}\")",
+        "after": "            && (record[\"connectionId\"] == format!(\"connection-{generation}\") || record[\"connectionId\"] == \"connection-6\")"
+      }
+    ],
+    "witnesses": ["resolve-exact-native-request"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK4",
+    "description": "unhandled-inventory",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/items.rs",
+    "edits": [
+      {
+        "before": "        agent[\"contextUsage\"] = Value::Null;",
+        "after": "        agent[\"contextUsage\"] = json!({\"stale\":true});"
+      }
+    ],
+    "witnesses": ["unhandled-inventory"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK5",
+    "description": "failed-tool-completion",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/items.rs",
+    "edits": [
+      {
+        "before": "        \"failed\"\n    } else {\n        \"completed\"",
+        "after": "        \"completed\"\n    } else {\n        \"completed\""
+      }
+    ],
+    "witnesses": ["failed-tool-completion"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "NK6",
+    "description": "command-output-sequence",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/kinds.rs",
+    "edits": [
+      {
+        "before": "            task[\"tail\"] = item[\"aggregatedOutput\"].clone();",
+        "after": "            task[\"tail\"] = json!(\"lost output\");"
+      }
+    ],
+    "witnesses": ["command-output-sequence"],
+    "lifecycleCombinations": []
+  }
+]

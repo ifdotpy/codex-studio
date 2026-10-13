@@ -106,15 +106,16 @@ pub(super) fn warning_text(kind: NoticeKind, params: &Value) -> String {
 }
 
 pub(super) fn decide(
-    original: &Value,
+    snapshot: &super::snapshot::NotificationSnapshot,
     method: &str,
     kind: NoticeKind,
     params: &Value,
-    previous_item: Option<&Value>,
     account: &str,
     generation: u64,
     at: f64,
 ) -> Result<NoticeDecision, NotificationDispatchError> {
+    let original = snapshot.agent();
+    let previous_item = snapshot.item();
     let mut decision = NoticeDecision::default();
     let turn = &params["turnId"];
     if matches!(kind, NoticeKind::HookStarted | NoticeKind::HookCompleted) {
@@ -412,14 +413,8 @@ fn error_kind(error: &Value) -> &str {
         })
         .unwrap_or("")
 }
-fn error_message(error: &Value) -> String {
-    match error_kind(error) {
-        "cyberPolicy"=>"Codex refused this turn under its cybersecurity policy.",
-        "misalignmentPolicyViolation"=>"Codex refused this turn under its safety policy.",
-        "tooManyDenials"=>"Codex stopped this turn after too many denied actions. Review the request and approval settings before trying again.",
-        "flexUnavailable"=>"The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
-        _=>error.as_str().filter(|s|!s.is_empty()).unwrap_or_else(|| nonempty(error,"message","Codex reported an error.")),
-    }.into()
+pub(crate) fn error_message(error: &Value) -> String {
+    crate::account_worker::history::message(error)
 }
 
 /// Human-visible JSON uses UTF-8 and Python's separators; key order carries no meaning.
@@ -437,6 +432,66 @@ pub(super) fn json_text(value: &Value) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Value::Number(n) if n.is_f64() => n
+            .as_f64()
+            .map(studio_runtime_store::python_float_json)
+            .unwrap_or_else(|| n.to_string()),
         value => value.to_string(),
     }
+}
+
+pub(super) fn ascii_text(text: &str) -> String {
+    let mut output = String::new();
+    for character in text.chars() {
+        if character.is_ascii() {
+            output.push(character);
+        } else {
+            for unit in character.encode_utf16(&mut [0; 2]) {
+                output.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    output
+}
+
+/// Preserve generated object's insertion order, including fields appended by a transition.
+pub(super) fn ordered_text(value: &Value, keys: impl IntoIterator<Item = String>) -> String {
+    let Some(fields) = value.as_object() else {
+        return json_text(value);
+    };
+    let mut ordered = Vec::new();
+    for key in keys.into_iter().chain(fields.keys().cloned()) {
+        if fields.contains_key(&key) && !ordered.contains(&key) {
+            ordered.push(key);
+        }
+    }
+    format!(
+        "{{{}}}",
+        ordered
+            .iter()
+            .map(|key| format!("{}: {}", json!(key), json_text(&fields[key])))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+pub(super) fn object_keys(text: &str) -> Option<Vec<String>> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+    struct Keys;
+    impl<'de> Visitor<'de> for Keys {
+        type Value = Vec<String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("JSON object")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut keys = Vec::new();
+            while let Some((key, _)) = map.next_entry::<String, serde::de::IgnoredAny>()? {
+                keys.push(key);
+            }
+            Ok(keys)
+        }
+    }
+    serde_json::Deserializer::from_str(text)
+        .deserialize_map(Keys)
+        .ok()
 }
