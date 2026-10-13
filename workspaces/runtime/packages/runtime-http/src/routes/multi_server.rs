@@ -146,7 +146,7 @@ async fn manage(
         return Err(unavailable_for(
             "POST",
             "/api/multi-server",
-            &IDENTITY_WRITE_DEPENDENCIES,
+            &MANAGEMENT_DEPENDENCIES,
         ));
     }
     if matches!(action, "settings" | "alias" | "revoke" | "unrevoke") {

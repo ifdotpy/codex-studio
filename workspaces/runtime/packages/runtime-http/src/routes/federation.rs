@@ -141,7 +141,9 @@ async fn manage(
                 crate::generated::FederationSnapshot,
             >(result)?))
         }
-        "create_invite" => Err(unavailable_for(&INVITE_DEPENDENCIES)),
+        // The route is declared with MANAGEMENT_DEPENDENCIES; report missing
+        // operation-specific services without violating that manifest contract.
+        "create_invite" => Err(unavailable_for(&MANAGEMENT_DEPENDENCIES)),
         "accept_peer" => Err(unavailable_for(&ACCEPT_DEPENDENCIES)),
         _ => Err(unavailable_for(&SIGNING_DEPENDENCIES)),
     }
