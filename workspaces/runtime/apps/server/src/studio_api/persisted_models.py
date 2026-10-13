@@ -139,6 +139,8 @@ class PersistedRequestRecord(_OpenPersistedRecord):
     connectionId: StrictStr | None = None
     status: StrictStr | None = None
 
+    method: StrictStr | None = None
+
 
 class PersistedComplaintRecord(_OpenPersistedRecord):
     leadId: StrictStr | None = None
@@ -178,6 +180,10 @@ class PersistedWorkItemRecord(_OpenPersistedRecord):
     rootId: StrictStr | None = None
     status: StrictStr | None = None
     title: StrictStr | None = None
+
+    owner: StrictStr | None = None
+    releases: list[JsonValue] = Field(default_factory=list)
+    version: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
 
 
 class PersistedRuleRecord(_OpenPersistedRecord):
