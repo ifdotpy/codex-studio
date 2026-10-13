@@ -6,16 +6,13 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use studio_runtime_services::questions_reads::{self, QuestionReadRecord, QuestionsReadsError};
 use studio_runtime_store::QuestionsReadsRepository;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
-use crate::validation::Registry;
-
-type ValidatedRecord = (String, Map<String, Value>);
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -37,7 +34,6 @@ pub(crate) async fn questions(
         .typed_value("agent")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let (agents, records) = store
@@ -47,9 +43,19 @@ pub(crate) async fn questions(
                     QuestionsReadsRepository::questions(transaction)?,
                 ))
             })
-            .map_err(|_| ApiError::internal())?;
-        let agents = validate_records(&validators, agents, "AgentRecordResponse", "agents")?;
-        let requests = validate_question_records(&validators, records)?;
+            .map_err(map_store_error)?;
+        let agents = agents
+            .into_iter()
+            .map(|record| (record.id, record.value))
+            .collect();
+        let requests = records
+            .into_iter()
+            .map(|record| QuestionReadRecord {
+                id: record.id,
+                raw: record.raw,
+                value: record.value,
+            })
+            .collect();
         let value = questions_reads::question_history(agent_id.as_deref(), agents, requests)
             .map_err(questions_error)?;
         Ok::<_, ApiError>(value)
@@ -68,17 +74,12 @@ pub(crate) async fn complaint(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let stored = QuestionsReadsRepository::complaint(&connection, &id)
-            .map_err(|_| ApiError::internal())?;
-        let stored = stored
-            .map(|record| {
-                validate_record(&validators, record, "ComplaintRecordResponse", "complaints")
-            })
-            .transpose()?;
+            .map_err(map_store_error)?
+            .map(|record| (record.id, record.value));
         questions_reads::complaint_detail(stored).map_err(questions_error)
     })
     .await
@@ -95,7 +96,6 @@ pub(crate) async fn checkpoints(
         .typed_value("agent")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let (agents, records) = store
@@ -105,10 +105,15 @@ pub(crate) async fn checkpoints(
                     QuestionsReadsRepository::checkpoints(transaction)?,
                 ))
             })
-            .map_err(|_| ApiError::internal())?;
-        let agents = validate_records(&validators, agents, "AgentRecordResponse", "agents")?;
-        let checkpoints =
-            validate_records(&validators, records, "CheckpointSummary", "checkpoints")?;
+            .map_err(map_store_error)?;
+        let agents = agents
+            .into_iter()
+            .map(|record| (record.id, record.value))
+            .collect();
+        let checkpoints = records
+            .into_iter()
+            .map(|record| (record.id, record.value))
+            .collect();
         let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, checkpoints)
             .map_err(questions_error)?;
         Ok::<_, ApiError>(value)
@@ -156,49 +161,13 @@ fn checkpoint_response(value: Value, headers: HeaderMap) -> Result<Response, Api
     Ok(response)
 }
 
-fn validate_records(
-    validators: &Registry,
-    records: Vec<studio_runtime_store::QuestionsReadsRecord>,
-    schema: &str,
-    object: &'static str,
-) -> Result<Vec<ValidatedRecord>, ApiError> {
-    records
-        .into_iter()
-        .map(|record| validate_record(validators, record, schema, object))
-        .collect()
-}
-
-fn validate_question_records(
-    validators: &Registry,
-    records: Vec<studio_runtime_store::QuestionsReadsRecord>,
-) -> Result<Vec<QuestionReadRecord>, ApiError> {
-    records
-        .into_iter()
-        .map(|record| {
-            let value = validators
-                .validated_stored("RequestRecordResponse", &record.record)
-                .and_then(|value| value.as_object().cloned())
-                .ok_or_else(|| invalid_stored_object("requests", &record.id))?;
-            Ok(QuestionReadRecord {
-                id: record.id,
-                raw: record.record,
-                value,
-            })
-        })
-        .collect()
-}
-
-fn validate_record(
-    validators: &Registry,
-    record: studio_runtime_store::QuestionsReadsRecord,
-    schema: &str,
-    object: &'static str,
-) -> Result<(String, Map<String, Value>), ApiError> {
-    let value = validators
-        .validated_stored(schema, &record.record)
-        .and_then(|value| value.as_object().cloned())
-        .ok_or_else(|| invalid_stored_object(object, &record.id))?;
-    Ok((record.id, value))
+fn map_store_error(error: studio_runtime_store::StoreError) -> ApiError {
+    match error {
+        studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
+            invalid_stored_object(table, &id)
+        }
+        _ => ApiError::internal(),
+    }
 }
 
 fn questions_error(error: QuestionsReadsError) -> ApiError {
