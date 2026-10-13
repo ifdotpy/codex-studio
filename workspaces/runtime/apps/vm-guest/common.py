@@ -127,6 +127,11 @@ def receipt(database, request_id, request_digest):
     return None
 
 
+def forget_receipt(database, request_id):
+    database.execute("DELETE FROM receipts WHERE id=? AND response IS NULL", (request_id,))
+    database.commit()
+
+
 def save_receipt(database, request_id, response):
     database.execute("UPDATE receipts SET response=? WHERE id=?", (json.dumps(response), request_id))
     database.commit()
