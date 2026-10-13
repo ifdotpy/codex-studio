@@ -8,31 +8,28 @@ writer; it is never allowed to promote an unknown/rejected event.
 import sys
 from pathlib import Path
 
-sys.argv.append("--isolated")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "turn_lifecycle"))
-import oracle as guarded
+from oracle_guard import install_guard
+
+GUARD = install_guard(block_processes=True)
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "apps/server/src"))
 import copy
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import tempfile
 from unittest.mock import patch
 from contextlib import nullcontext
 
 from codex_runtime import Runtime
+import codex_runtime
 from codex_efficiency import EfficiencyMixin, remember_context_manifest
 import codex_efficiency as efficiency
 from codex_workspace import WorkspaceMixin
 from codex_time import message_clock, append_message_clocks
 import codex_vm_agents
 
-# An accidentally added process or socket operation is a test failure.
-def no_effects(event, args):
-    if event in {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "socket.connect", "socket.bind"}:
-        raise guarded.IsolationViolation("provider/network execution forbidden in preparation oracle")
-sys.addaudithook(no_effects)
 for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
     assert Path(os.environ[key]).resolve().is_relative_to(Path(os.environ["TMPDIR"]).parent), key
 
@@ -281,7 +278,7 @@ def run(case, root):
             for row in rows:
                 metadata=json.loads(db.execute("SELECT record FROM runtime_event_meta WHERE id=?",(row["id"],)).fetchone()[0]);metadata["modelEventProjection"]=1
                 db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?",(json.dumps(metadata),row["id"]))
-            with patch.object(guarded.codex_runtime.time,"time",lambda:s["prepared_at"]):
+            with patch.object(codex_runtime.time,"time",lambda:s["prepared_at"]):
                 host.item(db,host.actor["id"],rows[0]["id"],"user",text,inputs=pyrows,assets=[host.asset_view(host.asset_record(i)) for i in ids])
             item=json.loads(db.execute("SELECT record FROM runtime_items").fetchone()[0])
             full=db.execute("SELECT body FROM runtime_item_fulltext").fetchone()
@@ -296,7 +293,6 @@ def run(case, root):
             if current:
                 current["sequence"]+=case["current"]
                 host.seed_manifest(current)
-            before=db.execute("SELECT record FROM runtime_context_manifests WHERE agent=? AND thread_id=? AND compactions=?",(host.actor["id"],manifest["epoch"][0] or "",manifest["epoch"][1])).fetchone()
             valid=all(receipt[k]==expected[k] for k in ("operation_id","actor_id","epoch","event_ids")) and receipt["outcome"]["kind"]=="accepted" and bool(receipt["outcome"].get("turn_id"))
             if valid: db.execute("UPDATE runtime_events SET status='delivered'")
             promoted=remember_context_manifest(db,host.actor["id"],rows[0]["id"])

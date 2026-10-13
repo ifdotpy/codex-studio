@@ -47,14 +47,15 @@ server before compilation. The compiler does not query those authorities again.
 
 ## Oracle and comparison
 
-[oracle.py](oracle.py) imports the existing lifecycle audit guard before importing
+[oracle.py](oracle.py) imports the shared `oracle_guard` before importing
 application code. A minimal host binds the real Python `model_turn_context`,
 `model_known_context`, `model_event_text`, `bounded_event`, `Runtime.item`,
 complaint selection/message, attachment methods, receipt clocks, and
 `remember_context_manifest`. SQLite is in memory; guidance and child-result
 artifacts live in disposable directories. No `Runtime` is constructed and
 `Runtime.start` is never called. Process execution and network operations are
-forbidden by an additional audit hook.
+forbidden by that guard before any application import. Its self-test uses only
+a synthetic forbidden path; provider-home paths are rejected before resolution.
 
 The Rust test compares every output field, including types, missing fields,
 array order, full original transcript inputs, metadata patches, artifact bytes,

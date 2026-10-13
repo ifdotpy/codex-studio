@@ -107,6 +107,12 @@ fn python_submission_compiler_corpus() {
         let original = json!(snapshot);
         let mut actual = match compile(&snapshot, &rows) {
             Ok(prepared) => {
+                assert!(
+                    fixture["expected"]["ok"] == true,
+                    "{}: Rust prepared a submission but Python rejected it: {}",
+                    case["id"],
+                    fixture["expected"]["error"]
+                );
                 // Replay compilation without artifact observations: it must defer, returning
                 // the exact immutable content needed by the adapter, never a ready request.
                 if !prepared.artifact_intents.is_empty() {
