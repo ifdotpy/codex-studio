@@ -10,7 +10,7 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-pub use studio_runtime_store::python_json;
+pub use studio_runtime_store::{python_json, python_json_compact};
 
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 

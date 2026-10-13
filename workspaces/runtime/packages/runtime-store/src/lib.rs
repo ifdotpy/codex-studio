@@ -4,12 +4,12 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
-pub use schema::{python_json, sha256_hex};
+pub use schema::{python_json, python_json_compact, sha256_hex};
 
 pub use repositories::account_state;
 pub use repositories::analytics::{
     AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError, SessionCostError,
-    persisted_session_cost, read as analytics_read,
+    export as analytics_export, persisted_session_cost, read as analytics_read,
 };
 
 use std::fs::{File, OpenOptions};

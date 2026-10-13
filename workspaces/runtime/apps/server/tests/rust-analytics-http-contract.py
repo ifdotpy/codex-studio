@@ -30,9 +30,13 @@ try:
         'status':'idle','name':'Analytics contract','role':'orchestrator','cwd':os.environ['CODEX_CANVAS_CWD'],
         'isLead':True,'autoWake':True,'approvalPolicy':'never','threadId':'analytics-thread',
         'turnId':'analytics-turn','accountKey':'default','accountHistory':[],'model':'fixture-model'}}
+    teammate = {{**agent,'id':'analytics-contract-teammate','parentId':agent['id'],
+        'rootId':agent['id'],'isLead':False,'name':'Analytics teammate'}}
     with runtime.lock, runtime.db(analytics=True) as db:
         runtime.put(db, 'agents', agent, sync_rooms=False)
         runtime.analytics_agent(db, agent)
+        runtime.put(db, 'agents', teammate, sync_rooms=False)
+        runtime.analytics_agent(db, teammate)
         usage = {{**agent,'id':'analytics-response','agentId':agent['id'],'at':100,'recordedAt':100,
             'responseId':'analytics-response','model':'fixture-model','source':'rollout','timestampSource':'record',
             'last':{{'inputTokens':100,'cachedInputTokens':25,'outputTokens':20,'totalTokens':120}},
@@ -45,6 +49,11 @@ try:
         db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
             ('analytics-response','analytics-contract-agent','analytics-contract-agent',
              'analytics-thread','analytics-turn',100,json.dumps(usage)))
+        provisional = {{**usage,'id':'analytics-provisional','at':99,'recordedAt':99}}
+        provisional.pop('responseId', None)
+        db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+            ('analytics-provisional','analytics-contract-agent','analytics-contract-agent',
+             'analytics-thread','analytics-turn',99,json.dumps(provisional)))
         error = {{**agent,'id':'analytics-contract-agent:analytics-thread:analytics-turn','agentId':agent['id'],
             'at':101,'status':'failed','error':{{'message':'fixture failure'}}}}
         db.execute('INSERT INTO analytics_turns(id,agent,root,at,record) VALUES (?,?,?,?,?)',
@@ -60,7 +69,37 @@ try:
         db.execute('INSERT INTO analytics_items(id,agent,root,thread,turn,at,type,name,is_tool,record) VALUES (?,?,?,?,?,?,?,?,?,?)',
             ('analytics-call','analytics-contract-agent','analytics-contract-agent','analytics-thread',
              'analytics-turn',102,'commandExecution','shell',1,json.dumps(item)))
+        second_item = {{**item,'id':'analytics-call-second','itemId':'analytics-call-second','at':103}}
+        db.execute('INSERT INTO analytics_items(id,agent,root,thread,turn,at,type,name,is_tool,record) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('analytics-call-second','analytics-contract-agent','analytics-contract-agent','analytics-thread',
+             'analytics-turn',103,'commandExecution','shell',1,json.dumps(second_item)))
+        message = {{**agent,'id':'analytics-message','agentId':agent['id'],'itemId':'analytics-response',
+            'at':104,'recordedAt':104,'startedAt':104,'finishedAt':104,'turnId':'analytics-turn','threadId':'analytics-thread',
+            'source':'rollout','timestampSource':'record','type':'agentMessage','name':'','isTool':False,
+            'status':'completed','payloadBoundary':'protocol'}}
+        db.execute('INSERT INTO analytics_items(id,agent,root,thread,turn,at,type,name,is_tool,record) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('analytics-message','analytics-contract-agent','analytics-contract-agent','analytics-thread',
+             'analytics-turn',104,'agentMessage','',0,json.dumps(message)))
     assert runtime.analytics('analytics-contract-agent')['summary']['usageSamples'] == 1
+    from codex_session_costs import SessionCostReader
+    from codex_cost_usage import source_state as cost_source_state
+    class NoPricing:
+        def snapshot(self): return None
+    state = Path(os.environ['CODEX_AGENTS_STATE_DIR'])
+    reader = SessionCostReader(state / 'analytics.sqlite3', NoPricing(), state_root=state)
+    db = reader._connect()
+    try:
+        root = 'analytics-contract-agent'
+        agents = reader._root_agents(db, root, root)
+        source = {{'usage':reader._usage_state(db,root),
+            'pricingSignature':reader._pricing_snapshot()[1],
+            'agentsSignature':reader._agent_signature(agents),
+            'claudeSignature':reader._claude_signature(reader._claude_agents(agents)),
+            'costProjection':cost_source_state(db,root)}}
+    finally:
+        db.close()
+    cached = {{'rootId':root,'pricingState':'ready','unknownModels':[],'breakdown':{{'providers':{{}},'models':{{}}}},'totalUSD':1,'pricedSamples':1,'estimated':True}}
+    reader._persist(root,cached,source, __import__('time').time()-30)
 finally:
     runtime.close()
 """
@@ -106,8 +145,27 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         value = rollup.json()
         self.assertEqual(value["summary"]["usageSamples"], 1)
         self.assertEqual(value["summary"]["tokens"]["totalTokens"], 120)
-        self.assertEqual(value["pagination"]["total"], 1)
+        self.assertEqual(value["pagination"]["total"], 2)
         self.assertEqual(self.backend.request("GET", root + "&tool=missing", headers=headers).json()["pagination"]["total"], 0)
+        all_scope = self.backend.request("GET", "/api/analytics?scope=all", headers=headers)
+        self.assertEqual(all_scope.status, 200, all_scope.body[:1000])
+        self.assertEqual(all_scope.json()["pagination"]["total"], 2)
+        team_scope = self.backend.request("GET", root + "&scope=team", headers=headers)
+        self.assertEqual(team_scope.status, 200, team_scope.body[:1000])
+        self.assertEqual(len(team_scope.json()["agents"]), 2)
+        self.assertEqual(team_scope.json()["summary"]["agents"], 1)
+        date_filtered = self.backend.request("GET", root + "&from_time=99&to_time=99", headers=headers)
+        self.assertEqual(date_filtered.status, 200, date_filtered.body[:1000])
+        self.assertEqual(date_filtered.json()["summary"]["usageSamples"], 0)
+        self.assertEqual(date_filtered.json()["summary"]["provisionalUsageSamples"], 1)
+        boundary = self.backend.request("GET", root + "&from_time=100&to_time=100", headers=headers)
+        self.assertEqual(boundary.status, 200, boundary.body[:1000])
+        self.assertEqual(boundary.json()["summary"]["usageSamples"], 1)
+        filtered_tools = self.backend.request("GET", root + "&tool=missing", headers=headers).json()
+        self.assertEqual(filtered_tools["summary"]["observedToolRows"], 0)
+        self.assertEqual(self.backend.request("GET", root + "&tool=", headers=headers).json()["pagination"]["total"], 2)
+        capped = self.backend.request("GET", root + "&limit=1", headers=headers).json()
+        self.assertEqual((len(capped["calls"]), capped["pagination"]["total"]), (1, 2))
 
         errors = self.backend.request("GET", root + "&view=turn-errors&thread=analytics-thread&turns=analytics-turn", headers=headers)
         self.assertEqual(errors.status, 200, errors.body[:1000])
@@ -117,6 +175,9 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(detail.json()["pagination"]["total"], 1)
         metadata = self.backend.request("GET", root + "&view=message-info&item=missing", headers=headers)
         self.assertEqual(metadata.status, 200, metadata.body[:1000])
+        attributed = self.backend.request("GET", root + "&view=message-info&item=analytics-response", headers=headers)
+        self.assertEqual(attributed.status, 200, attributed.body[:1000])
+        self.assertEqual(attributed.json()["tokens"]["totalTokens"], 120)
         export = self.backend.request("GET", root + "&export=1", headers=headers)
         self.assertEqual(export.status, 200, export.body[:1000])
         disposition = next((value for key, value in export.headers.items()
@@ -124,12 +185,21 @@ class AnalyticsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn("codex-studio-analytics.json", disposition)
         self.assertEqual(json.loads(export.body)["summary"]["usageSamples"], 1)
         cost = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
+        self.assertEqual(cost.status, 200, cost.body[:1000])
         if self.rust_backend:
-            self.assertEqual(cost.status, 501, cost.body[:1000])
-            self.assertIn("usage-policy/session-cost-refresh", cost.body.decode("utf-8"))
+            self.assertEqual(cost.json()["pricingState"], "ready")
         else:
-            self.assertEqual(cost.status, 200, cost.body[:1000])
             self.assertEqual(cost.json()["pricingState"], "loading")
+        cache_file = next((self.backend.state / "session-costs").glob("cost-*.json"))
+        saved = json.loads(cache_file.read_text())
+        saved["source"]["usage"]["generation"] += 1
+        cache_file.write_text(json.dumps(saved))
+        stale = self.backend.request("GET", "/api/session-cost?agent=analytics-contract-agent", headers=headers)
+        if self.rust_backend:
+            self.assertEqual(stale.status, 501, stale.body[:1000])
+            self.assertIn("usage-policy/session-cost-refresh", stale.body.decode("utf-8"))
+        else:
+            self.assertEqual(stale.status, 200, stale.body[:1000])
 
 
 if __name__ == "__main__":

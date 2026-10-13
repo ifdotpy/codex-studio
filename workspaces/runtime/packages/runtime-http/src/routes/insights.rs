@@ -39,11 +39,11 @@ async fn analytics_read(
     let options = AnalyticsOptions {
         agent: string(&query, "agent"),
         scope: string(&query, "scope"),
-        from: number(&query, "from"),
-        to: number(&query, "to"),
+        from: number(&query, "from_time"),
+        to: number(&query, "to_time"),
         limit: integer(&query, "limit"),
         offset: integer(&query, "offset"),
-        tool: string(&query, "tool"),
+        tool: string(&query, "tool").filter(|value| !value.is_empty()),
         export: string(&query, "export").as_deref() == Some("1"),
         view: string(&query, "view"),
         detail: string(&query, "detail"),
@@ -57,12 +57,11 @@ async fn analytics_read(
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || analytics::read(&store, &options))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_analytics_error)?;
     if export {
-        let body = serde_json::to_vec(&result).map_err(|_| ApiError::internal())?;
+        let body = tokio::task::spawn_blocking(move || analytics::export(&store, &options))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(map_analytics_error)?;
         let mut response = Response::new(Body::from(body));
         *response.status_mut() = StatusCode::OK;
         response.headers_mut().insert(
@@ -82,6 +81,10 @@ async fn analytics_read(
         );
         return Ok(response);
     }
+    let result = tokio::task::spawn_blocking(move || analytics::read(&store, &options))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(map_analytics_error)?;
     let mut response =
         Json(super::generated_json::<crate::generated::AnalyticsResponse>(result)?).into_response();
     if timing {
@@ -109,7 +112,12 @@ async fn session_cost(
         tokio::task::spawn_blocking(move || analytics::persisted_session_cost(&store, &agent))
             .await
             .map_err(|_| ApiError::internal())?
-            .map_err(map_session_cost_error)?;
+            .map_err(|error| match error {
+                analytics::SessionCostError::RefreshRequired => {
+                    dependency_error("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
+                }
+                other => map_session_cost_error(other),
+            })?;
     let Some(value) = value else {
         return Err(dependency_error(
             "GET",
@@ -138,9 +146,13 @@ fn map_analytics_error(error: analytics::AnalyticsError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object {object}"),
         ),
-        analytics::AnalyticsError::Read(_) | analytics::AnalyticsError::Sqlite(_) => {
-            ApiError::internal()
-        }
+        analytics::AnalyticsError::InvalidStoredRow { table, id } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
+        ),
+        analytics::AnalyticsError::Read(_)
+        | analytics::AnalyticsError::Sqlite(_)
+        | analytics::AnalyticsError::Serialization(_) => ApiError::internal(),
     }
 }
 
@@ -149,9 +161,16 @@ fn map_session_cost_error(error: analytics::SessionCostError) -> ApiError {
         analytics::SessionCostError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown chat")
         }
+        analytics::SessionCostError::RefreshRequired => {
+            dependency_error("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
+        }
         analytics::SessionCostError::InvalidStored(object) => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object {object}"),
+        ),
+        analytics::SessionCostError::InvalidStoredRow { table, id } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {table}/{id}"),
         ),
         analytics::SessionCostError::Json(_) => ApiError::internal(),
         analytics::SessionCostError::Read(_) | analytics::SessionCostError::Sqlite(_) => {

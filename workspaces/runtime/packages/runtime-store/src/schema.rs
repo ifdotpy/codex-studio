@@ -182,6 +182,15 @@ pub fn sha256_hex(value: &[u8]) -> String {
 
 /// Python-compatible sorted-key JSON used for persisted signatures.
 pub fn python_json(value: &Value) -> String {
+    python_json_separated(value, ", ", ": ")
+}
+
+/// Compact Python-compatible JSON for content-addressed signatures.
+pub fn python_json_compact(value: &Value) -> String {
+    python_json_separated(value, ",", ":")
+}
+
+fn python_json_separated(value: &Value, item_separator: &str, key_separator: &str) -> String {
     match value {
         Value::Null | Value::Bool(_) => value.to_string(),
         Value::Number(number) if number.is_f64() => {
@@ -202,9 +211,9 @@ pub fn python_json(value: &Value) -> String {
             "[{}]",
             values
                 .iter()
-                .map(python_json)
+                .map(|item| python_json_separated(item, item_separator, key_separator))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(item_separator)
         ),
         Value::Object(values) => {
             let mut keys = values.keys().collect::<Vec<_>>();
@@ -212,9 +221,13 @@ pub fn python_json(value: &Value) -> String {
             format!(
                 "{{{}}}",
                 keys.into_iter()
-                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
+                    .map(|key| format!(
+                        "{}{key_separator}{}",
+                        python_quote(key),
+                        python_json_separated(&values[key], item_separator, key_separator)
+                    ))
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(item_separator)
             )
         }
     }
