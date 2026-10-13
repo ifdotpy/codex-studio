@@ -53,6 +53,17 @@ class PersistedTranscriptAsset(ContractModel):
     created: float
 
 
+class PersistedAgentArchive(ContractModel):
+    """Archive identity consumed by lifecycle restoration; other audit data stays open."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    at: float
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    cleanupPending: StrictBool | None = None
+
+
 class PersistedAgentRecord(ContractModel):
     """Persisted agent identity plus the extensible state written by the runtime."""
 
@@ -67,6 +78,24 @@ class PersistedAgentRecord(ContractModel):
     name: StrictStr | None = None
     sandbox: dict[StrictStr, JsonValue] | None = None
     approvalPolicy: StrictStr | None = None
+
+    # Lifecycle fields are optional so older Python-written agents remain readable.
+    agentArchive: PersistedAgentArchive | None = None
+    autoWake: StrictBool | None = None
+    cleanedImageWorkspace: dict[StrictStr, JsonValue] | None = None
+    cleanedWorktree: dict[StrictStr, JsonValue] | None = None
+    deletedAt: StrictBool | float | None = None
+    executionMode: StrictStr | None = None
+    imageWorkspace: StrictBool | None = None
+    imageWorkspaceReady: StrictBool | None = None
+    inFlight: StrictBool | None = None
+    isLead: StrictBool | None = None
+    parentId: StrictStr | None = None
+    parkedEvent: StrictStr | None = None
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    worktreeCleanup: dict[StrictStr, JsonValue] | None = None
+    worktreeReady: StrictBool | None = None
 
 
 class _OpenPersistedRecord(ContractModel):
