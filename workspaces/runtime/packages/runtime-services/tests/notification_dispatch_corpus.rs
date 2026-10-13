@@ -59,7 +59,7 @@ impl Drop for State {
         fs::remove_dir_all(&self.0).expect("remove disposable states");
     }
 }
-fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), String> {
+fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
     use studio_runtime_providers::LineDecoder;
     use studio_runtime_services::notification_dispatch::{
         NotificationStreamBuffer, ProviderDeliveryIdentity, dispatch_notification,
@@ -118,8 +118,9 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), Str
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         });
         assert!(deleted_replay.is_err());
-        return Ok(());
+        return Ok(json!([result]));
     }
+    let mut results = Vec::new();
     let mut streams = NotificationStreamBuffer::default();
     for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
         let agent_id = step["agent"].as_str().unwrap_or("agent");
@@ -221,6 +222,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), Str
             assert_eq!(before,tx.total_changes());
             Ok::<_,studio_runtime_store::StoreError>(())
         }).map_err(|e|e.to_string())?;
+        results.push(json!(result.outcome));
         if let Some(update) = result.stream_update {
             streams = update;
         }
@@ -229,7 +231,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<(), Str
         }
     }
     flush_agents(store, case, &mut streams)?;
-    Ok(())
+    Ok(json!(results))
 }
 
 fn raw_rows(
@@ -476,7 +478,11 @@ fn corpus(full: bool) {
         );
         let seeded = started.elapsed().as_secs_f64();
         let store = RuntimeStore::open(Some(&rust)).expect("open Python-written state");
-        let error = apply(&store, case, &expected["before"]["prepared"]).err();
+        let first = apply(&store, case, &expected["before"]["prepared"]);
+        let error = first.as_ref().err().cloned();
+        if let Ok(value) = &first {
+            assert_eq!(value, &case["return"], "{id}: entry-point result");
+        }
         drop(store);
         if case["crash_replay"] == true {
             let fixture = rust.parent().expect("parent").join("replay.json");
@@ -528,7 +534,7 @@ fn corpus(full: bool) {
         } else {
             eprintln!("{id}: {} differences; error={error:?}", diff.len());
         }
-        report.push(json!({"id":id,"differences":diff,"error":error,"seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
+        report.push(json!({"id":id,"differences":diff,"error":error,"firstResult":first.ok(),"seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
     }
     assert!(!report.is_empty(), "case filter matched nothing");
     let report_path = std::env::var_os("NOTIFICATION_CORPUS_REPORT")

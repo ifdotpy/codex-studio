@@ -214,20 +214,6 @@ fn expected_difference(diff: &Value, case: &Value, python_root: &Path) -> bool {
             if rule["path"] != diff["path"] {
                 return false;
             }
-            assert!(matches!(
-                rule["deviation"].as_str(),
-                Some(
-                    "rust_receipts"
-                        | "notification_dispatch_unwired"
-                        | "durable_reconciliation_hold"
-                )
-            ));
-            if rule["deviation"] == "notification_dispatch_unwired" {
-                assert!(matches!(
-                    rule["entrypoint"].as_str(),
-                    Some("record_user_submission" | "dispatch_notification")
-                ));
-            }
             if rule["pythonPresent"] != diff["pythonPresent"]
                 || rule["rustPresent"] != diff["rustPresent"]
             {
@@ -276,6 +262,59 @@ fn unexpected_differences(diff: &[Value], case: &Value, python_root: &Path) -> V
 fn fast_witnesses_cover_transitions_states_and_review_findings() {
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_lifecycle/cases.json")).expect("corpus");
+    let notifications: Vec<Value> =
+        serde_json::from_str(include_str!("turn_lifecycle/notification_cases.json"))
+            .expect("notification cases");
+    let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))
+        .expect("central registry");
+    let registry = registry.as_object().expect("class declarations");
+    assert_eq!(
+        registry.len(),
+        8,
+        "the approved three lifecycle and five notification classes are closed"
+    );
+    let owners: std::collections::BTreeSet<_> = cases
+        .iter()
+        .flat_map(|c| c["expectedDifferences"].as_array().into_iter().flatten())
+        .map(|rule| rule["deviation"].as_str().expect("class"))
+        .chain(notifications.iter().filter_map(|c| c["deviation"].as_str()))
+        .collect();
+    assert_eq!(
+        owners,
+        registry.keys().map(String::as_str).collect(),
+        "every case deviation is declared and every declaration has an owner, including unit witnesses"
+    );
+    let mutations: Vec<Value> = serde_json::from_str(include_str!("turn_lifecycle/mutations.json"))
+        .expect("mutation inventory");
+    for mutation in mutations {
+        for id in mutation["witnesses"]
+            .as_array()
+            .expect("mutation witnesses")
+        {
+            assert!(
+                cases
+                    .iter()
+                    .chain(&notifications)
+                    .any(|c| c["id"] == *id && c["tier"] == "fast"),
+                "{}: missing fast mutation witness {id}",
+                mutation["id"]
+            );
+        }
+        for combination in mutation["lifecycleCombinations"]
+            .as_array()
+            .expect("transition/state combinations")
+        {
+            assert!(
+                cases.iter().any(|c| c["tier"] == "fast"
+                    && combination
+                        .as_object()
+                        .expect("combination")
+                        .iter()
+                        .all(|(key, value)| c[key] == *value)),
+                "missing mutation transition/state combination: {combination}"
+            );
+        }
+    }
     for key in ["transition", "state"] {
         let all: std::collections::BTreeSet<_> = cases
             .iter()
@@ -395,6 +434,10 @@ fn python_written_turn_lifecycle_corpus() {
         }
         let first = apply(&store, case);
         let mut error = first.as_ref().err().cloned();
+        if let Ok(value) = &first {
+            let normalized = oracle.call(json!({"command":"normalize","value":value}));
+            assert_eq!(normalized, case["return"], "{id}: entry-point return value");
+        }
         if let Some(text) = case["afterEventText"].as_str() {
             store
                 .transaction(|tx| {
@@ -408,12 +451,20 @@ fn python_written_turn_lifecycle_corpus() {
             for (key, value) in probe {
                 changed[key] = value.clone();
             }
+            let before = store
+                .transaction(|tx| Ok(tx.total_changes()))
+                .expect("probe write counter");
             let refusal =
                 apply(&store, &changed).expect_err("conflicting evidence must be refused");
-            assert!(
-                refusal.contains("runtime_") && !refusal.contains("CORPUS_PRIVATE_PAYLOAD"),
-                "sanitized stored error"
+            assert_eq!(
+                refusal,
+                case["probeRefusal"].as_str().expect("exact conflict error"),
+                "{id}: exact conflict location"
             );
+            let after = store
+                .transaction(|tx| Ok(tx.total_changes()))
+                .expect("probe write counter");
+            assert_eq!(before, after, "conflicting replay wrote SQLite");
         }
         if case["replay"] == true && error.is_none() {
             let before = store

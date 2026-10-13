@@ -246,6 +246,10 @@ def opaque_state(db):
 
 
 def assert_revisions(before, after):
+    # These services do not write the legacy scope-version table. Its hashes
+    # have no payload in that table from which to recompute them; preserve the
+    # Python-written version records exactly instead of hiding valid-looking corruption.
+    assert before.get("sync_versions") == after.get("sync_versions"), "legacy version/hash changed"
     for table, rows in after.items():
         for key, row in rows.items():
             assert type(row[0]) is int and row[0] >= 0, f"invalid stored revision: {table} {key}"
@@ -335,6 +339,8 @@ def seed(runtime, case):
         for key in case.get("remove", []):
             agent.pop(key, None)
         agent.update(case.get("agent", {}))
+        if case.get("expectRefusal"):
+            agent["corpusPrivate"] = "SECRET_STORED_SENTINEL"
         runtime.put(db, "agents", agent)
         if case.get("event"):
             for key, value in case["event"].items():
@@ -447,7 +453,7 @@ class LifecycleCases:
         runtime, case = self.runtime, command["case"]
         runtime.close_notification_database()
         runtime.__dict__.pop("_agent_records_cache", None)
-        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery") if k in case}}, sort_keys=True)
+        key = json.dumps({"legacy":case.get("state")=="python_unknown",**{k:case[k] for k in ("phase","agent","attempt","remove","event","run","corrupt","seedRecovery","expectRefusal") if k in case}}, sort_keys=True)
         if key not in self.seeds:
             with sqlite3.connect(runtime.db_path) as db:
                 self.pristine.backup(db)
@@ -466,8 +472,8 @@ class LifecycleCases:
         shutil.copyfile(self.template / "analytics.sqlite3", rust / "analytics.sqlite3")
         with sqlite3.connect(rust / "canvas.sqlite3") as db:
             saved.backup(db)
-        before = snapshot(runtime.root)
         assert_backup_equivalent(runtime.root, rust)
+        before = snapshot(runtime.root)
         assert snapshot(rust) == before, "pre-states differ"
         python_error = None
         try:

@@ -65,6 +65,8 @@ def seed(runtime, case):
         if case.get('submission'):
             agent['startAttempt']['events'] = ['input-' + str(i) for i in range(len(case.get('events', [{'kind':'user','text':'hello'}])))]
         agent.update(case.get('agent', {}))
+        if case.get('expect_refusal'):
+            agent['corpusPrivate'] = 'SECRET_STORED_SENTINEL'
         for key in case.get('remove', []):
             agent.pop(key, None)
         runtime.put(db, 'agents', agent)
@@ -280,9 +282,9 @@ def run_case(command, template, runtime_type):
         saved.backup(db)
     if prepared is not None:
         (rust.parent / 'prepared.json').write_text(prepared)
-    before = snapshot(runtime.root)
     import __main__ as oracle
     oracle.assert_backup_equivalent(runtime.root, rust)
+    before = snapshot(runtime.root)
     assert snapshot(rust) == before, 'pre-states differ'
     import threading
     runtime.__dict__.setdefault('_callback_db', threading.local()).reuse = True

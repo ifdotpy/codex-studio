@@ -48,7 +48,18 @@
       }
     ],
     "tier": "fast",
-    "crash_replay": true
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks1",
@@ -98,7 +109,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks2",
@@ -148,7 +170,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks3",
@@ -198,7 +231,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks0",
@@ -248,7 +292,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks1",
@@ -298,7 +353,18 @@
         "tick": false
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks2",
@@ -348,7 +414,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks3",
@@ -398,7 +475,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks0",
@@ -448,7 +536,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks1",
@@ -498,7 +597,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks2",
@@ -548,7 +658,18 @@
         "tick": false
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks3",
@@ -598,7 +719,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks0",
@@ -648,7 +780,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks1",
@@ -698,7 +841,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks2",
@@ -748,7 +902,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks3",
@@ -798,7 +963,18 @@
         "tick": false
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks0",
@@ -848,7 +1024,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks1",
@@ -898,7 +1085,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks2",
@@ -948,7 +1146,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks3",
@@ -998,7 +1207,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks0",
@@ -1048,7 +1268,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks1",
@@ -1098,7 +1329,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks2",
@@ -1148,7 +1390,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks3",
@@ -1198,7 +1451,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "flushed_then_start_then_delta",
@@ -1257,7 +1521,21 @@
         }
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "pending_then_start",
@@ -1304,7 +1582,18 @@
         }
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "pending_new_generation",
@@ -1350,7 +1639,18 @@
         "generation": 8
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "flushed_new_generation",
@@ -1410,7 +1710,22 @@
         "generation": 7
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "reason": "closed-stream",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "missing_turn_completion",
@@ -1454,7 +1769,19 @@
         }
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "reason": "closed-stream",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks0",
@@ -1504,7 +1831,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks1",
@@ -1554,7 +1892,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks2",
@@ -1604,7 +1953,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks3",
@@ -1654,7 +2014,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks0",
@@ -1704,7 +2075,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks1",
@@ -1754,7 +2136,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks2",
@@ -1804,7 +2197,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks3",
@@ -1854,7 +2258,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks0",
@@ -1904,7 +2319,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks1",
@@ -1954,7 +2380,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks2",
@@ -2004,7 +2441,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks3",
@@ -2054,7 +2502,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks0",
@@ -2104,7 +2563,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks1",
@@ -2154,7 +2624,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks2",
@@ -2204,7 +2685,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks3",
@@ -2254,7 +2746,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks0",
@@ -2304,7 +2807,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks1",
@@ -2354,7 +2868,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks2",
@@ -2404,7 +2929,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks3",
@@ -2454,7 +2990,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks0",
@@ -2504,7 +3051,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks1",
@@ -2554,7 +3112,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks2",
@@ -2604,7 +3173,18 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks3",
@@ -2654,14 +3234,30 @@
         "tick": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-user",
     "module": "notification_dispatch",
     "submission": true,
     "steps": [],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks4",
@@ -2710,7 +3306,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks4",
@@ -2759,7 +3366,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks5",
@@ -2808,7 +3426,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks5",
@@ -2857,7 +3486,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks6",
@@ -2906,7 +3546,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks6",
@@ -2955,7 +3606,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DSC-ticks7",
@@ -3004,7 +3666,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DSC-ticks7",
@@ -3053,7 +3726,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks4",
@@ -3102,7 +3786,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks4",
@@ -3151,7 +3846,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks5",
@@ -3200,7 +3906,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks5",
@@ -3249,7 +3966,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks6",
@@ -3298,7 +4026,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks6",
@@ -3347,7 +4086,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "DCS-ticks7",
@@ -3396,7 +4146,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-DCS-ticks7",
@@ -3445,7 +4206,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks4",
@@ -3494,7 +4266,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks4",
@@ -3543,7 +4326,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks5",
@@ -3592,7 +4386,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks5",
@@ -3641,7 +4446,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks6",
@@ -3690,7 +4506,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks6",
@@ -3739,7 +4566,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SDC-ticks7",
@@ -3788,7 +4626,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SDC-ticks7",
@@ -3837,7 +4686,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks4",
@@ -3886,7 +4746,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks4",
@@ -3935,7 +4806,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks5",
@@ -3984,7 +4866,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks5",
@@ -4033,7 +4926,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks6",
@@ -4082,7 +4986,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks6",
@@ -4131,7 +5046,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "SCD-ticks7",
@@ -4180,7 +5106,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-SCD-ticks7",
@@ -4229,7 +5166,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks4",
@@ -4278,7 +5226,18 @@
         "tick": true
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks4",
@@ -4327,7 +5286,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks5",
@@ -4376,7 +5346,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks5",
@@ -4425,7 +5406,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks6",
@@ -4474,7 +5466,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks6",
@@ -4523,7 +5526,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CDS-ticks7",
@@ -4572,7 +5586,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CDS-ticks7",
@@ -4621,7 +5646,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks4",
@@ -4670,7 +5706,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks4",
@@ -4719,7 +5766,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks5",
@@ -4768,7 +5826,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks5",
@@ -4817,7 +5886,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks6",
@@ -4866,7 +5946,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks6",
@@ -4915,7 +6006,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "CSD-ticks7",
@@ -4964,7 +6066,18 @@
         "tick": true
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "full-CSD-ticks7",
@@ -5013,7 +6126,18 @@
         "tick": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-running-D",
@@ -5034,7 +6158,12 @@
     "agent": {
       "status": "running"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-running-S",
@@ -5058,7 +6187,12 @@
     "agent": {
       "status": "running"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-running-C",
@@ -5082,7 +6216,12 @@
     "agent": {
       "status": "running"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-paused-D",
@@ -5103,7 +6242,12 @@
     "agent": {
       "status": "paused"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-paused-S",
@@ -5127,7 +6271,12 @@
     "agent": {
       "status": "paused"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-paused-C",
@@ -5151,7 +6300,12 @@
     "agent": {
       "status": "paused"
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-stopped-D",
@@ -5175,7 +6329,12 @@
       "inFlight": false
     },
     "note": "Python stop represents stopped as paused with autoWake=false; literal status=stopped cannot occur.",
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-stopped-S",
@@ -5202,7 +6361,12 @@
       "inFlight": false
     },
     "note": "Python stop represents stopped as paused with autoWake=false; literal status=stopped cannot occur.",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-stopped-C",
@@ -5229,7 +6393,12 @@
       "inFlight": false
     },
     "note": "Python stop represents stopped as paused with autoWake=false; literal status=stopped cannot occur.",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "state-deleted-D",
@@ -5251,7 +6420,13 @@
       "status": "deleted",
       "deletedAt": 1234.5
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "reason": "deleted-agent",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "state-deleted-S",
@@ -5276,7 +6451,13 @@
       "status": "deleted",
       "deletedAt": 1234.5
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "reason": "deleted-agent",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "state-deleted-C",
@@ -5301,7 +6482,13 @@
       "status": "deleted",
       "deletedAt": 1234.5
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "reason": "deleted-agent",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "stale-turn-D",
@@ -5322,7 +6509,13 @@
     "agent": {
       "turnId": "new-turn"
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "reason": "stale-turn-item",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "null-retry-missing-D",
@@ -5346,7 +6539,12 @@
         "turnId": null
       }
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "null-retry-null-D",
@@ -5371,7 +6569,12 @@
         "turnId": null
       }
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "stale-turn-S",
@@ -5395,7 +6598,13 @@
     "agent": {
       "turnId": "new-turn"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "reason": "stale-turn-item",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "null-retry-missing-S",
@@ -5422,7 +6631,12 @@
         "turnId": null
       }
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "null-retry-null-S",
@@ -5450,7 +6664,12 @@
         "turnId": null
       }
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "stale-turn-C",
@@ -5474,7 +6693,13 @@
     "agent": {
       "turnId": "new-turn"
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "reason": "stale-turn-item",
+        "status": "ignored"
+      }
+    ]
   },
   {
     "id": "null-retry-missing-C",
@@ -5501,7 +6726,12 @@
         "turnId": null
       }
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "null-retry-null-C",
@@ -5529,7 +6759,12 @@
         "turnId": null
       }
     },
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "created-order",
@@ -5563,7 +6798,12 @@
       }
     ],
     "finding": "R3-A10",
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "old-metadata",
@@ -5596,7 +6836,12 @@
         }
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "long-completion",
@@ -5627,7 +6872,12 @@
       "restartRecovery": {
         "stage": "held"
       }
-    }
+    },
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "long-stream",
@@ -5685,7 +6935,21 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "search-legacy",
@@ -5733,7 +6997,18 @@
       }
     ],
     "search_phase": "legacy",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "search-building",
@@ -5781,7 +7056,18 @@
       }
     ],
     "search_phase": "building",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "search-active",
@@ -5829,7 +7115,18 @@
       }
     ],
     "search_phase": "active",
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "search-dropping",
@@ -5877,7 +7174,18 @@
       }
     ],
     "search_phase": "dropping",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "search-complete",
@@ -5925,7 +7233,18 @@
       }
     ],
     "search_phase": "complete",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-user-metadata",
@@ -5942,7 +7261,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-followup-no-metadata",
@@ -5957,7 +7281,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-followup-metadata",
@@ -5974,7 +7303,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-work_decision-no-metadata",
@@ -5989,7 +7323,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-work_decision-metadata",
@@ -6006,7 +7345,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-radio-no-metadata",
@@ -6021,7 +7365,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-radio-metadata",
@@ -6038,7 +7387,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-child_result-no-metadata",
@@ -6053,7 +7407,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-child_result-metadata",
@@ -6070,7 +7429,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-complaint-no-metadata",
@@ -6085,7 +7449,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-complaint-metadata",
@@ -6102,7 +7471,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-event_wake-no-metadata",
@@ -6117,7 +7491,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-event_wake-metadata",
@@ -6134,7 +7513,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-browser_declined-no-metadata",
@@ -6149,7 +7533,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-browser_declined-metadata",
@@ -6166,7 +7555,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-browser_recovery-no-metadata",
@@ -6181,7 +7575,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-browser_recovery-metadata",
@@ -6198,7 +7597,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-monitor_exit-no-metadata",
@@ -6213,7 +7617,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-monitor_exit-metadata",
@@ -6230,7 +7639,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-monitor_cancelled-no-metadata",
@@ -6245,7 +7659,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-monitor_cancelled-metadata",
@@ -6262,7 +7681,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-plan_update-no-metadata",
@@ -6277,7 +7701,12 @@
         "no_metadata": true
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-plan_update-metadata",
@@ -6294,7 +7723,12 @@
         "no_metadata": false
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-batch",
@@ -6315,7 +7749,12 @@
         "text": "third"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "submission-long",
@@ -6329,7 +7768,12 @@
       }
     ],
     "tier": "fast",
-    "crash_replay": true
+    "crash_replay": true,
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-followup-agent-sender",
@@ -6361,7 +7805,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-followup-agent-missing",
@@ -6391,7 +7840,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-followup-agent-null",
@@ -6424,7 +7878,8 @@
       }
     ],
     "expect_refusal": "invalid stored object runtime_event_meta:input-0",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-followup-foreign-sender",
@@ -6457,7 +7912,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "policy-followup-foreign-missing",
@@ -6487,7 +7943,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-followup-foreign-null",
@@ -6520,7 +7981,8 @@
       }
     ],
     "expect_refusal": "invalid stored object runtime_event_meta:input-0",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-message-private-agent",
@@ -6559,7 +8021,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-message-private-foreign",
@@ -6599,7 +8066,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-message-broadcast-agent",
@@ -6638,7 +8106,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-message-broadcast-foreign",
@@ -6678,7 +8151,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-complaint-user-same",
@@ -6719,7 +8193,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-complaint-user-foreign",
@@ -6761,7 +8240,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "policy-complaint-user-missing",
@@ -6803,7 +8283,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "policy-complaint-user-null",
@@ -6845,7 +8326,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-same",
@@ -6886,7 +8368,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-complaint-sender-foreign",
@@ -6928,7 +8415,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-missing",
@@ -6970,7 +8458,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-null",
@@ -7012,7 +8501,8 @@
       }
     ],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-peer-175",
@@ -7064,7 +8554,12 @@
         }
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-peer-176",
@@ -7116,7 +8611,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-peer-177",
@@ -7168,7 +8668,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-chat-review",
@@ -7184,7 +8689,8 @@
     ],
     "related": [],
     "expect_refusal": "submitted event is not authorized",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "policy-radio-turn",
@@ -7201,7 +8707,8 @@
     "related": [],
     "expect_refusal": "Not implemented: requires radio-policy",
     "deviation": "radio-policy",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-id",
@@ -7215,7 +8722,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7235,7 +8743,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-epoch",
@@ -7249,7 +8758,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7269,7 +8779,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-events",
@@ -7283,7 +8794,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7303,7 +8815,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-rootId",
@@ -7317,7 +8830,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7337,7 +8851,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-status",
@@ -7351,7 +8866,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7371,7 +8887,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_agents-unhandledNotifications",
@@ -7385,7 +8902,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7407,7 +8925,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_agents:agent",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-id",
@@ -7421,7 +8940,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7441,7 +8961,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-role",
@@ -7455,7 +8976,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7475,7 +8997,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-text",
@@ -7489,7 +9012,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7509,7 +9033,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-inputs",
@@ -7523,7 +9048,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7543,7 +9069,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-assets",
@@ -7557,7 +9084,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7577,7 +9105,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-truncated",
@@ -7591,7 +9120,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7611,7 +9141,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-runtime_items-streaming",
@@ -7625,7 +9156,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -7645,7 +9177,8 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed-metadata-assets",
@@ -7661,7 +9194,8 @@
       }
     ],
     "expect_refusal": "invalid stored object runtime_event_meta:input-0",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "malformed-metadata-transcriptItemId",
@@ -7677,7 +9211,8 @@
       }
     ],
     "expect_refusal": "invalid stored object runtime_event_meta:input-0",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": null
   },
   {
     "id": "deviation-token-usage",
@@ -7785,7 +9320,12 @@
         "deviation": "token-usage-partials"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "deviation-questions",
@@ -7912,7 +9452,12 @@
         "deviation": "questions-service/async-question"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "unhandled-turn-started",
@@ -7929,7 +9474,14 @@
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "turn/started",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-turn-completed",
@@ -7946,7 +9498,14 @@
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "turn/completed",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-turn-plan-updated",
@@ -7963,7 +9522,14 @@
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "turn/plan/updated",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-turn-diff-updated",
@@ -7980,7 +9546,14 @@
     ],
     "declared_unhandled": "turn-lifecycle-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "turn/diff/updated",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-serverRequest-resolved",
@@ -7997,7 +9570,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "serverRequest/resolved",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-commandExecution-outputDelta",
@@ -8014,7 +9594,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/commandExecution/outputDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-reasoning-textDelta",
@@ -8031,7 +9618,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/reasoning/textDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-reasoning-summaryTextDelta",
@@ -8048,7 +9642,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/reasoning/summaryTextDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-autoApprovalReview-started",
@@ -8065,7 +9666,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/autoApprovalReview/started",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-autoApprovalReview-completed",
@@ -8082,7 +9690,14 @@
     ],
     "declared_unhandled": "approval-question-or-non-text-item-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/autoApprovalReview/completed",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-error",
@@ -8099,7 +9714,14 @@
     ],
     "declared_unhandled": "provider-error-state-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "error",
+        "reason": "provider-error-state-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-model-safetyBuffering-updated",
@@ -8116,7 +9738,14 @@
     ],
     "declared_unhandled": "provider-notice-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "model/safetyBuffering/updated",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-model-verification",
@@ -8133,7 +9762,14 @@
     ],
     "declared_unhandled": "provider-notice-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "model/verification",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-modelProvider-authRecoveryStarted",
@@ -8150,7 +9786,14 @@
     ],
     "declared_unhandled": "provider-notice-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "modelProvider/authRecoveryStarted",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-modelProvider-authRecoveryCompleted",
@@ -8167,7 +9810,14 @@
     ],
     "declared_unhandled": "provider-notice-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "modelProvider/authRecoveryCompleted",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-warning",
@@ -8184,7 +9834,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "warning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-guardianWarning",
@@ -8201,7 +9858,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "guardianWarning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-configWarning",
@@ -8218,7 +9882,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "configWarning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-deprecationNotice",
@@ -8235,7 +9906,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "deprecationNotice",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-mcpServer-startupStatus-updated",
@@ -8252,7 +9930,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "mcpServer/startupStatus/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-mcpServer-oauthLogin-completed",
@@ -8269,7 +9954,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "mcpServer/oauthLogin/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-autoApprovalReview-strictReviewRequired",
@@ -8286,7 +9978,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "autoApprovalReview/strictReviewRequired",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-hook-started",
@@ -8303,7 +10002,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "hook/started",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-hook-completed",
@@ -8320,7 +10026,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "hook/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-account-login-completed",
@@ -8337,7 +10050,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "account/login/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-account-updated",
@@ -8354,7 +10074,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "account/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-account-rateLimits-updated",
@@ -8371,7 +10098,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "account/rateLimits/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-command-exec-outputDelta",
@@ -8388,7 +10122,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "command/exec/outputDelta",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-provider-generationStarted",
@@ -8405,7 +10146,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "provider/generationStarted",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-closed",
@@ -8422,7 +10170,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/closed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-status-changed",
@@ -8439,7 +10194,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/status/changed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-item-started",
@@ -8456,7 +10218,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/item/started",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-item-completed",
@@ -8473,7 +10242,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/item/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-transcript-delta",
@@ -8490,7 +10266,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/transcript/delta",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-transcript-done",
@@ -8507,7 +10290,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/transcript/done",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-sdp",
@@ -8524,7 +10314,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/sdp",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-error",
@@ -8541,7 +10338,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/error",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-thread-realtime-closed",
@@ -8558,7 +10362,14 @@
     ],
     "declared_unhandled": "notification-kind-not-ported",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "thread/realtime/closed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-userMessage",
@@ -8581,7 +10392,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-userMessage",
@@ -8604,7 +10422,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-reasoning",
@@ -8627,7 +10452,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-reasoning",
@@ -8650,7 +10482,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-commandExecution",
@@ -8673,7 +10512,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-commandExecution",
@@ -8696,7 +10542,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-dynamicToolCall",
@@ -8719,7 +10572,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-dynamicToolCall",
@@ -8742,7 +10602,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-mcpToolCall",
@@ -8765,7 +10632,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-mcpToolCall",
@@ -8788,7 +10662,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-webSearch",
@@ -8811,7 +10692,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-webSearch",
@@ -8834,7 +10722,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-fileChange",
@@ -8857,7 +10752,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-fileChange",
@@ -8880,7 +10782,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-contextCompaction",
@@ -8903,7 +10812,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-contextCompaction",
@@ -8926,7 +10842,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-exitedReviewMode",
@@ -8949,7 +10872,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-exitedReviewMode",
@@ -8972,7 +10902,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-started-unknownFutureItem",
@@ -8995,7 +10932,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "unhandled-item-completed-unknownFutureItem",
@@ -9018,7 +10962,14 @@
     ],
     "declared_unhandled": "non-text-provider-item",
     "deviation": "unhandled-notification-kinds",
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
+    ]
   },
   {
     "id": "bounded-open-streams",
@@ -9045,7 +10996,12 @@
         "text": ""
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "rollback-completion-then-delta",
@@ -9093,7 +11049,15 @@
         "tick": false
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "shared-account-two-agents",
@@ -9144,6 +11108,14 @@
           "activeTools": [],
           "autoWake": false
         }
+      }
+    ],
+    "return": [
+      {
+        "status": "written"
+      },
+      {
+        "status": "written"
       }
     ]
   },
@@ -9856,6 +11828,298 @@
       "unhandled-item-completed-exitedReviewMode",
       "unhandled-item-started-unknownFutureItem",
       "unhandled-item-completed-unknownFutureItem"
+    ],
+    "return": [
+      {
+        "kind": "turn/started",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "turn/completed",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "turn/plan/updated",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "turn/diff/updated",
+        "reason": "turn-lifecycle-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "serverRequest/resolved",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/commandExecution/outputDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/reasoning/textDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/reasoning/summaryTextDelta",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/autoApprovalReview/started",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/autoApprovalReview/completed",
+        "reason": "approval-question-or-non-text-item-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "error",
+        "reason": "provider-error-state-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "model/safetyBuffering/updated",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "model/verification",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "modelProvider/authRecoveryStarted",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "modelProvider/authRecoveryCompleted",
+        "reason": "provider-notice-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "warning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "guardianWarning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "configWarning",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "deprecationNotice",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "mcpServer/startupStatus/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "mcpServer/oauthLogin/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "autoApprovalReview/strictReviewRequired",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "hook/started",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "hook/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "account/login/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "account/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "account/rateLimits/updated",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "command/exec/outputDelta",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "provider/generationStarted",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/closed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/status/changed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/item/started",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/item/completed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/transcript/delta",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/transcript/done",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/sdp",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/error",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "thread/realtime/closed",
+        "reason": "notification-kind-not-ported",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/started",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      },
+      {
+        "kind": "item/completed",
+        "reason": "non-text-provider-item",
+        "status": "unhandled"
+      }
     ]
   },
   {
@@ -9897,7 +12161,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-complaint-user-responder-missing",
@@ -9939,7 +12208,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "policy-complaint-user-responder-null",
@@ -9981,7 +12251,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "policy-complaint-user-responder-number",
@@ -10023,7 +12294,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-responder-lead",
@@ -10064,7 +12336,12 @@
         }
       }
     ],
-    "tier": "heavy"
+    "tier": "heavy",
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "policy-complaint-sender-responder-missing",
@@ -10106,7 +12383,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-responder-null",
@@ -10148,7 +12426,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "policy-complaint-sender-responder-number",
@@ -10190,7 +12469,8 @@
       }
     ],
     "tier": "heavy",
-    "expect_refusal": "submitted event is not authorized"
+    "expect_refusal": "submitted event is not authorized",
+    "return": null
   },
   {
     "id": "malformed-related-runtime_rooms",
@@ -10238,7 +12518,8 @@
         "value": {}
       }
     ],
-    "expect_refusal": "invalid stored object runtime_rooms:room"
+    "expect_refusal": "invalid stored object runtime_rooms:room",
+    "return": null
   },
   {
     "id": "malformed-related-runtime_complaints",
@@ -10288,7 +12569,8 @@
         "value": 12
       }
     ],
-    "expect_refusal": "invalid stored object runtime_complaints:c"
+    "expect_refusal": "invalid stored object runtime_complaints:c",
+    "return": null
   },
   {
     "id": "malformed-related-runtime_projects",
@@ -10353,7 +12635,8 @@
         ]
       }
     ],
-    "expect_refusal": "invalid stored object runtime_projects:$project"
+    "expect_refusal": "invalid stored object runtime_projects:$project",
+    "return": null
   },
   {
     "id": "malformed-related-runtime_agents",
@@ -10394,7 +12677,8 @@
         "value": 12
       }
     ],
-    "expect_refusal": "invalid stored object runtime_agents:sender"
+    "expect_refusal": "invalid stored object runtime_agents:sender",
+    "return": null
   },
   {
     "id": "malformed-event-created",
@@ -10410,7 +12694,8 @@
         "column": "created",
         "value": -1
       }
-    ]
+    ],
+    "return": null
   },
   {
     "id": "malformed-saved-receipt",
@@ -10425,7 +12710,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "before"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         },
         "tick": false
       }
@@ -10434,7 +12720,8 @@
     "expect_refusal": "invalid stored object runtime_operation_receipts:provider-notification:dbeee0c9a712f79ae3f68b466bada840bab40f18ec80a0720cee6de61984b7c5",
     "receipt_result": {
       "status": "invalid-status"
-    }
+    },
+    "return": null
   },
   {
     "id": "foreign-account",
@@ -10458,7 +12745,8 @@
     ],
     "tier": "fast",
     "expect_refusal": "invalid provider notification or delivery identity",
-    "routing_refusal": true
+    "routing_refusal": true,
+    "return": null
   },
   {
     "id": "foreign-thread",
@@ -10481,7 +12769,8 @@
     ],
     "tier": "fast",
     "expect_refusal": "invalid provider notification or delivery identity",
-    "routing_refusal": true
+    "routing_refusal": true,
+    "return": null
   },
   {
     "id": "late-service-failure",
@@ -10499,14 +12788,16 @@
               "type": "agentMessage",
               "text": "late partial write"
             }
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         },
         "tick": false
       }
     ],
     "tier": "fast",
     "expect_refusal": "SQLite operation failed: injected late failure",
-    "late_failure": true
+    "late_failure": true,
+    "return": null
   },
   {
     "id": "submission-prepared-assets",
@@ -10553,6 +12844,11 @@
         "created": 11.0,
         "path": "/fixture/b.txt"
       }
+    ],
+    "return": [
+      {
+        "status": "written"
+      }
     ]
   },
   {
@@ -10567,7 +12863,8 @@
             "turnId": "replay-turn-1",
             "itemId": "answer",
             "delta": "new"
-          }
+          },
+          "privateSentinel": "CORPUS_PRIVATE_PAYLOAD"
         }
       }
     ],
@@ -10587,6 +12884,7 @@
     ],
     "expect_refusal": "invalid stored object runtime_items:agent:answer",
     "contract": "strict stored-schema refusal; compare no-write state rather than emulate Python lax parsing",
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   }
 ]

@@ -37,12 +37,20 @@ Python initializes the schema and creates the baseline agent once. Seed classes
 are keyed only by state-producing fields; real Runtime.put/enqueue/item writers
 prepare each class. SQLite memory backups retain those Python-written pre-states.
 Each case restores one pre-state, resets the decoded agent cache and stream buffer,
-and backs it up to a distinct Rust root. No Rust-written row becomes an expected
+and backs it up to a distinct Rust root. The guarantee is SQLite backup equivalence:
+the complete, unnormalized SQL dumps must match, including stored JSON text and
+tables outside the comparison inventory. Database-file bytes may differ because
+SQLite backup changes bookkeeping. No Rust-written row becomes an expected
 fixture. Snapshots compare all selected rows, JSON business fields, absence/null,
 item creation order, full text, event links, receipt signatures/results, canonical
 agent sync payloads and hashes, legacy search rows and next-index token postings.
-The raw sync hash is validated before hashing the normalized payload. Only explicit
-wall-clock/revision fields are replaced; rows otherwise remain exact.
+The raw sync hash is validated before hashing the normalized payload. Every opaque
+time/revision field is checked before replacement: finite nonnegative clocks or
+valid timezone-aware ISO strings, and nonnegative integer revisions. Rust must
+preserve the Python field's stored shape. Invalid input fields remain unnormalized
+so refusal witnesses can still compare them. Changed sync content must advance its
+revision; revisions cannot go backwards. These services preserve legacy
+`sync_versions` rows exactly, including their validated SHA-256 hash strings.
 
 Submissions run real Runtime.start until immediately before Runtime.item. The
 captured call is then applied on Python while Rust receives PreparedSubmission on
@@ -74,7 +82,7 @@ replayed frames from writing or recreating buffered deltas.
 
 ## Deviations and tiers
 
-Only the five named deviation groups in `notification_coverage.json` are allowed:
+Only the five notification deviation groups in `deviations.json` are allowed:
 token budget/cache/token-rate captures; async questions; module-table unhandled
 kinds; `radio_turn` policy; and the 8,192 open-stream bound. Token and question
 cases execute the Python path and assert exact allowed field differences. Unhandled
@@ -90,6 +98,33 @@ empty/full completions and independent state/policy/corruption combinations. Tim
 and generation permutations do not apply to prepared submissions or token usage;
 Python represents stopped agents as paused with autoWake false. Radio-turn policy
 is refused upstream by the scheduler; plain radio is tested as an ordinary kind.
+
+Both corpora use the sole declaration list in `deviations.json`: the lifecycle's
+three classes and notification's five. Per-case field patches must reference a
+declared class and exact field inventory. An absent, equal, or otherwise stale
+declared difference fails. The `rust_receipts` declaration owns the return contract:
+Python first-call effects are compared as rows; Rust entry-point results are pinned
+as case data. Rust receipt replay must return its saved result and write nothing,
+and changed content must refuse without writing. Python callbacks have no such
+receipt contract; the oracle does not pretend they do. Timer flushing has no
+delivery identity; it is checked through staged buffer equality and stored effects.
+
+Foreign-account/thread fixtures call Python's real routing path and assert no
+stored changes. The late-failure fixture aborts receipt insertion after earlier
+service writes, catches that error inside the caller's transaction, and commits
+unrelated caller work. All service rows and the input buffer must remain unchanged.
+Located refusals match exact errors, including the stored table and ID, and cannot
+include the planted private request/stored sentinels. Prepared submission fixtures
+include nonempty per-input assets and an ordered aggregate with a repeated asset.
+
+`just test-rust-runtime-corpora-mutations` runs the permanent manual heavy mutation
+check. It copies sources below an external target directory and never patches the
+checkout. The unchanged baseline must pass; each mutation must compile and fail a
+default corpus test. Infrastructure/build failures are invalid evidence. The
+inventory in `mutations.json` includes concrete fast witnesses and lifecycle
+transition/state combinations; those witnesses cannot silently leave the fast set.
+See `docs/testing.md` for invocation options. Neither full matrices nor mutations
+run automatically in the fast tier, and neither creates synthetic load.
 
 The initial 255-case run took 90.9 seconds. Reusing seed states and the production
 connection-reuse mode reduced it to 31.4 seconds. Avoiding recursive duplicate

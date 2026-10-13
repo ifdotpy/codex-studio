@@ -23,7 +23,7 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[6]
     target = args.target.resolve()
-    assert root not in target.parents, "target must be outside the source checkout"
+    assert target != root and root not in target.parents, "target must be outside the source checkout"
     target.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="sources-", dir=target))
     names = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root).decode().split("\0")
@@ -34,6 +34,7 @@ def main():
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     mutations = json.loads(Path(__file__).with_name("mutations.json").read_text())
+    assert len({m["id"] for m in mutations}) == len(mutations), "duplicate mutation ID"
     if args.only:
         wanted = set(args.only.split(","))
         mutations = [m for m in mutations if m["id"] in wanted]
@@ -52,7 +53,7 @@ def main():
     environment.update(PATH=f'{environment["CARGO_HOME"]}/bin:/usr/local/bin:/usr/bin:/bin',
                        CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
-    command = ["cargo", "nextest", "run", "-p", "studio-runtime-services", "-E",
+    command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
                "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)"]
     results = []
 

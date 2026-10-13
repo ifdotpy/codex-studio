@@ -9,7 +9,7 @@
     {
       "id": "R1-A2",
       "finding": "thread/account/deleted/stale routing",
-      "cases": ["stale-turn-D"]
+      "cases": ["stale-turn-D", "foreign-account", "foreign-thread"]
     },
     {
       "id": "R1-A3",
@@ -34,7 +34,7 @@
     {
       "id": "R1-A7",
       "finding": "prepared batch/model text/assets/links",
-      "cases": ["submission-batch"]
+      "cases": ["submission-batch", "submission-prepared-assets"]
     },
     {
       "id": "R1-A8",
@@ -49,7 +49,7 @@
     {
       "id": "R1-A10",
       "finding": "transactional refusal",
-      "cases": ["malformed-runtime_items-truncated"]
+      "cases": ["malformed-runtime_items-truncated", "late-service-failure"]
     },
     {
       "id": "R1-A11",
@@ -124,7 +124,10 @@
     {
       "id": "R2-new-error-disclosure",
       "finding": "no stored sentinel in errors",
-      "cases": ["malformed-runtime_agents-epoch"]
+      "cases": [
+        "malformed-runtime_agents-epoch",
+        "located-transcript-store-error"
+      ]
     },
     {
       "id": "R3-A1",
@@ -207,11 +210,11 @@
       "guardianWarning": 2,
       "hook/completed": 2,
       "hook/started": 2,
-      "item/agentMessage/delta": 138,
+      "item/agentMessage/delta": 141,
       "item/autoApprovalReview/completed": 2,
       "item/autoApprovalReview/started": 2,
       "item/commandExecution/outputDelta": 2,
-      "item/completed": 139,
+      "item/completed": 140,
       "item/reasoning/summaryTextDelta": 2,
       "item/reasoning/textDelta": 2,
       "item/started": 131,
@@ -248,14 +251,14 @@
       "complaint": 2,
       "complaint_response": 17,
       "event_wake": 2,
-      "followup": 10,
+      "followup": 11,
       "monitor_cancelled": 2,
       "monitor_exit": 2,
       "plan_update": 2,
       "radio": 2,
       "radio_turn": 1,
-      "user": 4,
-      "work_decision": 3
+      "user": 5,
+      "work_decision": 4
     }
   },
   "deviation_registry": "deviations.json"

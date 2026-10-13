@@ -27,7 +27,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "unknown",
@@ -58,7 +60,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null,
+    "replay": true
   },
   {
     "id": "rejected",
@@ -93,7 +97,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "not_sent",
@@ -124,7 +130,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null,
+    "replay": true
   },
   {
     "id": "interrupted",
@@ -169,7 +177,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed",
@@ -312,7 +322,9 @@
         "entrypoint": "dispatch_notification"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed",
@@ -399,7 +411,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "denials",
@@ -500,7 +514,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "policy_interrupted",
@@ -601,7 +617,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "saved_error",
@@ -696,7 +714,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "paused_failed",
@@ -789,7 +809,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "deleted_accepted",
@@ -805,7 +827,9 @@
     },
     "findings": ["A4"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": false,
+    "replay": true
   },
   {
     "id": "scope_accepted",
@@ -817,7 +841,9 @@
     },
     "findings": ["A4"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": false,
+    "replay": true
   },
   {
     "id": "startup_unknown",
@@ -1064,7 +1090,8 @@
         "deviation": "durable_reconciliation_hold"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": 1
   },
   {
     "id": "startup_paused_unknown",
@@ -1244,7 +1271,8 @@
         "deviation": "durable_reconciliation_hold"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": 1
   },
   {
     "id": "startup_noattempt",
@@ -1428,7 +1456,8 @@
         "deviation": "durable_reconciliation_hold"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": 1
   },
   {
     "id": "disconnected",
@@ -1437,7 +1466,8 @@
     "state": "queued_pending",
     "findings": ["B3"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "generation_change",
@@ -1593,7 +1623,8 @@
         "deviation": "durable_reconciliation_hold"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "interrupted_answer",
@@ -1641,7 +1672,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "claim_queued",
@@ -1781,7 +1814,34 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    },
+    "replay": true
   },
   {
     "id": "submit_python_claim",
@@ -1910,7 +1970,9 @@
         "pythonId": "agent:event"
       }
     ],
-    "tier": "full"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "started_notice",
@@ -1919,7 +1981,8 @@
     "state": "running",
     "findings": ["A10", "B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": false
   },
   {
     "id": "accepted_replay",
@@ -1950,7 +2013,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true
   },
   {
     "id": "unknown_replay",
@@ -1982,7 +2046,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "rejected_replay",
@@ -2018,7 +2083,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "not_sent_replay",
@@ -2050,7 +2116,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "interrupted_replay",
@@ -2096,7 +2163,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "completed_replay",
@@ -2240,7 +2308,8 @@
         "entrypoint": "dispatch_notification"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "failed_replay",
@@ -2328,7 +2397,8 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "denials_replay",
@@ -2430,7 +2500,8 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "policy_interrupted_replay",
@@ -2532,7 +2603,8 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "saved_error_replay",
@@ -2628,7 +2700,8 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "paused_failed_replay",
@@ -2722,7 +2795,8 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "interrupted_answer_replay",
@@ -2771,7 +2845,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_queued",
@@ -2780,7 +2855,8 @@
     "state": "queued_pending",
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_claimed",
@@ -2789,7 +2865,8 @@
     "state": "queued_pending",
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_submitted",
@@ -2798,7 +2875,8 @@
     "state": "queued_pending",
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_accepted",
@@ -2807,7 +2885,8 @@
     "state": "running",
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true
   },
   {
     "id": "accepted__native_failure_hold",
@@ -2840,7 +2919,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "accepted__last_answer",
@@ -2873,7 +2954,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "accepted__account_transfer",
@@ -2906,7 +2989,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "accepted__workspace_operation",
@@ -2939,7 +3024,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "accepted__native_thread_block",
@@ -2977,7 +3064,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "unknown__native_failure_hold",
@@ -3011,7 +3100,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "unknown__last_answer",
@@ -3045,7 +3136,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "unknown__account_transfer",
@@ -3079,7 +3172,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "unknown__workspace_operation",
@@ -3113,7 +3208,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "unknown__native_thread_block",
@@ -3152,7 +3249,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "rejected__native_failure_hold",
@@ -3190,7 +3289,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "rejected__last_answer",
@@ -3228,7 +3329,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "rejected__account_transfer",
@@ -3266,7 +3369,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "rejected__workspace_operation",
@@ -3304,7 +3409,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "rejected__native_thread_block",
@@ -3347,7 +3454,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "not_sent__native_failure_hold",
@@ -3381,7 +3490,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent__last_answer",
@@ -3415,7 +3526,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent__account_transfer",
@@ -3449,7 +3562,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent__workspace_operation",
@@ -3483,7 +3598,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent__native_thread_block",
@@ -3522,7 +3639,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "started_notice__native_failure_hold",
@@ -3534,7 +3653,8 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": false
   },
   {
     "id": "started_notice__last_answer",
@@ -3546,7 +3666,8 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": false
   },
   {
     "id": "started_notice__account_transfer",
@@ -3558,7 +3679,8 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": false
   },
   {
     "id": "started_notice__workspace_operation",
@@ -3570,7 +3692,8 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": false
   },
   {
     "id": "started_notice__native_thread_block",
@@ -3587,7 +3710,8 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": false
   },
   {
     "id": "interrupted__native_failure_hold",
@@ -3635,7 +3759,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "interrupted__last_answer",
@@ -3683,7 +3809,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "interrupted__account_transfer",
@@ -3731,7 +3859,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "interrupted__workspace_operation",
@@ -3779,7 +3909,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "interrupted__native_thread_block",
@@ -3832,7 +3964,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__native_failure_hold",
@@ -3922,7 +4056,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__last_answer",
@@ -4012,7 +4148,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__account_transfer",
@@ -4102,7 +4240,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__workspace_operation",
@@ -4192,7 +4332,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__native_thread_block",
@@ -4287,7 +4429,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__native_failure_hold",
@@ -4424,7 +4568,9 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__last_answer",
@@ -4570,7 +4716,9 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__account_transfer",
@@ -4716,7 +4864,9 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__workspace_operation",
@@ -4862,7 +5012,9 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__native_thread_block",
@@ -5013,7 +5165,9 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "stop_accepted__native_failure_hold",
@@ -5025,7 +5179,8 @@
     "agent": {
       "nativeFailureHold": true
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_accepted__last_answer",
@@ -5037,7 +5192,8 @@
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_accepted__account_transfer",
@@ -5049,7 +5205,8 @@
     "agent": {
       "accountTransferId": "transfer"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_accepted__workspace_operation",
@@ -5061,7 +5218,8 @@
     "agent": {
       "workspaceOperation": "checkpoint"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_accepted__native_thread_block",
@@ -5078,7 +5236,8 @@
         }
       }
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "accepted__paused",
@@ -5114,7 +5273,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "accepted__stopped",
@@ -5150,7 +5311,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "unknown__paused",
@@ -5187,7 +5350,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "unknown__stopped",
@@ -5224,7 +5389,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "rejected__paused",
@@ -5265,7 +5432,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "rejected__stopped",
@@ -5306,7 +5475,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "not_sent__paused",
@@ -5343,7 +5514,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent__stopped",
@@ -5380,7 +5553,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "started_notice__paused",
@@ -5395,7 +5570,8 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "started_notice__stopped",
@@ -5410,7 +5586,8 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "interrupted__paused",
@@ -5461,7 +5638,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "interrupted__stopped",
@@ -5512,7 +5691,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__paused",
@@ -5605,7 +5786,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed__stopped",
@@ -5698,7 +5881,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__paused",
@@ -5807,7 +5992,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "completed__stopped",
@@ -5916,7 +6103,9 @@
       "autoWake": false,
       "error": "Stopped by user"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "terminal_existing_result",
@@ -5968,7 +6157,9 @@
       "resultItemId": "saved-item",
       "error": null
     },
-    "tier": "fast"
+    "tier": "fast",
+    "return": true,
+    "replay": true
   },
   {
     "id": "claim_replay",
@@ -6109,7 +6300,33 @@
       }
     ],
     "replay": true,
-    "tier": "fast"
+    "tier": "fast",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    }
   },
   {
     "id": "submission_replay",
@@ -6239,7 +6456,8 @@
       }
     ],
     "replay": true,
-    "tier": "fast"
+    "tier": "fast",
+    "return": true
   },
   {
     "id": "interrupt_accepted",
@@ -6283,7 +6501,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "interrupt_rejected",
@@ -6329,7 +6548,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "interrupt_unknown",
@@ -6375,7 +6595,8 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "accepted_conflict",
@@ -6408,7 +6629,9 @@
     "probe": {
       "turnId": "changed"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
   },
   {
     "id": "rejected_conflict",
@@ -6446,7 +6669,9 @@
     "probe": {
       "message": "changed"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
   },
   {
     "id": "interrupted_conflict",
@@ -6494,7 +6719,9 @@
     "probe": {
       "transition": "failed"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
   },
   {
     "id": "submit_python_claim_conflict",
@@ -6626,7 +6853,9 @@
     "probe": {
       "ticket": "changed"
     },
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
   },
   {
     "id": "claim_queued_conflict",
@@ -6770,7 +6999,34 @@
       "transition": "submission"
     },
     "afterEventText": "changed frozen input",
-    "tier": "fast"
+    "tier": "fast",
+    "return": {
+      "account_key": "default",
+      "agent_id": "agent",
+      "attempt_id": "attempt",
+      "cwd": "/fixture",
+      "epoch": 0,
+      "events": [
+        {
+          "created": "<time>",
+          "epoch": 0,
+          "error": null,
+          "id": "event",
+          "kind": "user",
+          "metadata": {
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
+            }
+          },
+          "text": "input"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "codex",
+      "thread_id": "thread"
+    },
+    "probeRefusal": "invalid stored sync object runtime_agents/agent"
   },
   {
     "id": "reattach_account_transfer",
@@ -6783,7 +7039,8 @@
     },
     "findings": ["A6", "B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "reattach_workspace_operation",
@@ -6796,7 +7053,8 @@
     },
     "findings": ["A6", "B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "reattach_native_thread_block",
@@ -6814,7 +7072,8 @@
     },
     "findings": ["A6", "B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "reattach_native_failure_hold",
@@ -6828,7 +7087,8 @@
     "findings": ["A6", "A7", "B6"],
     "expectedDifferences": [],
     "roundtripHold": true,
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "reattach_context_wait",
@@ -6843,7 +7103,8 @@
     },
     "findings": ["A6", "B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed_agent_submission",
@@ -6864,7 +7125,8 @@
       "id": "agent"
     },
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "malformed_agent_accepted",
@@ -6885,7 +7147,8 @@
       "id": "agent"
     },
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "malformed_agent_unknown",
@@ -6906,7 +7169,8 @@
       "id": "agent"
     },
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "malformed_agent_restart",
@@ -6927,7 +7191,8 @@
       "id": "agent"
     },
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "existing_python_claim_identity",
@@ -6940,7 +7205,8 @@
       "id": "attempt"
     },
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "terminal_conflicts_with_saved_run",
@@ -6960,7 +7226,8 @@
       "id": "run:attempt"
     },
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "stop_idle",
@@ -6973,7 +7240,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_deleted",
@@ -6985,7 +7253,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_account_transfer",
@@ -6997,7 +7266,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_workspace_operation",
@@ -7009,7 +7279,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_native_thread_block",
@@ -7026,7 +7297,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_native_failure_hold",
@@ -7038,7 +7310,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_idle",
@@ -7051,7 +7324,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": true
   },
   {
     "id": "pause_deleted",
@@ -7063,7 +7337,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_account_transfer",
@@ -7075,7 +7350,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_workspace_operation",
@@ -7087,7 +7363,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_native_thread_block",
@@ -7104,7 +7381,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_native_failure_hold",
@@ -7116,7 +7394,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "claim_idle",
@@ -7129,7 +7408,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_deleted",
@@ -7145,7 +7426,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_account_transfer",
@@ -7157,7 +7440,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_workspace_operation",
@@ -7169,7 +7454,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_native_thread_block",
@@ -7186,7 +7473,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_native_failure_hold",
@@ -7198,7 +7487,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null,
+    "replay": true
   },
   {
     "id": "accepted_python_fields",
@@ -7228,7 +7519,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "unknown_python_fields",
@@ -7259,7 +7552,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "started_notice_python_fields",
@@ -7268,7 +7563,8 @@
     "state": "python_unknown",
     "findings": ["B4"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": false
   },
   {
     "id": "interrupted_python_fields",
@@ -7313,7 +7609,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "failed_python_fields",
@@ -7400,7 +7698,9 @@
         "pythonId": "agent:native-notice:error:turn"
       }
     ],
-    "tier": "full"
+    "tier": "full",
+    "return": true,
+    "replay": true
   },
   {
     "id": "malformed_interrupt",
@@ -7421,7 +7721,8 @@
       "id": "agent"
     },
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null
   },
   {
     "id": "malformed_terminal_run",
@@ -7442,7 +7743,8 @@
       "id": "run:attempt"
     },
     "expectedDifferences": [],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "completed_deleted",
@@ -7458,7 +7760,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": false,
+    "replay": true
   },
   {
     "id": "failed_deleted",
@@ -7474,7 +7778,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": false,
+    "replay": true
   },
   {
     "id": "interrupted_deleted",
@@ -7490,7 +7796,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": false,
+    "replay": true
   },
   {
     "id": "started_notice_deleted",
@@ -7506,7 +7814,8 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": null
   },
   {
     "id": "unknown_deleted",
@@ -7544,7 +7853,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": null,
+    "replay": true
   },
   {
     "id": "rejected_deleted",
@@ -7586,7 +7897,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": true,
+    "replay": true
   },
   {
     "id": "not_sent_deleted",
@@ -7624,7 +7937,9 @@
       "autoWake": false,
       "error": "Stopped by user",
       "deletedAt": 1.0
-    }
+    },
+    "return": null,
+    "replay": true
   },
   {
     "id": "stop_matrix_paused",
@@ -7639,7 +7954,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_matrix_stopped",
@@ -7654,7 +7970,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_matrix_python_attempt",
@@ -7664,7 +7981,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "stop_matrix_python_unknown",
@@ -7674,7 +7992,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_queued_pending",
@@ -7684,7 +8003,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_running",
@@ -7694,7 +8014,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_paused",
@@ -7709,7 +8030,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_stopped",
@@ -7724,7 +8046,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_last_answer",
@@ -7736,7 +8059,8 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_python_attempt",
@@ -7746,7 +8070,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "pause_matrix_python_unknown",
@@ -7756,7 +8081,8 @@
     "agent": {},
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": true
   },
   {
     "id": "claim_paused",
@@ -7770,7 +8096,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "claim_stopped",
@@ -7784,7 +8112,9 @@
     },
     "findings": ["B6"],
     "expectedDifferences": [],
-    "tier": "full"
+    "tier": "full",
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent_after_submit",
@@ -7815,7 +8145,9 @@
         "deviation": "rust_receipts"
       }
     ],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null,
+    "replay": true
   },
   {
     "id": "reattach_running",
@@ -7824,7 +8156,8 @@
     "state": "running",
     "seedRecovery": true,
     "findings": ["A6", "B6"],
-    "tier": "fast"
+    "tier": "fast",
+    "return": null
   },
   {
     "id": "rejected_busy",
@@ -7867,7 +8200,8 @@
       "status": "running"
     },
     "tier": "fast",
-    "replay": true
+    "replay": true,
+    "return": true
   },
   {
     "id": "unknown_busy",
@@ -7904,7 +8238,9 @@
     "agent": {
       "turnId": "active-turn",
       "status": "running"
-    }
+    },
+    "return": null,
+    "replay": true
   },
   {
     "id": "not_sent_busy",
@@ -7941,7 +8277,9 @@
     "agent": {
       "turnId": "active-turn",
       "status": "running"
-    }
+    },
+    "return": null,
+    "replay": true
   },
   {
     "id": "reattach_restart",
@@ -7949,6 +8287,25 @@
     "state": "running",
     "phase": "accepted",
     "seedRecovery": "restart",
-    "findings": ["A6", "B6"]
+    "findings": ["A6", "B6"],
+    "return": null
+  },
+  {
+    "id": "started_notice__active_tools",
+    "transition": "started",
+    "phase": "submitted",
+    "state": "running",
+    "findings": ["A10", "B6"],
+    "expectedDifferences": [],
+    "tier": "fast",
+    "return": false,
+    "agent": {
+      "activeTools": [
+        {
+          "id": "tool",
+          "name": "fixture"
+        }
+      ]
+    }
   }
 ]

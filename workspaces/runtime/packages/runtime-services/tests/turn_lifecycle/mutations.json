@@ -8,6 +8,15 @@
         "before": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n",
         "after": "        if agent.epoch == epoch {\n            attempt.remove(\"executionOutcome\");\n        }\n        // AUDIT MUTATION: omit accepted turnId write.\n        agent.extra.insert(\"inFlight\".into(), json!(true));\n        if current_attempt || recovering(&agent, epoch) {\n            if current_attempt {\n"
       }
+    ],
+    "witnesses": ["accepted"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
     ]
   },
   {
@@ -18,6 +27,15 @@
       {
         "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
         "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        // AUDIT MUTATION: preserve previous answer on turn-start notice.\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ],
+    "witnesses": ["started_notice"],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice",
+        "transition": "started",
+        "state": "running",
+        "phase": "submitted"
       }
     ]
   },
@@ -30,6 +48,15 @@
         "before": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = status;\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n",
         "after": "        params![decision.event_status,message,identity.agent_id,identity.epoch,events])?;\n    require_membership(changed, count, &identity.agent_id)?;\n    if let Some(status) = decision.visible {\n        agent.status = if !unknown && !preparation { AgentStatus::Running } else { status };\n        agent.extra.insert(\n            \"error\".into(),\n            json!(if unknown { WAITING_START } else { message }),\n"
       }
+    ],
+    "witnesses": ["rejected"],
+    "lifecycleCombinations": [
+      {
+        "id": "rejected",
+        "transition": "rejected",
+        "state": "queued_pending",
+        "phase": "submitted"
+      }
     ]
   },
   {
@@ -41,7 +68,9 @@
         "before": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n",
         "after": "        delta: &str,\n        params: &Value,\n    ) -> EnqueueResult {\n        if false && self.closed.contains(&key) {\n            return EnqueueResult::Closed;\n        }\n        let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {\n"
       }
-    ]
+    ],
+    "witnesses": ["missing_turn_completion"],
+    "lifecycleCombinations": []
   },
   {
     "id": "M5",
@@ -51,6 +80,15 @@
       {
         "before": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return result[\"bound\"]\n                .as_bool()\n                .ok_or_else(|| invalid_agent(agent_id));\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n",
         "after": "            \"startResult\",\n            &receipt_input,\n        )? {\n            return Ok(false); // AUDIT MUTATION: discard saved successful replay result.\n        }\n        let Some(validated) = load_attempt(transaction, agent_id, epoch, attempt_id, None)? else {\n            return Ok(false);\n"
+      }
+    ],
+    "witnesses": ["accepted_replay"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted_replay",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
       }
     ]
   },
@@ -63,7 +101,9 @@
         "before": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    transaction\n        .execute_batch(&format!(\"SAVEPOINT {SAVEPOINT}\"))\n        .map_err(StoreError::from)?;\n    match operation() {\n        Ok(value) => match transaction.execute_batch(&format!(\"RELEASE SAVEPOINT {SAVEPOINT}\")) {\n            Ok(()) => Ok(value),\n            Err(error) => {\n                drop(transaction.execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                )));\n                Err(StoreError::from(error).into())\n            }\n        },\n        Err(error) => {\n            if transaction\n                .execute_batch(&format!(\n                    \"ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT}\"\n                ))\n                .is_err()\n            {\n                return Err(error);\n            }\n            Err(error)\n        }\n    }\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n",
         "after": "    transaction: &Transaction<'_>,\n    operation: impl FnOnce() -> Result<T, NotificationDispatchError>,\n) -> Result<T, NotificationDispatchError> {\n    operation() // AUDIT MUTATION: no internal savepoint.\n}\n\nfn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {\n"
       }
-    ]
+    ],
+    "witnesses": ["late-service-failure"],
+    "lifecycleCombinations": []
   },
   {
     "id": "M7",
@@ -71,10 +111,12 @@
     "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
     "edits": [
       {
-        "before": "    InvalidNotification,\n    #[error(\"open notification stream capacity reached\")]\n    StreamCapacity,\n    #[error(\"invalid stored object {table}:{id}\")]\n    InvalidStoredObject { table: &'static str, id: String },\n    #[error(\"delivery identity was reused with different content\")]\n    ConflictingDelivery,\n",
-        "after": "    InvalidNotification,\n    #[error(\"open notification stream capacity reached\")]\n    StreamCapacity,\n    #[error(\"invalid stored object {table}:{id} SECRET_STORED_SENTINEL\")]\n    InvalidStoredObject { table: &'static str, id: String },\n    #[error(\"delivery identity was reused with different content\")]\n    ConflictingDelivery,\n"
+        "before": "    #[error(\"invalid stored object {table}:{id}\")]",
+        "after": "    #[error(\"invalid stored object {table}:{id} SECRET_STORED_SENTINEL\")]"
       }
-    ]
+    ],
+    "witnesses": ["malformed-runtime_agents-epoch"],
+    "lifecycleCombinations": []
   },
   {
     "id": "M8",
@@ -84,6 +126,15 @@
       {
         "before": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.insert(\"lastAnswer\".into(), json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n",
         "after": "            json!({\"phase\":\"thinking\",\"at\":timestamp()}),\n        );\n        agent.extra.insert(\"activeTools\".into(), json!([]));\n        agent.extra.entry(\"lastAnswer\".to_owned()).or_insert(json!(\"\"));\n        agent.extra.insert(\"turnId\".into(), json!(turn_id));\n        for key in [\n            \"nativeStatus\",\n"
+      }
+    ],
+    "witnesses": ["started_notice__last_answer"],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice__last_answer",
+        "transition": "started",
+        "state": "last_answer",
+        "phase": "submitted"
       }
     ]
   },
@@ -95,6 +146,15 @@
       {
         "before": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,timestamp(),ids])?;\n    }\n    Ok(())\n}\n",
         "after": "    )?;\n    if exists {\n        let path = format!(\"$.timing.{field}\");\n        tx.execute(\"INSERT INTO runtime_event_meta(id,record) SELECT value,json_set('{}',?1,?2) FROM json_each(?3) WHERE 1 ON CONFLICT(id) DO UPDATE SET record=json_set(runtime_event_meta.record,?1,?2)\",params![path,\"not-a-time\",ids])?;\n    }\n    Ok(())\n}\n"
+      }
+    ],
+    "witnesses": ["accepted"],
+    "lifecycleCombinations": [
+      {
+        "id": "accepted",
+        "transition": "accepted",
+        "state": "queued_pending",
+        "phase": "submitted"
       }
     ]
   },
@@ -111,6 +171,199 @@
         "before": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n",
         "after": "        Some(Value::String(account)) if !account.is_empty() => account,\n        Some(_) => return Err(stored(\"runtime_agents\", agent_id)),\n    };\n    if false && provider_handle != format!(\"account:{account}\") {\n        return Err(NotificationDispatchError::InvalidNotification);\n    }\n    Ok(())\n"
       }
+    ],
+    "witnesses": ["foreign-account", "foreign-thread"],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M11",
+    "description": "retain active tools on turn start",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "witnesses": ["started_notice__active_tools"],
+    "edits": [
+      {
+        "before": "        agent.extra.insert(\"activeTools\".into(), json!([]));",
+        "after": "        // mutation: retain stale active tools"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "started_notice__active_tools",
+        "transition": "started",
+        "state": "running",
+        "phase": "submitted"
+      }
     ]
+  },
+  {
+    "id": "M12",
+    "description": "stop keeps continuation enabled",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "witnesses": ["stop_accepted"],
+    "edits": [
+      {
+        "before": "        agent.extra.insert(\"autoWake\".into(), json!(false));",
+        "after": "        agent.extra.insert(\"autoWake\".into(), json!(true));"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "stop_accepted",
+        "transition": "stop",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M13",
+    "description": "submission stores wrong request ticket",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+    "witnesses": ["submit_python_claim"],
+    "edits": [
+      {
+        "before": "\"submitted\":true,\"requestTicket\":request_id,\"nativeOperationId\"",
+        "after": "\"submitted\":true,\"requestTicket\":\"wrong-ticket\",\"nativeOperationId\""
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "submit_python_claim",
+        "transition": "submission",
+        "state": "python_attempt",
+        "phase": "claimed"
+      }
+    ]
+  },
+  {
+    "id": "M14",
+    "description": "terminal replay returns false",
+    "file": "workspaces/runtime/packages/runtime-services/src/scheduler.rs",
+    "witnesses": ["completed"],
+    "edits": [
+      {
+        "before": "            return saved\n                .as_bool()",
+        "after": "            return Some(false)\n                .or_else(|| saved.as_bool())"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "completed",
+        "transition": "completed",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M15",
+    "description": "ignore terminal policy refusal mapping",
+    "file": "workspaces/runtime/packages/runtime-services/src/scheduler.rs",
+    "witnesses": ["policy_interrupted"],
+    "edits": [
+      {
+        "before": "    let visible = if refusal { \"failed\" } else { native };",
+        "after": "    let visible = if refusal { \"interrupted\" } else { native };"
+      }
+    ],
+    "lifecycleCombinations": [
+      {
+        "id": "policy_interrupted",
+        "transition": "interrupted",
+        "state": "running",
+        "phase": "accepted"
+      }
+    ]
+  },
+  {
+    "id": "M16",
+    "description": "notification identity omits cursor",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "            \"cursor\": identity.cursor,",
+        "after": "            \"cursor\": 1,"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M17",
+    "description": "wrong returned outcome with correct receipt",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "    result.map(|outcome| NotificationDispatchResult {\n        outcome,",
+        "after": "    result.map(|_outcome| NotificationDispatchResult {\n        outcome: DispatchOutcome::Ignored { reason: \"wrong-return\".into() },"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M18",
+    "description": "reverse prepared input ordering",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "witnesses": ["submission-batch"],
+    "edits": [
+      {
+        "before": "        .inputs\n        .iter()\n        .map(|input| {",
+        "after": "        .inputs\n        .iter()\n        .rev()\n        .map(|input| {"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M19",
+    "description": "omit aggregate prepared assets",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
+    "witnesses": ["submission-prepared-assets"],
+    "edits": [
+      {
+        "before": "        \"assets\": submission.assets,",
+        "after": "        \"assets\": [],"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M20",
+    "description": "completion overwrites buffered text with empty snapshot",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["DSC-ticks0"],
+    "edits": [
+      {
+        "before": "                    .filter(|text| !text.is_empty())\n                    .unwrap_or(&latest_text)",
+        "after": "                    .filter(|_text| true)\n                    .unwrap_or(&latest_text)"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M21",
+    "description": "drop stream base text on flush",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+    "witnesses": ["pending_then_start"],
+    "edits": [
+      {
+        "before": "        let text = entry.base.get_or_insert_with(|| current_text.to_owned());",
+        "after": "        let text = entry.base.get_or_insert_with(|| { let _ = current_text; String::new() });"
+      }
+    ],
+    "lifecycleCombinations": []
+  },
+  {
+    "id": "M22",
+    "description": "mislocate stored errors",
+    "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+    "witnesses": ["malformed-runtime_agents-epoch"],
+    "edits": [
+      {
+        "before": "        table: table.into(),\n        id: id.to_owned(),",
+        "after": "        table: table.into(),\n        id: \"wrong-id\".to_owned(),"
+      }
+    ],
+    "lifecycleCombinations": []
   }
 ]

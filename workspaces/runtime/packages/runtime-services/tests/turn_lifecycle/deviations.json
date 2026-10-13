@@ -13,7 +13,8 @@
       "/runtime_execution_attempts/*/record/requestTicket",
       "/runtime_agents/*/record/startAttempt/interrupt",
       "/runtime_execution_attempts/*/record/interrupt"
-    ]
+    ],
+    "returnContract": "Python callbacks are compared by first-call row effects; their raw results are reported. Rust entry-point return values are pinned per case. Rust receipt replay alone must return the saved first result with zero total changes; changed content is refused without writes. Python callbacks have no corresponding idempotent receipt contract."
   },
   "notification_dispatch_unwired": {
     "approvedClass": "a",
