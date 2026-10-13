@@ -3,7 +3,7 @@
 mod prepared_python_support;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
 use studio_runtime_services::{
     agent_lifecycle_runtime::{
         self, LifecycleEffect, LifecycleEffectKind, LifecyclePorts, UnavailableLifecyclePorts,
@@ -103,12 +103,68 @@ fn state(store: &RuntimeStore) -> Value {
 
 // A fixture for the transaction boundary only. Provider transport is owned by
 // account_worker, whose direct Stop receipt tests run in the crate suite.
-struct InterruptFixture;
+#[derive(Default)]
+struct InterruptFixture {
+    notification_payloads: BTreeMap<String, String>,
+}
+impl InterruptFixture {
+    fn for_case(case: &Value) -> Self {
+        let notification_payloads = case["expected"]["notificationPayloads"]
+            .as_array()
+            .expect("Python notification payloads")
+            .iter()
+            .map(|row| {
+                (
+                    row[0].as_str().expect("notification id").to_owned(),
+                    row[1].as_str().expect("notification payload").to_owned(),
+                )
+            })
+            .collect();
+        Self {
+            notification_payloads,
+        }
+    }
+}
 impl LifecyclePorts for InterruptFixture {
     fn committed(&self) -> Result<(), ManagementError> {
         Ok(())
     }
     fn stage(&self, tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
+        if effect.kind() == LifecycleEffectKind::NotifyParent {
+            let before = effect.before();
+            let stopped = effect.stopped();
+            let marker = before
+                .get("turnId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .or_else(|| before.pointer("/startAttempt/id").and_then(Value::as_str))
+                .unwrap_or("stop");
+            let id = format!(
+                "child-stop:{}:{}:stop:{marker}",
+                stopped["id"].as_str().unwrap_or_default(),
+                stopped["epoch"].as_i64().unwrap_or_default()
+            );
+            let parent_id = before["parentId"].as_str().unwrap_or_default();
+            let parent_epoch: i64 = tx
+                .query_row(
+                    "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id=?1",
+                    [parent_id],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let text = self
+                .notification_payloads
+                .get(&id)
+                .map(String::as_str)
+                .unwrap_or("{}");
+            tx.execute(
+                "INSERT OR IGNORE INTO runtime_events(id,agent,kind,text,status,created,epoch) \
+                 VALUES(?1,?2,'child_result',?3,'pending',?4,?5)",
+                rusqlite::params![id, parent_id, text, effect.at(), parent_epoch],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            return Ok(());
+        }
         if effect.kind() != LifecycleEffectKind::Interrupt {
             return Err(ManagementError::Unavailable(effect.kind().dependency()));
         }
@@ -154,12 +210,33 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             case["name"]
         );
     }
+    let actual_sync = saved["sync"]
+        .as_array()
+        .expect("sync projection rows")
+        .iter()
+        .filter(|row| row[0] != "workspace")
+        .map(|row| json!([row[0], row[1], row[4], row[5]]))
+        .collect::<Vec<_>>();
+    let mut expected_sync = case["expected"]["syncEntities"]
+        .as_array()
+        .expect("Python sync projection oracle")
+        .clone();
+    expected_sync.iter_mut().for_each(|row| {
+        *row = json!([row[0], row[1], row[2], row[3]]);
+    });
+    expected_sync.sort_by_key(|row| {
+        (
+            row[0].as_str().unwrap_or_default().to_owned(),
+            row[1].as_str().unwrap_or_default().to_owned(),
+        )
+    });
+    assert_eq!(actual_sync, expected_sync, "{} sync_entities", case["name"]);
 }
 
 #[test]
 fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
-    assert_eq!(cases.len(), 12);
+    assert_eq!(cases.len(), 18);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
@@ -169,11 +246,37 @@ fn python_stop_corpus_complete_records_and_exact_descendants() {
             &store,
             serde_json::from_value(case["records"].clone()).expect("Python rows"),
         );
-        let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-        let result =
-            agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &InterruptFixture)
+        let actions = case["actions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| vec![case["action"].clone()]);
+        let ports = InterruptFixture::for_case(&case);
+        let mut result = Value::Null;
+        for action in actions {
+            let action: Action = serde_json::from_value(action).expect("action");
+            result = agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &ports)
                 .expect("stop commits");
+        }
         assert_eq!(result, case["expected"]["result"], "{}", case["name"]);
+        let db = store.read().expect("notification reader");
+        let notifications = db
+            .prepare("SELECT id,agent,status FROM runtime_events WHERE id LIKE 'child-stop:%' ORDER BY id")
+            .expect("notification query")
+            .query_map([], |row| {
+                Ok(json!([row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?]))
+            })
+            .expect("notification rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("notification result");
+        assert_eq!(
+            notifications,
+            case["expected"]["notifications"]
+                .as_array()
+                .expect("Python notifications")
+                .clone(),
+            "{} notification recipients and count",
+            case["name"]
+        );
         assert_records(&store, &case);
         drop(store);
         let store = RuntimeStore::open(Some(root.path())).expect("restart");
@@ -208,8 +311,13 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
             store.transaction(|tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint {boundary} {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'stop failure'); END"))?; Ok(()) }).expect("failpoint");
             let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
             assert!(
-                agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &InterruptFixture)
-                    .is_err()
+                agent_lifecycle_runtime::execute(
+                    &store,
+                    &action,
+                    1234567.5,
+                    &InterruptFixture::default(),
+                )
+                .is_err()
             );
             assert_eq!(state(&store), before, "{boundary} {table}");
             drop(store);
@@ -234,11 +342,39 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
                 ))
             ));
             assert_eq!(state(&store), before);
-            agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &InterruptFixture)
-                .expect("recover");
+            agent_lifecycle_runtime::execute(
+                &store,
+                &action,
+                1234567.5,
+                &InterruptFixture::default(),
+            )
+            .expect("recover");
             assert_records(&store, &case);
         }
     }
+}
+
+#[test]
+fn deletion_requires_release_only_for_releasable_deleted_owner_work() {
+    let mut case = cases()
+        .into_iter()
+        .find(|c| c["name"] == "delete-worker-review-work")
+        .expect("review work corpus case");
+    case["records"]["tables"]["runtime_work"][0]["status"] = json!("ready");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("rows"),
+    );
+    let before = state(&store);
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    assert!(matches!(
+        agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &UnavailableLifecyclePorts),
+        Err(ManagementError::Unavailable("work-driver/deletion-release"))
+    ));
+    assert_eq!(state(&store), before);
 }
 
 #[test]
@@ -319,6 +455,48 @@ fn successful_adapter_cannot_resurrect_stopped_agent() {
 }
 
 #[test]
+fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
+    struct ReplacesIdentity(&'static str);
+    impl LifecyclePorts for ReplacesIdentity {
+        fn committed(&self) -> Result<(), ManagementError> {
+            panic!("must not wake after rollback")
+        }
+        fn stage(
+            &self,
+            tx: &Transaction<'_>,
+            effect: &LifecycleEffect,
+        ) -> Result<(), ManagementError> {
+            let mut changed = effect.stopped().clone();
+            changed[self.0] = json!("replacement");
+            agent_management::write(tx, "runtime_agents", &changed)?;
+            Ok(())
+        }
+    }
+    let case = cases()
+        .into_iter()
+        .find(|c| c["name"] == "unknown-True")
+        .expect("case");
+    for field in ["startAttempt", "threadId", "accountKey", "provider"] {
+        let root = tempfile::tempdir().expect("root");
+        template(root.path());
+        let store = RuntimeStore::open(Some(root.path())).expect("open");
+        seed(
+            &store,
+            serde_json::from_value(case["records"].clone()).expect("rows"),
+        );
+        let before = state(&store);
+        let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+        assert!(matches!(
+            agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &ReplacesIdentity(field)),
+            Err(ManagementError::Invalid(
+                "Lifecycle adapter changed stop identity"
+            ))
+        ));
+        assert_eq!(state(&store), before, "{field}");
+    }
+}
+
+#[test]
 fn lost_wake_preserves_committed_stop_for_restart() {
     struct LostWake;
     impl LifecyclePorts for LostWake {
@@ -327,7 +505,7 @@ fn lost_wake_preserves_committed_stop_for_restart() {
             tx: &Transaction<'_>,
             effect: &LifecycleEffect,
         ) -> Result<(), ManagementError> {
-            InterruptFixture.stage(tx, effect)
+            InterruptFixture::default().stage(tx, effect)
         }
         fn committed(&self) -> Result<(), ManagementError> {
             Err(ManagementError::Invalid("injected lost wake"))

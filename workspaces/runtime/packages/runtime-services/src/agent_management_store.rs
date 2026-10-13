@@ -144,7 +144,18 @@ fn execute_decision(
             ))?;
             let current =
                 serde_json::to_value(current).map_err(studio_runtime_store::StoreError::from)?;
-            for field in ["epoch", "autoWake", "status", "deletedAt"] {
+            for field in [
+                "epoch",
+                "autoWake",
+                "status",
+                "deletedAt",
+                "startAttempt",
+                "threadId",
+                "accountKey",
+                "connectionId",
+                "connectionGeneration",
+                "provider",
+            ] {
                 if current.get(field) != write.record.get(field) {
                     return Err(ManagementError::Invalid(
                         "Lifecycle adapter changed stop identity",

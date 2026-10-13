@@ -493,6 +493,20 @@ fn is_status(row: &Value, statuses: &[&str]) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|s| statuses.contains(&s))
 }
+
+fn has_releasable_deleted_work(snapshot: &ManagementSnapshot, agents: &[&Agent]) -> bool {
+    agents.iter().any(|agent| {
+        agent.identity.parent_id.is_some()
+            && snapshot.work.iter().any(|work| {
+                work.identity.owner.as_deref() == Some(agent.id())
+                    && work
+                        .identity
+                        .status
+                        .as_deref()
+                        .is_some_and(|status| ["ready", "running", "blocked"].contains(&status))
+            })
+    })
+}
 fn brief(record: &Value) -> Value {
     Value::Object(
         BRIEF_FIELDS
@@ -515,16 +529,19 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
         .ok_or(ManagementError::Invalid("Agent epoch limit reached"))
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
+    let image_removed = agent
+        .record
+        .get("imageWorkspacePhase")
+        .and_then(Value::as_str)
+        == Some("removed");
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || [
-            "imageWorkspaceReady",
-            "worktreeReady",
-            "worktreeCleanup",
-            "cleanedWorktree",
-            "cleanedImageWorkspace",
-        ]
-        .iter()
-        .any(|key| agent.flag(key))
+        || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
+            .iter()
+            .any(|key| agent.flag(key))
+        || (!image_removed
+            && ["imageWorkspaceReady", "cleanedImageWorkspace"]
+                .iter()
+                .any(|key| agent.flag(key)))
     {
         return Err(ManagementError::Unavailable(
             "workspace-state/agent-lifecycle",
@@ -621,7 +638,15 @@ fn stop(
         }
         if delete {
             workspace_dependency(agent)?;
-            if agent.flag("imageWorkspace") {
+            // Python only schedules image cleanup for non-removed workspaces
+            // (codex_runtime.py:4983-4985).
+            if agent.flag("imageWorkspace")
+                && agent
+                    .record
+                    .get("imageWorkspacePhase")
+                    .and_then(Value::as_str)
+                    != Some("removed")
+            {
                 return Err(ManagementError::Unavailable(
                     "workspace-state/agent-lifecycle",
                 ));
@@ -650,12 +675,9 @@ fn stop(
         }
         required.insert(agent.id(), effects);
     }
-    if delete
-        && snapshot
-            .rows("runtime_work")
-            .iter()
-            .any(|r| !is_status(r, &["accepted", "cancelled"]))
-    {
+    // Python selects releasable rows by failed/deleted child owner, then only
+    // work statuses ready/running/blocked (codex_runtime.py:2816-2823).
+    if delete && has_releasable_deleted_work(snapshot, &agents) {
         required
             .entry(target)
             .or_default()
