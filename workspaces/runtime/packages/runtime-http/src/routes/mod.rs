@@ -18,6 +18,7 @@ mod questions_reads;
 mod questions_write;
 mod queue_read;
 mod queue_write;
+mod recovery;
 mod rules;
 mod session;
 mod sync;

@@ -8,6 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.recovery_models import RecoveryAgentRecord, RecoveryTaskRecord, RecoveryToolReceipt
 
 
 def _unicode_scalar(value: str) -> str:
@@ -287,6 +288,9 @@ STATE_SCHEMA_MODELS = {
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-graph-agent-record.schema.json": PersistedGraphAgentRecord,
     "persisted-profile-record.schema.json": PersistedProfileRecord,
+    "recovery-agent-record.schema.json": RecoveryAgentRecord,
+    "recovery-task-record.schema.json": RecoveryTaskRecord,
+    "recovery-tool-receipt.schema.json": RecoveryToolReceipt,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
