@@ -256,10 +256,7 @@ fn teams(transaction: &Transaction<'_>) -> Result<AgentDirectory, CoordinationEr
         if suppressed_aliases.contains(id) || unresolved_thread_agents.contains(id) {
             continue;
         }
-        let deleted = value
-            .get("deletedAt")
-            .is_some_and(|v| !v.is_null() && v != false && v != 0 && v != "");
-        if deleted {
+        if super::workspace_views::deleted_agent(value) {
             continue;
         }
         let team = if let Some(root) = value
