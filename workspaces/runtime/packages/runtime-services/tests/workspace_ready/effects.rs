@@ -6,7 +6,7 @@ use studio_runtime_store::{AgentRecord, AgentRepository};
 fn fixture_parent() -> PathBuf {
     let path = std::env::var_os("STUDIO_WORKSPACE_TEST_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/tmp/cs-rust-workspace-ready"));
+        .unwrap_or_else(std::env::temp_dir);
     std::fs::create_dir_all(&path).expect("isolated fixture parent");
     path
 }
@@ -170,13 +170,13 @@ fn git() -> Git {
 }
 fn command(cwd: &Path, args: &[&str]) -> String {
     assert!(
-        cwd.starts_with("/var/tmp/"),
+        cwd.starts_with(fixture_parent()),
         "Git writes only in disposable repositories"
     );
     let output = Command::new("git")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", fixture_parent().join("home"))
+        .env("HOME", cwd.join(".fixture-home"))
         .arg("-C")
         .arg(cwd)
         .args([
@@ -963,20 +963,48 @@ fn running_git_deadline_kills_child_and_keeps_durable_identity() {
         &[
             "config",
             "alias.workspace-stall",
-            "!echo running > running-marker; exec sleep 30",
+            "!echo $$ > running-marker; exec sleep 300",
         ],
     );
-    let started = Instant::now();
+    // Startup is not the behavior under test. Expire the runner's clock only
+    // after the real child has published its PID, then exercise real termination.
+    let marker = fixture.repo.join("running-marker");
+    crate::bounded_child::DEADLINE_OVERRIDE.set(Some(Box::new(move || {
+        let guard = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < guard {
+            if std::fs::read_to_string(&marker).is_ok_and(|pid| pid.trim().parse::<u32>().is_ok()) {
+                break;
+            }
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        Instant::now()
+    })));
     let result = Git {
-        deadline: started + Duration::from_millis(150),
+        deadline: Instant::now() + Duration::from_secs(120),
     }
     .run(&fixture.repo, &["workspace-stall"]);
     assert!(matches!(result, Err(WorkspaceError::Deadline)));
-    assert!(started.elapsed() < Duration::from_secs(2));
     assert!(
         fixture.repo.join("running-marker").exists(),
-        "child actually started"
+        "child actually started before the readiness hang guard"
     );
+    let pid =
+        std::fs::read_to_string(fixture.repo.join("running-marker")).expect("child PID marker");
+    let guard = Instant::now() + Duration::from_secs(120);
+    loop {
+        let status = Command::new("ps")
+            .args(["-p", pid.trim(), "-o", "stat="])
+            .output()
+            .expect("check child termination");
+        let status = String::from_utf8(status.stdout).expect("process status");
+        // An orphan may await init's reaper after group termination; a zombie
+        // has already stopped executing and cannot retain the worktree lock.
+        if status.trim().is_empty() || status.trim().starts_with('Z') {
+            break;
+        }
+        assert!(Instant::now() < guard, "timed-out child remains alive");
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
     assert!(
         WorkspaceReadyRepository::journal(&fixture.store.read().expect("read"), &plan.id)
             .expect("journal")

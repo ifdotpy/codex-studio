@@ -18,6 +18,10 @@ use studio_runtime_process::{
     SupervisorHandle, WriteRequest,
 };
 
+#[path = "support/supervisor_ready.rs"]
+mod supervisor_ready;
+use supervisor_ready::HANG_GUARD;
+
 const SOCKET: &str = "supervisor.sock";
 #[cfg(target_os = "linux")]
 const UNIX_SOCKET_PATH_LIMIT: usize = 108;
@@ -93,7 +97,6 @@ fn assert_outside_runtime_state(path: &Path) {
 struct SupervisorProcess {
     child: Child,
     owned_children: Vec<u32>,
-    stderr_path: PathBuf,
 }
 
 impl SupervisorProcess {
@@ -123,48 +126,14 @@ impl SupervisorProcess {
         let mut process = Self {
             child,
             owned_children: Vec::new(),
-            stderr_path,
         };
         let socket = state.socket();
         assert!(
             socket.starts_with(&state.0),
             "refuse a socket outside this test's disposable directory: {socket:?}"
         );
-        process.wait_for_socket(&socket);
+        supervisor_ready::wait(&mut process.child, state.identity(), &stderr_path);
         process
-    }
-
-    fn wait_for_socket(&mut self, socket: &Path) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while Instant::now() < deadline {
-            if socket.exists() {
-                return;
-            }
-            match self.child.try_wait() {
-                Ok(Some(status)) => panic!(
-                    "disposable supervisor exited before creating socket {} (status {status}); stderr:\n{}",
-                    socket.display(),
-                    self.stderr_output()
-                ),
-                Ok(None) => thread::yield_now(),
-                Err(error) => panic!(
-                    "failed checking disposable supervisor while waiting for socket {}: {error}; stderr:\n{}",
-                    socket.display(),
-                    self.stderr_output()
-                ),
-            }
-        }
-        panic!(
-            "timed out waiting for disposable supervisor socket {} after 15-second hang guard; child status: {:?}; stderr:\n{}",
-            socket.display(),
-            self.child.try_wait(),
-            self.stderr_output()
-        );
-    }
-
-    fn stderr_output(&self) -> String {
-        fs::read_to_string(&self.stderr_path)
-            .unwrap_or_else(|error| format!("<could not read stderr log: {error}>"))
     }
 
     fn id(&self) -> u32 {
@@ -218,12 +187,12 @@ impl Drop for SupervisorProcess {
 }
 
 fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + HANG_GUARD;
     while Instant::now() < deadline {
         if ready() {
             return;
         }
-        thread::yield_now();
+        thread::park_timeout(Duration::from_millis(1));
     }
     panic!("timed out waiting for {label}");
 }
@@ -259,7 +228,7 @@ fn poll_event(
     cursor: EventCursor,
     predicate: impl Fn(&studio_runtime_process::SupervisorEvent) -> bool,
 ) -> studio_runtime_process::SupervisorEvent {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + HANG_GUARD;
     let mut current = cursor;
     while Instant::now() < deadline {
         let result = client
@@ -407,7 +376,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
     let mut stderr_text = String::new();
     let mut stderr_seen = false;
     let mut exit_code = None;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + HANG_GUARD;
     let mut readers_drained = false;
     while Instant::now() < deadline && !(readers_drained && stderr_seen) {
         let result = client
@@ -497,7 +466,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         |event| event.kind == EventKind::Exit,
     );
     let mut ended = false;
-    let reader_deadline = Instant::now() + Duration::from_secs(15);
+    let reader_deadline = Instant::now() + HANG_GUARD;
     while !ended && Instant::now() < reader_deadline {
         let next = client
             .next(CursorRequest {
@@ -509,7 +478,7 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         ended =
             next.return_code.is_some() && !next.stdout_reader_alive && !next.stderr_reader_alive;
         if !ended {
-            thread::yield_now();
+            thread::park_timeout(Duration::from_millis(1));
         }
     }
     assert!(ended, "command readers did not stop before retirement");
