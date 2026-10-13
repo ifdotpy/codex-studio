@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
@@ -53,7 +54,7 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def snapshot(self):
         # All fixture agents are paused; no dispatcher-owned running fields enter
         # this proof. The uncertain event and repair receipt must be immutable.
-        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
             agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.ids["rewrite"],)).fetchone()[0])
             event = db.execute("SELECT * FROM runtime_events WHERE id='repair-uncertain'").fetchone()
             return {key: agent.get(key) for key in ("threadId", "contextRepair", "contextRepairHistory", "contextRepairWait")}, event
