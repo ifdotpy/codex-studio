@@ -779,17 +779,7 @@ fn remap_provider_reply(
         .lock()
         .map_err(|_| io::Error::other("provider response ID lock poisoned"))?
         .remove(&remote_id);
-    let Some(payload) = payload.as_object_mut() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "provider response is not an object",
-        ));
-    };
-    payload.insert(
-        "id".into(),
-        local_id.unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote_id}"))),
-    );
-    Ok(())
+    crate::provider_shared::assign_reply_id(payload, remote_id, local_id)
 }
 
 fn send_output(shared: &SharedProcess, item: OutputItem) -> io::Result<()> {

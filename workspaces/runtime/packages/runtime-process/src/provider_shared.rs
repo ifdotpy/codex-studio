@@ -6,7 +6,6 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
 use std::io;
 
 const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
@@ -182,4 +181,22 @@ pub(crate) fn serialize_frame(value: &Value) -> Result<Vec<u8>, SupervisorError>
     }
     frame.push(b'\n');
     Ok(frame)
+}
+
+pub(crate) fn assign_reply_id(
+    payload: &mut Value,
+    remote_id: u64,
+    local_id: Option<Value>,
+) -> io::Result<()> {
+    let Some(payload) = payload.as_object_mut() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "provider response is not an object",
+        ));
+    };
+    payload.insert(
+        "id".into(),
+        local_id.unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote_id}"))),
+    );
+    Ok(())
 }
