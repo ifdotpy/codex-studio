@@ -362,7 +362,7 @@ fn strip(value: &mut Value, keys: &[&str]) {
 fn text<'a>(record: &'a Value, key: &str) -> &'a str {
     record.get(key).and_then(Value::as_str).unwrap_or_default()
 }
-fn expire(result: &mut Value, now: f64) {
+pub(crate) fn expire(result: &mut Value, now: f64) {
     if result["serverOutputExpiresAt"]
         .as_f64()
         .is_some_and(|expiry| now >= expiry)
