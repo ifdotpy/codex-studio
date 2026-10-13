@@ -401,8 +401,6 @@ class SeedTests(unittest.TestCase):
         self.assertEqual(share.seed_paths(self.root / "none"), [])
 
     def test_the_layer_tar_is_the_same_each_time_and_the_guest_accepts_it(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "vm-guest"))
-        from upload import extract_tree
         os.chown(self.source / "chromium/src/BUILD.gn", os.getuid(), os.getgid())
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
@@ -415,9 +413,11 @@ class SeedTests(unittest.TestCase):
         self.assertTrue(members["src/same.gn"].isfile())
         self.assertEqual({(m.uid, m.gid, m.uname, m.gname) for m in members.values()}, {(0, 0, "", "")})
         (self.root / "archive.tar").write_bytes(first)
-        (self.root / "expanded").mkdir()
-        with patch.dict(os.environ, {"CODEX_WORKSPACE_MIN_FREE_BYTES": "0"}):
-            extract_tree(self.root / "archive.tar", self.root / "expanded")
+        # The guest's own extraction worker, in its own process as in the VM.
+        guest = Path(__file__).resolve().parents[2] / "vm-guest/upload.py"
+        subprocess.run([sys.executable, str(guest), str(self.root / "archive.tar"), str(self.root / "expanded"),
+                        hashlib.sha256(first).hexdigest()], check=True, capture_output=True,
+                       env={**os.environ, "CODEX_WORKSPACE_MIN_FREE_BYTES": "0"})
         self.assertEqual((self.root / "expanded/src/same.gn").read_bytes(), b"group" * 700)
         self.assertEqual(os.readlink(self.root / "expanded/src/link"), "BUILD.gn")
 
