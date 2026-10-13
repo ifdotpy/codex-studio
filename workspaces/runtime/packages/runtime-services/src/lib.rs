@@ -19,6 +19,7 @@ pub mod questions_reads;
 pub mod queue_write;
 pub mod rules;
 pub mod scheduler;
+pub mod sync_documents;
 pub mod sync_policy;
 pub mod terminal_driver;
 pub mod transcript;
