@@ -18,7 +18,7 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
-    /// Host policy; absent means prepared local workspace checks and named budget refusal.
+    /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
     pub message_admission:
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
