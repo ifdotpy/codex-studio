@@ -167,7 +167,7 @@ Then cancel the operation to release its slot.
 
 A command from a line without the cache folder removes the folder from the slot,
 but not its Mac-only paths. A plain folder at a cache path (`layr cache list` shows
-`plain folder`) is part of the state and follows the normal source rules.
+`plain folder` or `not a cache`) is part of the state and follows the normal source rules.
 
 ### Clones from the project folder on the Mac
 

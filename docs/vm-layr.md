@@ -82,8 +82,9 @@ first build and `layr save --caches` ("Warm caches" below):
 A `.layrattributes` file in the project gives paths attributes: a line is a pattern of the
 `.gitignore` form and attributes. `node_modules regenerable` marks the folders that a build
 makes again; `-regenerable` unsets it. layr turns a regenerable folder into a cache only if
-the ignore rules ignore it (layr `docs/design.md`, section 5). The import already leaves out
-every ignored folder, so the attribute changes only what becomes a cache in the VM:
+the ignore rules ignore it (layr `docs/design.md`, section 5) and the head of the line has no
+files in it. The import leaves out the ignored folders, so the attribute changes only what
+becomes a cache in the VM:
 
 1. The file is part of main; on the Mac it comes with Mac folder sync.
 2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
@@ -94,6 +95,14 @@ every ignored folder, so the attribute changes only what becomes a cache in the 
    `layr save --caches` in main.
 3. Each new line from main starts with a copy-on-write copy of the nearest saved folders.
    Lines made before the save build their own.
+
+The import keeps a nested repository and the files that Git tracks in an ignored folder.
+Such a folder has versioned files, so it stays a plain folder in each line.
+`layr save --caches` and `layr cache list` show `not a cache: has versioned files` for it.
+To make it a cache, remove its files from history first.
+A record of an older layr that lists such a folder as a cache does not change this: a new line
+takes the folder from the state. `layr cache repair` (at each turn end) or the next
+`layr save --caches` makes such a cache in a working folder a plain folder again.
 
 Studio does not choose the build command or when a build is good enough to save.
 

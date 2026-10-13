@@ -113,7 +113,8 @@ so models learn it quickly, and it has equal convenience. It does not take the n
       layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
       warm cache comes only from an explicit `layr save --caches` on main, and which tools'
       output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
-      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the cache folders; the operator
+      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the cache folders
+      (a folder with files in the head state stays a plain folder); the operator
       (`codex_layr_exec.py`) or the lead builds in main and runs `layr save --caches`
       ([vm-layr.md](vm-layr.md), "Warm caches");
     - Studio merges as the lead agent's user, not as root: root passes every rule;

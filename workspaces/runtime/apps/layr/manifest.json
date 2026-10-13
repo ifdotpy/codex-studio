@@ -1,7 +1,7 @@
 {
   "revision": "7e5ddb6e3c5678877ffb82676a3986452230a321",
   "tree": "a2c5351d701cddeaf63abd42e327170912d2c545",
-  "sourceSha256": "9cda22a7535b192916f5badca0b5bd0f37d2f070a150802ca5bf49f5af2591b4",
+  "sourceSha256": "6bdb60d8d24d6187d8453052efd5e10cc1fc52be5e36a9df0d8ea09335621a41",
   "files": {
     "Cargo.lock": "89f40bdf206993990d8e78ab7c7608d2218d16e37a2bcc8446a6c111a28efc1b",
     "Cargo.toml": "5e8b179a5369a3d54c61f1c40194dde3f7250d928827b6e88c8fe70ec188e295",
@@ -10,7 +10,7 @@
     "src/args.rs": "659a89f9c087e734e37ec87e72064ad47162ab14eebf67841202120631544ed8",
     "src/btrfs.rs": "5bc0a5a8e750f8d7a38a0941b84563bf439bb84ccd0789bddeeb44b9712f8652",
     "src/changes.rs": "b3c288221618c00e048579b41630e1f7487b252b844f8205dfc6b68675e84748",
-    "src/cmd/admin.rs": "537a3a92bf43ecea8a53339ee285db757f5cefc39e9ca94d70ece41e5da52913",
+    "src/cmd/admin.rs": "e8c86c73554cb783b18f159c9017b66ac470abea196ca4d54f6b1f82e3979d4b",
     "src/cmd/branch.rs": "de40ce29b1c17806dba86540c8ee581e40425be164b81aeecdecc1ccd7cde935",
     "src/cmd/history.rs": "bc9b60e8fb08d7af3f249c25a40614a1e32eaa3ebf7ed36a417d6458bfbb51f5",
     "src/cmd/mergecmd.rs": "9967fdc02c5e2a69a37858735b0bd8cd69997fcd642455e9b71ec17a133dc3ab",
@@ -34,7 +34,7 @@
     "src/overlay.rs": "f24345e02c58ec6daacf151f040ebef8865aad2d0833c2c20a29644e17f58b34",
     "src/privs.rs": "cb2609d7b9830bae7794ebe86662f4f39c4186ac6f590bfdf47d57a96a79d81e",
     "src/recv.rs": "0320c74e3b9dfb5353da208ca7780ae97720d106015fe12836c138e7a705f4ce",
-    "src/repo.rs": "8422bc74dfa66c4b566719e19bc2b89f97d01455a044789b9f696650df794be5",
+    "src/repo.rs": "c43c385cc291710231d5950e29e37d9f428db08dc161cdba1a231476bea6d37c",
     "src/revs.rs": "b4a648593b2c61a10539a19e97e23f45eccefe7f401cf1e6446cb65a05ba4fa7",
     "src/service.rs": "c3b7090257ef0dcca81d5bc8f448ef852b88e466929e9165968c928ba9c73154",
     "src/store.rs": "4ebbf845f688127530fee9b99e0c5beb11cfc778f2db444f40ef1e86f736df73",

@@ -909,6 +909,11 @@ impl<'a> Repo<'a> {
             }
         }
         for (i, path) in paths.iter().enumerate() {
+            // Versioned files win: a folder that holds files of the state comes from the state,
+            // also when a record of an older layr lists it as a cache.
+            if holds_files(w, path) {
+                continue;
+            }
             let cp = fsutil::safe_join(w, path)?;
             if let Some(src) = self.warm_cache(state, path, uid)? {
                 if cp.symlink_metadata().is_ok() {
@@ -937,6 +942,13 @@ impl<'a> Repo<'a> {
             }
         }
         paths
+    }
+
+    /// The cache paths of a line (`cache_paths`) in two lists: the caches, and the paths whose
+    /// folder holds files in the head of the line. Such a folder is versioned: never a cache.
+    pub fn line_cache_paths(&self, line: &Line) -> Result<(Vec<String>, Vec<String>)> {
+        let head = self.state_root(&line.head)?;
+        Ok(self.cache_paths(&self.working(line)).into_iter().partition(|p| !holds_files(&head, p)))
     }
 
     /// The cache paths that `state` or its ancestors saved (the search of `warm_cache`).
@@ -1274,17 +1286,71 @@ pub fn convert_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
     if !m.is_dir() || m.ino == 256 {
         return Ok(false);
     }
+    replace_folder(&t, path, true, uid, gid)?;
+    Ok(true)
+}
+
+/// Turn a cache (a nested subvolume) at `path` back into a plain folder with the same files, so
+/// that states hold them again: the folder holds versioned files. Copies with reflinks.
+pub fn uncache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
+    let t = Tree::open(w)?;
+    match t.stat(path) {
+        Some(m) if m.is_dir() && m.ino == 256 => {}
+        _ => return Ok(false),
+    }
+    replace_folder(&t, path, false, uid, gid)?;
+    Ok(true)
+}
+
+/// Replace the folder at `path` with a copy of its files in a new subvolume or plain folder.
+fn replace_folder(t: &Tree, path: &str, subvolume: bool, uid: u32, gid: u32) -> Result<()> {
+    let mode = t.stat(path).map(|m| m.mode).unwrap_or(0o755);
     let (tmp, old) = (format!("{path}.layr-new"), format!("{path}.layr-old"));
     for x in [&tmp, &old] {
         if t.stat(x).is_some() {
             t.remove(x)?;
         }
     }
-    t.create_subvolume(&tmp)?;
-    copy_tree(&t, path, &tmp, Some((uid, gid)))?;
+    if subvolume {
+        t.create_subvolume(&tmp)?;
+    } else {
+        t.mkdirs(&tmp, None)?;
+        t.chmod(&tmp, mode)?;
+    }
+    copy_tree(t, path, &tmp, Some((uid, gid)))?;
     t.rename(path, &old)?;
     t.rename(&tmp, path)?;
     t.chown(path, uid, gid)?;
     t.remove(&old)?;
-    Ok(true)
+    Ok(())
+}
+
+/// Whether the tree at `root` has a file, link or other entry that is not a folder at `path` or
+/// below it (a folder of a state that holds versioned files). A path below such an entry counts;
+/// an error counts too, so that a folder whose files cannot be read never becomes a cache.
+pub fn holds_files(root: &Path, path: &str) -> bool {
+    let start = match fsutil::safe_join(root, path) {
+        Ok(p) => p,
+        Err(_) => return true,
+    };
+    match std::fs::symlink_metadata(&start) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    }
+    let mut stack = vec![start];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return true,
+        };
+        for e in entries {
+            match e.and_then(|e| Ok((e.path(), e.file_type()?))) {
+                Ok((p, t)) if t.is_dir() => stack.push(p),
+                _ => return true,
+            }
+        }
+    }
+    false
 }
