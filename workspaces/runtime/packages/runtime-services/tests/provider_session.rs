@@ -551,6 +551,40 @@ fn duplicate_reply_and_already_acknowledged_cursor_are_dropped() {
 }
 
 #[test]
+fn repeated_unacknowledged_cursor_is_not_dispatched_twice() {
+    let acknowledged = Arc::new(AtomicU64::new(9));
+    let mut session = ProviderSession::connect(
+        Box::new(scripted_process(
+            Arc::clone(&acknowledged),
+            vec![
+                (json!({"id":"__initialize__","result":{}}), Some(10)),
+                (json!({"method":"test/once"}), Some(11)),
+                (json!({"method":"test/once"}), Some(11)),
+            ],
+        )),
+        ProviderSessionConfig::new(),
+    )
+    .expect("provider initializes before duplicate replay");
+
+    let (event, cursor) = session.receive_event().expect("first notification");
+    assert!(matches!(event, ProviderSessionEvent::Inbound(_)));
+    assert_eq!(cursor, Some(11));
+    assert_eq!(acknowledged.load(Ordering::Acquire), 10);
+    assert!(matches!(
+        session.receive_event(),
+        Ok((ProviderSessionEvent::Closed { generation: 2 }, None))
+    ));
+    assert_eq!(
+        acknowledged.load(Ordering::Acquire),
+        10,
+        "dropping a duplicate cursor must not acknowledge the unhandled original"
+    );
+    session.acknowledge_handled(11).unwrap();
+    assert_eq!(acknowledged.load(Ordering::Acquire), 11);
+    session.close().unwrap();
+}
+
+#[test]
 fn recovered_reply_waits_for_the_contiguous_handshake_ack_prefix() {
     let acknowledged = Arc::new(AtomicU64::new(0));
     let recovered_id = RequestId::String("durable-ticket".into());

@@ -140,6 +140,7 @@ pub struct ProviderSession {
     queued: VecDeque<(ProviderSessionEvent, Option<u64>)>,
     tickets: BTreeMap<RequestId, RequestTicket>,
     completed_ids: BTreeSet<RequestId>,
+    seen_cursors: BTreeSet<u64>,
     delivered_cursors: BTreeSet<u64>,
     settled_cursors: BTreeSet<u64>,
     started: Instant,
@@ -302,6 +303,7 @@ impl ProviderSession {
             queued: VecDeque::new(),
             tickets,
             completed_ids: BTreeSet::new(),
+            seen_cursors: BTreeSet::new(),
             delivered_cursors: BTreeSet::new(),
             settled_cursors: BTreeSet::new(),
             started,
@@ -475,11 +477,14 @@ impl ProviderSession {
         frame: Frame,
         cursor: Option<u64>,
     ) -> Result<Vec<(ProviderSessionEvent, Option<u64>)>, ProviderSessionError> {
-        if let Some(cursor) = cursor
-            && cursor <= self.handled_cursor
-        {
-            self.settle_internal(cursor)?;
-            return Ok(Vec::new());
+        if let Some(cursor) = cursor {
+            if cursor <= self.handled_cursor {
+                self.settle_internal(cursor)?;
+                return Ok(Vec::new());
+            }
+            if !self.seen_cursors.insert(cursor) {
+                return Ok(Vec::new());
+            }
         }
         if let Frame::Response { id, .. } = &frame {
             if self.completed_ids.contains(id) {
@@ -660,6 +665,8 @@ impl ProviderSession {
                 .acknowledge(target)
                 .map_err(ProviderSessionError::Process)?;
             self.handled_cursor = self.handled_cursor.max(process.acknowledged_cursor());
+            self.seen_cursors
+                .retain(|cursor| *cursor > self.handled_cursor);
             self.settled_cursors
                 .retain(|cursor| *cursor > self.handled_cursor);
         }
