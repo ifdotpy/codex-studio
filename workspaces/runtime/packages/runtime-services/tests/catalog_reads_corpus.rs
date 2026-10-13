@@ -1,14 +1,16 @@
 //! Differential witness against the real Python projections and Python-written task rows.
 
-use serde_json::{Value, json};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use studio_runtime_services::catalog_reads::{
     CapabilityAgentSnapshot, apply_capability_result, capabilities_base, managed_tool_catalog,
     skills_for_cwd,
 };
 use studio_runtime_services::thread_prepare::{CatalogSnapshot, CatalogSource, ToolDefinition};
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use studio_runtime_store::{CapabilityReadsRepository, Connection};
 
 struct Scratch(PathBuf);
@@ -37,8 +39,9 @@ fn isolated_dir(root: &Path, name: &str) -> String {
 }
 
 fn python_oracle(root: &Path, input: &Value) -> Value {
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .expect("set CODEX_AGENTS_PYTHON to the prepared isolated interpreter");
+    let python = prepared_python::prepared_python(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    );
     let mut child = Command::new(python)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/catalog_reads/oracle.py"))
         .env("PYTHONDONTWRITEBYTECODE", "1")
