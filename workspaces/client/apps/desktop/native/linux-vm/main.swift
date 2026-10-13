@@ -40,7 +40,10 @@ func address(_ path: String) throws -> sockaddr_un {
 final class HostExecListener: NSObject, VZVirtioSocketListenerDelegate {
     weak var host: Host?
     init(host: Host) { self.host = host }
-    func listener(_ listener: VZVirtioSocketListener, shouldAcceptNewConnection connection: VZVirtioSocketConnection) -> Bool {
+    // The full Objective-C name (…fromSocketDevice:). Without "from" the method does not match the
+    // protocol, Virtualization never calls it, and every guest connection to port 4051 is refused.
+    func listener(_ listener: VZVirtioSocketListener, shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+                  from socketDevice: VZVirtioSocketDevice) -> Bool {
         guard let host = host, host.channels.wait(timeout: .now()) == .success else { return false }
         DispatchQueue.global().async { host.connectHostExec(connection) }
         return true
@@ -349,8 +352,12 @@ final class Host: NSObject, VZVirtualMachineDelegate {
 
 signal(SIGPIPE, SIG_IGN)
 if CommandLine.arguments == [CommandLine.arguments[0], "--check"] {
-    print(String(data: json(["supported": VZVirtualMachine.isSupported, "architecture": "arm64", "protocol": 1]), encoding: .utf8)!)
-    exit(VZVirtualMachine.isSupported ? 0 : 1)
+    let checkHost = Host(directory: URL(fileURLWithPath: "/"))
+    let delegate = HostExecListener(host: checkHost)
+    let acceptsHostConnections = delegate.responds(to: #selector(VZVirtioSocketListenerDelegate.listener(_:shouldAcceptNewConnection:from:)))
+    print(String(data: json(["supported": VZVirtualMachine.isSupported, "architecture": "arm64", "protocol": 1,
+                            "hostExecListener": acceptsHostConnections]), encoding: .utf8)!)
+    exit(VZVirtualMachine.isSupported && acceptsHostConnections ? 0 : 1)
 }
 guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "serve" else {
     fputs("Use studio-linux-vm serve STATE_DIRECTORY or --check.\n", stderr); exit(2)
