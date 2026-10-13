@@ -15,6 +15,7 @@ from pathlib import Path
 
 HERE = Path(os.path.abspath(os.path.dirname(__file__)))
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
 from oracle_guard import OracleGuard
 
 _oracle_guard = OracleGuard()
