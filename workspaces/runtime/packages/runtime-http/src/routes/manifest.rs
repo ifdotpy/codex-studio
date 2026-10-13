@@ -19,6 +19,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "monitor-driver/active-checks",
     "provider-session/account-rate-limits",
     "provider-session/model-list",
+    "provider-session/question-answer",
     "provider-session/app-server",
     "resource-policy/publish-drafts",
     "resource-policy/read-progress-panel",

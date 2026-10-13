@@ -9,6 +9,7 @@ mod messages;
 mod monitors;
 mod panels;
 mod questions_reads;
+mod questions_write;
 mod queue_read;
 mod queue_write;
 mod rules;
@@ -41,6 +42,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         session::routes(),
         rules::routes(),
         questions_reads::routes(),
+        questions_write::routes(),
         sync::routes(),
         sync_documents::routes(),
         terminals::routes(),

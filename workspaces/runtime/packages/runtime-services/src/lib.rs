@@ -16,6 +16,7 @@ pub mod panels;
 pub mod progress_panel;
 pub mod provider_session;
 pub mod questions_reads;
+pub mod questions_write;
 pub mod queue_write;
 pub mod rules;
 pub mod scheduler;
