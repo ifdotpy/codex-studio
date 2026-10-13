@@ -56,6 +56,8 @@ pub enum StoreError {
     SchemaMismatch(String),
     #[error("invalid stored sync object {scope}/{id}")]
     InvalidSyncObject { scope: String, id: String },
+    #[error("invalid stored {table} record {id}")]
+    InvalidStoredRecord { table: &'static str, id: String },
     #[error("database object {object} in {database} is incompatible: {reason}")]
     SchemaObjectMismatch {
         database: String,

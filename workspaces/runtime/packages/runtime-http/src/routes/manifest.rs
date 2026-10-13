@@ -12,6 +12,7 @@ pub(crate) struct Dependency(&'static str);
 const KNOWN_DEPENDENCIES: &[&str] = &[
     "coordination-policy/inbox",
     "cross-server/remote-events",
+    "cross-server-driver/local-identity",
     "cross-server-driver/peer-team-transport",
     "cross-server-driver/project-location-read",
     "cross-server-driver/project-location-write",
