@@ -89,12 +89,22 @@ def validate_destination(staging, root):
     return links
 
 
-def extract_tree(archive: Path, destination: Path):
-    """Treat link targets as text. Create links after all files and directories."""
+# The folder modes of a seed archive (docs/vm-layr.md, "Seeded layers"), next to the expanded tree.
+FOLDER_MODES = "folder-modes.json"
+
+
+def extract_tree(archive: Path, destination: Path, *, exact_modes=False):
+    """Treat link targets as text. Create links after all files and directories.
+
+    An ordinary upload gives each file owner read and write and each folder owner rwx. A seed
+    (`exact_modes`) keeps the permission bits of each file, because a seeded layer must be an
+    exact copy. Its folders keep owner rwx here, so this service can write and remove the tree;
+    their archive modes go to FOLDER_MODES next to the tree, for the broker's copy."""
     expanded = 0
     members = 0
     links = []
     link_paths = set()
+    folder_modes = {}
     with tarfile.open(archive, "r|*") as source:
         for item in source:
             members += 1
@@ -103,6 +113,7 @@ def extract_tree(archive: Path, destination: Path):
             require(not name.is_absolute() and ".." not in name.parts, "The archive path is outside the tree")
             if str(name) == ".":
                 require(item.isdir(), "The archive root must be a directory")
+                folder_modes["."] = item.mode & 0o777
                 continue
             target = destination.joinpath(*name.parts)
             require(target.is_relative_to(destination), "The archive path is outside the tree")
@@ -125,6 +136,7 @@ def extract_tree(archive: Path, destination: Path):
                         pass
                     with real_directory(destination, name.parts) as directory:
                         os.fchmod(directory, 0o700 | (item.mode & 0o077))
+                    folder_modes[str(name)] = item.mode & 0o777
                 else:
                     descriptor = os.open(name.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                          0o600, dir_fd=parent)
@@ -132,17 +144,19 @@ def extract_tree(archive: Path, destination: Path):
                         while block := input_file.read(1024 * 1024):
                             tree_space(destination, len(block))
                             output.write(block)
-                        os.fchmod(output.fileno(), 0o600 | (item.mode & 0o177))
+                        os.fchmod(output.fileno(), item.mode & 0o777 if exact_modes else 0o600 | (item.mode & 0o177))
     for target, link in links:
         with real_directory(destination, target.relative_to(destination).parts[:-1], create=True) as parent:
             os.symlink(link, target.name, dir_fd=parent)
+    if exact_modes:
+        (destination.parent / FOLDER_MODES).write_text(json.dumps(folder_modes))
     # One sync for the whole tree: a sync for each file made a project of 200,000 files
     # pass the worker deadline. The tree is durable before the apply marker is written.
     os.sync()
     return expanded
 
 
-def prepare_tree(archive, destination, expected):
+def prepare_tree(archive, destination, expected, *, exact_modes=False):
     """Restart extraction only after taking the surviving worker's file lease."""
     require(destination == archive.parent / "expanded", "The extraction destination differs from the upload directory")
     with (archive.parent / "extract.lock").open("a+") as lease:
@@ -159,8 +173,9 @@ def prepare_tree(archive, destination, expected):
         elif destination.exists():
             shutil.rmtree(destination)
         destination.mkdir(mode=0o700)
+        (destination.parent / FOLDER_MODES).unlink(missing_ok=True)
         try:
-            return extract_tree(archive, destination)
+            return extract_tree(archive, destination, exact_modes=exact_modes)
         except BaseException:
             shutil.rmtree(destination, ignore_errors=True)
             raise
@@ -269,13 +284,18 @@ class Uploads:
 
 if __name__ == "__main__":
     import sys
-    archive, destination, expected = sys.argv[1:4]
+    arguments = sys.argv[1:]
+    # Only a seed passes --exact-modes (service.py seed_layer).
+    exact = "--exact-modes" in arguments
+    if exact:
+        arguments.remove("--exact-modes")
+    archive, destination, expected = arguments[:3]
     try:
         archive = Path(archive)
         destination = Path(destination)
-        expanded = prepare_tree(archive, destination, expected)
-        if len(sys.argv) == 5:
-            validate_destination(destination, Path(sys.argv[4]))
+        expanded = prepare_tree(archive, destination, expected, exact_modes=exact)
+        if len(arguments) == 4:
+            validate_destination(destination, Path(arguments[3]))
         print(json.dumps({"bytes": expanded}))
     except GuestError as exc:
         print(json.dumps({"error": exc.object()}))

@@ -360,7 +360,9 @@ class Service:
             archive = self.uploads.path / identity / "tree.tar"
             staging = archive.parent / "expanded"
             if row[5] == "receiving":
-                code, output = await self.worker("upload.py", {}, 3600, arguments=(str(archive), str(staging), row[2]))
+                # A seeded layer must be an exact copy: the file modes stay (upload.extract_tree).
+                code, output = await self.worker("upload.py", {}, 3600,
+                                                 arguments=(str(archive), str(staging), row[2], "--exact-modes"))
                 result = json.loads(output)
                 if code or "error" in result:
                     if "error" in result:

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import stat
 import sqlite3
 import sys
 import tarfile
@@ -25,6 +26,25 @@ from service import Service
 
 def encoded(data):
     return base64.b64encode(data).decode()
+
+
+def archive_with_modes(entries):
+    """A tar of (name -> (data or None for a folder, mode)) with a root entry."""
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w") as output:
+        root = tarfile.TarInfo(".")
+        root.type, root.mode = tarfile.DIRTYPE, 0o751
+        output.addfile(root)
+        for name, (value, mode) in entries.items():
+            item = tarfile.TarInfo(name)
+            item.mode = mode
+            if value is None:
+                item.type = tarfile.DIRTYPE
+                output.addfile(item)
+            else:
+                item.size = len(value)
+                output.addfile(item, io.BytesIO(value))
+    return data.getvalue()
 
 
 def archive(entries):
@@ -497,17 +517,20 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         async def admin_request(request_id, method, params, emit=None):
             source = Path(params["source"])
             forwarded.append((request_id, method, params["projectId"], params["path"], source.name,
-                              (source / "src/BUILD.gn").read_bytes()))
+                              (source / "src/BUILD.gn").read_bytes(), oct(stat.S_IMODE((source / "src/.git/pack").stat().st_mode))))
             return {"projectId": "app", "stateId": "warm", "path": "chromium", "seeded": True}
 
-        data = archive({"src/BUILD.gn": b"group", "src/.git/HEAD": b"ref"})
+        data = archive_with_modes({"src": (None, 0o755), "src/BUILD.gn": (b"group", 0o644),
+                                   "src/.git": (None, 0o755), "src/.git/HEAD": (b"ref", 0o644),
+                                   "src/.git/pack": (b"pack", 0o400)})
         await self.stage_upload("seed-up", data)
         params = {"projectId": "app", "path": "chromium", "uploadId": "seed-up"}
         with patch("layr_admin_client.admin_request", admin_request), patch("service.Service.apply_upload") as rsync:
             result = await self.call("project.seed", params, "op-seed")
             self.assertEqual(await self.call("project.seed", params, "op-seed-again"), result)
         rsync.assert_not_called()
-        self.assertEqual(forwarded, [("op-seed", "project.seed", "app", "chromium", "expanded", b"group")])
+        # The seed keeps the file mode of the archive; an ordinary upload would make 0400 a 0600.
+        self.assertEqual(forwarded, [("op-seed", "project.seed", "app", "chromium", "expanded", b"group", "0o400")])
         self.assertEqual(result["stateId"], "warm")
         self.assertFalse((self.service.uploads.path / "seed-up").exists())
         # A later commit returns the seed receipt; it never applies the archive to the upload root.
@@ -533,6 +556,24 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(extract_tree(source, destination), 200)
         self.assertEqual((each.call_count, once.call_count), (0, 1))
         self.assertEqual((destination / "folder/file49").read_bytes(), b"data")
+
+    async def test_an_ordinary_upload_and_a_seed_extract_modes_differently(self):
+        from upload import FOLDER_MODES, extract_tree
+        source = self.root / "modes.tar"
+        source.write_bytes(archive_with_modes({"src": (None, 0o555), "src/pack": (b"p", 0o400),
+                                               "src/tool": (b"t", 0o755), "src/read": (b"r", 0o444)}))
+        modes = {}
+        for label, exact in (("ordinary", False), ("seed", True)):
+            target = self.root / label / "expanded"
+            target.mkdir(parents=True)
+            extract_tree(source, target, exact_modes=exact)
+            modes[label] = [oct(stat.S_IMODE((target / name).stat().st_mode)) for name in ("src", "src/pack", "src/tool", "src/read")]
+        # An ordinary upload keeps owner rw on files and owner rwx on folders, as before.
+        self.assertEqual(modes["ordinary"], ["0o755", "0o600", "0o755", "0o644"])
+        self.assertFalse((self.root / "ordinary" / FOLDER_MODES).exists())
+        # A seed keeps each file mode; folders keep owner rwx and record their archive modes.
+        self.assertEqual(modes["seed"], ["0o755", "0o400", "0o755", "0o444"])
+        self.assertEqual(json.loads((self.root / "seed" / FOLDER_MODES).read_text()), {".": 0o751, "src": 0o555})
 
     async def test_extraction_rejects_a_link_parent_already_in_the_destination(self):
         from upload import extract_tree

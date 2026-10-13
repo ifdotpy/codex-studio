@@ -126,6 +126,12 @@ first import send that folder from the Mac once, as a layer of main:
    already a layr cache, so the save makes no copy. Each seeded folder runs its own save, and
    each save keeps the caches of the earlier ones. The guest needs about twice the size of the
    folder on the data disk while the upload folder exists. An existing `main/<path>` is kept.
+   The layer is an exact copy of the file modes: the extraction keeps the mode of each file
+   (an ordinary upload gives each file owner read and write). The expanded folders keep owner
+   rwx, so the guest service can remove them; the broker gives each folder of the copy its
+   archive mode (`folder-modes.json` next to the expanded upload) before the owner of main
+   gets the tree. A layer seeded before this rule can have other file modes than the Mac
+   folder; host_exec then changes only the mode of such a file ([host-exec.md](host-exec.md)).
 4. The sidebar shows the project as importing until the seed ends. A failed seed repeats
    alone on the next VM chat start. Each line from main then starts with a copy-on-write copy.
 
