@@ -125,7 +125,7 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if truthy(item.record.get("afterRestore")) {
+    if studio_runtime_services::event_write::truthy(item.record.get("afterRestore")) {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item)
@@ -161,17 +161,6 @@ fn empty_reported_changes() -> Value {
         "scope":"chat", "git":true, "files":[], "diff":"", "patch":"",
         "truncated":false, "turnId":null, "reportedAt":null,
     })
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Null) | None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
 }
 
 fn workspace_view(

@@ -144,11 +144,11 @@ fn projects_error(error: ProjectsError) -> ApiError {
             format!("Invalid stored {table} record {id}"),
         ),
         ProjectsError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
-            table,
+            object,
             id,
         }) => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Invalid stored {table} record {id}"),
+            format!("Invalid stored object {object}/{id}"),
         ),
         ProjectsError::Store(_) => ApiError::internal(),
         ProjectsError::Sqlite(_) => ApiError::internal(),

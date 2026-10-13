@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, RulesRepository, StoreError, Transaction,
@@ -41,10 +40,7 @@ pub fn python_json(value: &Value) -> String {
 }
 
 pub fn request_signature(value: &Value) -> String {
-    Sha256::digest(python_json(value).as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    studio_runtime_store::sha256_hex(python_json(value).as_bytes())
 }
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.

@@ -49,10 +49,12 @@ pub fn action(
     if agent.id.0 != agent_id {
         return Err(invalid_stored("runtime_agents", agent_id));
     }
-    if truthy(agent.extra.get("deletedAt")) {
+    if event_write::truthy(agent.extra.get("deletedAt")) {
         return Err(QueueWriteError::InvalidRequest("This agent was deleted"));
     }
-    if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
+    if event_write::truthy(agent.extra.get("remoteWorker"))
+        || event_write::truthy(agent.extra.get("remoteAnchor"))
+    {
         return Err(QueueWriteError::RemoteEventsUnavailable);
     }
 
@@ -312,17 +314,6 @@ fn valid_receipt(value: &Value) -> bool {
             .get("capabilities")
             .and_then(Value::as_object)
             .is_some()
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-        Some(Value::Bool(true)) => true,
-    }
 }
 
 fn unix_time() -> Result<f64, QueueWriteError> {
