@@ -34,8 +34,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/multi_server_pairing.rs",
     "edits": [
       {
-        "before": "if !RemoteTransportRepository::consume_access_nonce(",
-        "after": "if false && !RemoteTransportRepository::consume_access_nonce("
+        "before": "            match nonce {",
+        "after": "            match AccessNonceOutcome::Accepted {"
       }
     ]
   },

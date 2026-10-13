@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use studio_runtime_store::{RemoteTransportRepository, RuntimeStore};
+use studio_runtime_store::{AccessNonceOutcome, RemoteTransportRepository, RuntimeStore};
 
 use crate::multi_server_auth::{
     self as auth, AccessError, AccessSnapshot, OwnerObservation, SignedRequest, VerifiedPrincipal,
@@ -177,18 +177,36 @@ impl MultiServerBoundary {
                 probe,
                 now,
             )?;
-            if !RemoteTransportRepository::consume_access_nonce(
+            let nonce = RemoteTransportRepository::consume_access_nonce_outcome(
                 tx,
                 request.client_id(),
                 request.nonce(),
                 now,
                 decision.unpaired_attempt,
-            )? {
-                return Err(refused(
-                    401,
-                    "nonce_replay",
-                    "The request nonce was already used or its limit was reached",
-                ));
+            )?;
+            match nonce {
+                AccessNonceOutcome::Accepted => {}
+                AccessNonceOutcome::Replay => {
+                    return Err(refused(
+                        401,
+                        "nonce_replay",
+                        "The request nonce was already used",
+                    ));
+                }
+                AccessNonceOutcome::ClientLimit => {
+                    return Err(refused(
+                        429,
+                        "nonce_limit",
+                        "The client request limit is reached",
+                    ));
+                }
+                AccessNonceOutcome::PairingLimit => {
+                    return Err(refused(
+                        429,
+                        "pairing_limit",
+                        "The server pairing attempt limit is reached",
+                    ));
+                }
             }
             if let Some(client) = decision.client_write {
                 tx.execute(
