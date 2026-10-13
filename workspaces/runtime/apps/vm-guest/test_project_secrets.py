@@ -20,7 +20,7 @@ from common import GuestError
 from layr_admin import Broker
 from layr_agents import AgentHandlers
 from layr_projects import Projects
-from project_secrets import RESERVED, RESERVED_PREFIXES
+from project_secrets import MAX_VALUE_BYTES, RESERVED, RESERVED_PREFIXES
 
 VALUE = "zulip-value-7f3a9c"
 PROJECT = "a" * 64
@@ -81,12 +81,12 @@ class SecretBrokerTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.call("secrets.set", {"name": name, "value": VALUE})
                 self.assertEqual(response["error"]["code"], "invalid_params")
                 self.assert_no_value(response)
-        for value in ("", VALUE + "\0", "x" * (16 * 1024 + 1), "é" * (8 * 1024 + 1), VALUE + "\ud800", 5, None):
+        for value in ("", VALUE + "\0", "x" * (MAX_VALUE_BYTES + 1), "é" * (MAX_VALUE_BYTES // 2 + 1), VALUE + "\ud800", 5, None):
             with self.subTest(size=len(value) if isinstance(value, str) else value):
                 response = await self.call("secrets.set", {"name": "TOKEN", "value": value})
                 self.assertEqual(response["error"]["code"], "invalid_params")
                 self.assert_no_value(response)
-        accepted = await self.call("secrets.set", {"name": "_A9", "value": "x" * (16 * 1024)})
+        accepted = await self.call("secrets.set", {"name": "_A9", "value": "x" * MAX_VALUE_BYTES})
         self.assertEqual(accepted["result"]["names"], ["_A9"])
         missing = await self.broker.request({"id": "other", "method": "secrets.set",
                                              "params": {"projectId": "b" * 64, "name": "TOKEN", "value": VALUE}}, None)

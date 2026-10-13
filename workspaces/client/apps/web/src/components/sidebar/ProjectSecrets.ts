@@ -1,5 +1,9 @@
 import type { components } from "../../generated/api";
 import type { SidebarBackend } from "./services";
+import {
+  MAX_PROJECT_SECRET_VALUE_BYTES,
+  PROJECT_SECRET_VALUE_LIMIT_LABEL,
+} from "../../generated/sharedValues";
 
 /** The secret names of a layr project (docs/project-secrets.md). No response has a value. */
 export type ProjectSecretsReply =
@@ -8,7 +12,7 @@ export type ProjectSecretsReply =
 /** The name rule of the VM (vm-guest project_secrets.py). The VM also refuses the names that
  * Studio or a provider sets, and tells why. */
 export const SECRET_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
-export const MAX_VALUE_BYTES = 16 * 1024;
+export const MAX_VALUE_BYTES = MAX_PROJECT_SECRET_VALUE_BYTES;
 
 export function nameProblem(name: string): string | null {
   if (!name) return "Enter a name";
@@ -22,7 +26,7 @@ export function valueProblem(value: string): string | null {
   if (!value) return "Enter a value";
   if (value.includes("\0")) return "The value must not contain a NUL character";
   if (new TextEncoder().encode(value).length > MAX_VALUE_BYTES)
-    return "The value is longer than 16 KiB";
+    return `The value is longer than ${PROJECT_SECRET_VALUE_LIMIT_LABEL}`;
   return null;
 }
 

@@ -3,6 +3,7 @@ import {
   answered,
   changeRequest,
   listSecrets,
+  MAX_VALUE_BYTES,
   nameProblem,
   removeSecret,
   setSecret,
@@ -25,12 +26,12 @@ test.each([
 
 test("a value is not empty, has no NUL and has at most 16 KiB of UTF-8", () => {
   expect(valueProblem("secret")).toBeNull();
-  expect(valueProblem("x".repeat(16 * 1024))).toBeNull();
+  expect(valueProblem("x".repeat(MAX_VALUE_BYTES))).toBeNull();
   expect(valueProblem("")).toBe("Enter a value");
   expect(valueProblem("a\0b")).toMatch(/NUL/);
-  expect(valueProblem("x".repeat(16 * 1024 + 1))).toMatch(/16 KiB/);
-  // 8193 characters of two bytes each: the limit counts bytes.
-  expect(valueProblem("é".repeat(8 * 1024 + 1))).toMatch(/16 KiB/);
+  expect(valueProblem("x".repeat(MAX_VALUE_BYTES + 1))).toMatch(/16 KiB/);
+  // Half as many two-byte characters demonstrates that the limit counts bytes.
+  expect(valueProblem("é".repeat(MAX_VALUE_BYTES / 2 + 1))).toMatch(/16 KiB/);
 });
 
 test("the same change keeps its request ID until an answer; another change gets a new one", () => {

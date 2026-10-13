@@ -22,9 +22,13 @@ import sys
 from typing import Any, Protocol
 import uuid
 
+from codex_shared_values import (
+    MAX_PROJECT_SECRET_VALUE_BYTES,
+    project_secret_value_limit_label,
+)
+
 # The guest checks the name again and refuses the names that the agent launch sets.
 NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
-MAX_VALUE_BYTES = 16 * 1024
 
 
 class GuestClient(Protocol):
@@ -62,13 +66,13 @@ def read_value(stdin: Any = None) -> str:
     if stream.isatty():
         value = getpass.getpass('Value (hidden): ')
     else:
-        value = stream.read(MAX_VALUE_BYTES * 4 + 2)
+        value = stream.read(MAX_PROJECT_SECRET_VALUE_BYTES * 4 + 2)
         value = value[:-1] if value.endswith('\n') else value
         value = value[:-1] if value.endswith('\r') else value
     if not value:
         raise ValueError('The value is empty')
-    if len(value.encode('utf-8', 'surrogatepass')) > MAX_VALUE_BYTES:
-        raise ValueError('The value exceeds 16 KiB')
+    if len(value.encode('utf-8', 'surrogatepass')) > MAX_PROJECT_SECRET_VALUE_BYTES:
+        raise ValueError(f'The value exceeds {project_secret_value_limit_label()}')
     return value
 
 
