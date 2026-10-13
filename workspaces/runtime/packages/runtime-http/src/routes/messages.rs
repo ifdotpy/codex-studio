@@ -230,6 +230,17 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "messages",
         routes: Some(routes),
-        dependencies: &["coordination-policy/chat-history", "coordination-policy/room-visibility", "event-driver/message-receipts", "event-driver/message-send"],
+        dependencies: &[
+            "budget-policy/message-admission",
+            "capacity-retry/store",
+            "coordination-policy/chat-history",
+            "coordination-policy/room-visibility",
+            "cross-server/remote-events",
+            "event-driver/message-receipts",
+            "event-driver/message-send",
+            "federation-driver/rooms",
+            "payload-store/uploads",
+            "workspace-policy/message-admission",
+        ],
     }
 }

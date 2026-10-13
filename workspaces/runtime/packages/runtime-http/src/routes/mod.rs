@@ -137,7 +137,7 @@ mod registration_tests {
     #[test]
     fn dependency_manifest_is_registered_in_stable_order() {
         let dependencies = super::manifest::registered_dependencies();
-        assert_eq!(dependencies.len(), 61);
+        assert_eq!(dependencies.len(), 63);
         assert!(dependencies.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(
             inventory::iter::<RouteModuleRegistration>

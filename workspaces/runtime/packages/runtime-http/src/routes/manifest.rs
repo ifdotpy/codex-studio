@@ -15,6 +15,7 @@ pub(crate) fn registered_dependencies() -> Vec<&'static str> {
         .flat_map(|registration| registration.dependencies.iter().copied())
         .collect::<Vec<_>>();
     names.sort_unstable();
+    names.dedup();
     names
 }
 

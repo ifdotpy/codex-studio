@@ -649,6 +649,12 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "workspace_views",
         routes: Some(routes),
-        dependencies: &["coordination-policy/inbox", "work-policy/views", "workspace-state/git-changes", "workspace-state/snapshot"],
+        dependencies: &[
+            "coordination-policy/inbox",
+            "work-policy/views",
+            "workspace-state/git-changes",
+            "workspace-state/image-execution",
+            "workspace-state/snapshot",
+        ],
     }
 }
