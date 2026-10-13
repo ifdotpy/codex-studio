@@ -1,4 +1,10 @@
-import { get, ApiError, type GetResult, type PostBody } from "../api";
+import {
+  get,
+  ApiError,
+  READ_DEADLINE_MS,
+  type GetResult,
+  type PostBody,
+} from "../api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -57,8 +63,11 @@ export async function readNewChatResource<P extends ChatReadPath>(
     new Request(url, {
       headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
       signal: options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)])
-        : AbortSignal.timeout(15000),
+        ? AbortSignal.any([
+            options.signal,
+            AbortSignal.timeout(READ_DEADLINE_MS),
+          ])
+        : AbortSignal.timeout(READ_DEADLINE_MS),
       redirect: "error",
     }),
   );
