@@ -247,13 +247,17 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         path=self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(path) as db:
             original=db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",(self.summary_agent,)).fetchone()[0]
-            db.execute("UPDATE sync_entities SET payload='[]' WHERE collection='agent' AND id=?",(self.summary_agent,))
-        before=database_snapshot(path)
-        response=self.backend.request("GET","/api/ui-summary",headers=self.headers())
-        self.assertEqual(response.status,500,response.body)
-        self.assertIn("sync_entities/"+self.summary_agent,response.json()["error"])
-        self.assertEqual(database_snapshot(path),before)
-        with sqlite3.connect(path) as db:db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",(original,self.summary_agent))
+        try:
+            for value in ([], {**json.loads(original),"value":{**json.loads(original)["value"],"version":-1}}, {**json.loads(original),"value":{**json.loads(original)["value"],"version":9007199254740992}}):
+                with sqlite3.connect(path) as db:
+                    db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",(json.dumps(value),self.summary_agent))
+                before=database_snapshot(path)
+                response=self.backend.request("GET","/api/ui-summary",headers=self.headers())
+                self.assertEqual(response.status,500,response.body)
+                self.assertIn("sync_entities/"+self.summary_agent,response.json()["error"])
+                self.assertEqual(database_snapshot(path),before)
+        finally:
+            with sqlite3.connect(path) as db:db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",(original,self.summary_agent))
 
     @unittest.skipUnless(hasattr(os,"geteuid") and os.geteuid()!=0,"requires ordinary Unix permissions")
     def test_permission_denied_path_is_redacted(self):

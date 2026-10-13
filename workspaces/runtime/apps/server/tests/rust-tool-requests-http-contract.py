@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import time
 import json
 import sqlite3
 import sys
@@ -32,7 +33,7 @@ def database_snapshot(state: Path):
         }
 
 
-def write_receipts(backend, records=(), aliases=()):
+def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, location_outbox=False):
     backend.stop()
     spec = importlib.util.spec_from_file_location(
         "tool_requests_runtime_fixture", Path(__file__).with_name("runtime-contract.py")
@@ -47,21 +48,47 @@ def write_receipts(backend, records=(), aliases=()):
 
     runtime = make_runtime(QuietRuntime, backend, fixture.FakeServer)
     saved = []
+    expected = {}
+    service = None
+    if location_outbox:
+        from codex_multi_server_orchestration import MultiServerService, identity
+        class Transport:
+            local_server_id="local-fixture"
+            def request(self, server, envelope, **_kwargs):
+                return {"requestId":envelope["requestId"],"outcome":"applied","value":{
+                    "serverId":server,"homeProjectId":"deleted-project","path":"/fixture",
+                    "canonicalPath":"/fixture","projectId":"/fixture","requestId":envelope["requestId"]}}
+        service=MultiServerService(runtime,Transport())
     try:
         with runtime.db() as database:
             for record in records:
                 runtime.put(database, "tool_requests", record)
                 saved.append(database.execute("SELECT id,record FROM runtime_tool_requests WHERE id=?", (record["id"],)).fetchone())
+            if service:
+                for record in records:
+                    key=identity("project-location",record["agent"],record["id"])
+                    service.queue(database,"remote-fixture","add_location",{"project":"deleted-project","path":"/fixture","signature":"fixture"},key)
+            if settlement_oracle:
+                database.execute("SAVEPOINT reference_settlement")
+                for record in records:
+                    expected[record["id"]] = json.loads(json.dumps(runtime.finish_tool_request(record["id"], record["result"], db=database)))
+                database.execute("ROLLBACK TO reference_settlement")
+                database.execute("RELEASE reference_settlement")
             for alias in aliases:
                 database.execute(
                     "INSERT INTO runtime_tool_request_aliases(agent,alias,request) VALUES(?,?,?)",
                     alias,
                 )
+        if service:
+            for record in records:
+                service.deliver(identity("project-location",record["agent"],record["id"]))
     finally:
+        if service: service.close()
         runtime.close()
     backend.start()
     with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
         database.executemany("UPDATE runtime_tool_requests SET record=?2 WHERE id=?1", saved)
+    return expected
 
 
 def seed_agents(backend):
@@ -284,15 +311,67 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 400, response.body[:1000])
 
     def test_inline_completion_is_settled_before_get_list_and_cancel(self):
-        records=[receipt(f"inline-{action}",self.lead_id,stage="queued",outcome="pending") for action in ("get","list","cancel")]
-        write_receipts(self.backend,records)
-        for action in ("get","list","cancel"):
+        records=[]
+        for expired in (False, True):
+            for action in ("get", "list", "cancel"):
+                result={"success":True,"contentItems":[{"type":"inputText","text":json.dumps({"outcome":"applied"})}]}
+                if expired: result["serverOutputExpiresAt"]=1
+                records.append(receipt(f"inline-{expired}-{action}",self.lead_id,stage="queued",outcome="pending",
+                    tool="orchestration_servers",result=result,timing={"handlerStartedAt":7}))
+        for original in records:
+            expected=write_receipts(self.backend,[original],settlement_oracle=True)
+            started=time.monotonic_ns()
+            identity=original["id"]; action=identity.rsplit("-",1)[1]
             query={"agent":self.lead_id}
-            if action!="list":query["request_id"]=f"inline-{action}"
+            if action!="list": query["request_id"]=identity
             response=self.backend.request("POST" if action=="cancel" else "GET", "/api/tool-requests/cancel" if action=="cancel" else "/api/tool-requests?"+urlencode(query),body=query if action=="cancel" else None,headers=self.headers())
             self.assertEqual(response.status,200,response.body)
-            record=next(r for r in response.json()["requests"] if r["id"]=="inline-list") if action=="list" else response.json()
-            self.assertEqual((record["stage"],record["outcome"]),("completed","applied"))
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                actual=json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",(identity,)).fetchone()[0])
+            self.assertLessEqual(started,actual["timing"]["handlerEndedAt"])
+            self.assertLessEqual(actual["timing"]["handlerEndedAt"],time.monotonic_ns())
+            def normalized(value):
+                value=json.loads(json.dumps(value))
+                for key in ("updated","finished"):
+                    if key in value: value[key]="timestamp"
+                if "handlerEndedAt" in value.get("timing",{}): value["timing"]["handlerEndedAt"]="monotonic timestamp"
+                return value
+            self.assertEqual(normalized(actual),normalized(expected[identity]))
+            if "True" in identity and action!="list":
+                self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
+
+    def test_project_location_outbox_evidence_never_returns_stale_receipt(self):
+        from codex_multi_server_orchestration import identity
+        key=identity("project-location",self.lead_id,"location-evidence")
+        record=receipt("location-evidence",self.lead_id,stage="failed",outcome="unknown",tool="orchestration_servers",
+            result={"success":True,"contentItems":[{"type":"inputText","text":json.dumps({"requestId":key,"outcome":"unknown"})}]})
+        write_receipts(self.backend,[record],location_outbox=True)
+        try:
+            for action in ("get","list","cancel"):
+                before=database_snapshot(self.backend.state)
+                query={"agent":self.lead_id}
+                if action!="list": query["request_id"]=record["id"]
+                response=self.backend.request("POST" if action=="cancel" else "GET", "/api/tool-requests/cancel" if action=="cancel" else "/api/tool-requests?"+urlencode(query),body=query if action=="cancel" else None,headers=self.headers())
+                self.assertEqual(response.status,501 if self.rust_backend else 200,response.body)
+                if self.rust_backend:
+                    self.assertIn("multi-server/project-location-receipt",response.json()["error"])
+                    self.assertEqual(database_snapshot(self.backend.state),before)
+                elif action!="list": self.assertEqual(response.json()["outcome"],"applied")
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                db.execute("DELETE FROM runtime_tool_requests WHERE id=?",(record["id"],))
+                db.execute("DELETE FROM runtime_server_outbox WHERE id=?",(key,))
+
+    def test_queued_move_and_teleport_list_and_cancel_are_local(self):
+        records=[receipt("queued-"+tool,self.lead_id,stage="queued",outcome="pending",tool=tool,result=None)
+                 for tool in ("orchestration_move","orchestration_teleport")]
+        write_receipts(self.backend,records)
+        response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id}),headers=self.headers())
+        self.assertEqual(response.status,200,response.body)
+        for record in records:
+            response=self.backend.request("POST","/api/tool-requests/cancel",body={"agent":self.lead_id,"request_id":record["id"]},headers=self.headers())
+            self.assertEqual(response.status,200,response.body)
+            self.assertEqual((response.json()["stage"],response.json()["outcome"]),("cancelled","not_applied"))
 
     def test_expired_outputs_are_redacted_on_get_and_terminal_cancel(self):
         write_receipts(self.backend,[receipt("expired",self.lead_id,result={"success":True,"serverOutputExpiresAt":1,"contentItems":[{"type":"inputText","text":"expired output still visible"}]})])

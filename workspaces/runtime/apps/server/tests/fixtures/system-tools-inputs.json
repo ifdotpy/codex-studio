@@ -70,6 +70,21 @@
     },
     {
       "epoch": 9007199254740992
+    },
+    {
+      "supervisor": {
+        "generation": "invalid"
+      }
+    },
+    {
+      "supervisor": {
+        "generation": -1
+      }
+    },
+    {
+      "supervisor": {
+        "generation": 9007199254740992
+      }
     }
   ],
   "valid_cancel_patches": [

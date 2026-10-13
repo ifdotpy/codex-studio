@@ -55,7 +55,7 @@ fn state(record: &Value) -> Result<State, ToolRequestError> {
     })
 }
 
-fn apply(record: &mut Value, state: &State) -> Result<(), ToolRequestError> {
+fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
     let operation = state
         .operation
         .as_ref()
@@ -74,7 +74,7 @@ fn apply(record: &mut Value, state: &State) -> Result<(), ToolRequestError> {
     record["stage"] = json!(stage);
     record["outcome"] = json!(outcome);
     record["cancelRequested"] = json!(cancel);
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
@@ -95,16 +95,13 @@ pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
             kind: EventKind::Cancel,
         },
     );
-    if matches!(decision.kind, DecisionKind::Rejected(_)) {
-        return Err(ToolRequestError::InvalidRequest(
+    match decision.kind {
+        DecisionKind::Rejected(_) => Err(ToolRequestError::InvalidRequest(
             "Conflicting request lifecycle evidence",
-        ));
+        )),
+        DecisionKind::Transitioned => apply(record, &decision.next_state),
+        _ => Ok(false),
     }
-    if decision.kind != DecisionKind::Transitioned {
-        return Ok(false);
-    }
-    apply(record, &decision.next_state)?;
-    Ok(true)
 }
 
 pub(super) fn settle(
@@ -155,6 +152,5 @@ pub(super) fn settle(
     if decision.kind == SettlementKind::NoChange {
         return Ok(false);
     }
-    apply(record, &decision.state)?;
-    Ok(true)
+    apply(record, &decision.state)
 }
