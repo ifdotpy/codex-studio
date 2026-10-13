@@ -7,7 +7,9 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::Value;
-use studio_runtime_services::work_write::{self, CreateWork, WorkMutation, WorkWrite};
+use studio_runtime_services::work_write::{
+    self, AcceptWork, ClaimWork, CreateWork, SubmitWork, WorkMutation, WorkWrite, WorkWriteError,
+};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -72,9 +74,29 @@ pub(crate) async fn work_action(
             version: version(&body)?,
             reason: required_text(&body, "result")?,
         }),
-        "claim" => return Err(unavailable("worker-driver/work-assignment")),
-        "submit" => return Err(unavailable("workspace-state/submission-files")),
-        "accept" => return Err(unavailable("workspace-state/agent-archive")),
+        "claim" => WorkWrite::Claim(ClaimWork {
+            task_id: required_text(&body, "task_id")?,
+            version: version(&body)?,
+            claimant_id: body
+                .get("owner")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| agent.clone()),
+        }),
+        "submit" => WorkWrite::Submit(SubmitWork {
+            task_id: required_text(&body, "task_id")?,
+            version: version(&body)?,
+            result: required_text(&body, "result")?,
+            checks: required_text(&body, "checks")?,
+            revision: required_text(&body, "revision")?,
+            files: string_list(&body, "files")?,
+            state_dir: state.state_dir.clone().into(),
+        }),
+        "accept" => WorkWrite::Accept(AcceptWork {
+            task_id: required_text(&body, "task_id")?,
+            version: version(&body)?,
+            reason: required_text(&body, "result")?,
+        }),
         _ => return Err(invalid_request()),
     };
     commit(state, agent, request_id, signature, command)
@@ -91,19 +113,34 @@ async fn commit(
 ) -> Result<Value, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let result = store
             .transaction_with_error(|tx| {
                 work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
             })
-            .map_err(work_items::write_error)?;
+            .map_err(write_error)?;
         if result.event_inserted {
             wake.notify_one();
         }
-        Ok(result.record)
+        if let Some(artifact) = &result.artifact {
+            work_write::write_result_artifact(artifact).map_err(|_| ApiError::internal())?;
+        }
+        Ok::<_, ApiError>(result)
     })
     .await
-    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal())??;
+    Ok(result.record)
+}
+
+fn write_error(error: WorkWriteError) -> ApiError {
+    match error {
+        WorkWriteError::Event(error) => work_items::write_error(error),
+        WorkWriteError::Store(_) => ApiError::internal(),
+        WorkWriteError::NotImplemented(dependency) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {dependency}"),
+        ),
+    }
 }
 
 fn required_text(body: &Value, field: &str) -> Result<String, ApiError> {
@@ -163,13 +200,6 @@ fn version(body: &Value) -> Result<Option<i64>, ApiError> {
     }
 }
 
-fn unavailable(dependency: &'static str) -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        format!("Not implemented: requires {dependency}"),
-    )
-}
-
 fn invalid_request() -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "Invalid request")
 }
@@ -189,6 +219,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "work_write",
         routes: Some(routes),
-        dependencies: &[],
+        dependencies: &["workspace-state/agent-archive", "workspace-state/submission-files"],
     }
 }

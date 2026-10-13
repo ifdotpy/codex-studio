@@ -1,13 +1,13 @@
 //! Read and write persisted work-item, plan, and queue state.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::records::{
-    AgentId, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
+    AgentId, AgentRecord, EventMetadataRecord, JsonRecord, PlanRecord, QueueEventId, Table, TaskId,
     TranscriptAssetId, TranscriptAssetRecord, WorkItemRecord,
 };
-use crate::schema::{SchemaRequirements, TableRequirement};
+use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 const TABLES: &[TableRequirement] = &[
@@ -35,9 +35,20 @@ const TABLES: &[TableRequirement] = &[
     },
 ];
 
+const EXECUTION_RUNS: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_execution_runs",
+    columns: &[
+        "id", "agent", "account", "epoch", "thread", "turn", "created", "record",
+    ],
+}];
+const CONDITIONAL_TABLES: &[ConditionalTableRequirement] = &[ConditionalTableRequirement {
+    table_exists: "runtime_execution_runs",
+    tables: EXECUTION_RUNS,
+}];
+
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[TABLES[4]],
-    conditional_tables: &[],
+    conditional_tables: CONDITIONAL_TABLES,
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
@@ -68,6 +79,85 @@ pub struct StoredRecord {
 pub struct WorkItemsRepository;
 
 impl WorkItemsRepository {
+    /// Read the active execution identity the Python writer would attach to a work result.
+    /// The execution table is feature-created and therefore optional on older state.
+    pub fn submission_identity(
+        connection: &Connection,
+        agent: &AgentRecord,
+    ) -> StoreResult<Option<(String, Option<String>)>> {
+        let table_exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(None);
+        }
+
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("default");
+        let thread = agent
+            .extra
+            .get("threadId")
+            .and_then(serde_json::Value::as_str);
+        let turn = agent
+            .extra
+            .get("turnId")
+            .and_then(serde_json::Value::as_str);
+        let row: Option<(String, String)> = if let Some(turn) = turn {
+            let mut statement = connection.prepare(
+                "SELECT id, record FROM runtime_execution_runs \
+                 WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
+            )?;
+            let rows = statement
+                .query_map(params![agent.id.0, account, thread, turn], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            (rows.len() == 1).then(|| rows.into_iter().next()).flatten()
+        } else {
+            connection
+                .query_row(
+                    "SELECT id, record FROM runtime_execution_runs \
+                     WHERE agent=?1 AND account=?2 AND epoch=?3 AND turn IS NULL \
+                     ORDER BY created DESC LIMIT 1",
+                    params![agent.id.0, account, agent.epoch],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+        };
+        let Some((id, record)) = row else {
+            return Ok(None);
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&record).map_err(|_| crate::StoreError::InvalidStoredObject {
+                table: "runtime_execution_runs",
+                id: id.clone(),
+            })?;
+        if value.get("id").and_then(serde_json::Value::as_str) != Some(id.as_str()) {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: "runtime_execution_runs",
+                id,
+            });
+        }
+        if turn.is_none()
+            && matches!(
+                value.get("status").and_then(serde_json::Value::as_str),
+                Some("completed" | "failed" | "interrupted" | "cancelled")
+            )
+        {
+            return Ok(None);
+        }
+        let attempt_id = value
+            .get("latestAttemptId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        Ok(Some((id, attempt_id)))
+    }
+
     pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(Table::<WorkItemRecord>::new(connection)
             .get(&TaskId::from(id))?
@@ -95,6 +185,98 @@ impl WorkItemsRepository {
         }
         Table::<WorkItemRecord>::new(connection).update(&record)?;
         Ok(())
+    }
+
+    /// Release unfinished work owned by a failed worker and return each updated record.
+    pub fn release_failed_work(
+        connection: &Connection,
+        owner_id: &str,
+        reason: &str,
+        now: f64,
+    ) -> StoreResult<Vec<Value>> {
+        let mut statement = connection.prepare(
+            "SELECT id, record FROM runtime_work \
+             WHERE json_extract(record,'$.owner')=?1 \
+             AND json_extract(record,'$.status') IN ('ready','running','blocked')",
+        )?;
+        let rows = statement
+            .query_map([owner_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let reason: String = reason.chars().take(500).collect();
+        let mut released = Vec::with_capacity(rows.len());
+        for (id, raw) in rows {
+            let mut record: Value =
+                serde_json::from_str(&raw).map_err(|_| crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id: id.clone(),
+                })?;
+            if record.get("id").and_then(Value::as_str) != Some(id.as_str())
+                || record.get("owner").and_then(Value::as_str) != Some(owner_id)
+            {
+                return Err(crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id,
+                });
+            }
+            let status = record
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id: id.clone(),
+                })?;
+            let version = record
+                .get("version")
+                .and_then(Value::as_i64)
+                .and_then(|version| version.checked_add(1))
+                .ok_or_else(|| crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id: id.clone(),
+                })?;
+            if record
+                .get("releases")
+                .is_some_and(|value| !value.is_array())
+            {
+                return Err(crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id: id.clone(),
+                });
+            }
+            record
+                .as_object_mut()
+                .ok_or_else(|| crate::StoreError::InvalidStoredObject {
+                    table: "runtime_work",
+                    id: id.clone(),
+                })?
+                .entry("releases")
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .expect("validated release history")
+                .push(serde_json::json!({
+                    "agent": owner_id,
+                    "reason": reason,
+                    "created": now,
+                }));
+            record["owner"] = Value::Null;
+            record["status"] = Value::String(
+                if status == "blocked" {
+                    "blocked"
+                } else {
+                    "ready"
+                }
+                .to_owned(),
+            );
+            record["version"] = Value::from(version);
+            record["updated"] = Value::from(now);
+            Self::update_work(connection, &id, &record)?;
+            released.push(record);
+        }
+        Ok(released)
     }
 
     pub fn validate_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
@@ -248,6 +430,7 @@ fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool)
 mod tests {
     use super::{REQUIREMENTS, WorkItemsRepository};
     use rusqlite::Connection;
+    use serde_json::json;
 
     #[test]
     fn bootstrapped_tables_are_required_and_empty_reads_succeed() {
@@ -262,7 +445,11 @@ mod tests {
                 .execute_batch(&format!("CREATE TABLE {}({columns} TEXT)", table.name))
                 .expect("required family creates");
         }
-        assert!(REQUIREMENTS.conditional_tables.is_empty());
+        assert_eq!(REQUIREMENTS.conditional_tables.len(), 1);
+        assert_eq!(
+            REQUIREMENTS.conditional_tables[0].table_exists,
+            "runtime_execution_runs"
+        );
         assert!(
             WorkItemsRepository::work(&connection)
                 .expect("empty work list")
@@ -277,6 +464,54 @@ mod tests {
             WorkItemsRepository::queue(&connection, "agent-a", 0)
                 .expect("empty queue")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn release_failed_work_updates_only_unfinished_items_and_keeps_blocked_status() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("work table creates");
+        for (id, status) in [
+            ("running-work", "running"),
+            ("blocked-work", "blocked"),
+            ("review-work", "review"),
+        ] {
+            let record = json!({
+                "id":id,"rootId":"lead","owner":"worker","status":status,
+                "title":"Work","created":1.0,"updated":1.0,"version":3,
+                "dependencies":[],"results":[],"decisions":[]
+            });
+            connection
+                .execute(
+                    "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
+                    rusqlite::params![id, record.to_string()],
+                )
+                .expect("work record inserts");
+        }
+
+        let reason = "x".repeat(510);
+        let released =
+            WorkItemsRepository::release_failed_work(&connection, "worker", &reason, 12.5)
+                .expect("unfinished items release");
+        assert_eq!(released.len(), 2);
+        let by_id = released
+            .into_iter()
+            .map(|record| (record["id"].as_str().unwrap_or_default().to_owned(), record))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(by_id["running-work"]["status"], "ready");
+        assert_eq!(by_id["blocked-work"]["status"], "blocked");
+        for record in by_id.values() {
+            assert_eq!(record["owner"], serde_json::Value::Null);
+            assert_eq!(record["version"], 4);
+            assert_eq!(record["updated"], 12.5);
+            assert_eq!(record["releases"][0]["reason"], "x".repeat(500));
+        }
+        assert!(
+            WorkItemsRepository::work_record(&connection, "review-work")
+                .expect("review item reads")
+                .is_some_and(|record| record["status"] == "review")
         );
     }
 

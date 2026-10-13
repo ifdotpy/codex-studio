@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from test_isolation import isolate_supervisor_environment
-
 import importlib.util
 import json
 import os
@@ -15,11 +13,25 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
+HERE = Path(os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, str(HERE))
+from oracle_guard import OracleGuard
+
+_oracle_guard = OracleGuard()
+_filesystem_audit_events = {"open", "os.listdir", "os.scandir", "os.stat", "os.lstat", "os.fstatat"}
+sys.addaudithook(
+    lambda event, args: _oracle_guard.audit(event, args)
+    if event in _filesystem_audit_events
+    else None
+)
+os.stat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.stat, path, *args, **kwargs)
+os.lstat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.lstat, path, *args, **kwargs)
+
+from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
-HERE = Path(__file__).resolve().parent
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing
 from codex_sync_entities import register_functions
 
@@ -27,6 +39,7 @@ _fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixtu
 _fixture = importlib.util.module_from_spec(_fixture_spec)
 assert _fixture_spec.loader is not None
 _fixture_spec.loader.exec_module(_fixture)
+_oracle_guard.self_test()
 
 
 def quiet_runtime(state):
@@ -172,6 +185,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def post(self, body):
         return self.backend.request("POST", "/api/work", body={"agent": self.agent_id, **body}, headers=self.headers())
 
+    def post_as(self, agent_id, body):
+        return self.backend.request("POST", "/api/work", body={"agent": agent_id, **body}, headers=self.headers())
+
     def assert_matches_python(self, body):
         expected_result, expected_state = reference_action(self.backend, self.agent_id, body)
         response = self.post(body)
@@ -201,6 +217,82 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
 
+    def test_claim_submit_accept_and_host_result_artifact(self):
+        worker_task = self.post({"action": "create", "title": "Worker submission"})
+        self.assertEqual(worker_task.status, 200, worker_task.body[:1000])
+        worker_id = worker_task.json()["id"]
+        claimed = self.assert_matches_python({
+            "action": "claim", "task_id": worker_id, "owner": self.worker_id,
+        })
+        self.assertEqual(claimed["owner"], self.worker_id)
+        submit = {
+            "action": "submit", "task_id": worker_id, "version": claimed["version"],
+            "result": "Worker result", "checks": "Contract passed", "revision": "abc1234",
+            "files": ["src/example.rs"], "id": "work-submit-replay",
+        }
+        response = self.post_as(self.worker_id, submit)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        result = response.json()["results"][-1]
+        self.assertEqual(result["agent"], self.worker_id)
+        self.assertEqual(result["text"], "Worker result")
+        self.assertEqual(result["checks"], "Contract passed")
+        result_path = Path(result["resultFile"])
+        self.assertTrue(result_path.is_file())
+        self.assertIn("Worker result", result_path.read_text())
+        after_submit = snapshot(self.backend.state)
+        replay = self.post_as(self.worker_id, submit)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(normal_result(replay.json()), normal_result(response.json()))
+        self.assertEqual(snapshot(self.backend.state), after_submit)
+        before_archive = snapshot(self.backend.state)
+        worker_accept = self.post({"action": "accept", "task_id": worker_id, "result": "Verified"})
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(worker_accept.status, 501, worker_accept.body[:1000])
+            self.assertEqual(worker_accept.json().get("error"), "Not implemented: requires workspace-state/agent-archive")
+            self.assertEqual(snapshot(self.backend.state), before_archive)
+        else:
+            self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
+            self.assertEqual(worker_accept.json()["status"], "accepted")
+            self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+
+        lead_task = self.post({"action": "create", "title": "Lead submission"})
+        self.assertEqual(lead_task.status, 200, lead_task.body[:1000])
+        lead_id = lead_task.json()["id"]
+        lead_claim = self.post({"action": "claim", "task_id": lead_id, "owner": self.agent_id})
+        self.assertEqual(lead_claim.status, 200, lead_claim.body[:1000])
+        lead_submit = self.post({
+            "action": "submit", "task_id": lead_id, "version": lead_claim.json()["version"],
+            "result": "Lead result", "checks": "Contract passed", "revision": "abc1234",
+            "id": "lead-submit-replay",
+        })
+        self.assertEqual(lead_submit.status, 200, lead_submit.body[:1000])
+        accepted = self.post({
+            "action": "accept", "task_id": lead_id, "version": lead_submit.json()["version"],
+            "result": "Verified on host", "id": "lead-accept-replay",
+        })
+        self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        self.assertEqual(accepted.json()["status"], "accepted")
+        self.assertEqual(accepted.json()["archive"]["status"], "skipped")
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(accepted.json()["archivePending"], False)
+            vm_task = self.post({"action": "create", "title": "VM submission"})
+            self.assertEqual(vm_task.status, 200, vm_task.body[:1000])
+            vm_id = vm_task.json()["id"]
+            vm_claim = self.post({"action": "claim", "task_id": vm_id, "owner": self.worker_id})
+            self.assertEqual(vm_claim.status, 200, vm_claim.body[:1000])
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
+                worker = json.loads(row[0]); worker["executionMode"] = "vm"
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+            before_vm_submit = snapshot(self.backend.state)
+            vm_submit = self.post_as(self.worker_id, {
+                "action": "submit", "task_id": vm_id, "result": "VM result",
+                "checks": "Contract passed", "revision": "abc1234",
+            })
+            self.assertEqual(vm_submit.status, 501, vm_submit.body[:1000])
+            self.assertEqual(vm_submit.json().get("error"), "Not implemented: requires workspace-state/submission-files")
+            self.assertEqual(snapshot(self.backend.state), before_vm_submit)
+
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})
         self.assertEqual(created.status, 200, created.body[:1000])
@@ -214,9 +306,6 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             cases = (
                 ({"action": "create", "title": "Assigned", "owner": self.worker_id}, "worker-driver/work-assignment"),
                 ({"action": "update", "task_id": created.json()["id"], "owner": self.worker_id}, "worker-driver/work-assignment"),
-                ({"action": "claim", "task_id": created.json()["id"]}, "worker-driver/work-assignment"),
-                ({"action": "submit", "task_id": created.json()["id"], "result": "done", "checks": "ok", "revision": "abc"}, "workspace-state/submission-files"),
-                ({"action": "accept", "task_id": created.json()["id"], "result": "verified"}, "workspace-state/agent-archive"),
             )
         for body, dependency in cases:
             before = snapshot(self.backend.state)
