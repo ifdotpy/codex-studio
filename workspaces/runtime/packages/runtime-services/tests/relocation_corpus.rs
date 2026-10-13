@@ -314,6 +314,43 @@ fn python_location_and_move_corpus_through_consumers() {
 }
 
 #[test]
+fn location_consumer_checks_shared_outbox_storage_before_decoding() {
+    let fixture = Fixture::new();
+    let case = &fixture.data["cases"][0];
+    let (_path, store) = fixture.store("invalid-delivery-metadata");
+    fixture.seed(&store, case);
+    let key = text(&case["outbox"], "id");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_server_outbox SET attempts=-1 WHERE id=?1",
+                [key],
+            )?;
+            Ok(())
+        })
+        .expect("invalid storage metadata fixture");
+    let before = snapshot(&store);
+    assert!(ProjectLocationsRepository::outbox(&store.read().expect("read"), key).is_err());
+    assert!(
+        project_locations::complete(
+            &store,
+            key,
+            "peer",
+            &case["outbox"]["body"],
+            &case["receipt"],
+            text(&fixture.data, "local"),
+            fixture.data["now"].as_f64().expect("clock"),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        snapshot(&store),
+        before,
+        "invalid delivery metadata never writes"
+    );
+}
+
+#[test]
 fn location_commit_failpoints_reopen_and_apply_once() {
     let fixture = Fixture::new();
     let case = &fixture.data["cases"][0];

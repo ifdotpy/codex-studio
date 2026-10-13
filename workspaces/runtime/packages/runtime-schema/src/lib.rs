@@ -262,7 +262,6 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         "https://codex-studio.invalid/analytics-usage.schema.json",
         include_bytes!("schemas/analytics-usage.schema.json"),
     ),
-
 ];
 
 type SchemaResult<T> = Result<T, String>;
@@ -309,7 +308,6 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
-
         "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" | "runtime_access_discovered" => "PersistedAccessClient",
         "runtime_access_invites" => "PersistedAccessInvite",
@@ -520,7 +518,6 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
             "workspace-usage-limits/UsageLimitsWorkspaceEnvelope",
             USAGE_LIMITS_URI,
         ),
-
     ] {
         let validator = compile(&registry, json!({"$ref": uri}), name)?;
         validators.insert(name.to_owned(), validator);

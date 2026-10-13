@@ -69,9 +69,6 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
         check_table::<crate::ProjectLocationRecord>(&connection)?,
     ];
     tables.extend(check_system_tables(&connection)?);
-    tables.push(crate::repositories::project_locations::check_outbox(
-        &connection,
-    )?);
     tables.extend(crate::repositories::federation_messaging::check_state(
         &connection,
     )?);
