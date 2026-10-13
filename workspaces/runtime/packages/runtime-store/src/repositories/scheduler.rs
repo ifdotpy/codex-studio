@@ -641,12 +641,11 @@ impl SchedulerRepository {
         let prepared =
             prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
         if let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
-            let dependency =
-                event_policy_dependency(&event.kind).or_else(|| match event.kind.as_str() {
-                    "complaint" => Some("complaint-policy"),
-                    "work_review" => Some("work-policy"),
-                    _ => None,
-                });
+            let dependency = event_policy_dependency(&event.kind).or(match event.kind.as_str() {
+                "complaint" => Some("complaint-policy"),
+                "work_review" => Some("work-policy"),
+                _ => None,
+            });
             dependency.map(|dependency| (event.kind.as_str(), dependency))
         }) {
             return Ok(Some(refused(
