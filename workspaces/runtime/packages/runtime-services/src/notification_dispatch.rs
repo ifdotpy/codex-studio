@@ -184,6 +184,19 @@ pub fn record_user_submission(
     })
 }
 
+/// Immutable renderer identity, resolved before entering a writer transaction.
+#[derive(Clone, Default)]
+pub struct PublicationContext {
+    server_id: Option<String>,
+}
+impl PublicationContext {
+    pub fn load(root: &std::path::Path) -> Result<Self, NotificationDispatchError> {
+        Ok(Self {
+            server_id: crate::sync_entity_context::local_server_id(&root.to_string_lossy())?,
+        })
+    }
+}
+
 /// Stored outcome and a staged connection-buffer replacement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotificationDispatchResult {
@@ -199,7 +212,7 @@ pub struct NotificationDispatchResult {
 pub fn dispatch_notification(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     identity: &ProviderDeliveryIdentity,
     notification: &Frame,
@@ -208,7 +221,7 @@ pub fn dispatch_notification(
     dispatch_notification_with_effects(
         transaction,
         agent_id,
-        state_dir,
+        publication,
         streams,
         identity,
         notification,
@@ -223,7 +236,7 @@ pub fn dispatch_notification(
 pub fn dispatch_notification_with_effects(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     identity: &ProviderDeliveryIdentity,
     notification: &Frame,
@@ -298,7 +311,7 @@ pub fn dispatch_notification_with_effects(
                 observed_at,
             )?;
             if agent != before {
-                persist_agent(transaction, agent_id, &agent, state_dir)?;
+                persist_agent(transaction, agent_id, &agent, publication)?;
             }
         }
         if kind == "item/commandExecution/outputDelta" {
@@ -347,7 +360,7 @@ pub fn dispatch_notification_with_effects(
             &kind,
             &params,
             identity,
-            state_dir,
+            publication,
             observed_at,
         )? {
             return save_outcome(transaction, &receipt_id, &content_signature, outcome);
@@ -465,7 +478,7 @@ pub fn dispatch_notification_with_effects(
 
         if kind == "item/agentMessage/delta" || matches!(outcome, DispatchOutcome::Ignored { .. }) {
             if agent != before {
-                persist_agent(transaction, agent_id, &agent, state_dir)?;
+                persist_agent(transaction, agent_id, &agent, publication)?;
             }
             return save_outcome(transaction, &receipt_id, &content_signature, outcome);
         }
@@ -478,7 +491,7 @@ pub fn dispatch_notification_with_effects(
             update_common_agent_fields(&mut agent, &kind, &params, observed_at)?;
         }
         if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
-            persist_agent(transaction, agent_id, &agent, state_dir)?;
+            persist_agent(transaction, agent_id, &agent, publication)?;
         }
         save_outcome(transaction, &receipt_id, &content_signature, outcome)
     });
@@ -810,7 +823,7 @@ fn write_text_notification(
 pub fn flush_notification_streams(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     observed_at: f64,
 ) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
@@ -833,7 +846,7 @@ pub fn flush_notification_streams(
             },
         )?;
         if agent != before {
-            persist_agent(transaction, agent_id, &agent, state_dir)?;
+            persist_agent(transaction, agent_id, &agent, publication)?;
         }
         Ok((next != *streams).then_some(next))
     })
@@ -1281,17 +1294,16 @@ fn persist_agent(
     transaction: &Transaction<'_>,
     agent_id: &str,
     agent: &Value,
-    state_dir: &str,
+    publication: &PublicationContext,
 ) -> Result<(), NotificationDispatchError> {
     let mut normalized = agent.clone();
     crate::agents_create::mode_fields(&mut normalized);
     let agent = &normalized;
     NotificationDispatchRepository::put_agent_record(transaction, agent_id, agent)?;
-    let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
     let context = crate::sync_entity_context::agent_view_context(
         transaction,
         agent,
-        project_server_id.as_deref(),
+        publication.server_id.as_deref(),
     )
     .map_err(|_| stored("runtime_agents", agent_id))?;
     let view = crate::sync_views::agent_entity_view(agent, &context)
@@ -1412,7 +1424,7 @@ mod tests {
     fn dispatch_notification(
         transaction: &rusqlite::Transaction<'_>,
         agent: &str,
-        state: &str,
+        state: &super::PublicationContext,
         streams: &mut NotificationStreamBuffer,
         identity: &ProviderDeliveryIdentity,
         frame: &Frame,
@@ -1485,7 +1497,7 @@ mod tests {
         dispatch_notification(
             transaction,
             "agent",
-            ".",
+            &super::PublicationContext::default(),
             streams,
             &identity(cursor),
             &frame(value),
@@ -1497,9 +1509,9 @@ mod tests {
     fn stale_safety_notice_keeps_current_turn_stream_pending() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction");
-        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let initial = super::dispatch_notification(&tx,"agent",&super::PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
         let streams = initial.stream_update.expect("staged stream");
-        let result = super::dispatch_notification(&tx,"agent",".",&streams,&identity(2),&frame(&json!({"method":"model/safetyBuffering/updated","params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}})),1234.5).expect("stale notice");
+        let result = super::dispatch_notification(&tx,"agent",&super::PublicationContext::default(),&streams,&identity(2),&frame(&json!({"method":"model/safetyBuffering/updated","params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}})),1234.5).expect("stale notice");
         assert!(
             result.stream_update.is_none(),
             "unrelated turn must not consume pending text"
@@ -1514,13 +1526,13 @@ mod tests {
     fn injected_unload_refusal_keeps_pending_text_and_has_no_receipt() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction");
-        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let initial = super::dispatch_notification(&tx,"agent",&super::PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
         let streams = initial.stream_update.expect("staged stream");
         let before = streams.clone();
         let result = super::dispatch_notification_with_effects(
             &tx,
             "agent",
-            ".",
+            &super::PublicationContext::default(),
             &streams,
             &identity(2),
             &frame(&json!({"method":"thread/closed","params":{"threadId":"thread"}})),
@@ -1588,7 +1600,7 @@ mod tests {
             let result = super::dispatch_notification(
                 &tx,
                 "agent",
-                ".",
+                &super::PublicationContext::default(),
                 &streams,
                 &identity(1),
                 &frame(
@@ -1645,7 +1657,7 @@ mod tests {
         let result = super::dispatch_notification(
             &tx,
             "agent",
-            ".",
+            &super::PublicationContext::default(),
             &streams,
             &identity(1),
             &frame(
@@ -1725,7 +1737,7 @@ mod tests {
             dispatch_notification(
                 &transaction,
                 "agent",
-                ".",
+                &super::PublicationContext::default(),
                 &mut streams,
                 &new_generation,
                 &frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}})),

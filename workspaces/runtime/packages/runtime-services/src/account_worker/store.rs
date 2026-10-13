@@ -582,6 +582,7 @@ pub(super) fn journal(
         JournalPayload::Exit(value) => json!({"exit":value}),
         JournalPayload::Other { kind, payload } => json!({"kind":kind,"payload":payload}),
     };
+    let publication = crate::notification_dispatch::PublicationContext::load(store.root())?;
     let digest = studio_runtime_store::sha256_hex(payload.to_string().as_bytes());
     scheduler::lifecycle_transaction_with(store, |tx| {
         if entry.cursor.0 <= checkpoint(tx, account, entry.generation.0)? {
@@ -648,7 +649,7 @@ pub(super) fn journal(
                             next = flush_notification_streams(
                                 tx,
                                 &identity.agent_id,
-                                &store.root().to_string_lossy(),
+                                &publication,
                                 streams,
                                 now(),
                             )?
@@ -667,7 +668,7 @@ pub(super) fn journal(
                             let dispatched = dispatch_notification(
                                 tx,
                                 &identity.agent_id,
-                                &store.root().to_string_lossy(),
+                                &publication,
                                 streams,
                                 &ProviderDeliveryIdentity {
                                     provider_handle: ProviderHandle::for_account(account)
@@ -685,7 +686,7 @@ pub(super) fn journal(
                                 flush_notification_streams(
                                     tx,
                                     &identity.agent_id,
-                                    &store.root().to_string_lossy(),
+                                    &publication,
                                     &staged,
                                     now(),
                                 )?
@@ -1111,6 +1112,7 @@ pub(super) fn flush_streams(
     account: &str,
     _streams: NotificationStreamBuffer,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
+    let publication = crate::notification_dispatch::PublicationContext::load(store.root())?;
     scheduler::lifecycle_transaction_with(store, |tx| {
         // A failed/cancelled journal job may have moved the live buffer. The
         // committed pending record, never that possibly empty cache, owns text.
@@ -1124,7 +1126,7 @@ pub(super) fn flush_streams(
                 && let Some(next) = flush_notification_streams(
                     tx,
                     &identity.agent_id,
-                    &store.root().to_string_lossy(),
+                    &publication,
                     &streams,
                     now(),
                 )?

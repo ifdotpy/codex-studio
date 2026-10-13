@@ -337,3 +337,35 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
     );
     replacement.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn invalid_publication_identity_refuses_before_entering_writer() {
+    let state = State::new().await;
+    state
+        .bridge
+        .run(|store| {
+            let directory = store.root().join("multi-server");
+            std::fs::create_dir_all(&directory).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+            }
+            std::fs::write(directory.join("identity.json"), b"invalid identity").unwrap();
+            let entered = std::cell::Cell::new(false);
+            let result = scheduler::lifecycle_transaction(store, |_| {
+                entered.set(true);
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(
+                !entered.get(),
+                "identity must be resolved before the writer begins"
+            );
+            assert!(crate::notification_dispatch::PublicationContext::load(store.root()).is_err());
+            Ok(())
+        })
+        .await
+        .unwrap();
+}

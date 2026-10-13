@@ -62,12 +62,12 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
     store: &RuntimeStore,
     change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, E>,
 ) -> Result<T, E> {
+    let server_id = crate::sync_entity_context::local_server_id(&store.root().to_string_lossy())?;
     store.transaction_with(|tx| {
         let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0)).map_err(StoreError::from)?;
         let result = change(tx)?;
         let mut statement = tx.prepare("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id").map_err(StoreError::from)?;
         let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(StoreError::from)?;
-        let server_id = crate::sync_entity_context::local_server_id(&store.root().to_string_lossy())?;
         for (id,raw) in rows {
             let agent: Value = serde_json::from_str(&raw).map_err(|_|StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
             let context = crate::sync_entity_context::agent_view_context(tx,&agent,server_id.as_deref())?;

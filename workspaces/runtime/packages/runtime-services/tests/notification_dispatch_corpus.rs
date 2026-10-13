@@ -86,6 +86,9 @@ impl studio_runtime_services::notification_dispatch::NotificationEffects for Cap
     }
 }
 fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, String> {
+    let publication =
+        studio_runtime_services::notification_dispatch::PublicationContext::load(store.root())
+            .map_err(|e| e.to_string())?;
     use studio_runtime_providers::LineDecoder;
     use studio_runtime_services::notification_dispatch::{
         NotificationStreamBuffer, ProviderDeliveryIdentity,
@@ -169,7 +172,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             return store.transaction_with(|tx| {
                 let before = raw_rows(tx);
                 let error = dispatch_notification(
-                    tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects,
+                    tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects,
                 ).expect_err("missing service must refuse before acknowledgement");
                 assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
@@ -181,7 +184,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             let refusal = store.transaction_with(|tx| {
                 tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
                 let before = raw_rows(tx);
-                let refusal = dispatch_notification(tx, agent_id, store.root().to_str().expect("path"), &streams, &identity, &frame, 1234.5, &effects).expect_err("late failure must reach the service caller");
+                let refusal = dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects).expect_err("late failure must reach the service caller");
                 assert_eq!(before, raw_rows(tx), "service leaked rows after caller caught its error");
                 assert_eq!(streams, original_streams, "service leaked stream state");
                 tx.execute_batch("DROP TRIGGER corpus_late_failure; INSERT INTO corpus_caller VALUES ('caller committed');")?;
@@ -204,7 +207,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 dispatch_notification(
                     tx,
                     agent_id,
-                    store.root().to_str().expect("path"),
+                    &publication,
                     &streams,
                     &identity,
                     &frame,
@@ -216,7 +219,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         }
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {
-            rolled = Some(dispatch_notification(tx, agent_id, store.root().to_str().expect("state path"), &streams, &identity, &frame, 1234.5, &effects)?);
+            rolled = Some(dispatch_notification(tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, &effects)?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         });
         assert!(rollback.is_err());
@@ -228,7 +231,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 dispatch_notification(
                     tx,
                     agent_id,
-                    store.root().to_str().expect("state path"),
+                    &publication,
                     &streams,
                     &identity,
                     &frame,
@@ -248,7 +251,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 let replay = dispatch_notification(
                     tx,
                     agent_id,
-                    store.root().to_str().expect("path"),
+                    &publication,
                     &streams,
                     &identity,
                     &frame,
@@ -276,7 +279,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .remove(0);
         store.transaction_with(|tx| {
             let before = tx.total_changes();
-            assert!(matches!(dispatch_notification(tx,agent_id,store.root().to_str().expect("path"),&streams,&identity,&conflict,1234.5,&effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
+            assert!(matches!(dispatch_notification(tx,agent_id,&publication,&streams,&identity,&conflict,1234.5,&effects), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
             assert_eq!(before,tx.total_changes());
             Ok::<_,studio_runtime_store::StoreError>(())
         }).map_err(|e|e.to_string())?;
@@ -312,7 +315,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             studio_runtime_services::notification_dispatch::flush_notification_streams(
                 tx,
                 "agent",
-                store.root().to_str().expect("path"),
+                &publication,
                 &streams,
                 1234.5,
             )
@@ -429,12 +432,15 @@ fn flush(
     use studio_runtime_services::notification_dispatch::{
         NotificationDispatchError, flush_notification_streams,
     };
+    let publication =
+        studio_runtime_services::notification_dispatch::PublicationContext::load(store.root())
+            .map_err(|e| e.to_string())?;
     let mut rolled = None;
     let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
         rolled = Some(flush_notification_streams(
             tx,
             agent_id,
-            store.root().to_str().expect("path"),
+            &publication,
             streams,
             1234.5,
         )?);
@@ -443,13 +449,7 @@ fn flush(
     assert!(rollback.is_err());
     let result = store
         .transaction_with(|tx| {
-            flush_notification_streams(
-                tx,
-                agent_id,
-                store.root().to_str().expect("path"),
-                streams,
-                1234.5,
-            )
+            flush_notification_streams(tx, agent_id, &publication, streams, 1234.5)
         })
         .map_err(|e| e.to_string())?;
     assert_eq!(
