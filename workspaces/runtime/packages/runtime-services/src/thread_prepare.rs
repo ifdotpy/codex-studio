@@ -149,6 +149,11 @@ pub struct CatalogSnapshot {
     pub saved_digest: Option<String>,
 }
 
+/// Return the selected full tool inventory before per-agent preparation filters.
+pub(crate) fn full_tool_catalog(catalog: &CatalogSnapshot) -> Vec<ToolDefinition> {
+    catalog.definitions.clone()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuidanceBundle {
     pub instructions: String,
