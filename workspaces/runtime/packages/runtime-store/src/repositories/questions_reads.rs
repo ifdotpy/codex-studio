@@ -116,7 +116,7 @@ pub struct QuestionsReadsRepository;
 
 impl QuestionsReadsRepository {
     pub fn agents(connection: &Connection) -> StoreResult<Vec<QuestionsReadsRecord>> {
-        Ok(Table::<AgentRecord>::new(connection)
+        Table::<AgentRecord>::new(connection)
             .list()?
             .into_iter()
             .map(|record| {
@@ -130,11 +130,11 @@ impl QuestionsReadsRepository {
                 })?;
                 Ok(QuestionsReadsRecord { id, value })
             })
-            .collect::<Result<_, crate::StoreError>>()?)
+            .collect::<Result<_, crate::StoreError>>()
     }
 
     pub fn questions(connection: &Connection) -> StoreResult<Vec<QuestionsRequestRecord>> {
-        Ok(Table::<RequestRecord>::new(connection)
+        Table::<RequestRecord>::new(connection)
             .list_with_raw()?
             .into_iter()
             .map(|(record, raw)| {
@@ -147,7 +147,7 @@ impl QuestionsReadsRepository {
                 })?;
                 Ok(QuestionsRequestRecord { id, raw, value })
             })
-            .collect::<Result<_, crate::StoreError>>()?)
+            .collect::<Result<_, crate::StoreError>>()
     }
 
     pub fn complaint(
@@ -170,7 +170,7 @@ impl QuestionsReadsRepository {
     }
 
     pub fn checkpoints(connection: &Connection) -> StoreResult<Vec<QuestionsReadsRecord>> {
-        Ok(Table::<CheckpointRecord>::new(connection)
+        Table::<CheckpointRecord>::new(connection)
             .list()?
             .into_iter()
             .map(|record| {
@@ -183,6 +183,6 @@ impl QuestionsReadsRepository {
                 })?;
                 Ok(QuestionsReadsRecord { id, value })
             })
-            .collect::<Result<_, crate::StoreError>>()?)
+            .collect::<Result<_, crate::StoreError>>()
     }
 }
