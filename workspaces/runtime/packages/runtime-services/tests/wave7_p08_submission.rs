@@ -494,6 +494,29 @@ fn retry_reconstructs_full_text_and_original_assets_and_rejects_a_changed_receip
             "receipt conflict rolled back all submission writes",
         );
     }
+    // A full transcript is proof for the frozen retry; a preview alone is not.
+    let tx = db.transaction().expect("tx");
+    tx.execute("DELETE FROM runtime_item_fulltext WHERE id='agent:one'", [])
+        .expect("missing fulltext");
+    let incomplete = state(&tx);
+    assert!(
+        commit_start(
+            &tx,
+            &intent(&before_retry),
+            "request:retry",
+            binding(7),
+            &prepared,
+            &later
+        )
+        .is_err()
+    );
+    compare(
+        &tx,
+        &incomplete,
+        "missing long fulltext refuses before submission writes",
+    );
+    drop(tx);
+    compare(&db, &before_retry, "missing fulltext refusal rolled back");
     let tx = db.transaction().expect("tx");
     commit_start(
         &tx,
@@ -619,4 +642,93 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
     );
     drop(tx);
     compare(&db, &before, "ownership loss after freeze rolls back");
+}
+
+#[test]
+fn python_retry_without_a_rust_receipt_migrates_only_a_complete_transcript() {
+    let root = tempfile::tempdir().expect("tmpfs");
+    let cases = corpus(root.path());
+    let retry = cases
+        .iter()
+        .find(|c| c["retry"] == true && c["fault"].is_null())
+        .expect("Python retry");
+    for fault in [
+        "none",
+        "missing_item",
+        "missing_inputs",
+        "partial_input",
+        "missing_assets",
+        "missing_clock",
+        "missing_text",
+        "partial_text",
+    ] {
+        let path = root.path().join(format!("python-retry-{fault}.sqlite3"));
+        std::fs::copy(retry["path"].as_str().expect("path"), &path)
+            .expect("Python-written prestate");
+        let mut db = rusqlite::Connection::open(&path).expect("db");
+        compare(
+            &db,
+            &retry["before"],
+            "untouched Python retry, no Rust receipt seeded",
+        );
+        assert_eq!(state(&db)["runtime_operation_receipts"], json!([]));
+        match fault {
+            "missing_item" => {
+                db.execute("DELETE FROM runtime_items WHERE id='agent:one'", [])
+                    .expect("missing item");
+            }
+            "partial_text" => {
+                db.execute("UPDATE runtime_items SET record=json_set(record,'$.text','partial') WHERE id='agent:one'",[]).expect("partial text");
+            }
+            "none" => {}
+            _ => {
+                let field = match fault {
+                    "missing_inputs" => "$.inputs",
+                    "partial_input" => "$.inputs[0].assets",
+                    "missing_assets" => "$.assets",
+                    "missing_clock" => "$.at",
+                    "missing_text" => "$.text",
+                    _ => unreachable!(),
+                };
+                db.execute(
+                    "UPDATE runtime_items SET record=json_remove(record,?1) WHERE id='agent:one'",
+                    [field],
+                )
+                .expect("incomplete item");
+            }
+        }
+        let before = state(&db);
+        let tx = db.transaction().expect("tx");
+        let result = commit_start(
+            &tx,
+            &intent(&before),
+            "request:retry",
+            binding(7),
+            &params(&before),
+            &submission(&before, 170.0),
+        );
+        assert_eq!(result.is_ok(), fault == "none", "{fault}: {result:?}");
+        if fault == "none" {
+            tx.commit().expect("commit Python-origin retry");
+        } else {
+            drop(tx);
+        }
+        drop(db);
+        let db = rusqlite::Connection::open(&path).expect("restart");
+        if fault == "none" {
+            let mut expected = retry["after"].clone();
+            add_receipts(&mut expected, &["retry"], true);
+            compare(
+                &db,
+                &expected,
+                "Python transcript migrated through commit_start without a prior Rust receipt",
+            );
+        } else {
+            compare(
+                &db,
+                &before,
+                "unproven retry refused, all rows unchanged after restart",
+            );
+        }
+    }
 }

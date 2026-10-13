@@ -319,15 +319,16 @@ impl Controls {
                     .filter(|t| !t.is_empty() && t.len() <= 1024)
                     .ok_or(ControlError::Request)?;
                 let mut scope = scope;
+                let thread = thread.ok_or(ControlError::Request)?;
                 // The task identity is stable even when a client omits request_id.
                 scope.request_id.get_or_insert_with(|| {
-                    format!("stop-task:{}:{task}", thread.as_deref().unwrap_or(""))
+                    format!("stop-task:{}", request_signature(&json!([thread, task])))
                 });
                 self.bound_call(
                     &binding,
                     &scope,
                     "claude/stopTask",
-                    json!({"threadId":thread.ok_or(ControlError::Request)?,"taskId":task}),
+                    json!({"threadId":thread,"taskId":task}),
                     20,
                 )
                 .await

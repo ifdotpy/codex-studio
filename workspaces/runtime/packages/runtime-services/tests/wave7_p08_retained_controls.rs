@@ -194,7 +194,56 @@ async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline
         assert_eq!(calls[0].identity.scope.epoch, 2);
         assert_eq!(
             calls[0].identity.scope.request_id.as_deref(),
-            Some("stop-task:thread:task")
+            Some(
+                format!(
+                    "stop-task:{}",
+                    studio_runtime_services::event_write::request_signature(&json!([
+                        "thread", "task"
+                    ]))
+                )
+                .as_str()
+            )
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn opaque_stop_ids_have_distinct_stable_request_identities() {
+    let port = port("none");
+    let controls = Controls::new(
+        Arc::new(NoWrites),
+        Arc::new(RetainedClaudeSession::new(port.clone())),
+    );
+    for (thread, task, request) in [
+        ("a:b", "c", None),
+        ("a", "b:c", None),
+        ("a:b", "c", None),
+        ("a:b", "c", Some("caller-request")),
+    ] {
+        let agent = json!({"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":thread});
+        let mut body = json!({"action":"stop_task","task_id":task});
+        if let Some(request) = request {
+            body["request_id"] = json!(request);
+        }
+        controls
+            .read_or_stop(&agent, &body, None)
+            .await
+            .expect("stop");
+    }
+    let calls = port.calls.lock().expect("calls");
+    assert_eq!(calls.len(), 4);
+    assert_ne!(
+        calls[0].identity.scope.request_id, calls[1].identity.scope.request_id,
+        "colon concatenation collision witness"
+    );
+    assert_eq!(
+        calls[0].identity.scope.request_id, calls[2].identity.scope.request_id,
+        "same tuple replays the same identity"
+    );
+    assert_eq!(
+        calls[3].identity.scope.request_id.as_deref(),
+        Some("caller-request")
+    );
+    assert_eq!(calls[0].params, json!({"threadId":"a:b","taskId":"c"}));
+    assert_eq!(calls[1].params, json!({"threadId":"a","taskId":"b:c"}));
 }
