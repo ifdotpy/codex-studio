@@ -1303,7 +1303,7 @@ def probe_operations(
     from http_backend_harness import BackendProcess, HttpResult
 
     with tempfile.TemporaryDirectory(
-        prefix="rust-http-ledger-", dir=DEFAULT_CACHE
+        prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
         backend = BackendProcess(scratch, claude_bin=None)
