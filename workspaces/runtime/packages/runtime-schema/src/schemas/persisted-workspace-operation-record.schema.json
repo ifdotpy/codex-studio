@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "agent": {
+      "title": "Agent",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["capture", "checkpoint", "restore", "branch", "provision"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "capture_pending",
+        "capture_running",
+        "provider_pending",
+        "provider_ready",
+        "local_mutation",
+        "recovery_required",
+        "completed",
+        "failed"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Provider"
+    },
+    "restartHold": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Restarthold"
+    },
+    "result": {
+      "$ref": "#/$defs/JsonValue"
+    },
+    "signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Signature"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source"
+    }
+  },
+  "required": ["id", "kind", "agent", "phase"],
+  "title": "PersistedWorkspaceOperationRecord",
+  "type": "object"
+}
