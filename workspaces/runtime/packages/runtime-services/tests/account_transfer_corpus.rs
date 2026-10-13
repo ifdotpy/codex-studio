@@ -1,0 +1,222 @@
+//! Complete differential outputs from real Python transfer methods.
+use serde_json::{Value, json};
+use std::{path::Path, process::Command};
+use studio_runtime_services::account_transfer::{
+    Action, Command as Transition, Snapshot, Ticket, before_start,
+};
+
+fn read(case: &Value) -> Snapshot {
+    Snapshot::read(
+        case["raw"].as_str().expect("raw Python row"),
+        case["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .map(|pair| {
+                (
+                    pair[0].as_str().expect("id").to_owned(),
+                    pair[1].as_str().expect("raw agent").to_owned(),
+                )
+            }),
+    )
+    .expect("Python-written state validates")
+}
+#[test]
+fn python_transfer_actions_restart_and_projection() {
+    let python = std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or_else(|| "python3".into());
+    let output = Command::new(python)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
+        .output()
+        .expect("oracle starts");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle cases");
+    assert!(cases.len() >= 60);
+    for case in cases {
+        let snapshot = read(&case);
+        let command = match case["command"].as_str().expect("command") {
+            "restart" => Transition::Restart,
+            "cancel" => Transition::Action(Action::Cancel),
+            "retry" => Transition::Action(Action::Retry),
+            "finish_history" => Transition::Action(Action::FinishHistory),
+            _ => panic!("oracle command"),
+        };
+        let expected = &case["expected"];
+        match snapshot.decide(command) {
+            Err(error) => assert_eq!(
+                json!(error.to_string()),
+                expected["error"],
+                "{}",
+                case["name"]
+            ),
+            Ok(mut decision) => {
+                assert!(
+                    expected["error"].is_null(),
+                    "{} expected refusal",
+                    case["name"]
+                );
+                decision.stamp(100.0, None).expect("stamp");
+                let followups: Vec<Value> = decision
+                    .followups
+                    .iter()
+                    .map(|f| json!({"agent":f.agent,"id":f.id,"text":f.text}))
+                    .collect();
+                assert_eq!(
+                    decision.operation, expected["operation"],
+                    "{} operation",
+                    case["name"]
+                );
+                assert_eq!(
+                    json!(decision.agents),
+                    expected["agents"],
+                    "{} agents",
+                    case["name"]
+                );
+                assert_eq!(
+                    json!(followups),
+                    expected["followups"],
+                    "{} followups",
+                    case["name"]
+                );
+                assert_eq!(
+                    decision.public_view().expect("view"),
+                    expected["public"],
+                    "{} public",
+                    case["name"]
+                );
+                let roundtrip = Snapshot::read(
+                    &decision.encoded().expect("encode"),
+                    decision
+                        .agents
+                        .iter()
+                        .map(|(id, value)| (id.clone(), value.to_string())),
+                )
+                .expect("stored roundtrip");
+                assert_eq!(
+                    roundtrip.public_view().expect("view"),
+                    expected["public"],
+                    "{} member order after write",
+                    case["name"]
+                );
+            }
+        }
+    }
+}
+fn fixture() -> (Value, Value, Ticket) {
+    let op = json!({"id":"op","leadId":"a","targetAccountKey":"target","status":"pending","created":1.0,"members":{"a":{"phase":"waiting","sourceAccountKey":"source","lazy":false}}});
+    let agent = json!({"id":"a","rootId":"a","epoch":3,"status":"idle","accountKey":"source","accountTransferId":"op"});
+    let ticket = Ticket {
+        operation: "op".into(),
+        agent: "a".into(),
+        epoch: 3,
+        account: "target".into(),
+        connection: "c1".into(),
+        request: "r1".into(),
+    };
+    (op, agent, ticket)
+}
+fn snapshot(op: &Value, agent: &Value) -> Snapshot {
+    Snapshot::read(&op.to_string(), [("a".into(), agent.to_string())]).expect("snapshot")
+}
+#[test]
+fn exact_native_receipt_survives_restart_without_resubmission() {
+    let (op, agent, ticket) = fixture();
+    let preparing = snapshot(&op, &agent)
+        .begin_read("a")
+        .expect("begin preparation");
+    let mut submitted = snapshot(&preparing.operation, &agent)
+        .submit(&ticket, "thread/fork", json!({"threadId":"source"}))
+        .expect("reserve");
+    submitted.operation["members"]["a"]["submittedAt"] = json!(10.0);
+    let restarted = snapshot(&submitted.operation, &agent)
+        .decide(Transition::Restart)
+        .expect("restart");
+    assert_eq!(restarted.operation["members"]["a"]["phase"], "unknown");
+    let restored = snapshot(&restarted.operation, &agent);
+    assert!(restored.submit(&ticket, "thread/fork", json!({})).is_err());
+    let mut foreign = ticket.clone();
+    foreign.connection = "c2".into();
+    assert!(
+        restored
+            .receive(&foreign, Some(json!({"thread":{"id":"fork"}})))
+            .is_err()
+    );
+    let received = restored
+        .receive(&ticket, Some(json!({"thread":{"id":"fork"}})))
+        .expect("late exact receipt");
+    assert_eq!(received.operation["members"]["a"]["phase"], "ready");
+    let saved = snapshot(&received.operation, &agent);
+    assert!(
+        !saved
+            .receive(&ticket, Some(json!({"thread":{"id":"fork"}})))
+            .expect("replay")
+            .changed
+    );
+    assert!(
+        saved
+            .receive(&ticket, Some(json!({"thread":{"id":"different-fork"}})))
+            .is_err()
+    );
+    assert!(before_start(&agent).is_err());
+    let mut newer = agent.clone();
+    newer["epoch"] = json!(4);
+    assert!(
+        snapshot(&restarted.operation, &newer)
+            .receive(&ticket, Some(json!({"thread":{"id":"fork"}})))
+            .is_err()
+    );
+}
+#[test]
+fn malformed_records_fail_without_panicking_or_echoing_values() {
+    let (op, agent, _) = fixture();
+    for (pointer, value) in [
+        ("/members", json!([])),
+        ("/members/a/phase", json!("SECRET_INVALID")),
+        ("/members/a/lazy", json!("SECRET_INVALID")),
+        ("/status", Value::Null),
+        ("/created", json!(true)),
+    ] {
+        let mut invalid = op.clone();
+        *invalid
+            .pointer_mut(pointer)
+            .unwrap_or_else(|| panic!("fixture path {pointer}")) = value;
+        let result = Snapshot::read(&invalid.to_string(), [("a".into(), agent.to_string())]);
+        assert!(result.is_err(), "{pointer}");
+        assert!(
+            !result
+                .err()
+                .expect("error")
+                .to_string()
+                .contains("SECRET_INVALID")
+        );
+    }
+}
+
+#[test]
+fn request_replay_is_bound_to_lead_destination_and_scope() {
+    let (mut op, agent, _) = fixture();
+    op["requests"] =
+        json!({"alias":{"leadId":"a","targetAccountKey":"target","scope":"subagents"}});
+    let saved = snapshot(&op, &agent);
+    assert!(
+        saved
+            .replay("op", "a", "target", "team")
+            .expect("legacy default scope")
+    );
+    assert!(
+        saved
+            .replay("alias", "a", "target", "subagents")
+            .expect("alias")
+    );
+    assert!(saved.replay("op", "a", "target", "subagents").is_err());
+    assert!(saved.replay("alias", "a", "changed", "subagents").is_err());
+    assert!(
+        saved
+            .replay("alias", "other", "target", "subagents")
+            .is_err()
+    );
+    assert!(!saved.replay("fresh", "a", "target", "team").expect("new"));
+}
