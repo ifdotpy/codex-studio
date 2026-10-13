@@ -225,7 +225,7 @@ impl PreparedCapture {
 }
 /// Raw database rows are accepted only through `from_records`.
 #[derive(Default)]
-pub struct CaptureRows {
+struct CaptureRows {
     pub turn: Option<Value>,
     pub item: Option<Value>,
     pub usage: Option<Value>,
@@ -240,10 +240,7 @@ pub struct CaptureSnapshot {
     rows: CaptureRows,
 }
 impl CaptureSnapshot {
-    pub fn from_records(
-        prepared: PreparedCapture,
-        rows: CaptureRows,
-    ) -> Result<Self, CaptureError> {
+    fn from_records(prepared: PreparedCapture, rows: CaptureRows) -> Result<Self, CaptureError> {
         for (table, row) in [
             (CaptureTable::Turns, &rows.turn),
             (CaptureTable::Items, &rows.item),
@@ -268,8 +265,16 @@ impl CaptureSnapshot {
         .into_iter()
         .flatten()
         {
-            if row["agentId"] != meta["agentId"] || row["threadId"] != meta["threadId"] {
+            if row["agentId"] != meta["agentId"]
+                || row["threadId"] != meta["threadId"]
+                || row["rootId"] != meta["rootId"]
+            {
                 return Err(CaptureError::Invalid("/snapshot/row/identity"));
+            }
+        }
+        for row in [&rows.turn, &rows.item].into_iter().flatten() {
+            if row["turnId"] != meta["turnId"] {
+                return Err(CaptureError::Invalid("/snapshot/row/turnId"));
             }
         }
         Ok(Self {

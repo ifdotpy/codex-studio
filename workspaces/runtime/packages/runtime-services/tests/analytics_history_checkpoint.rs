@@ -15,10 +15,17 @@ impl HistoryBudgetSink for Budget {
         Ok(())
     }
 }
+// Allow the fixed mutation runner to keep SQLite fixtures on caller-owned tmpfs.
+fn fixture_directory() -> tempfile::TempDir {
+    std::env::var_os("STUDIO_ANALYTICS_TEST_TMPDIR")
+        .map(tempfile::tempdir_in)
+        .unwrap_or_else(tempfile::tempdir)
+        .expect("disposable fixture directory")
+}
 fn fixture() -> (tempfile::TempDir, Value) {
     static TEMPLATE: OnceLock<(tempfile::TempDir, Value)> = OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
-        let root = tempfile::tempdir().expect("template");
+        let root = fixture_directory();
         let out = Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").expect("isolated Python"))
             .arg(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,7 +41,7 @@ fn fixture() -> (tempfile::TempDir, Value) {
         );
         (root, serde_json::from_slice(&out.stdout).expect("agent"))
     });
-    let copy = tempfile::tempdir().expect("case");
+    let copy = fixture_directory();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
         fs::copy(root.path().join(name), copy.path().join(name)).expect("clone template");
     }
@@ -682,4 +689,198 @@ fn conflicting_header_alias_does_not_authorize_a_foreign_file() {
     .expect("refusal");
     assert_eq!(batch.checkpoint()["status"], "wrongThread");
     assert_eq!(batch.checkpoint()["offset"], 0);
+}
+
+#[test]
+fn changed_consumed_range_is_refused_before_any_effect() {
+    struct NoEffects;
+    impl HistoryBudgetSink for NoEffects {
+        fn capture(&self, _: &Value, _: &Value, _: f64) -> Result<(), HistoryError> {
+            panic!("changed file must be refused before budget capture")
+        }
+    }
+    for change in ["rewrite", "truncate", "replace"] {
+        let (root, agent) = fixture();
+        let mut lines = records();
+        lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+        lines.push(json!({"type":"ignored","padding":"x".repeat(512)}));
+        let path = file(root.path(), &lines, b"");
+        let original = fs::read(&path).expect("original");
+        let store = RuntimeStore::open(Some(root.path())).expect("store");
+        let batch = history::prepare(
+            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            root.path(),
+            RolloutPath::Found(path.clone()),
+            BatchLimits::default(),
+            200.,
+            &AtomicBool::new(false),
+        )
+        .expect("read batch");
+        match change {
+            "rewrite" => {
+                let text = String::from_utf8(original.clone())
+                    .expect("JSON")
+                    .replace("task_started", "task_storted");
+                assert_eq!(text.len(), original.len());
+                assert_eq!(
+                    &text.as_bytes()[text.len() - 256..],
+                    &original[original.len() - 256..]
+                );
+                fs::write(&path, text).expect("rewrite consumed bytes, preserve final anchor");
+            }
+            "truncate" => fs::write(&path, b"").expect("truncate"),
+            _ => {
+                fs::rename(&path, root.path().join("old-file")).expect("replace inode");
+                fs::write(&path, &original).expect("same bytes, new inode");
+            }
+        }
+        assert!(
+            matches!(
+                batch.commit(&store, &NoEffects, 201.),
+                Err(HistoryError::ChangedDuringRead)
+            ),
+            "{change}"
+        );
+        assert!(checkpoint(&store).is_none());
+        let db = AnalyticsRepository::new(root.path())
+            .open_read_only()
+            .expect("read");
+        for table in [
+            "analytics_turns",
+            "analytics_usage",
+            "analytics_notifications",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                    .expect("count"),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn discovery_round_reuses_profile_scan_and_enforces_filename_and_symlink_rules() {
+    let root = tempfile::tempdir().expect("profile");
+    let sessions = root.path().join("sessions");
+    fs::create_dir(&sessions).expect("sessions");
+    let cancel = AtomicBool::new(false);
+    let first = sessions.join("rollout-fixture-first.jsonl");
+    let second = sessions.join("rollout-fixture-second.jsonl");
+    fs::write(&first, "first").expect("first");
+    fs::write(&second, "second").expect("second");
+    fs::write(sessions.join("unrelated-third.jsonl"), "invalid filename").expect("foreign name");
+    let outside = tempfile::tempdir().expect("outside profile");
+    fs::write(
+        outside.path().join("rollout-fixture-hidden.jsonl"),
+        "hidden",
+    )
+    .expect("hidden");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), sessions.join("linked-directory")).expect("symlink");
+    let mut round = history::DiscoveryRound::default();
+    assert_eq!(
+        round
+            .resolve(root.path(), "first", &cancel)
+            .expect("first scan"),
+        RolloutPath::Found(first)
+    );
+    fs::write(sessions.join("rollout-duplicate-second.jsonl"), "duplicate")
+        .expect("new file after round snapshot");
+    assert_eq!(
+        round
+            .resolve(root.path(), "second", &cancel)
+            .expect("shared scan"),
+        RolloutPath::Found(second)
+    );
+    assert_eq!(
+        round
+            .resolve(root.path(), "third", &cancel)
+            .expect("prefix"),
+        RolloutPath::Missing
+    );
+    assert_eq!(
+        round
+            .resolve(root.path(), "hidden", &cancel)
+            .expect("symlink directory"),
+        RolloutPath::Missing
+    );
+    assert_eq!(
+        history::discover(root.path(), "second", &cancel).expect("next round"),
+        RolloutPath::Ambiguous
+    );
+}
+
+#[test]
+fn collector_shares_discovery_between_actors_until_next_round() {
+    let (root, agent) = fixture();
+    let sessions = root.path().join("sessions");
+    fs::create_dir(&sessions).expect("sessions");
+    let path = file(&sessions, &records(), b"");
+    let mut second = agent.clone();
+    second["id"] = json!("b");
+    second["parentId"] = json!("a");
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('b',?)",
+                [second.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("second managed actor");
+    let actors = [agent, second];
+    let cancel = AtomicBool::new(false);
+    let mut collector = history::HistoryCollector::default();
+    for index in 0..2 {
+        assert!(
+            collector
+                .step(
+                    &store,
+                    &actors,
+                    |_| Ok(root.path().to_path_buf()),
+                    history::HistoryClock {
+                        observed_at: 200.,
+                        monotonic: 10. + index as f64
+                    },
+                    &cancel,
+                    &Budget
+                )
+                .expect("actor import")
+        );
+        if index == 0 {
+            fs::copy(&path, sessions.join("rollout-duplicate-thread.jsonl"))
+                .expect("new file between actors");
+        }
+    }
+    let db = AnalyticsRepository::new(root.path())
+        .open_read_only()
+        .expect("read");
+    assert_eq!(
+        Repo::read(&db, CaptureTable::History, "b:default:thread")
+            .expect("row")
+            .expect("second checkpoint")["status"],
+        "current"
+    );
+    drop(db);
+    collector.begin_round();
+    collector
+        .step(
+            &store,
+            &actors,
+            |_| Ok(root.path().to_path_buf()),
+            history::HistoryClock {
+                observed_at: 201.,
+                monotonic: 20.,
+            },
+            &cancel,
+            &Budget,
+        )
+        .expect("next round");
+    assert_eq!(
+        checkpoint(&store).expect("new discovery")["status"],
+        "ambiguous"
+    );
 }
