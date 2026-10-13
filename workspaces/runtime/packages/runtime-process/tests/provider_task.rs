@@ -483,10 +483,11 @@ async fn real_write(
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn real_supervisor_incomplete_initialization_recovers_same_child_and_replays_after_ack() {
-    watchdog(async {
+    // Wait for the real startup handshake before arming the scenario hang guard.
     let state = DisposableState::new();
     let python = python_executable();
     let mut supervisor = SupervisorProcess::start(&state, &python);
+    real_watchdog(async {
     let script = r#"
 import json,sys
 for line in sys.stdin:
@@ -812,18 +813,11 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
-    watchdog(async {
+    // Wait for the real startup handshake before arming the scenario hang guard.
     let state = DisposableState::new();
     let python = python_executable();
     let mut supervisor = SupervisorProcess::start(&state, &python);
-    // Socket existence precedes chmod and serve_forever in the Python supervisor.
-    // Finish a handshake before renaming, otherwise startup can chmod a missing
-    // path and exit while the proxy is connecting.
-    let endpoint = state.socket();
-    let identity = state.identity();
-    tokio::task::spawn_blocking(move || {
-        drop(SupervisorClient::connect(endpoint, identity).unwrap());
-    }).await.unwrap();
+    real_watchdog(async {
     let actual = state.0.join("actual.sock");
     std::fs::rename(state.socket(), &actual).unwrap();
     let listener = UnixListener::bind(state.socket()).unwrap();
@@ -907,11 +901,11 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn initialized_identity_is_scoped_to_real_child_generation() {
-    watchdog(async {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let state = DisposableState::new();
-        let python = python_executable();
-        let mut supervisor = SupervisorProcess::start(&state, &python);
+    // Wait for the real startup handshake before arming the scenario hang guard.
+    let state = DisposableState::new();
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start(&state, &python);
+    real_watchdog(async {
         let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)\n elif m.get('method')=='initialized': print(json.dumps({'method':'observed/initialized'}),flush=True)\n elif m.get('method')=='quit': sys.exit(0)";
         let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],support::child_environment(&state.0),state.0.clone());
         let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -948,7 +942,6 @@ async fn initialized_identity_is_scoped_to_real_child_generation() {
         }
         assert_eq!(second.status.borrow().initialization,InitializationStatus::Ready);
         assert!(second.shutdown().await.recovery_needed.is_none());
-    }).await.expect("review probe exceeded watchdog");
     }).await;
 }
 
@@ -983,4 +976,12 @@ async fn watchdog<T>(future: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(std::time::Duration::from_secs(15), future)
         .await
         .expect("adapter integration exceeded local watchdog")
+}
+
+// Real process scenarios wait on status/journal/receipt channels. This bounds a
+// broken protocol without requiring a loaded host to finish within 15 seconds.
+async fn real_watchdog<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(HANG_GUARD, future)
+        .await
+        .expect("real supervisor scenario exceeded hang guard")
 }

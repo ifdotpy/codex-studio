@@ -690,11 +690,12 @@ mod support;
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn disposable_supervisor_session_preserves_replay_and_settlement_across_reattach() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        use support::*;
-        let root = DisposableState::new();
-        let python = python_executable();
-        let mut supervisor = SupervisorProcess::start(&root, &python);
+    use support::*;
+    let root = DisposableState::new();
+    let python = python_executable();
+    // Startup completes by handshake, before the session's clock/guard starts.
+    let mut supervisor = SupervisorProcess::start(&root, &python);
+    tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
 import json,sys
 for line in sys.stdin:
@@ -711,7 +712,7 @@ for line in sys.stdin:
         let mut opts = options();
         opts.launch = launch.clone();
         let mut cfg = config();
-        cfg.timeout_ms = 10_000;
+        cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
         let mut first = SessionHandle::open(factory.clone(), ProviderHandle::for_account("test"), opts, cfg).await.unwrap();
         status(&mut first, InitializationStatus::Ready).await;
         supervisor.own_child(first.status.borrow().attachment.info.as_ref().unwrap().pid);
@@ -722,7 +723,7 @@ for line in sys.stdin:
             if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; }
             first.status.changed().await.unwrap();
         }
-        let ticket = first.control.submit(first.control.prepare(spec(2, 10_000)).await.unwrap()).await.unwrap();
+        let ticket = first.control.submit(first.control.prepare(spec(2, HANG_GUARD.as_millis() as u64)).await.unwrap()).await.unwrap();
         let mut raw = false;
         let mut stderr = false;
         let mut responded = false;
@@ -746,7 +747,7 @@ for line in sys.stdin:
         let mut cfg = config();
         cfg.request_id_prefix = Some("attachment-2".into());
         cfg.initialize_operation = OperationId("init:attachment-2".into());
-        cfg.timeout_ms = 10_000;
+        cfg.timeout_ms = HANG_GUARD.as_millis() as u64;
         let mut second = SessionHandle::open(factory, ProviderHandle::for_account("test"), opts, cfg).await.unwrap();
         status(&mut second, InitializationStatus::Ready).await;
         assert_eq!(second.status.borrow().attachment.info.as_ref().unwrap().pid, pid);
@@ -1139,11 +1140,12 @@ async fn review_full_callback_queue_retains_taken_response_and_resolution() {
 
 #[tokio::test]
 async fn review_numeric_request_recovery_needs_hidden_receipt_mapping() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        use support::*;
-        let root = DisposableState::new();
-        let python = python_executable();
-        let mut supervisor = SupervisorProcess::start(&root, &python);
+    use support::*;
+    let root = DisposableState::new();
+    let python = python_executable();
+    // Startup completes by handshake, before the session's clock/guard starts.
+    let mut supervisor = SupervisorProcess::start(&root, &python);
+    tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
 import json,sys
 saved=None
@@ -1157,19 +1159,19 @@ for line in sys.stdin:
         let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options(); opts.launch=launch.clone();
-        let mut cfg=config(); cfg.timeout_ms=10000;
+        let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
         let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
         status(&mut first, InitializationStatus::Ready).await;
         supervisor.own_child(first.status.borrow().attachment.info.as_ref().unwrap().pid);
         let initial = first.events.recv().await.unwrap().journal.unwrap();
         first.control.settled(initial.cursor).await.unwrap();
         loop { if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; } first.status.changed().await.unwrap(); }
-        let ticket = first.control.submit(first.control.prepare(spec(77,10000)).await.unwrap()).await.unwrap();
+        let ticket = first.control.submit(first.control.prepare(spec(77,HANG_GUARD.as_millis() as u64)).await.unwrap()).await.unwrap();
         let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
         assert!(recovery.remote_id.is_some());
         first.checked_shutdown().await;
         let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
-        let mut cfg=config(); cfg.timeout_ms=10000; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![recovery];
+        let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![recovery];
         let mut second=SessionHandle::open(factory,ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
         status(&mut second,InitializationStatus::Ready).await;
         let release=Frame::Notification(studio_runtime_providers::NotificationFrame { method: Method::ThreadUnsubscribe,params:None,fields:Default::default() });
@@ -1437,11 +1439,12 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
 }
 #[tokio::test]
 async fn closure_crash_before_written_persistence_keeps_unknown_without_resend() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        use support::*;
-        let root = DisposableState::new();
-        let python = python_executable();
-        let mut supervisor = SupervisorProcess::start(&root, &python);
+    use support::*;
+    let root = DisposableState::new();
+    let python = python_executable();
+    // Startup completes by handshake, before the session's clock/guard starts.
+    let mut supervisor = SupervisorProcess::start(&root, &python);
+    tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
 import json,sys
 saved=None
@@ -1458,14 +1461,14 @@ for line in sys.stdin:
         let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options(); opts.launch=launch.clone();
-        let mut cfg=config(); cfg.timeout_ms=10000;
+        let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
         let mut first = SessionHandle::open(factory.clone(),ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
         status(&mut first, InitializationStatus::Ready).await;
         supervisor.own_child(first.status.borrow().attachment.info.as_ref().unwrap().pid);
         let initial = first.events.recv().await.unwrap().journal.unwrap();
         first.control.settled(initial.cursor).await.unwrap();
         loop { if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; } first.status.changed().await.unwrap(); }
-        let prepared = first.control.prepare(spec(77,10000)).await.unwrap();
+        let prepared = first.control.prepare(spec(77,HANG_GUARD.as_millis() as u64)).await.unwrap();
         let submitted = prepared.recovery_record();
         assert_eq!(submitted.deadline_ms, prepared.deadline_ms());
         let ticket = first.control.submit(prepared).await.unwrap();
@@ -1473,7 +1476,7 @@ for line in sys.stdin:
         assert!(recovery.remote_id.is_some());
         first.checked_shutdown().await;
         let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
-        let mut cfg=config(); cfg.timeout_ms=10000; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![submitted];
+        let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64; cfg.initialize_operation=OperationId("second:init".into()); cfg.request_id_prefix=Some("second".into()); cfg.recovered=vec![submitted];
         let mut second=SessionHandle::open(factory,ProviderHandle::for_account("test"),opts,cfg).await.unwrap();
         status(&mut second,InitializationStatus::Ready).await;
         let release=Frame::Notification(studio_runtime_providers::NotificationFrame { method: Method::ThreadUnsubscribe,params:None,fields:Default::default() });
