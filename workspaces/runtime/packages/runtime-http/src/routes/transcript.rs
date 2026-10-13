@@ -8,15 +8,27 @@ use studio_runtime_services::transcript::{self, TranscriptError};
 use studio_runtime_services::transcript_runtime::{self, PageRequest};
 
 use super::extractors::QueryParams;
-use super::manifest::{OperationStatus, RouteGroup, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
+
+pub(super) const PAGE_DEPENDENCIES: &[Dependency] = &[
+    Dependency::new("transcript/payload-store"),
+    Dependency::new("transcript/receipt-page"),
+    Dependency::new("transcript/reasoning-page"),
+];
+const CANVAS_DEPENDENCIES: &[Dependency] = &[
+    Dependency::new("transcript/payload-store"),
+    Dependency::new("transcript/receipt-page"),
+    Dependency::new("transcript/reasoning-page"),
+    Dependency::new("transcript/workspace-state"),
+];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
             "/api/transcript/page",
-            OperationStatus::Implemented,
+            OperationStatus::partial(PAGE_DEPENDENCIES),
             transcript_page,
         ),
         get(
@@ -37,7 +49,7 @@ pub(crate) fn routes() -> RouteGroup {
         get("/api/search", OperationStatus::Implemented, search),
         get(
             "/api/transcript",
-            OperationStatus::Implemented,
+            OperationStatus::partial(CANVAS_DEPENDENCIES),
             canvas_transcript,
         ),
     ])
@@ -198,6 +210,16 @@ async fn canvas_transcript(
 
 pub(crate) fn map_transcript_error(error: TranscriptError) -> ApiError {
     match error {
+        TranscriptError::DeletedAssetOwner => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
+        }
+        TranscriptError::UnknownAssetOwner => {
+            ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
+        }
+        TranscriptError::SnapshotChanged => ApiError::new(
+            StatusCode::CONFLICT,
+            "Search context changed; retry the read",
+        ),
         TranscriptError::UnknownMessage => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Unknown message in this conversation",
@@ -241,5 +263,18 @@ inventory::submit! {
         name: "transcript",
         routes: Some(routes),
         dependencies: &["transcript/payload-store", "transcript/receipt-page", "transcript/reasoning-page", "transcript/workspace-state"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transcript_partial_manifest_accepts_every_remaining_refusal() {
+        use super::super::manifest::dependency_unavailable;
+        for path in ["/api/transcript/page", "/api/sync/pull"] {
+            assert!(dependency_unavailable("GET", path, PAGE_DEPENDENCIES).is_ok());
+        }
+        assert!(dependency_unavailable("GET", "/api/transcript", CANVAS_DEPENDENCIES).is_ok());
     }
 }

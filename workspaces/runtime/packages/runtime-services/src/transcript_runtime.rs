@@ -67,13 +67,21 @@ fn rows(
     let limit = request.limit.unwrap_or(PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
     let mut anchor = match before.or(around).or(after) {
         Some(identity) => {
-            let item = TranscriptRepository::resolve_item(connection, agent, identity)?
-                .ok_or(TranscriptError::UnknownMessage)?;
-            Some(connection.query_row(
-                "SELECT created,id FROM runtime_items WHERE id=?1 AND agent=?2",
-                params![item.id, agent],
-                |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)),
-            )?)
+            let direct = connection.query_row(
+                "SELECT created,id FROM runtime_items WHERE id=?1 AND agent=?2 AND json_extract(record,'$.afterRestore') IS NULL",
+                params![identity, agent], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?)),
+            ).optional()?;
+            Some(match direct {
+                Some(anchor) => anchor,
+                None => connection.query_row(
+                    "SELECT i.created,i.id FROM runtime_items i JOIN json_each(i.record,'$.inputs') input
+                     WHERE i.agent=?1 AND json_extract(i.record,'$.afterRestore') IS NULL
+                     AND CASE WHEN json_type(input.value,'$.id')='text'
+                         THEN ?1 || ':' || json_extract(input.value,'$.id')
+                         ELSE i.id || ':' || input.key END=?2 ORDER BY i.created,i.id LIMIT 1",
+                    params![agent, identity], |r| Ok((r.get(0)?, r.get(1)?)),
+                ).optional()?.ok_or(TranscriptError::UnknownMessage)?,
+            })
         }
         None => None,
     };
@@ -161,6 +169,37 @@ pub(crate) fn project(
         actor["status"].as_str(),
         Some("running" | "starting" | "approval")
     ) && truthy(actor.get("autoWake"));
+    let failed_turns = items
+        .iter()
+        .filter(|i| i["turnStatus"] == "failed")
+        .filter_map(|i| {
+            i["turnId"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut turn_errors = BTreeMap::new();
+    if let Some(thread) = actor["threadId"].as_str() {
+        for turn in &failed_turns {
+            let identity = format!("{agent}:{thread}:{turn}");
+            let result =
+                studio_runtime_store::analytics::turn_errors(analytics, vec![identity.clone()])?;
+            for record in result["turns"].as_array().into_iter().flatten() {
+                if record["agentId"].as_str() != Some(agent)
+                    || record["turnId"].as_str() != Some(turn)
+                    || record["status"].as_str().is_none()
+                    || (!record["threadId"].is_null()
+                        && record["threadId"].as_str() != Some(thread))
+                {
+                    return Err(invalid("analytics_turns", &identity));
+                }
+                if record["status"] == "failed" && truthy(record.get("error")) {
+                    turn_errors.insert(turn.clone(), record["error"].clone());
+                }
+            }
+        }
+    }
     for item in &mut items {
         if let Some(turn) = item["turnId"].as_str()
             && !turn.is_empty()
@@ -174,24 +213,11 @@ pub(crate) fn project(
                 item["turnStatus"] = json!("ended");
             }
         }
-        if item["turnStatus"] == "failed" {
-            let error = if let (Some(thread), Some(turn)) =
-                (actor["threadId"].as_str(), item["turnId"].as_str())
-            {
-                studio_runtime_store::analytics::turn_errors(
-                    analytics,
-                    vec![format!("{agent}:{thread}:{turn}")],
-                )
-                .map_err(|_| TranscriptError::Store)?["turns"]
-                    .as_array()
-                    .and_then(|turns| turns.iter().find(|v| v["status"] == "failed"))
-                    .and_then(|v| v.get("error"))
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
-            item["turnError"] = error;
+        if let Some(turn) = item["turnId"]
+            .as_str()
+            .filter(|v| failed_turns.contains(*v))
+        {
+            item["turnError"] = turn_errors.get(turn).cloned().unwrap_or(Value::Null);
             item["turnErrorResolved"] = json!(true);
         }
         tool_result(connection, &actor, item, now)?;
@@ -311,6 +337,14 @@ fn receipts(
                     .ok_or_else(|| invalid("runtime_event_meta", &id))?;
                 let mut asset = records::get(connection, "runtime_assets", asset_id)?
                     .ok_or_else(|| invalid("runtime_assets", asset_id))?;
+                let owner_id = asset["agent"]
+                    .as_str()
+                    .ok_or_else(|| invalid("runtime_assets", asset_id))?;
+                let owner = TranscriptRepository::agent(connection, owner_id)?
+                    .ok_or(TranscriptError::UnknownAssetOwner)?;
+                if truthy(owner.get("deletedAt")) {
+                    return Err(TranscriptError::DeletedAssetOwner);
+                }
                 asset
                     .as_object_mut()
                     .ok_or_else(|| invalid("runtime_assets", asset_id))?
@@ -452,6 +486,18 @@ struct ReasoningGroup {
     since: Option<f64>,
     observed: bool,
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReasoningRecord {
+    id: String,
+    agent_id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    turn_id: String,
+    started_at: f64,
+    finished_at: Option<f64>,
+}
+
 fn reasoning(
     analytics: &Connection,
     connection: &Connection,
@@ -486,20 +532,26 @@ fn reasoning(
     }
     let mut groups = BTreeMap::<(usize, String), ReasoningGroup>::new();
     for (id, raw) in records {
-        let record: Value =
+        let record: ReasoningRecord =
             serde_json::from_str(&raw).map_err(|_| invalid("analytics_items", &id))?;
-        let Some(turn) = record["turnId"]
-            .as_str()
-            .filter(|t| items.iter().any(|i| i["turnId"] == *t))
-        else {
+        if record.id != id
+            || record.agent_id != actor["id"]
+            || record.kind != "reasoning"
+            || !record.started_at.is_finite()
+            || record
+                .finished_at
+                .is_some_and(|v| !v.is_finite() || v < record.started_at)
+        {
+            return Err(invalid("analytics_items", &id));
+        }
+        let turn = record.turn_id.as_str();
+        if !items.iter().any(|i| i["turnId"] == turn) {
             continue;
-        };
-        let Some(start) = record["startedAt"].as_f64().filter(|v| v.is_finite()) else {
-            continue;
-        };
-        let mut end = record["finishedAt"].as_f64();
+        }
+        let start = record.started_at;
+        let mut end = record.finished_at;
         let mut observed = false;
-        if record["finishedAt"].is_null() {
+        if record.finished_at.is_none() {
             let next=analytics.query_row("SELECT at FROM analytics_items WHERE agent=?1 AND at>?2 AND at<?3 AND json_extract(record,'$.turnId')=?4 ORDER BY at LIMIT 1",params![actor["id"].as_str(),start,upper,turn],|r|r.get::<_,f64>(0)).optional()?;
             let message = rows
                 .iter()

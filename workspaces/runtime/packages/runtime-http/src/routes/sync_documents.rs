@@ -21,7 +21,11 @@ const SYNC_STREAM_BYTE_LIMIT: i64 = 1_048_576;
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/sync/protocol", OperationStatus::Implemented, protocol),
-        get("/api/sync/pull", OperationStatus::Implemented, pull),
+        get(
+            "/api/sync/pull",
+            OperationStatus::partial(super::transcript::PAGE_DEPENDENCIES),
+            pull,
+        ),
         post(
             "/api/sync/drafts",
             OperationStatus::Implemented,

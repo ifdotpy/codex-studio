@@ -43,6 +43,141 @@ def clone(runtime, destination):
             source.backup(target)
 
 
+def review_cases(runtime, root):
+    cases = []
+    def snapshot(name, *, pages=True, error=None, extra=None):
+        destination = root / name
+        clone(runtime, destination)
+        case = {'path':str(destination), 'phase':name, 'now':1000.0, 'pages':[]}
+        if pages:
+            with patch('time.time', return_value=1000.0):
+                case['pages'] = [{'request':{}, 'value':runtime.transcript('agent')}]
+        if error:
+            case['pageError'] = error
+            try:
+                with patch('time.time', return_value=1000.0):
+                    value = runtime.transcript('agent')
+                case['pythonOutcome'] = {'items':len(value['items'])}
+            except Exception as exc:
+                case['pythonOutcome'] = {'error':str(exc)}
+        if extra: case.update(extra)
+        cases.append(case)
+        return case
+
+    # Search every supported view and room visibility branch from Python-written records.
+    with runtime.db() as db:
+        actor = runtime.agent('agent', db)
+        runtime.put(db, 'agents', {**actor, 'id':'gone', 'rootId':'agent', 'deletedAt':1.0})
+        runtime.put(db, 'projects', {'id':str(root), 'path':str(root), 'name':'fixture',
+                                   'peerTeams':[{'id':'peers','name':'Peers','members':['agent','other']}]})
+        for table, record in [
+            ('work', {'id':'work','rootId':'agent','title':'needle work','status':'ready'}),
+            ('work', {'id':'child-work','rootId':'child','title':'needle child root','status':'ready'}),
+            ('plans', {'id':'agent','agent':'agent','rootId':'agent','text':'needle plan','version':1,'updated':1.0}),
+            ('complaints', {'id':'complaint','leadId':'agent','title':'needle complaint','text':'needle detail','status':'open'}),
+        ]: runtime.put(db, table, record)
+        for identity, kind, members in [('peer','private',['agent','other']), ('unavailable','private',['agent','gone']),
+                                         ('approved','federated',['agent']), ('unapproved','federated',['agent'])]:
+            runtime.put(db, 'rooms', {'id':identity,'kind':kind,'rootId':'agent','members':members,'updated':1.0})
+            if kind == 'federated':
+                record = {'id':identity,'status':'approved' if identity=='approved' else 'pending',
+                          'localApproved':True,'remoteApproved':identity=='approved','localMembers':['agent'],
+                          'remoteMembers':[],'peerId':'remote','peerLabel':'Remote','name':'Federated'}
+                db.execute('INSERT INTO runtime_federation_rooms(id,record) VALUES (?,?)', (identity,json.dumps(record)))
+            db.execute('INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)',
+                       ('chat-'+identity,identity,'agent','needle '+identity,800.0,'{}'))
+        runtime.enqueue(db, actor, 'user', 'needle legacy durable body', 'legacy-event')
+        db.execute("UPDATE runtime_events SET status='delivered' WHERE id='legacy-event'")
+        runtime.item(db,'agent','legacy','user','needle legacy durable body','You',
+                     inputs=[{'id':'legacy-event','kind':'user','text':'short','truncated':True}],at=850.0)
+        db.execute("UPDATE runtime_items SET record=json_remove(record,'$.text') WHERE id='agent:legacy'")
+        db.execute("DELETE FROM runtime_item_fulltext WHERE id='agent:legacy'")
+    snapshot('search-views', extra={
+        'search':runtime.search_work('needle'), 'scoped':runtime.search_work('needle','agent'),
+        'item':runtime.search_item('agent:answer'), 'roomItem':runtime.search_item('chat'),
+        'searchItems':{identity:runtime.search_item(identity) for identity in ('agent:legacy','work','agent','complaint','chat-peer','chat-approved')},
+        'unavailableItems':['chat-unavailable','chat-unapproved'],
+    })
+    # Explicit displayed-input cursor and unknown cursor, both with a one-item page bound.
+    case = snapshot('input-cursor', pages=False)
+    case['pages'] = [{'request':{'around':'agent:legacy-event','limit':1},
+                      'value':runtime.transcript('agent',around='agent:legacy-event',limit=1)}]
+    case['unknownCursor'] = 'agent:missing-input'
+
+    # A writer commits on the other side of a one-item page boundary.
+    request = {'after':'agent:old-7','limit':1}
+    before = runtime.transcript('agent', **request)
+    case = snapshot('concurrent-append', pages=False)
+    with runtime.db() as db:
+        runtime.item(db,'agent','concurrent','assistant','concurrent append','Agent',at=150.0)
+        db.execute("UPDATE runtime_items SET created=150.0 WHERE id='agent:concurrent'")
+        record = json.loads(db.execute("SELECT record FROM runtime_items WHERE id='agent:concurrent'").fetchone()[0])
+    case['append'] = {'request':request,'before':before,'after':runtime.transcript('agent',**request),'record':record,'created':150.0}
+
+    with runtime.db() as db:
+        answer = db.execute("SELECT record FROM runtime_items WHERE id='agent:answer'").fetchone()[0]
+        db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus','failed') WHERE id='agent:answer'")
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        turn = {'id':'agent:thread:turn','agentId':'agent','threadId':'thread','turnId':'turn',
+                'status':'failed','error':{'message':'fixture failure'},'at':300.0}
+        analytics.execute('INSERT INTO analytics_turns(id,agent,root,at,record) VALUES (?,?,?,?,?)',
+                          (turn['id'],'agent','agent',300.0,json.dumps(turn)))
+    snapshot('failed-turn')
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        analytics.execute("UPDATE analytics_turns SET record='[]' WHERE id='agent:thread:turn'")
+    snapshot('malformed-turn', pages=False, error='invalid stored object analytics_turns/agent:thread:turn')
+    with runtime.db() as db: db.execute("UPDATE runtime_items SET record=? WHERE id='agent:answer'",(answer,))
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        analytics.execute("DELETE FROM analytics_turns WHERE id='agent:thread:turn'")
+        original = analytics.execute("SELECT record FROM analytics_items WHERE id='measured'").fetchone()[0]
+    for name, invalid in [('array','[]'),('empty','{}'),('wrong-start',json.dumps({**json.loads(original),'startedAt':'wrong'}))]:
+        with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+            analytics.execute("UPDATE analytics_items SET record=? WHERE id='measured'",(invalid,))
+        snapshot('malformed-reasoning-'+name, pages=False, error='invalid stored object analytics_items/measured')
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        analytics.execute("UPDATE analytics_items SET record=? WHERE id='measured'",(original,))
+
+    with runtime.db() as db:
+        runtime.put(db,'assets',{'id':'attachment','agent':'gone','name':'fixture.txt','path':str(root/'absent'),
+                                 'size':1,'image':False,'mime':'text/plain','hash':'sha256:fixture','created':1.0})
+        oldmeta = db.execute("SELECT record FROM runtime_event_meta WHERE id='pending'").fetchone()
+        db.execute("INSERT OR REPLACE INTO runtime_event_meta(id,record) VALUES ('pending',?)",(json.dumps({'assets':['attachment']}),))
+    snapshot('deleted-asset-owner', pages=False, error='This agent was deleted')
+    with runtime.db() as db:
+        db.execute("DELETE FROM runtime_event_meta WHERE id='pending'")
+        if oldmeta: db.execute("INSERT INTO runtime_event_meta VALUES ('pending',?)",(oldmeta[0],))
+        tool = db.execute("SELECT result FROM runtime_tool_results WHERE id='thread:call'").fetchone()[0]
+        from codex_payloads import store_bytes
+        content = [{'type':'inputText','text':'external tool payload'}]
+        ref = store_bytes(runtime.root, json.dumps(content).encode(), db=db)
+        db.execute("UPDATE runtime_tool_results SET result=? WHERE id='thread:call'",(json.dumps({'success':True,'contentItems':[], '_payloadBlobs':{'contentItems':ref}}),))
+    snapshot('external-payload', pages=False, error='transcript operation requires transcript/payload-store')
+    with runtime.db() as db: db.execute("UPDATE runtime_tool_results SET result=? WHERE id='thread:call'",(tool,))
+
+    # Named Rust bounds intentionally differ from Python's unbounded projection.
+    with runtime.db() as db:
+        for index in range(499):
+            runtime.enqueue(db, runtime.agent('agent',db), 'user','bound receipt',f'bound-{index}')
+            db.execute('UPDATE runtime_events SET created=900.0 WHERE id=?',(f'bound-{index}',))
+    snapshot('receipt-at-limit')
+    with runtime.db() as db:
+        runtime.enqueue(db, runtime.agent('agent',db), 'user','bound receipt','bound-over')
+    snapshot('receipt-over-limit', pages=False, error='transcript operation requires transcript/receipt-page')
+    with runtime.db() as db: db.execute("DELETE FROM runtime_events WHERE id LIKE 'bound-%'")
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        saved = list(analytics.execute("SELECT * FROM analytics_items WHERE type='reasoning'"))
+        analytics.execute("DELETE FROM analytics_items WHERE type='reasoning'")
+        for index in range(8192):
+            runtime.analytics_store_item(analytics, {'id':f'bound-{index}','agentId':'agent','rootId':'agent','threadId':'thread',
+                'turnId':'turn','at':201.0,'startedAt':201.0,'finishedAt':203.0,'type':'reasoning','name':'reasoning','isTool':False})
+    snapshot('reasoning-at-limit')
+    with runtime.db(analytics=True) as db, runtime.analytics_connection(db) as analytics:
+        runtime.analytics_store_item(analytics, {'id':'bound-over','agentId':'agent','rootId':'agent','threadId':'thread',
+            'turnId':'turn','at':201.0,'startedAt':201.0,'finishedAt':203.0,'type':'reasoning','name':'reasoning','isTool':False})
+    snapshot('reasoning-over-limit', pages=False, error='transcript operation requires transcript/reasoning-page')
+    return cases
+
+
 def run(root):
     root.mkdir(exist_ok=True)
     runtime = QuietRuntime(root / 'python', lambda *a, **k: None)
@@ -119,6 +254,30 @@ def run(root):
     pull=sync.transcript_pull('transcript:agent',0,payload,False,revision)
     cases[-1]['pull']=pull
     cases[-1]['revision']=revision
+    # Differential update/tombstone and prune/floor transitions, starting from
+    # Python's committed checkpoint and using the original delta cursor.
+    cursor = pull['checkpoint']['seq']
+    with runtime.db() as db:
+        item = json.loads(db.execute("SELECT record FROM runtime_items WHERE id='agent:answer'").fetchone()[0])
+        item['text'] = 'Needle updated answer'
+        db.execute("UPDATE runtime_items SET record=? WHERE id='agent:answer'", (json.dumps(item),))
+        db.execute("UPDATE runtime_item_fulltext SET body=? WHERE id='agent:answer'",(item['text'],))
+        db.execute("DELETE FROM runtime_items WHERE id='agent:old-0'")
+    destination=root/'update';clone(runtime,destination)
+    payload=runtime.transcript('agent')
+    cases.append({'path':str(destination),'phase':'update','pages':[{'request':{},'value':payload}],
+                  'pullAfter':cursor,'faults':[['UPDATE',key] for key in ('item:agent:answer','item:agent:old-0','@order','@revision')]+[['CACHE','@revision']],
+                  'pull':sync.transcript_pull('transcript:agent',cursor,payload,False,sync.transcript_revision('agent'))})
+    cursor=cases[-1]['pull']['checkpoint']['seq']
+    from codex_sync_entities import next_sequence
+    with runtime.db() as db:
+        for index in range(513):
+            db.execute('INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES (?,?,?,?,NULL,1)',
+                       ('transcript:agent',f'item:stale-{index}',next_sequence(db),'stale'))
+    destination=root/'prune';clone(runtime,destination)
+    cases.append({'path':str(destination),'phase':'prune','pages':[{'request':{},'value':payload}],
+                  'pullAfter':cursor,'faults':[['DELETE','item:stale-0'],['DELETE','item:agent:old-0'],['UPDATE','@floor'],['CACHE','@revision']],
+                  'pull':sync.transcript_pull('transcript:agent',cursor,payload,False,sync.transcript_revision('agent'))})
     # Real durable tool receipt recovers a missing provider item completion.
     with runtime.db() as db:
         runtime.item(db,'agent','dynamic','tool',json.dumps({'id':'call','type':'dynamicToolCall','status':'inProgress','contentItems':None}),'dynamicToolCall',turnId='turn',toolStatus='running',at=600.0)
@@ -148,6 +307,7 @@ def run(root):
     with patch('time.time', return_value=1000.0):
         expected = runtime.transcript('agent')
     cases.append({'path':str(destination),'phase':'managed-image','now':1000.0,'pages':[{'request':{},'value':expected}]})
+    cases.extend(review_cases(runtime, root))
     runtime.close()
     return cases
 

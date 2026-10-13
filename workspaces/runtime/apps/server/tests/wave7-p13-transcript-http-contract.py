@@ -100,6 +100,10 @@ class TranscriptDeliveryHTTP(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(json.loads(pull['documents'][0]['payload']),self.expected[self.paths[0]])
         seq=pull['checkpoint']['seq']
         before=no_write_snapshot(self.backend.state)
+        replay=self.backend.request('GET','/api/sync/pull?'+urlencode({'scope':scope,'after':0}),headers=self.headers)
+        self.assertEqual(replay.status,200,replay.body)
+        self.assertEqual(replay.json(),pull,'lost response retry changed the original cursor response')
+        self.assertEqual(before,no_write_snapshot(self.backend.state),'original cursor retry wrote state')
         response=self.backend.request('GET','/api/sync/pull?'+urlencode({'scope':scope,'after':seq}),headers=self.headers)
         self.assertEqual(response.status,200,response.body)
         self.assertEqual(response.json()['documents'],[])
