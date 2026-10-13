@@ -538,7 +538,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(replay.status, 200, replay.body[:1000])
             self.assertEqual(replay.json().get("id"), message_id)
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                self.assertEqual(replay.json().get("status"), "queued")
+                self.assertEqual(replay.json().get("status"), "pending")
             after_replay = message_write_snapshot(
                 self.backend.state / "canvas.sqlite3", message_id, agent_id,
             )
