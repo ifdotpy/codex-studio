@@ -62,7 +62,10 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<EventMetadataRecord>(&connection)?,
             check_table::<GraphAgentRecord>(&connection)?,
             check_table::<ProfileRecord>(&connection)?,
-        ],
+        ]
+        .into_iter()
+        .chain(crate::federation_messaging::check_state(&connection)?)
+        .collect(),
     })
 }
 

@@ -8,6 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
 
 
 def _unicode_scalar(value: str) -> str:
@@ -271,6 +272,7 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 
 STATE_SCHEMA_MODELS = {
+    **FEDERATION_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-task-record.schema.json": PersistedTaskRecord,

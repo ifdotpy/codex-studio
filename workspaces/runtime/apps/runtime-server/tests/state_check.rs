@@ -48,7 +48,7 @@ db.close()
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    assert_eq!(tables.len(), 17);
+    assert_eq!(tables.len(), 22);
     let agents = tables
         .iter()
         .find(|table| table["table"] == "runtime_agents")

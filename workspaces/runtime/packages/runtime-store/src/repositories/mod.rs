@@ -6,6 +6,7 @@ pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod federation;
+pub mod federation_messaging;
 pub(crate) mod messages;
 pub(crate) mod monitors;
 pub(crate) mod multi_server;

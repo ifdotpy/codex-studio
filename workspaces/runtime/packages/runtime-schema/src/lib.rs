@@ -62,7 +62,40 @@ const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
+const FEDERATION_SETTINGS_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-settings.schema.json";
+const FEDERATION_SETTINGS: &[u8] =
+    include_bytes!("schemas/persisted-federation-settings.schema.json");
+const FEDERATION_PEER_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-peer.schema.json";
+const FEDERATION_PEER: &[u8] = include_bytes!("schemas/persisted-federation-peer.schema.json");
+const FEDERATION_ROOM_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-room.schema.json";
+const FEDERATION_ROOM: &[u8] = include_bytes!("schemas/persisted-federation-room.schema.json");
+const FEDERATION_OUTBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-outbox.schema.json";
+const FEDERATION_OUTBOX: &[u8] = include_bytes!("schemas/persisted-federation-outbox.schema.json");
+const FEDERATION_INBOX_URI: &str =
+    "https://codex-studio.invalid/persisted-federation-inbox.schema.json";
+const FEDERATION_INBOX: &[u8] = include_bytes!("schemas/persisted-federation-inbox.schema.json");
+
+const FEDERATION_CHAT_PAYLOAD_URI: &str =
+    "https://codex-studio.invalid/federation-chat-payload.schema.json";
+const FEDERATION_CHAT_PAYLOAD: &[u8] =
+    include_bytes!("schemas/federation-chat-payload.schema.json");
+const FEDERATION_ROOM_PAYLOAD_URI: &str =
+    "https://codex-studio.invalid/federation-room-payload.schema.json";
+const FEDERATION_ROOM_PAYLOAD: &[u8] =
+    include_bytes!("schemas/federation-room-payload.schema.json");
+
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (FEDERATION_SETTINGS_URI, FEDERATION_SETTINGS),
+    (FEDERATION_PEER_URI, FEDERATION_PEER),
+    (FEDERATION_ROOM_URI, FEDERATION_ROOM),
+    (FEDERATION_OUTBOX_URI, FEDERATION_OUTBOX),
+    (FEDERATION_INBOX_URI, FEDERATION_INBOX),
+    (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
+    (FEDERATION_ROOM_PAYLOAD_URI, FEDERATION_ROOM_PAYLOAD),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
@@ -128,6 +161,11 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_federation_settings" => "PersistedFederationSettings",
+        "runtime_federation_peers" => "PersistedFederationPeer",
+        "runtime_federation_rooms" => "PersistedFederationRoom",
+        "runtime_federation_outbox" => "PersistedFederationOutbox",
+        "runtime_federation_inbox" => "PersistedFederationInbox",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
@@ -186,26 +224,40 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "CheckpointSummary",
         "CheckpointsResponse",
         "ComplaintRecordResponse",
+        "FederationParticipant",
         "JsonObjectResponse",
+        "MessageRequest",
         "MonitorRecordResponse",
         "PlanView",
         "ProfileRecord",
-        "QueueItem",
+        "PullRequest",
+        "PullResult",
         "QuestionEntry",
         "QuestionHistory",
+        "QueueItem",
         "RequestRecordResponse",
         "RuleRecordResponse",
+        "SignedEnvelope",
+        "StatusRequest",
         "TaskDetailResponse",
         "TerminalRecord",
         "TranscriptAsset",
         "UsageResumeRecordResponse",
         "WorkItem",
+        "studio_api__federation__models__MessageReceipt",
     ] {
         let reference = format!("{OPENAPI_URI}#/components/schemas/{name}");
         let validator = compile(&registry, json!({"$ref": reference}), name)?;
         validators.insert(name.to_owned(), validator);
     }
     for (name, uri) in [
+        ("PersistedFederationSettings", FEDERATION_SETTINGS_URI),
+        ("PersistedFederationPeer", FEDERATION_PEER_URI),
+        ("PersistedFederationRoom", FEDERATION_ROOM_URI),
+        ("PersistedFederationOutbox", FEDERATION_OUTBOX_URI),
+        ("PersistedFederationInbox", FEDERATION_INBOX_URI),
+        ("FederationChatPayload", FEDERATION_CHAT_PAYLOAD_URI),
+        ("FederationRoomPayload", FEDERATION_ROOM_PAYLOAD_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
