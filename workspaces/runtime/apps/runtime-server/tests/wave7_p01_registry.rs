@@ -482,7 +482,7 @@ async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
 #[test]
 fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
     let fixture = Fixture::build("recovery");
-    let selected = account_registry::targets(&fixture.store).unwrap();
+    let selected = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
     assert_eq!(
         json!(selected.keys().collect::<Vec<_>>()),
         fixture.agents["selected"]
@@ -554,4 +554,446 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         writes.try_recv().is_err(),
         "unknown input must not be resent on replacement"
     );
+}
+
+fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<String> {
+    let source = fixture.agents[0]["id"].as_str().unwrap();
+    fixture.store.transaction(|tx| {
+        let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [source], |r| r.get(0))?;
+        let mut ids = Vec::new();
+        for i in 0..count {
+            let id = format!("00000000-0000-4000-8000-{i:012}");
+            let account = if each_account {format!("page-{i:06}")} else {"default".into()};
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,json_set(?2,'$.id',?1,'$.accountKey',?3,'$.contextRepairWait','blocked'))", rusqlite::params![id,raw,account])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?1,'annotation','fixture','pending',0,json_extract(?2,'$.epoch'))", rusqlite::params![id,raw])?;
+            ids.push(id);
+        }
+        Ok(ids)
+    }).unwrap()
+}
+
+#[test]
+fn pending_and_account_backlogs_are_bounded_pages_not_total_limits() {
+    let fixture = Fixture::new();
+    let expected = seed_backlog(&fixture, 4100, false);
+    let mut after = BTreeMap::new();
+    let mut actual = Vec::new();
+    while actual.len() < expected.len() {
+        let page = account_registry::target_page(&fixture.store, "", &after).unwrap();
+        let rows = &page["default"];
+        assert!(rows.len() <= 32);
+        actual.extend(rows.iter().map(|(id, _)| id.clone()));
+        after.insert("default".into(), rows.last().unwrap().0.clone());
+    }
+    assert_eq!(actual, expected);
+    let fixture = Fixture::new();
+    seed_backlog(&fixture, 130, true);
+    let first = account_registry::target_page(&fixture.store, "", &BTreeMap::new()).unwrap();
+    assert_eq!(first.len(), 128);
+    let second = account_registry::target_page(
+        &fixture.store,
+        first.last_key_value().unwrap().0,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(second.len(), 2);
+    assert!(second.keys().all(|account| !first.contains_key(account)));
+}
+
+#[tokio::test]
+async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    seed_backlog(&fixture, 48, false);
+    fixture.enqueue(0, "eligible-after-blocked-prefix");
+    let (launcher, mut writes) = scripted();
+    let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
+        .await
+        .unwrap();
+    let stop = Shutdown::default();
+    let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
+    let (_, request) = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        .await
+        .unwrap_or_else(|_| {
+            let db = fixture.store.read().unwrap();
+            let state: String = db.query_row("SELECT json_object('status',json_extract(record,'$.status'),'error',json_extract(record,'$.error'),'hold',json_extract(record,'$.startOutcomeHold'),'start',json_extract(record,'$.startAttempt')) FROM runtime_agents WHERE id=?1",[fixture.agents[0]["id"].as_str().unwrap()],|r|r.get(0)).unwrap();
+            panic!("fair wake hang guard: {state}")
+        })
+        .unwrap();
+    assert_eq!(request["method"], "turn/start");
+    stop.cancel();
+    task.await.unwrap().unwrap();
+    assert_eq!(launcher.opened.lock().unwrap().len(), 1);
+    let db = fixture.store.read().unwrap();
+    let blocked: i64 = db.query_row("SELECT count(*) FROM runtime_events WHERE kind='annotation' AND text='fixture' AND status='pending'",[],|r|r.get(0)).unwrap();
+    assert_eq!(blocked, 48);
+}
+
+fn python_launch(
+    root: &std::path::Path,
+    environment: &BTreeMap<String, String>,
+    home: &std::path::Path,
+    isolated: bool,
+    executable: &str,
+) -> Value {
+    use std::io::Write;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+    let mut child = std::process::Command::new(prepared_python::prepared_python(&source))
+        .arg("-B")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_launch_oracle.py"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable}).to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+async fn wire_read(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>) -> Value {
+    use tokio::io::AsyncBufReadExt;
+    let mut line = String::new();
+    peer.read_line(&mut line).await.unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, value: Value) {
+    use tokio::io::AsyncWriteExt;
+    peer.get_mut()
+        .write_all(format!("{value}\n").as_bytes())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn every_launch_signature_field_matches_real_python_appserver() {
+    for isolated in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("codex");
+        std::fs::create_dir(&home).unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), root.path().to_string_lossy().into_owned()),
+            ("CODEX_HOME".into(), home.to_string_lossy().into_owned()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("CODEX_AGENTS_SUPERVISOR_MODE".into(), "1".into()),
+            ("CODEX_AGENTS_BACKEND_ID".into(), "backend-only".into()),
+            ("CODEX_NODE".into(), "backend-only-node".into()),
+            ("OPENAI_API_KEY".into(), "fixture-openai-key".into()),
+            ("CODEX_API_KEY".into(), "fixture-codex-key".into()),
+            ("UNCHANGED".into(), "Unicode café".into()),
+        ]);
+        let oracle = python_launch(root.path(), &environment, &home, isolated, "/fixture/codex");
+        let launch = host_runtime::codex_launch(
+            Some("/fixture/codex"),
+            environment,
+            home.to_string_lossy().into_owned(),
+            isolated,
+            root.path().into(),
+        );
+        let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
+        let factory = studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
+            studio_runtime_process::BackendIdentity {
+                backend_id: studio_runtime_process::BackendId("fixture".into()),
+                state_dir: root.path().into(),
+            },
+        );
+        let preparing = tokio::spawn(async move {
+            factory
+                .prepare(
+                    ProviderHandle::for_account("default"),
+                    OpenOptions {
+                        launch,
+                        clock: SessionClock::default(),
+                        expected_generation: None,
+                    },
+                    Shutdown::default(),
+                )
+                .await
+                .unwrap()
+        });
+        let (peer, _) = listener.accept().await.unwrap();
+        let mut peer = tokio::io::BufReader::new(peer);
+        let _hello = wire_read(&mut peer).await;
+        wire_send(&mut peer, json!({"ok":true})).await;
+        let status = wire_read(&mut peer).await;
+        wire_send(
+            &mut peer,
+            json!({"requestId":status["requestId"],"error":"Unknown supervisor handle"}),
+        )
+        .await;
+        let open = wire_read(&mut peer).await;
+        for field in ["command", "env", "cwd"] {
+            assert_eq!(open[field], oracle[field], "{field}");
+        }
+        let command: Vec<String> = serde_json::from_value(open["command"].clone()).unwrap();
+        let environment: BTreeMap<String, String> =
+            serde_json::from_value(open["env"].clone()).unwrap();
+        assert_eq!(
+            studio_runtime_store::supervisor_journal::launch_signature(
+                &command,
+                &environment,
+                open["cwd"].as_str()
+            ),
+            oracle["signature"]
+        );
+        wire_send(&mut peer,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":0,"generation":1,"returnCode":null,"pid":1}})).await;
+        drop(preparing.await.unwrap());
+    }
+}
+
+fn account_driver(
+    root: &std::path::Path,
+) -> (
+    Arc<studio_runtime_services::account_driver::AccountDriver>,
+    PathBuf,
+) {
+    let home = root.join("account-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let registry = root.join("accounts/registry.json");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":home,"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+    (
+        Arc::new(studio_runtime_services::account_driver::AccountDriver::open(registry).unwrap()),
+        home,
+    )
+}
+
+#[test]
+fn launch_admission_refreshes_restored_and_changed_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let (driver, home) = account_driver(root.path());
+    assert!(host_runtime::account_home(&driver, "default").is_err());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-key-one"}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        host_runtime::account_home(&driver, "default").unwrap().0,
+        home.to_string_lossy()
+    );
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-key-two"}).to_string(),
+    )
+    .unwrap();
+    assert!(host_runtime::account_home(&driver, "default").is_err());
+    assert_eq!(driver.snapshot().unwrap().accounts[0]["status"], "changed");
+}
+
+#[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
+mod supervisor_ready;
+
+struct SupervisorFixture {
+    child: std::process::Child,
+    native: Option<u32>,
+}
+impl Drop for SupervisorFixture {
+    fn drop(&mut self) {
+        if let Some(pid) = self.native {
+            let _result = std::process::Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+        let _result = self.child.kill();
+        let _result = self.child.wait();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn host_start_reattaches_python_launch_and_delivers_http_input() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
+    // Isolate the supervisor-mode environment without mutating process globals.
+    if std::env::var_os("STUDIO_W7_P01_HOST_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "host_start_reattaches_python_launch_and_delivers_http_input",
+                "--nocapture",
+            ])
+            .env("STUDIO_W7_P01_HOST_CHILD", "1")
+            .env("CODEX_AGENTS_SUPERVISOR_MODE", "1")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let (accounts, home) = account_driver(fixture._root.path());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    let executable = fixture._root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let environment: BTreeMap<String, String> = std::env::vars().collect();
+    let oracle = python_launch(
+        fixture._root.path(),
+        &environment,
+        &home,
+        false,
+        executable.to_str().unwrap(),
+    );
+    let root = fixture._root.path().to_path_buf();
+    let mut supervisor = tokio::task::spawn_blocking(move || {
+        let stderr = root.join("supervisor.log");
+        let child = std::process::Command::new("python3")
+            .arg("-B")
+            .arg(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../server/src/codex_process_supervisor.py"),
+            )
+            .arg("--state")
+            .arg(&root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap();
+        let mut fixture = SupervisorFixture {
+            child,
+            native: None,
+        };
+        supervisor_ready::wait(
+            &mut fixture.child,
+            studio_runtime_process::BackendIdentity {
+                backend_id: studio_runtime_process::BackendId("python-cutover-fixture".into()),
+                state_dir: root,
+            },
+            &stderr,
+        );
+        fixture
+    })
+    .await
+    .unwrap();
+    let mut peer = tokio::io::BufReader::new(
+        tokio::net::UnixStream::connect(fixture._root.path().join("supervisor.sock"))
+            .await
+            .unwrap(),
+    );
+    wire_send(
+        &mut peer,
+        json!({"protocol":1,"stateDir":fixture._root.path(),"backendId":"python-cutover-fixture"}),
+    )
+    .await;
+    assert!(wire_read(&mut peer).await["error"].is_null());
+    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","command":oracle["command"],"env":oracle["env"],"cwd":oracle["cwd"]})).await;
+    let opened = wire_read(&mut peer).await;
+    assert!(opened["error"].is_null(), "supervisor fixture open failed");
+    let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
+    let generation = opened["result"]["generation"].as_u64().unwrap();
+    supervisor.native = Some(pid);
+    peer.get_mut().shutdown().await.unwrap();
+    let mut discarded = Vec::new();
+    peer.read_to_end(&mut discarded).await.unwrap();
+    drop(peer);
+    let observer = tokio::net::UnixListener::bind(fixture._root.path().join("turn.sock")).unwrap();
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        Some(executable.to_string_lossy().into_owned()),
+        fixture._root.path().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let body = json!({"room":fixture.agents[0]["id"],"id":"65f07ce1-42b9-42a3-b42e-8710a0c54617","text":"host composition cutover"});
+    for _ in 0..2 {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/messages")
+            .header("host", "127.0.0.1:49171")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "fixture-token")
+            .header(
+                studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                studio_runtime_http::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
+    }
+    let (mut reported, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
+            .await
+            .expect("host delivery hang guard")
+            .unwrap();
+    let mut bytes = Vec::new();
+    reported.read_to_end(&mut bytes).await.unwrap();
+    let request: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(request["pid"], pid);
+    assert_eq!(request["request"]["method"], "turn/start");
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
+    let launch = host_runtime::codex_launch(
+        Some(executable.to_str().unwrap()),
+        environment,
+        home.to_string_lossy().into_owned(),
+        false,
+        fixture._root.path().into(),
+    );
+    let factory = studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
+        studio_runtime_process::BackendIdentity {
+            backend_id: studio_runtime_process::BackendId("verify-cutover".into()),
+            state_dir: fixture._root.path().into(),
+        },
+    );
+    let retained = factory
+        .prepare(
+            ProviderHandle::for_account("default"),
+            OpenOptions {
+                launch,
+                clock: SessionClock::default(),
+                expected_generation: None,
+            },
+            Shutdown::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retained.generation(), Generation(generation));
+    drop(retained);
+    // Replay produced no second provider connection/request after shutdown joined the worker.
+    let mut next = Box::pin(observer.accept());
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(
+            std::future::Future::poll(next.as_mut(), cx).is_pending()
+        ))
+        .await
+    );
+    tokio::task::spawn_blocking(move || drop(supervisor))
+        .await
+        .unwrap();
 }

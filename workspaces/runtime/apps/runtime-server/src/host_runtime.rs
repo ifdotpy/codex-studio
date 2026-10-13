@@ -10,9 +10,8 @@ use studio_runtime_process::{
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_services::{
-    account_driver::AccountDriver,
+    account_driver::{AccountDriver, AccountStatus},
     account_worker::{WorkerError, preparation::PreparationResources},
-    model_catalog::ModelCatalogService,
     provider_session_task::SessionTaskConfig,
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
@@ -42,16 +41,14 @@ impl HostRuntime {
         let python =
             resolve_python(std::env::var_os("CODEX_AGENTS_PYTHON").map(PathBuf::from)).await?;
         let catalog = state.model_catalog_handle();
-        let resource_catalog = catalog.clone();
-        let resource_python = python.clone();
         let resources = tokio::task::spawn_blocking(move || {
-            PreparationResources::bundled(String::new(), resource_catalog, resource_python)
+            PreparationResources::bundled(String::new(), catalog, python)
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         *state = state.clone().with_tool_catalog(CatalogSnapshot {
             source: CatalogSource::Current,
-            definitions: resources.tools,
+            definitions: resources.tools.clone(),
             saved_thread_id: None,
             saved_digest: None,
         });
@@ -60,8 +57,7 @@ impl HostRuntime {
             accounts,
             root: store.root().to_owned(),
             native_path,
-            python,
-            catalog,
+            resources,
             environment: std::env::vars().collect(),
         });
         Self::with_launcher(store, launcher, state.event_wake_handle()).await
@@ -97,8 +93,7 @@ struct HostLauncher {
     accounts: Arc<AccountDriver>,
     root: PathBuf,
     native_path: Option<String>,
-    python: PathBuf,
-    catalog: ModelCatalogService,
+    resources: PreparationResources,
     environment: BTreeMap<String, String>,
 }
 
@@ -107,69 +102,26 @@ impl AccountLauncher for HostLauncher {
         Box::pin(async move {
             let accounts = self.accounts.clone();
             let key = account.clone();
-            let catalog = self.catalog.clone();
-            let python = self.python.clone();
-            let (home, isolated, resources) = tokio::task::spawn_blocking(move || {
-                let snapshot = accounts.snapshot().map_err(|_| {
-                    WorkerError::PreparationRefused("account-driver/unavailable".into())
-                })?;
-                let profile = snapshot
-                    .accounts
-                    .iter()
-                    .find(|profile| profile["id"] == key)
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused("account-driver/unavailable".into())
-                    })?;
-                if profile
-                    .get("provider")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("codex")
-                    != "codex"
-                {
-                    return Err(WorkerError::PreparationRefused(
-                        "provider-session/claude-runtime-launch".into(),
-                    ));
-                }
-                if profile["disconnected"] == true
-                    || profile["deleted"] == true
-                    || profile["status"] != "ready"
-                {
-                    return Err(WorkerError::PreparationRefused(
-                        "account-driver/unavailable".into(),
-                    ));
-                }
-                let home = profile["home"]
-                    .as_str()
-                    .filter(|home| !home.is_empty())
-                    .ok_or_else(|| {
-                        WorkerError::PreparationRefused("account-driver/profile-home".into())
-                    })?
-                    .to_owned();
-                let resources = PreparationResources::bundled(home.clone(), catalog, python)?;
-                Ok((home, key != "default", resources))
-            })
-            .await
-            .map_err(|_| WorkerError::TaskFailed)??;
-            let mut command = vec![
-                self.native_path.clone().unwrap_or_else(|| "codex".into()),
-                "app-server".into(),
-                "--listen".into(),
-                "stdio://".into(),
-            ];
-            let mut environment = self.environment.clone();
-            environment.insert("CODEX_HOME".into(), home);
-            if isolated {
-                command.extend(["-c".into(), "cli_auth_credentials_store=\"file\"".into()]);
-                environment.remove("OPENAI_API_KEY");
-                environment.remove("CODEX_API_KEY");
-            }
+            let (home, isolated) =
+                tokio::task::spawn_blocking(move || account_home(&accounts, &key))
+                    .await
+                    .map_err(|_| WorkerError::TaskFailed)??;
+            let mut resources = self.resources.clone();
+            resources.account_home.clone_from(&home);
+            let launch = codex_launch(
+                self.native_path.as_deref(),
+                self.environment.clone(),
+                home,
+                isolated,
+                self.root.clone(),
+            );
             // Existing catalog refresh owns its bounded one-off child; both
             // HTTP reads and preparation observe this same retained service.
             let _catalog_status = self
-                .catalog
+                .resources
+                .model_catalog
                 .read(&account, &resources.account_home, "codex", false)
                 .await;
-            let launch = ProviderLaunchSpec::new(command, environment, self.root.clone());
             let clock = SessionClock::default();
             let prepared = self
                 .factory
@@ -241,4 +193,71 @@ async fn resolve_python(configured: Option<PathBuf>) -> Result<PathBuf, WorkerEr
     } else {
         Err(invalid())
     }
+}
+
+pub(crate) fn codex_launch(
+    native_path: Option<&str>,
+    mut environment: BTreeMap<String, String>,
+    home: String,
+    isolated: bool,
+    root: PathBuf,
+) -> ProviderLaunchSpec {
+    let mut command = vec![
+        native_path.unwrap_or("codex").to_owned(),
+        "app-server".into(),
+        "--listen".into(),
+        "stdio://".into(),
+    ];
+    environment.insert("CODEX_HOME".into(), home);
+    if isolated {
+        command.extend(["-c".into(), "cli_auth_credentials_store=\"file\"".into()]);
+        environment.remove("OPENAI_API_KEY");
+        environment.remove("CODEX_API_KEY");
+    }
+    ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd()
+}
+
+pub(crate) fn account_home(
+    accounts: &AccountDriver,
+    key: &str,
+) -> Result<(String, bool), WorkerError> {
+    if accounts
+        .get(key)
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?
+        != AccountStatus::Ready
+    {
+        return Err(WorkerError::PreparationRefused(
+            "account-driver/unavailable".into(),
+        ));
+    }
+    let snapshot = accounts
+        .snapshot()
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let profile = snapshot
+        .accounts
+        .iter()
+        .find(|profile| profile["id"] == key)
+        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    if profile
+        .get("provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("codex")
+        != "codex"
+    {
+        return Err(WorkerError::PreparationRefused(
+            "provider-session/claude-runtime-launch".into(),
+        ));
+    }
+    if profile["disconnected"] == true || profile["deleted"] == true || profile["status"] != "ready"
+    {
+        return Err(WorkerError::PreparationRefused(
+            "account-driver/unavailable".into(),
+        ));
+    }
+    let home = profile["home"]
+        .as_str()
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
+        .to_owned();
+    Ok((home, key != "default"))
 }
