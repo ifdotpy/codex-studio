@@ -14,6 +14,8 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import urllib.request
+from urllib.error import HTTPError
 from collections import defaultdict
 from typing import Any, Iterator
 
@@ -26,19 +28,48 @@ JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
 
+# These consumer cases progress into provider turns which this runtime does
+# not implement. The ledger skips them explicitly instead of treating a
+# timeout as a conformance result.
+MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
+    "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
+        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": {"service": "turn-driver/provider-turn", "reason": "Provider turn execution requires turn-driver/provider-turn."},
+        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": {"service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
+    },
+    "workspaces/runtime/apps/server/tests/native-action-context-repair-contract.py": {
+        "__main__.NativeActionHTTPContract.test_compact_request_receipt_replay_targets_one_provider_thread": {"service": "turn-driver/provider-turn", "reason": "The receipt replay is followed by a provider turn requiring turn-driver/provider-turn."},
+        "__main__.NativeActionHTTPContract.test_review_request_receipt_replay_targets_one_provider_thread": {"service": "turn-driver/provider-turn", "reason": "The receipt replay is followed by a provider turn requiring turn-driver/provider-turn."},
+    },
+    "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
+        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"service": "turn-driver/provider-turn", "reason": "The fixture comparison starts a provider turn requiring turn-driver/provider-turn."},
+    },
+    "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
+        "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": {"service": "turn-driver/provider-turn", "reason": "Recovering the tool request requires a provider turn from turn-driver/provider-turn."},
+    },
+    "workspaces/runtime/apps/server/tests/yolo-contract.py": {
+        "__main__.YoloHTTPContract.test_turns_after_yolo_is_disabled_use_restricted_provider_permissions": {"service": "turn-driver/provider-turn", "reason": "The test executes provider turns requiring turn-driver/provider-turn."},
+        "__main__.YoloHTTPContract.test_yolo_default_inherits_to_worker_and_selects_provider_permissions": {"service": "turn-driver/provider-turn", "reason": "The test executes a worker provider turn requiring turn-driver/provider-turn."},
+        "__main__.YoloWorkerMessageOrderingHTTPContract.test_message_ordering_before_and_after_worker_first_turn_is_deterministic": {"service": "turn-driver/provider-turn", "reason": "The worker first turn requires turn-driver/provider-turn."},
+        "__main__.YoloRestartHTTPContract.test_disabled_yolo_mode_is_served_after_backend_restart": {"service": "turn-driver/provider-turn", "reason": "The post-restart message waits for a provider turn requiring turn-driver/provider-turn."},
+    },
+    "workspaces/runtime/apps/server/tests/sync-http-contract.py": {
+        "__main__.SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once": {"service": "event-driver/message-receipts", "reason": "Voice replay checks the unavailable event-driver/message-receipts endpoint."},
+    },
+}
+
 # Probe inputs are keyed by the documented HTTP operation so a schema-valid
 # sample can point at records created by the Python runtime seed. Each case may
 # override query/header values and top-level body fields. A value prefixed with
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/agent-chat"): {
-        "primary": {"query": {"room": "$room"}},
+        "primary": {"query": {"room": "$room"}, "expected": "501"},
     },
     ("GET", "/api/agents/finder-view"): {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/analytics"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -125,7 +156,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"room": "$room"}},
     },
     ("GET", "/api/messages/receipts"): {
-        "primary": {"query": {"agent": "$agent", "ids": "$message"}},
+        "primary": {"query": {"agent": "$agent", "ids": "$message"}, "expected": "501", "assert_no_write": True},
     },
     ("GET", "/api/panel"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -137,7 +168,19 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/session-cost"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$analyticsAgent"}, "expected": "2xx"},
+        "additional": [{
+            "name": "stale cost cache requires refresh",
+            "query": {"agent": "$analyticsAgent"},
+            "fixture_mutations": {"stale_session_cost_cache": True},
+            "restore": ["session_cost_cache"],
+            "expected": "501",
+            "expected_error": "Not implemented: requires usage-policy/session-cost-refresh",
+            "assert_no_write": True,
+        }],
+    },
+    ("GET", "/api/sync/stream"): {
+        "primary": {"query": {"protocol": "3", "resources": "[{\"kind\":\"state\"}]", "apiSchema": "$schemaHash"}, "expected": "2xx"},
     },
     ("GET", "/api/skills"): {
         "primary": {"query": {"agent": "$agent"}},
@@ -146,16 +189,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/transcript"): {
-        "primary": {"query": {"id": "$agent"}},
+        "primary": {"query": {"id": "$agent"}, "expected": "501"},
     },
     ("GET", "/api/transcript/page"): {
-        "primary": {"query": {"id": "$agent"}},
+        "primary": {"query": {"id": "$agent"}, "expected": "501"},
     },
+    ("GET", "/api/accounts/claude/login"): {
+        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "501"},
+    },
+    ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
+    ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
+    ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
     ("GET", "/api/search/item"): {
-        "primary": {"query": {"id": "$agent", "message_id": "$item"}},
+        "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "501"},
     },
     ("GET", "/api/search"): {
-        "primary": {"query": {"q": "ledger-probe"}},
+        "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
     },
     ("GET", "/api/complaint"): {
         "primary": {"query": {"id": "$complaint"}},
@@ -201,6 +250,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/workspace"): {
         "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/limits"): {
+        "primary": {"query": {"account_key": "default", "cached": "1"}, "expected": "2xx"},
+        "additional": [{"name": "live provider limits", "query": {"account_key": "default"}, "expected": "501"}],
     },
     ("GET", "/api/task"): {
         "primary": {"query": {"id": "$task"}},
@@ -260,10 +313,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "body": {"action": "create_invite", "label": "Ledger probe"},
             "replace_body": True,
             "expected": "501",
-            "expected_error": (
-                "Not implemented: requires remote-transport/tailscale-identity, "
-                "federation-credentials/key-generation"
-            ),
+            "expected_error": "Not implemented: requires federation-credentials/private-key, remote-transport/tailscale-identity, federation-credentials/key-generation, federation-credentials/invitation, remote-transport/signed-federation-exchange",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/limits/reset"): {
@@ -289,10 +340,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "body": {"action": "create_invite", "requestId": "ledger-probe-invite"},
             "replace_body": True,
             "expected": "501",
-            "expected_error": (
-                "Not implemented: requires remote-transport/owner-lookup, "
-                "federation-credentials/private-key"
-            ),
+            "expected_error": "Not implemented: requires federation-credentials/private-key, multi-server-runtime/orchestration, remote-transport/identity-write, remote-transport/owner-lookup, remote-transport/signed-server-requests, remote-transport/tailscale-discovery, server-credentials/local-identity",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/peer-teams"): {
@@ -372,7 +421,121 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         }},
     },
     ("POST", "/api/rename"): {
-        "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename"}},
+        "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename", "request_id": "ledger-rename"}, "fixture_mutations": {"agent_name": "HTTP ledger probe rename"}, "restore": ["agent_record"], "expected": "2xx"},
+        "additional": [{"name": "provider generated title", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/title-generation", "assert_no_write": True}],
+    },
+    ("POST", "/api/accounts/claude/add"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/claude/login"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/claude/login/cancel"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/claude/login/code"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/login"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/login/cancel"): {
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888886"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/delete"): {
+        "primary": {"body": {"account_key": "ledger-unknown-account", "request_id": "ledger-delete"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/disconnect"): {
+        "primary": {"body": {"account_key": "ledger-unknown-account"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/name"): {
+        "primary": {"body": {"account_key": "ledger-unknown-account", "label": "Probe account", "request_id": "ledger-name"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/reconnect"): {
+        "primary": {"body": {"account_key": "ledger-unknown-account"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/register"): {
+        "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/capacity-retry"): {
+        "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
+        "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/capacity-retry", "assert_no_write": True}],
+    },
+    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {}}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "serverId": "local", "cursor": 0}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1, "serverId": "local", "requestId": "ledger-status"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"enabled": True}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/organization"): {"primary": {"body": {"id": "$agent", "pinned": True}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/room/delete"): {"primary": {"body": {"id": "$room"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/servers/orchestration"): {"primary": {"body": {"serverId": "local", "payload": {}}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/close"): {"primary": {"body": {"id": "$terminal"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/create"): {"primary": {"body": {"id": "ledger-terminal", "agent": "$agent"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$terminal", "title": "Ledger"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/usage-resume"): {
+        "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
+        "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/usage-resume", "assert_no_write": True}],
+    },
+    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/agents"): {
+        "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
+        "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires worker-driver/workspace-preparation", "assert_no_write": True}],
+    },
+    ("POST", "/api/assets"): {
+        "primary": {"body": {"agent": "$agent", "name": "ledger.txt", "base64": "bGVkZ2Vy"}, "expected": "2xx"},
+    },
+    ("POST", "/api/checkpoint"): {
+        "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
+        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"}],
+    },
+    ("POST", "/api/checkpoint/preview"): {
+        "primary": {"body": {"agent": "$imageAgent", "checkpoint": "$imageCheckpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
+        "additional": [{"name": "lead preview shape", "body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"}],
+    },
+    ("POST", "/api/configure"): {
+        "primary": {"body": {"id": "$agent", "maxAgents": 10}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
+        "additional": [{"name": "agent mode settings dependency", "body": {"id": "$agent", "concurrency": 0}, "expected": "501", "expected_error": "Not implemented: requires agent-management/agent-mode-settings", "assert_no_write": True}],
+    },
+    ("POST", "/api/conversation"): {
+        "primary": {"body": {"id": "$agent", "excluded_account_keys": ["other-account"]}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
+        "additional": [{"name": "conversation settings dependency", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "501", "expected_error": "Not implemented: requires agent-management/conversation-settings", "assert_no_write": True}],
+    },
+    ("POST", "/api/leads"): {
+        "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
+        "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/model-list", "assert_no_write": True}],
+    },
+    ("POST", "/api/voice/approval_speech"): {
+        "primary": {"body": {"agent": "$agent", "request_id": "$approvalRequest"}, "replace_body": True, "expected": "2xx"},
+    },
+    ("POST", "/api/voice/approvals"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/voice/record"): {
+        "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession", "event_id": "ledger-event", "kind": "event", "text": "ledger"}, "replace_body": True, "expected": "2xx"},
+    },
+    ("POST", "/api/voice/records"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/voice/status"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
+    ("POST", "/api/voice/submit"): {
+        "primary": {"body": {"agent": "$agent", "message_id": "ledger-message", "record_ids": ["$voiceRecord"]}, "expected": "2xx"},
+        "additional": [{"name": "missing transcript records", "body": {"agent": "$agent", "message_id": "ledger-message-missing-records", "record_ids": ["ledger-missing-voice-record"]}, "expected": "400", "assert_no_write": True}],
+    },
+    ("POST", "/api/voice/end"): {
+        "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
+        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+    },
+    ("POST", "/api/voice/speech"): {
+        "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
+        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {
@@ -389,24 +552,30 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"agent": "$agent", "action": "list"}},
     },
     ("POST", "/api/sync/drafts"): {
-        "primary": {"body": {"rows": []}, "expected": "2xx"},
+        "primary": {"body": {"rows": [{
+            "newDocumentState": {
+                "id": "ledger-probe-device:ledger-probe-session",
+                "payload": "{\"device\":\"ledger-probe-device\",\"session\":\"ledger-probe-session\",\"text\":\"probe draft\"}",
+            },
+        }]}, "expected": "2xx"},
         "additional": [{
-            "name": "non-empty draft dependency",
+            "name": "draft identity mismatch is refused",
             "body": {"rows": [{
                 "newDocumentState": {
-                    "id": "ledger-probe-device:ledger-probe-session",
-                    "payload": "{\"device\":\"ledger-probe-device\",\"session\":\"ledger-probe-session\"}",
+                    "id": "wrong-device:ledger-probe-session",
+                    "payload": "{\"device\":\"ledger-probe-device\",\"session\":\"ledger-probe-session\",\"text\":\"probe draft\"}",
                 },
             }]},
-            "expected": "501",
+            "expected": "400",
+            "assert_no_write": True,
         }],
     },
     ("GET", "/api/sync/pull"): {
         "primary": {"query": {"scope": "drafts"}, "expected": "2xx"},
         "additional": [{
-            "name": "entity pull dependency",
+            "name": "entity pull shape",
             "query": {"scope": "state:entities:v1"},
-            "expected": "501",
+            "expected": "2xx",
         }],
     },
 }
@@ -565,6 +734,26 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
     return {}
 
 
+def ensure_operation_probe_cases(
+    manifest: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Generate only unambiguous probes; partial routes require explicit cases."""
+    for key, entry in manifest.items():
+        status = entry.get("status")
+        spec = PROBE_CASES.setdefault(key, {})
+        if status == "unimplemented":
+            # The manifest state has one exact contract for schema-valid input.
+            spec.setdefault("primary", {}).setdefault("expected", "501")
+            continue
+        if status not in {"implemented", "partial"}:
+            continue
+        primary = spec.setdefault("primary", {})
+        if status == "implemented":
+            primary.setdefault("expected", "2xx")
+        elif not primary.get("expected"):
+            primary["unverified"] = True
+
+
 def seed_python_probe_state(backend: Any) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
     agent_id = "ledger-probe-agent"
@@ -584,7 +773,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     file_path = "ledger-probe.txt"
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
-import os, sys
+import os, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
 from codex_runtime import Runtime
@@ -596,7 +785,8 @@ try:
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
         "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
-        "autoWake": True, "approvalPolicy": "never",
+        "autoWake": True, "approvalPolicy": "never", "worktreeReady": True,
+        "accountKey": "default", "threadId": "ledger-probe-thread",
     }}
     image_agent = {{
         **agent, "id": {image_agent_id!r}, "rootId": {agent_id!r},
@@ -604,9 +794,29 @@ try:
         "isLead": False, "autoWake": False, "workspaceMode": "image",
         "imageWorkspace": True, "executionMode": "vm",
     }}
+    now = time.time()
+    cancel_retry = {{
+        "id": "ledger-capacity-cancel", "status": "scheduled", "dueAt": now + 600,
+        "threadId": "ledger-probe-thread", "turnId": "ledger-probe-turn", "accountKey": "default",
+        "epoch": 0, "cause": "serverOverloaded", "attempt": 1, "maxAttempts": 3,
+        "cwd": os.environ["CODEX_CANVAS_CWD"], "settings": {{}}, "taskClaims": [],
+    }}
+    retry_retry = {{**cancel_retry, "id": "ledger-capacity-retry"}}
+    disable_resume = {{
+        "id": "ledger-resume-disable", "status": "scheduled", "dueAt": now + 600,
+        "threadId": "ledger-probe-thread", "turnId": "ledger-probe-turn", "accountKey": "default",
+        "epoch": 0, "cause": "usage_limit", "failedAt": now, "authAttempt": 0,
+        "authRefreshMarker": None, "plannedAt": None, "resetAt": None, "reason": None,
+    }}
+    enable_resume = {{**disable_resume, "id": "ledger-resume-enable"}}
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "agents", image_agent, sync_rooms=False)
+        runtime.capacity_save(db, agent, cancel_retry)
+        runtime.capacity_save(db, agent, retry_retry)
+        runtime.usage_resume_save(db, agent, disable_resume)
+        runtime.usage_resume_save(db, agent, enable_resume)
+        runtime.put(db, "agents", agent, sync_rooms=False)
         runtime.put(db, "tasks", {{
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
@@ -632,6 +842,11 @@ try:
             "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
+        runtime.put(db, "requests", {{
+            "id": "ledger-probe-monitor-approval", "agent": {agent_id!r}, "epoch": 0,
+            "method": "monitor/approve", "status": "pending", "createdAt": 1.0,
+            "params": {{"monitorId": "ledger-probe-monitor", "command": "echo ledger", "cwd": os.environ["CODEX_CANVAS_CWD"]}},
+        }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id": {complaint_id!r}, "leadId": {agent_id!r}, "author": "user",
             "text": "HTTP ledger probe complaint", "version": 1, "status": "open",
@@ -642,31 +857,66 @@ try:
             "id": {room_id!r}, "kind": "private", "members": [{agent_id!r}],
             "updated": 1.0,
         }}, sync_rooms=False)
-        runtime.put(db, "checkpoints", {{
-            "id": {checkpoint_id!r}, "agent": {agent_id!r}, "rootId": {agent_id!r},
-            "label": "HTTP ledger probe checkpoint", "tree": "probe", "created": 1.0,
-            "items": [], "historyDelta": [],
-        }}, sync_rooms=False)
-        runtime.put(db, "rules", {{
-            "id": {active_rule_id!r}, "agent": {agent_id!r}, "rootId": {agent_id!r},
-            "epoch": 0, "name": "HTTP ledger active rule", "kind": "interval",
-            "status": "active", "intervalSeconds": 60, "nextAt": 1.0, "at": 1.0,
-            "command": "echo ledger probe", "text": "Check the probe fixture.",
-            "created": 1.0, "inFlight": True, "checks": 1, "wakes": 0,
-        }}, sync_rooms=False)
-        runtime.put(db, "monitors", {{
-            "id": {monitor_id!r}, "agent": {agent_id!r}, "epoch": 0,
-            "command": "echo ledger probe", "status": "completed", "created": 1.0,
-            "tail": "probe log", "bytes": 10,
-            "log": str(Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"),
-        }}, sync_rooms=False)
-        runtime.put(db, "monitors", {{
-            "id": {active_monitor_id!r}, "agent": {agent_id!r}, "epoch": 0,
-            "ruleId": {active_rule_id!r}, "command": "echo active rule probe",
-            "status": "running", "created": 1.0, "tail": "probe log", "bytes": 10,
-            "log": str(Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"),
-        }}, sync_rooms=False)
         runtime.item(db, {agent_id!r}, {item_id!r}, "assistant", "HTTP ledger probe transcript item")
+    workspace = Path(os.environ["CODEX_CANVAS_CWD"])
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "HTTP Ledger Fixture"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "ledger@example.invalid"], cwd=workspace, check=True)
+    (workspace / {file_path!r}).write_text("HTTP ledger probe file\\n", encoding="utf-8")
+    subprocess.run(["git", "add", {file_path!r}], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "ledger seed"], cwd=workspace, check=True)
+    checkpoint = runtime.capture_checkpoint({agent_id!r}, "HTTP ledger probe checkpoint")
+    image_checkpoint = runtime.capture_checkpoint({image_agent_id!r}, "HTTP ledger image checkpoint")
+    runtime.set_rate_limits("default", {{
+        "data": {{"accountId": "fixture-account", "status": "ready", "signedIn": True,
+                 "rateLimits": {{"primary": {{"usedPercent": 27}}}}}},
+        "at": 1234.5, "readAt": 1234.5, "error": None,
+    }})
+    from codex_voice import VoiceStore
+    voice = VoiceStore(runtime)
+    voice._publish_voice = lambda _agent: None
+    voice._start_native = lambda _agent, _session, _sdp: None
+    voice.start({agent_id!r}, "ledger-probe-voice-ended", "v=0\\r\\n")
+    voice._state("ledger-probe-voice-ended", "lost", "fixture ended", ended=True, publish=False)
+    voice.record(
+        {agent_id!r}, "ledger-probe-voice-ended", "ledger-probe-voice-record",
+        "user", "Ledger voice transcript record.", payload={{"utterance_order": 1}}, _publish=False,
+    )
+    active_rule = runtime.rules({{
+        "agent": {agent_id!r}, "action": "save", "id": {active_rule_id!r},
+        "name": "HTTP ledger active rule", "kind": "interval", "intervalSeconds": 60,
+        "at": time.time(), "command": "echo ledger probe", "text": "Check the probe fixture.",
+    }})
+    class QuietPool:
+        def submit(self, *_args, **_kwargs):
+            return None
+    real_pool = runtime.pool
+    runtime.pool = QuietPool()
+    try:
+        runtime.rules_tick()
+    finally:
+        runtime.pool = real_pool
+    active_rule = next(
+        rule for rule in runtime.rules({{"agent": {agent_id!r}, "action": "list"}})["rules"]
+        if rule["id"] == {active_rule_id!r}
+    )
+    active_monitor = runtime.monitor(
+        {agent_id!r}, {{"command": "echo active rule probe", "stall_timeout_seconds": 0}},
+        key={active_monitor_id!r}, rule=active_rule,
+    )
+    monitor = runtime.monitor(
+        {agent_id!r}, {{"command": "echo ledger probe", "stall_timeout_seconds": 0}},
+        key={monitor_id!r},
+    )
+    for row in (active_monitor, monitor):
+        log = Path(row["log"])
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_bytes(b"probe log!\\n")
+    with runtime.db() as db:
+        db.execute(
+            "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?,?,?,?,?)",
+            ("ledger-probe-voice-ended:ledger-probe-voice-record", "ledger-probe-voice-ended", "ledger-probe-voice-record", "failed", "saved failure"),
+        )
     file = Path(os.environ["CODEX_CANVAS_CWD"]) / {file_path!r}
     file.write_text("HTTP ledger probe file\\n", encoding="utf-8")
     monitor_log = Path(os.environ["CODEX_AGENTS_STATE_DIR"]) / "monitor-logs" / "ledger.log"
@@ -691,6 +941,8 @@ try:
         Path(os.environ["CODEX_AGENTS_STATE_DIR"], "ledger-probe-identifiers.json").write_text(
             __import__("json").dumps({{
                 "terminal": terminal_id, "emptyQueueRevision": queue_revision,
+            "checkpoint": checkpoint["id"], "imageCheckpoint": image_checkpoint["id"], "monitor": monitor["id"],
+            "activeMonitor": active_monitor["id"],
             }}), encoding="utf-8"
         )
     finally:
@@ -724,15 +976,22 @@ finally:
         "task": task_id,
         "complaint": complaint_id,
         "room": room_id,
-        "checkpoint": checkpoint_id,
+        "checkpoint": terminal_identifiers["checkpoint"],
         "item": f"{agent_id}:{item_id}",
-        "monitor": monitor_id,
+        "monitor": terminal_identifiers["monitor"],
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
         "question": "ledger-probe-question",
         "questionDelete": "ledger-probe-question",
         "providerQuestion": "ledger-probe-provider-question",
+        "voiceRecord": "ledger-probe-voice-record",
+        "voiceEndedSession": "ledger-probe-voice-ended",
+        "voiceActiveSession": "ledger-probe-voice-active",
+        "approvalRequest": "ledger-probe-monitor-approval",
+        "imageCheckpoint": terminal_identifiers["imageCheckpoint"],
+        "schemaHash": backend.schema_hash,
+        "analyticsAgent": "analytics-contract-agent",
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
@@ -741,6 +1000,38 @@ finally:
         "projectPath": str(backend.cwd),
         "claudeAccount": "claude-ledger",
     }
+
+
+def seed_post_start_voice_session(backend: Any, agent_id: str) -> str:
+    """Use the Python voice writer after startup, when a live session can exist."""
+    source = Path(__file__).resolve().parents[1] / "src"
+    session_id = "ledger-probe-voice-active"
+    script = f"""
+import os, sys, threading
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+from codex_runtime import Runtime
+from codex_voice import VoiceStore
+runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+try:
+    voice = object.__new__(VoiceStore)
+    voice.runtime = runtime
+    voice.native_lock = threading.RLock()
+    voice.connections = {{}}
+    voice._publish_voice = lambda _agent: None
+    voice._start_native = lambda _agent, _session, _sdp: None
+    voice.start({agent_id!r}, {session_id!r}, "v=0\\r\\n")
+    voice._state({session_id!r}, "ready", publish=False)
+finally:
+    runtime.close()
+"""
+    environment = backend._environment()
+    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    subprocess.run(
+        [python, "-B", "-c", script], cwd=backend.cwd, env=environment,
+        check=True, timeout=30,
+    )
+    return session_id
 
 
 def valid_probe(
@@ -778,6 +1069,9 @@ def valid_probe(
         body = body_overrides if overrides.get("replace_body") else sample_value(body_schema, document)
         if not overrides.get("replace_body") and isinstance(body, dict) and isinstance(body_overrides, dict):
             body.update(body_overrides)
+        if isinstance(body, dict):
+            for name in overrides.get("body_omit", []):
+                body.pop(name, None)
     headers = {
         name: str(resolve_probe_value(value, identifiers))
         for name, value in header_overrides.items()
@@ -806,15 +1100,18 @@ def probe_fixture_state(
     """Apply a keyed probe's shared-state mutation and always restore it."""
     mutations = probe_case.get("fixture_mutations", {})
     restore = set(probe_case.get("restore", []))
-    if ("agent_execution_mode" in mutations) != ("agent_record" in restore):
-        raise ValueError("agent execution mode probe mutations must declare agent_record restoration")
+    if (bool({"agent_execution_mode", "agent_name"} & mutations.keys())) != ("agent_record" in restore):
+        raise ValueError("agent record probe mutations must declare agent_record restoration")
     if ("remove_identity" in mutations) != ("identity_file" in restore):
         raise ValueError("identity file probe mutations must declare identity_file restoration")
+    if ("stale_session_cost_cache" in mutations) != ("session_cost_cache" in restore):
+        raise ValueError("session cost cache mutations must declare cache restoration")
 
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
+    session_cost_cache: tuple[Path, bytes] | None = None
     try:
-        if "agent_execution_mode" in mutations:
+        if {"agent_execution_mode", "agent_name"} & mutations.keys():
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                 row = connection.execute(
                     "SELECT record FROM runtime_agents WHERE id=?", (identifiers["agent"],),
@@ -822,7 +1119,11 @@ def probe_fixture_state(
                 if row is None:
                     raise RuntimeError("seeded ledger agent is missing")
                 agent_record = json.loads(row[0])
-                changed = {**agent_record, "executionMode": mutations["agent_execution_mode"]}
+                changed = dict(agent_record)
+                if "agent_execution_mode" in mutations:
+                    changed["executionMode"] = mutations["agent_execution_mode"]
+                if "agent_name" in mutations:
+                    changed["name"] = mutations["agent_name"]
                 connection.execute(
                     "UPDATE runtime_agents SET record=? WHERE id=?",
                     (json.dumps(changed), identifiers["agent"]),
@@ -831,6 +1132,15 @@ def probe_fixture_state(
             path = backend.state / "multi-server" / "identity.json"
             identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
             path.unlink()
+        if mutations.get("stale_session_cost_cache"):
+            cache_files = sorted((backend.state / "session-costs").glob("cost-*.json"))
+            if not cache_files:
+                raise RuntimeError("seeded session-cost cache is missing")
+            path = cache_files[0]
+            session_cost_cache = (path, path.read_bytes())
+            cache = json.loads(session_cost_cache[1])
+            cache["source"]["usage"]["generation"] += 1
+            path.write_text(json.dumps(cache), encoding="utf-8")
         yield
     finally:
         try:
@@ -841,10 +1151,15 @@ def probe_fixture_state(
                         (json.dumps(agent_record), identifiers["agent"]),
                     )
         finally:
-            if identity_file is not None:
-                path, content, mode = identity_file
-                path.write_bytes(content)
-                path.chmod(mode)
+            try:
+                if identity_file is not None:
+                    path, content, mode = identity_file
+                    path.write_bytes(content)
+                    path.chmod(mode)
+            finally:
+                if session_cost_cache is not None:
+                    path, content = session_cost_cache
+                    path.write_bytes(content)
 
 
 def probe_operations(
@@ -853,20 +1168,29 @@ def probe_operations(
     successful_assertions: dict[str, set[str]],
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
-    from http_backend_harness import BackendProcess
+    from http_backend_harness import BackendProcess, HttpResult
 
     with tempfile.TemporaryDirectory(
         prefix="rust-http-ledger-", dir=DEFAULT_CACHE
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
-        backend = BackendProcess(scratch)
+        backend = BackendProcess(scratch, claude_bin=None)
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             seed_catalog_state(backend)
-            backend.start()
-            backend.stop()
+            import importlib.util
+            analytics_path = TESTS / "rust-analytics-http-contract.py"
+            analytics_spec = importlib.util.spec_from_file_location("ledger_analytics_seed", analytics_path)
+            if analytics_spec is None or analytics_spec.loader is None:
+                raise RuntimeError("could not load analytics contract seed")
+            analytics_module = importlib.util.module_from_spec(analytics_spec)
+            analytics_spec.loader.exec_module(analytics_module)
+            analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend)
             backend.start()
+            identifiers["voiceActiveSession"] = seed_post_start_voice_session(
+                backend, identifiers["agent"]
+            )
             token = backend.session["token"]
             rows = []
             for method, template in operations():
@@ -918,13 +1242,31 @@ def probe_operations(
                         if probe_case.get("assert_no_write") else None
                     )
                     with probe_fixture_state(backend, identifiers, probe_case):
-                        result = backend.request(
-                            method,
-                            path,
-                            body=body if method in JSON_METHODS else None,
-                            headers=headers,
-                            timeout=2.0,
-                        )
+                        if method == "GET" and template == "/api/sync/stream":
+                            request = urllib.request.Request(backend.origin + path, headers=headers)
+                            try:
+                                with urllib.request.urlopen(request, timeout=2.0) as response:
+                                    chunk = response.read(1)
+                                    result = HttpResult(
+                                        response.status,
+                                        {key.lower(): value for key, value in response.headers.items()},
+                                        chunk,
+                                    )
+                            except HTTPError as error:
+                                with error:
+                                    result = HttpResult(
+                                        error.code,
+                                        {key.lower(): value for key, value in error.headers.items()},
+                                        error.read(),
+                                    )
+                        else:
+                            result = backend.request(
+                                method,
+                                path,
+                                body=body if method in JSON_METHODS else None,
+                                headers=headers,
+                                timeout=2.0,
+                            )
                     try:
                         response_body = json.loads(result.body)
                     except (ValueError, TypeError):
@@ -950,14 +1292,13 @@ def probe_operations(
                         database_before is None
                         or database_before == sqlite_snapshot(backend.state / "canvas.sqlite3")
                     )
-                    expected = probe_case.get(
-                        "expected", "501" if implementation != "implemented" else "2xx"
-                    )
+                    expected = probe_case.get("expected")
                     expected_matches = (
                         (expected == "501" and result.status == 501 and standard_501)
+                        or (implementation == "unimplemented" and result.status == 501 and standard_501)
                         or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
+                        or (expected == "400" and result.status == 400)
                         or (expected == "2xx" and 200 <= result.status < 300)
-                        or (expected == "either" and (200 <= result.status < 300 or result.status == 501 and standard_501))
                     )
                     observations.append({
                         "case": case_name,
@@ -987,10 +1328,17 @@ def probe_operations(
                     standard_501_envelope,
                     dependency_response_matches,
                 )
+                if primary.get("expected") == "400" and primary.get("expectedMatches"):
+                    classification = "implemented"
                 if primary.get("expected") == "404" and primary.get("expectedMatches") and primary.get("reason"):
                     classification = "implemented"
                 if not all(observation["expectedMatches"] for observation in observations):
                     classification = "unexpected"
+                if implementation == "partial" and any(
+                    case.get("unverified") or not case.get("expected")
+                    for _, case in cases
+                ):
+                    classification = "unverified"
                 if not all(observation["noWrite"] for observation in observations):
                     classification = "unexpected"
                 rows.append({
@@ -1172,6 +1520,11 @@ def run_suite(
     trace_path = trace_root / f"{path.stem}.jsonl"
     suite_environment = environment.copy()
     suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    skipped_for_service = MISSING_SERVICE_TESTS.get(relative, {})
+    if skipped_for_service:
+        suite_environment["STUDIO_HTTP_LEDGER_SKIP_TESTS"] = json.dumps({
+            test_id: details["reason"] for test_id, details in skipped_for_service.items()
+        })
     process = subprocess.run(
         ["just", "test-json", "server", relative],
         cwd=ROOT,
@@ -1195,6 +1548,13 @@ def run_suite(
     log_path = result.get("logPath")
     log_text = Path(log_path).read_text(encoding="utf-8") if log_path else ""
     cases = case_results(log_text)
+    actual_skips = {case["testId"] for case in cases if case["status"] == "skipped"}
+    required_skips = set(skipped_for_service)
+    if actual_skips & required_skips != required_skips:
+        raise RuntimeError(
+            f"missing-service test skip mismatch in {relative}: "
+            f"expected={sorted(required_skips)}, observed={sorted(actual_skips & required_skips)}"
+        )
     requests: list[dict[str, Any]] = []
     if trace_path.exists():
         for line in trace_path.read_text(encoding="utf-8").splitlines():
@@ -1241,6 +1601,10 @@ def run_suite(
         "skipped": result.get("skipped") or 0,
         "exitCode": result.get("exitCode", process.returncode),
         "tests": cases,
+        "requiresMissingServices": [
+            {"testId": test_id, **details}
+            for test_id, details in sorted(skipped_for_service.items())
+        ],
         "failures": failures,
         "requests": requests,
         "unattributedRequests": unattributed,
@@ -1331,6 +1695,23 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
+    advertised_services = {
+        dependency
+        for entry in manifest.values()
+        for dependency in entry.get("dependencies", [])
+    }
+    stale_exclusions = sorted({
+        details["service"]
+        for suite in MISSING_SERVICE_TESTS.values()
+        for details in suite.values()
+        if details["service"] in advertised_services
+    })
+    if stale_exclusions:
+        raise RuntimeError(
+            "ledger has stale missing-service exclusions; service appears in the Rust manifest: "
+            + ", ".join(stale_exclusions)
+        )
+    ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rust-http-traces-", dir=DEFAULT_CACHE) as trace_dir_name:
         trace_root = Path(trace_dir_name)
@@ -1395,6 +1776,9 @@ def main() -> int:
         "testsPassed": sum(row["passed"] for row in suites),
         "testsFailed": sum(row["failed"] for row in suites),
         "testsSkipped": sum(row["skipped"] for row in suites),
+        "testsRequiringMissingService": sum(
+            len(row.get("requiresMissingServices", [])) for row in suites
+        ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
     }

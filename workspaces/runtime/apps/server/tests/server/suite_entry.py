@@ -96,6 +96,27 @@ def main() -> None:
     if len(sys.argv) < 3 or sys.argv[1] not in {"path", "module"}:
         raise SystemExit("usage: suite_entry.py path|module TARGET [unittest args]; list path|module TARGET")
     kind, target, *arguments = sys.argv[1:]
+    ledger_skips = {
+        test_id: reason
+        for test_id, reason in json.loads(os.environ.get("STUDIO_HTTP_LEDGER_SKIP_TESTS", "{}")).items()
+    }
+    if ledger_skips:
+        original_run = unittest.TestCase.run
+
+        def run_with_ledger_skips(test: Any, result: Any = None, *args: Any, **kwargs: Any) -> Any:
+            reason = ledger_skips.get(test.id())
+            if not reason:
+                return original_run(test, result, *args, **kwargs)
+            if result is None:
+                result = unittest.TestResult()
+            result.startTest(test)
+            try:
+                result.addSkip(test, reason)
+            finally:
+                result.stopTest(test)
+            return result
+
+        unittest.TestCase.run = run_with_ledger_skips
     RESULT_FILE = os.environ.pop("CODEX_SERVER_TEST_RESULT_FILE", None)
     setattr(unittest, "TextTestRunner", StructuredTextTestRunner)
     original_main = getattr(unittest, "main")

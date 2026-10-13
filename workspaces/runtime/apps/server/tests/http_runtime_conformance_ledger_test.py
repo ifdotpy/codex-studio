@@ -37,6 +37,8 @@ class LedgerTraceContract(unittest.TestCase):
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
+            "voiceRecord", "voiceEndedSession", "voiceActiveSession",
+            "analyticsAgent", "schemaHash", "imageCheckpoint", "approvalRequest",
         }
 
         def references(value):
@@ -52,12 +54,12 @@ class LedgerTraceContract(unittest.TestCase):
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "404", "501"})
+                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "404", "501"})
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
 
-    def test_reset_credit_probe_is_single_named_refusal_without_redemption(self) -> None:
+    def test_reset_credit_probes_are_named_refusals_without_redemption(self) -> None:
         reset = ledger.PROBE_CASES[("POST", "/api/limits/reset")]
         self.assertEqual(set(reset), {"primary"})
         self.assertEqual(reset["primary"]["expected"], "501")
@@ -158,19 +160,28 @@ class LedgerTraceContract(unittest.TestCase):
         self.assertEqual(queue["ordered_ids"], "$queueIds")
 
     def test_partial_operations_with_multiple_request_shapes_check_both_results(self) -> None:
-        for operation in (
-            ("GET", "/api/file"),
-            ("GET", "/api/file-info"),
-            ("GET", "/api/sync/pull"),
-            ("POST", "/api/sync/drafts"),
-            ("POST", "/api/rules"),
-        ):
+        expected_cases = {
+            ("GET", "/api/file"): ["2xx", "501"],
+            ("GET", "/api/file-info"): ["2xx", "501"],
+            ("GET", "/api/sync/pull"): ["2xx", "2xx"],
+            ("POST", "/api/sync/drafts"): ["2xx", "400"],
+            ("POST", "/api/rules"): ["2xx", "501"],
+            ("POST", "/api/agents"): ["2xx", "501"],
+            ("POST", "/api/leads"): ["2xx", "501"],
+            ("POST", "/api/configure"): ["2xx", "501"],
+            ("POST", "/api/conversation"): ["2xx", "501"],
+            ("POST", "/api/checkpoint"): ["501", "2xx"],
+            ("POST", "/api/checkpoint/preview"): ["501", "2xx"],
+            ("POST", "/api/voice/end"): ["2xx", "501"],
+            ("POST", "/api/voice/speech"): ["2xx", "501"],
+            ("POST", "/api/voice/submit"): ["2xx", "400"],
+        }
+        for operation, expected in expected_cases.items():
             with self.subTest(operation=operation):
                 spec = ledger.PROBE_CASES[operation]
-                self.assertEqual(spec["primary"]["expected"], "2xx")
                 self.assertEqual(
-                    [case["expected"] for case in spec["additional"]],
-                    ["501"],
+                    [spec["primary"]["expected"], *[case["expected"] for case in spec.get("additional", [])]],
+                    expected,
                 )
 
     def test_classifier_rejects_server_errors_before_allowances(self) -> None:
