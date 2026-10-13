@@ -49,6 +49,10 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
+[doc("Run the opt-in Rust runtime corpus matrices; accepts nextest package filters.")]
+test-rust-runtime-corpora *args:
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E 'binary(/_corpus$/)' {{args}}
+
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy

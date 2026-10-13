@@ -330,6 +330,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/connections"): {
         "primary": {"body": {"source": "$agent", "target": "$chat"}},
     },
+    ("POST", "/api/context-repair"): {
+        "primary": {"body": {"id": "$agent"}, "expected": "2xx"},
+    },
     ("POST", "/api/messages"): {
         "primary": {
             "body": {"id": "$message", "room": "$chat", "text": "Ledger message"},

@@ -2,6 +2,7 @@ pub mod account_state;
 pub(crate) mod agents;
 pub mod analytics;
 pub(crate) mod checkpoints;
+pub(crate) mod context_repair;
 pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
