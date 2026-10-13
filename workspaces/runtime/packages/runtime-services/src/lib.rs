@@ -12,6 +12,7 @@ pub mod account_policy;
 pub mod agents_create;
 pub mod coordination;
 pub mod event_write;
+pub mod model_catalog;
 pub mod panels;
 pub mod progress_panel;
 pub mod provider_session;

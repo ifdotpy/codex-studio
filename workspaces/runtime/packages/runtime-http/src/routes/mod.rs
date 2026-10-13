@@ -6,6 +6,7 @@ mod agents_create;
 mod catalog;
 mod desktop;
 mod messages;
+mod models;
 mod monitors;
 mod panels;
 mod questions_reads;
@@ -49,6 +50,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         transcript::routes(),
         work_items::routes(),
         messages::routes(),
+        models::routes(),
         work_write::routes(),
         workspace_files::routes(),
         workspace_views::routes(),
