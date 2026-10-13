@@ -149,7 +149,8 @@ class Projects:
                 require(parent.is_dir(), "The layer path has a file parent")
             seeded = not (target.exists() or target.is_symlink())
             if seeded:
-                partial = parent / (".layr-seed-" + hashlib.sha256(request_id.encode()).hexdigest()[:16])
+                # Named by the path: a later request after a failed one removes the earlier partial copy.
+                partial = parent / (".layr-seed-" + hashlib.sha256(path.encode()).hexdigest()[:16])
                 try:
                     if partial.exists():
                         await remove_tree(partial)
