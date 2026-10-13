@@ -123,11 +123,60 @@ class PersistedCheckpointRecord(_OpenPersistedRecord):
     created: StrictFloat | StrictInt | None = None
 
 
+class MonitorOperationRecord(ContractModel):
+    """Exact native command ownership; extra transport evidence remains readable."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    agent: StrictStr = Field(min_length=1, max_length=200)
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+    accountKey: StrictStr = Field(min_length=1, max_length=200)
+    connectionId: StrictStr = Field(min_length=1, max_length=200)
+
+
+class PersistedMonitorResult(ContractModel):
+    """First definitive command result, flushed before the monitor/event transaction."""
+
+    version: Literal[1]
+    key: StrictStr = Field(min_length=1, max_length=200)
+    code: StrictInt | None
+    error: StrictStr | None = Field(default=None, max_length=12000)
+    operation: MonitorOperationRecord | None
+    finished: float = Field(gt=0)
+
+
 class PersistedMonitorRecord(_OpenPersistedRecord):
     agent: StrictStr | None = None
     ruleId: StrictStr | None = None
-    status: StrictStr | None = None
+    status: Literal["approval", "starting", "running", "completed", "failed", "cancelled", "lost"] | None = None
     lastExitCode: StrictInt | None = None
+    epoch: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    command: StrictStr = Field(default="", max_length=12000)
+    cwd: StrictStr = ""
+    timeout_ms: Annotated[StrictInt, Field(ge=1000, le=86400000)] = 3600000
+    stallTimeoutSeconds: Annotated[StrictInt, Field(ge=0, le=31536000)] = 1800
+    wakeOn: Literal["exit", "failure"] = "exit"
+    livenessCommand: StrictStr = Field(default="", max_length=12000)
+    successExitCodes: list[Annotated[StrictInt, Field(ge=0, le=255)]] = Field(default_factory=lambda: [0], min_length=1, max_length=16)
+    created: float = Field(default=0, ge=0)
+    finished: float | None = Field(default=None, ge=0)
+    activityAt: float = Field(default=0, ge=0)
+    activityGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    stallWakeGeneration: Annotated[StrictInt, Field(ge=-1, le=MAX_SAFE_INTEGER)] = -1
+    stallProbeGeneration: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] | None = None
+    stallProbeStarted: float | None = Field(default=None, ge=0)
+    cancelRequested: StrictBool = False
+    configurationPending: StrictBool = False
+    interactive: StrictBool = False
+    stdinClosed: StrictBool = False
+    stdinCloseRequested: StrictStr | None = None
+    operation: MonitorOperationRecord | None = None
+    inputAttempt: dict[str, JsonValue] | None = None
+    log: StrictStr = ""
+    tail: StrictStr = Field(default="", max_length=12000)
+    bytes: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)] = 0
+    exitCode: StrictInt | None = None
+    error: StrictStr | None = Field(default=None, max_length=12000)
 
 
 class PersistedTerminalRecord(_OpenPersistedRecord):
@@ -280,6 +329,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,
     "persisted-monitor-record.schema.json": PersistedMonitorRecord,
+    "persisted-monitor-result.schema.json": PersistedMonitorResult,
     "persisted-terminal-record.schema.json": PersistedTerminalRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,

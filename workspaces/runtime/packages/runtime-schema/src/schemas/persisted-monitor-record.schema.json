@@ -1,11 +1,57 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "MonitorOperationRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Exact native command ownership; extra transport evidence remains readable.",
+      "properties": {
+        "accountKey": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "agent": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Agent",
+          "type": "string"
+        },
+        "connectionId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Connectionid",
+          "type": "string"
+        },
+        "epoch": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        }
+      },
+      "required": ["agent", "epoch", "accountKey", "connectionId"],
+      "title": "MonitorOperationRecord",
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "activityAt": {
+      "minimum": 0,
+      "title": "Activityat",
+      "type": "number"
+    },
+    "activityGeneration": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Activitygeneration",
+      "type": "integer"
+    },
     "agent": {
       "anyOf": [
         {
@@ -17,9 +63,103 @@
       ],
       "title": "Agent"
     },
+    "bytes": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Bytes",
+      "type": "integer"
+    },
+    "cancelRequested": {
+      "title": "Cancelrequested",
+      "type": "boolean"
+    },
+    "command": {
+      "maxLength": 12000,
+      "title": "Command",
+      "type": "string"
+    },
+    "configurationPending": {
+      "title": "Configurationpending",
+      "type": "boolean"
+    },
+    "created": {
+      "minimum": 0,
+      "title": "Created",
+      "type": "number"
+    },
+    "cwd": {
+      "title": "Cwd",
+      "type": "string"
+    },
+    "epoch": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Epoch"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 12000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Error"
+    },
+    "exitCode": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Exitcode"
+    },
+    "finished": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished"
+    },
     "id": {
       "title": "Id",
       "type": "string"
+    },
+    "inputAttempt": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Inputattempt"
+    },
+    "interactive": {
+      "title": "Interactive",
+      "type": "boolean"
     },
     "lastExitCode": {
       "anyOf": [
@@ -32,6 +172,25 @@
       ],
       "title": "Lastexitcode"
     },
+    "livenessCommand": {
+      "maxLength": 12000,
+      "title": "Livenesscommand",
+      "type": "string"
+    },
+    "log": {
+      "title": "Log",
+      "type": "string"
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonitorOperationRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "ruleId": {
       "anyOf": [
         {
@@ -43,7 +202,64 @@
       ],
       "title": "Ruleid"
     },
+    "stallProbeGeneration": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stallprobegeneration"
+    },
+    "stallProbeStarted": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stallprobestarted"
+    },
+    "stallTimeoutSeconds": {
+      "maximum": 31536000,
+      "minimum": 0,
+      "title": "Stalltimeoutseconds",
+      "type": "integer"
+    },
+    "stallWakeGeneration": {
+      "maximum": 9007199254740991,
+      "minimum": -1,
+      "title": "Stallwakegeneration",
+      "type": "integer"
+    },
     "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "approval",
+            "starting",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "lost"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status"
+    },
+    "stdinCloseRequested": {
       "anyOf": [
         {
           "type": "string"
@@ -52,7 +268,38 @@
           "type": "null"
         }
       ],
-      "title": "Status"
+      "title": "Stdincloserequested"
+    },
+    "stdinClosed": {
+      "title": "Stdinclosed",
+      "type": "boolean"
+    },
+    "successExitCodes": {
+      "items": {
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Successexitcodes",
+      "type": "array"
+    },
+    "tail": {
+      "maxLength": 12000,
+      "title": "Tail",
+      "type": "string"
+    },
+    "timeout_ms": {
+      "maximum": 86400000,
+      "minimum": 1000,
+      "title": "Timeout Ms",
+      "type": "integer"
+    },
+    "wakeOn": {
+      "enum": ["exit", "failure"],
+      "title": "Wakeon",
+      "type": "string"
     }
   },
   "required": ["id"],
