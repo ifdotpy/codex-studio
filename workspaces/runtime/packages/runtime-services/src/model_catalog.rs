@@ -3,21 +3,31 @@
 use crate::provider_session::{
     ProviderProcess, ProviderSession, ProviderSessionConfig, ProviderSessionEvent,
 };
+#[cfg(unix)]
+use process_wrap::std::{CommandWrap, ProcessGroup};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, Command, Stdio};
+#[cfg(windows)]
+use std::process::Child;
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use studio_runtime_providers::{Method, ResponseBody};
+#[cfg(unix)]
+type ManagedChildProcess = Box<dyn process_wrap::std::ChildWrapper>;
+#[cfg(windows)]
+type ManagedChildProcess = Box<Child>;
 
 const CATALOG_TTL: Duration = Duration::from_secs(300);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CATALOG_PAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CATALOG_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CATALOG_PAGES: usize = 100;
+pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CatalogRead {
@@ -38,6 +48,7 @@ struct CatalogInner {
     executable: Option<PathBuf>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     next_generation: Mutex<u64>,
+    on_change: ChangeCallback,
 }
 
 /// A single HTTP-state-owned cache and its provider process configuration.
@@ -47,10 +58,17 @@ pub struct ModelCatalogService(Arc<CatalogInner>);
 impl ModelCatalogService {
     #[must_use]
     pub fn new(executable: Option<String>) -> Self {
+        Self::with_change_callback(executable, Arc::new(|| {}))
+    }
+
+    /// Construct the cache with a shared resource-change callback for completed reads.
+    #[must_use]
+    pub fn with_change_callback(executable: Option<String>, on_change: ChangeCallback) -> Self {
         Self(Arc::new(CatalogInner {
             executable: executable.map(PathBuf::from),
             cache: Mutex::new(HashMap::new()),
             next_generation: Mutex::new(0),
+            on_change,
         }))
     }
 
@@ -114,34 +132,44 @@ impl ModelCatalogService {
                     &home,
                     account != "default",
                 );
-                if let Ok(mut cache) = service.0.cache.lock()
-                    && let Some(entry) = cache.get_mut(&worker_cache_key)
-                    && entry.generation == generation
-                {
-                    entry.pending = false;
-                    entry.expires_at = Some(Instant::now() + CATALOG_TTL);
-                    match result {
-                        Ok(value) => {
-                            entry.value = Some(value);
-                            entry.error = false;
-                        }
-                        Err(()) => entry.error = true,
-                    }
-                }
+                let _stored = store_result(&service.0, &worker_cache_key, generation, result);
             });
         if spawned.is_err() {
-            if let Ok(mut cache) = self.0.cache.lock()
-                && let Some(entry) = cache.get_mut(&cache_key)
-                && entry.generation == generation
-            {
-                entry.pending = false;
-                entry.error = true;
-                entry.expires_at = Some(Instant::now() + CATALOG_TTL);
-            }
+            let _stored = store_result(&self.0, &cache_key, generation, Err(()));
             return CatalogRead::Unavailable;
         }
         stale.map_or(CatalogRead::Pending, CatalogRead::Ready)
     }
+}
+
+fn store_result(
+    inner: &CatalogInner,
+    key: &(String, String, String),
+    generation: u64,
+    result: Result<Value, ()>,
+) -> bool {
+    let stored = if let Ok(mut cache) = inner.cache.lock()
+        && let Some(entry) = cache.get_mut(key)
+        && entry.generation == generation
+        && entry.pending
+    {
+        entry.pending = false;
+        entry.expires_at = Some(Instant::now() + CATALOG_TTL);
+        match result {
+            Ok(value) => {
+                entry.value = Some(value);
+                entry.error = false;
+            }
+            Err(()) => entry.error = true,
+        }
+        true
+    } else {
+        false
+    };
+    if stored {
+        (inner.on_change)();
+    }
+    stored
 }
 
 fn read_provider_catalog(
@@ -149,6 +177,7 @@ fn read_provider_catalog(
     home: &str,
     isolated: bool,
 ) -> Result<Value, ()> {
+    let started = Instant::now();
     let executable = executable.unwrap_or_else(|| std::path::Path::new("codex"));
     let mut command = Command::new(executable);
     command
@@ -163,12 +192,12 @@ fn read_provider_catalog(
             .env_remove("OPENAI_API_KEY")
             .env_remove("CODEX_API_KEY");
     }
-    let child = command.spawn().map_err(|_| ())?;
-    let process = ChildProcess::new(child).map_err(|_| ())?;
-    let started = Instant::now();
+    let child = spawn_provider(command).map_err(|_| ())?;
+    let process = ChildProcess::new(child, started + CATALOG_TIMEOUT);
     let mut config = ProviderSessionConfig::new();
     config.generation = 1;
-    config.request_timeout_ms = duration_ms(CATALOG_TIMEOUT);
+    config.request_timeout_ms =
+        duration_ms(CATALOG_TIMEOUT.checked_sub(started.elapsed()).ok_or(())?);
     config.initialize_params = json!({
         "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
         "capabilities": {"experimentalApi": true}
@@ -274,21 +303,20 @@ fn duration_ms(duration: Duration) -> u64 {
 }
 
 struct ChildProcess {
-    child: Option<Child>,
+    child: Option<ManagedChildProcess>,
+    write_deadline: Instant,
+    writer_thread: Option<JoinHandle<()>>,
     stderr_reader: Option<JoinHandle<()>>,
 }
 
 impl ChildProcess {
-    fn new(mut child: Child) -> io::Result<Self> {
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| io::Error::other("provider stderr was not piped"))?;
-        let stderr_reader = thread::spawn(move || discard_stderr(stderr));
-        Ok(Self {
+    fn new(child: ManagedChildProcess, write_deadline: Instant) -> Self {
+        Self {
             child: Some(child),
-            stderr_reader: Some(stderr_reader),
-        })
+            write_deadline,
+            writer_thread: None,
+            stderr_reader: None,
+        }
     }
 }
 
@@ -298,35 +326,238 @@ impl ProviderProcess for ChildProcess {
             .child
             .as_mut()
             .ok_or_else(|| io::Error::other("provider child is closed"))?;
-        let reader = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("provider stdout was not piped"))?;
-        let writer = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("provider stdin was not piped"))?;
-        Ok((Box::new(reader), Box::new(writer)))
+        let stdout =
+            take_stdout(child).ok_or_else(|| io::Error::other("provider stdout was not piped"))?;
+        let stdin =
+            take_stdin(child).ok_or_else(|| io::Error::other("provider stdin was not piped"))?;
+        let stderr =
+            take_stderr(child).ok_or_else(|| io::Error::other("provider stderr was not piped"))?;
+        let (writer, writer_thread) = deadline_writer(stdin, self.write_deadline)?;
+        self.writer_thread = Some(writer_thread);
+        self.stderr_reader = Some(
+            thread::Builder::new()
+                .name("model-catalog-stderr".to_owned())
+                .spawn(move || discard_stderr(stderr))?,
+        );
+        Ok((Box::new(BoundedReader::new(stdout)), Box::new(writer)))
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        let Some(mut child) = self.child.take() else {
-            return Ok(());
-        };
-        // Switch to process-wrap process-group termination when that adapter lands.
-        match child.kill() {
-            Ok(()) => child.wait().map(|_| ())?,
-            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
-                let _status = child.wait()?;
+        let mut result = Ok(());
+        if let Some(mut child) = self.child.take() {
+            result = stop_child(&mut child);
+        }
+        if let Some(writer) = self.writer_thread.take()
+            && writer.join().is_err()
+            && result.is_ok()
+        {
+            result = Err(io::Error::other("provider stdin writer failed"));
+        }
+        if let Some(reader) = self.stderr_reader.take()
+            && reader.join().is_err()
+            && result.is_ok()
+        {
+            result = Err(io::Error::other("provider stderr reader failed"));
+        }
+        result
+    }
+}
+
+fn spawn_provider(command: Command) -> io::Result<ManagedChildProcess> {
+    #[cfg(unix)]
+    {
+        let mut command = CommandWrap::from(command);
+        command.wrap(ProcessGroup::leader());
+        command.spawn()
+    }
+    #[cfg(windows)]
+    {
+        command.spawn().map(Box::new)
+    }
+}
+
+#[cfg(unix)]
+fn take_stdin(child: &mut ManagedChildProcess) -> Option<ChildStdin> {
+    child.stdin().take()
+}
+
+#[cfg(windows)]
+fn take_stdin(child: &mut ManagedChildProcess) -> Option<ChildStdin> {
+    child.stdin.take()
+}
+
+#[cfg(unix)]
+fn take_stdout(child: &mut ManagedChildProcess) -> Option<ChildStdout> {
+    child.stdout().take()
+}
+
+#[cfg(windows)]
+fn take_stdout(child: &mut ManagedChildProcess) -> Option<ChildStdout> {
+    child.stdout.take()
+}
+
+#[cfg(unix)]
+fn take_stderr(child: &mut ManagedChildProcess) -> Option<ChildStderr> {
+    child.stderr().take()
+}
+
+#[cfg(windows)]
+fn take_stderr(child: &mut ManagedChildProcess) -> Option<ChildStderr> {
+    child.stderr.take()
+}
+
+fn stop_child(child: &mut ManagedChildProcess) -> io::Result<()> {
+    let kill = child.kill();
+    if let Err(error) = kill
+        && !matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+        )
+    {
+        return Err(error);
+    }
+    child.wait().map(|_| ())
+}
+
+enum WriterRequest {
+    Write(Vec<u8>, SyncSender<io::Result<usize>>),
+    Flush(SyncSender<io::Result<()>>),
+}
+
+struct DeadlineWriter {
+    requests: SyncSender<WriterRequest>,
+    deadline: Instant,
+}
+
+fn deadline_writer(
+    mut stdin: ChildStdin,
+    deadline: Instant,
+) -> io::Result<(DeadlineWriter, JoinHandle<()>)> {
+    let (requests, receiver) = mpsc::sync_channel(1);
+    let thread = thread::Builder::new()
+        .name("model-catalog-stdin".to_owned())
+        .spawn(move || {
+            while let Ok(request) = receiver.recv() {
+                match request {
+                    WriterRequest::Write(bytes, response) => {
+                        let _ignored = response.send(stdin.write(&bytes));
+                    }
+                    WriterRequest::Flush(response) => {
+                        let _ignored = response.send(stdin.flush());
+                    }
+                }
             }
-            Err(error) => return Err(error),
+        })?;
+    Ok((DeadlineWriter { requests, deadline }, thread))
+}
+
+impl DeadlineWriter {
+    fn remaining(&self) -> io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "provider request timed out"))
+    }
+}
+
+impl Write for DeadlineWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let remaining = self.remaining()?;
+        let (response, result) = mpsc::sync_channel(1);
+        self.requests
+            .try_send(WriterRequest::Write(bytes.to_vec(), response))
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::TimedOut, "provider request timed out")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "provider stdin closed")
+                }
+            })?;
+        result
+            .recv_timeout(remaining)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "provider request timed out")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "provider stdin closed")
+                }
+            })?
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let remaining = self.remaining()?;
+        let (response, result) = mpsc::sync_channel(1);
+        self.requests
+            .try_send(WriterRequest::Flush(response))
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::TimedOut, "provider request timed out")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "provider stdin closed")
+                }
+            })?;
+        result
+            .recv_timeout(remaining)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "provider request timed out")
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "provider stdin closed")
+                }
+            })?
+    }
+}
+
+struct BoundedReader<R> {
+    inner: R,
+    frame_bytes: usize,
+    total_bytes: usize,
+}
+
+impl<R> BoundedReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            frame_bytes: 0,
+            total_bytes: 0,
         }
-        if let Some(reader) = self.stderr_reader.take() {
-            reader
-                .join()
-                .map_err(|_| io::Error::other("provider stderr reader failed"))?;
+    }
+}
+
+impl<R: Read> Read for BoundedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        if count == 0 {
+            return Ok(0);
         }
-        Ok(())
+        self.total_bytes = self.total_bytes.checked_add(count).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "provider output too large")
+        })?;
+        if self.total_bytes > MAX_CATALOG_RESPONSE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "provider output too large",
+            ));
+        }
+        for byte in &buffer[..count] {
+            self.frame_bytes = self.frame_bytes.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "provider frame too large")
+            })?;
+            if self.frame_bytes > MAX_CATALOG_PAGE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "provider frame too large",
+                ));
+            }
+            if *byte == b'\n' {
+                self.frame_bytes = 0;
+            }
+        }
+        Ok(count)
     }
 }
 
@@ -342,7 +573,18 @@ fn discard_stderr(mut stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CatalogRead, ModelCatalogService};
+    use super::{
+        BoundedReader, CATALOG_TIMEOUT, CacheEntry, CatalogRead, ChildProcess,
+        MAX_CATALOG_PAGE_BYTES, MAX_CATALOG_RESPONSE_BYTES, ModelCatalogService, spawn_provider,
+        store_result,
+    };
+    use crate::provider_session::ProviderProcess;
+    use std::io::{Cursor, Read, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
     #[test]
     fn claude_catalog_is_reported_unavailable_without_starting_codex() {
         let service = ModelCatalogService::new(None);
@@ -350,5 +592,122 @@ mod tests {
             service.read("account", "/disposable/home", "claude", false),
             CatalogRead::Unavailable
         );
+    }
+
+    #[test]
+    fn completion_callback_fires_once_after_refresh_result_is_stored() {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&notifications);
+        let service = ModelCatalogService::with_change_callback(
+            None,
+            Arc::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let generation = 7;
+        service
+            .0
+            .cache
+            .lock()
+            .expect("cache lock should be available")
+            .insert(
+                key.clone(),
+                CacheEntry {
+                    generation,
+                    value: None,
+                    expires_at: None,
+                    error: false,
+                    pending: true,
+                },
+            );
+
+        assert!(store_result(
+            &service.0,
+            &key,
+            generation,
+            Ok(serde_json::json!({"data": []})),
+        ));
+        assert!(!store_result(
+            &service.0,
+            &key,
+            generation,
+            Ok(serde_json::json!({"data": []})),
+        ));
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+        assert!(
+            service
+                .0
+                .cache
+                .lock()
+                .expect("cache lock should be available")[&key]
+                .value
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn raw_stdout_limit_counts_each_frame_before_json_decoding() {
+        let input = vec![b' '; MAX_CATALOG_PAGE_BYTES + 1];
+        let mut reader = BoundedReader::new(Cursor::new(input));
+        let mut buffer = [0_u8; 8192];
+        let rejected = loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break false,
+                Ok(_) => {}
+                Err(_) => break true,
+            }
+        };
+        assert!(rejected);
+    }
+
+    #[test]
+    fn raw_stdout_limit_counts_unknown_frames_toward_total() {
+        let mut input = Vec::new();
+        let frame = vec![b' '; MAX_CATALOG_PAGE_BYTES - 1];
+        for _ in 0..9 {
+            input.extend_from_slice(&frame);
+            input.push(b'\n');
+        }
+        let mut reader = BoundedReader::new(Cursor::new(input));
+        let mut buffer = [0_u8; 8192];
+        let mut rejected = false;
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => {
+                    rejected = true;
+                    break;
+                }
+            }
+        }
+        assert!(rejected);
+        assert!(reader.total_bytes > MAX_CATALOG_RESPONSE_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocked_provider_stdin_times_out_then_child_is_killed_and_reaped() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "exec sleep 5"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = spawn_provider(command).expect("fake provider should start");
+        let mut process = ChildProcess::new(child, Instant::now() + Duration::from_millis(25));
+        let (_reader, mut writer) = process.split().expect("provider streams should split");
+        let started = Instant::now();
+        let failure = writer
+            .write_all(&vec![b'x'; 8 * 1024 * 1024])
+            .expect_err("the provider is not reading stdin");
+        assert_eq!(failure.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < CATALOG_TIMEOUT);
+        drop(writer);
+        process
+            .stop()
+            .expect("provider group should be killed and reaped");
+        assert!(process.child.is_none());
     }
 }
