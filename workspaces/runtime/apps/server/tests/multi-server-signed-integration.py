@@ -7,14 +7,16 @@ Native HTTP/TLS has a separate suite in studio_api.multi_server.test_transport.
 The controlled scheduler permits deterministic dispatch through the real runtime.
 """
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import base64
 from contextlib import ExitStack
@@ -74,8 +76,9 @@ def install_shared_crypto_process():
 
 
 class Endpoint:
-    def __init__(self, folder, name, port, address):
+    def __init__(self, folder, name, port, address, environment):
         self.folder, self.name, self.port, self.address = folder, name, port, address
+        self.environment = environment
         self.origin = "https://" + name + ".example.ts.net"
         self.state = folder / "state"
         self.state.mkdir(parents=True)
@@ -83,7 +86,8 @@ class Endpoint:
         self.start()
 
     def start(self):
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.f.FakeServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.f.FakeServer,
+                                    environment_overrides=self.environment)
         canvas = Canvas(self.state)
         canvas.runtime = self.runtime
         self.context = ApiContext(canvas, token="test-token", remote=RemoteAccess(self.state), server_port=self.port)
@@ -143,17 +147,17 @@ print(json.dumps(value))
             )
         else:
             executable.chmod(0o700)
-        self.stack.enter_context(patch.dict(os.environ, {
-            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+        self.runtime_environment = {
+            "PATH": str(tools) + os.pathsep + os.defpath,
             "SIGNED_TEST_TAILSCALE_LOG": str(self.identity_log),
             "CODEX_HOME": str(test_codex_home),
             "PYTHONIOENCODING": "utf-8",
             "CODEX_CANVAS_PUBLIC_ORIGIN": "",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-        }))
-        self.a = Endpoint(self.folder / "a", "a", 18765, "100.64.0.11")
+        }
+        self.a = Endpoint(self.folder / "a", "a", 18765, "100.64.0.11", self.runtime_environment)
         self.stack.callback(self.a.close)
-        self.b = Endpoint(self.folder / "b", "b", 18766, "100.64.0.12")
+        self.b = Endpoint(self.folder / "b", "b", 18766, "100.64.0.12", self.runtime_environment)
         self.stack.callback(self.b.close)
         self.endpoints = {endpoint.origin: endpoint for endpoint in (self.a, self.b)}
         self.wire = []

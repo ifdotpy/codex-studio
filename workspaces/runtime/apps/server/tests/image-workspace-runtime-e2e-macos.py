@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Real macOS image engine through the runtime fixture provider."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -47,7 +49,7 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
             create_real = engine.create_workspace
             allow_create = threading.Event()
             user_edit_written = threading.Event()
-            rt = fixture.ControlledRuntime(root / 'state', fixture.f.FakeServer)
+            rt = make_runtime(fixture.ControlledRuntime, root / 'state', fixture.f.FakeServer)
             rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
             rt.image_workspace_support = lambda path: engine.supported(path)
             lead = rt.new_lead({'cwd': str(repo), 'workspaceMode': 'image'})

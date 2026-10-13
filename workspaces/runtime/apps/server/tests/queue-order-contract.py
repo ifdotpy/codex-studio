@@ -2,7 +2,9 @@
 """Queue ordering, revision conflicts, and durable mutation receipts."""
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import sys
 from pathlib import Path
@@ -69,7 +71,7 @@ class QueueOrderContract(unittest.TestCase):
             f.eventually(lambda: not self.runtime.agent(key).get("inFlight"))
             if index == 0:
                 self.runtime.close()
-                self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+                self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
                 # The fake native service loses its counter on restart. Native
                 # turn identities do not repeat across a real service restart.
                 self.runtime.connect().seq = 100
@@ -118,7 +120,7 @@ class QueueOrderContract(unittest.TestCase):
         self.assertEqual(self.order(key), request["ordered_ids"])
         self.assertEqual(clocks, {item: self.metadata(item) for item in self.order(key)})
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
         self.assertEqual(self.runtime.queue_action(key, request), receipt)
         self.assertEqual(self.queue(key)["revision"], receipt["revision"])
         self.runtime.dispatch()
@@ -154,7 +156,7 @@ class QueueOrderContract(unittest.TestCase):
         cancel = self.request(key, "cancel", message_id="message-0")
         cancelled = self.runtime.queue_action(key, cancel)
         self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
         self.assertEqual(self.runtime.queue_action(key, cancel), cancelled)
         self.assertNotIn("message-0", self.order(key))
         with self.assertRaisesRegex(ValueError, "different content"):

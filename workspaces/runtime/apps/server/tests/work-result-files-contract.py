@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Submitted task results have stable Markdown archives and bounded event delivery."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -23,7 +25,7 @@ from codex_efficiency import EfficiencyMixin
 class WorkResultFiles(unittest.TestCase):
     def setUp(self):
         self.tmp = f.tempfile.TemporaryDirectory()
-        self.rt = f.ControlledRuntime(Path(self.tmp.name), f.f.FakeServer)
+        self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         self.rt.catalog = lambda account='default': __import__('copy').deepcopy(f.CATALOG)
         self.project = Path(self.tmp.name) / 'project'
         self.project.mkdir()

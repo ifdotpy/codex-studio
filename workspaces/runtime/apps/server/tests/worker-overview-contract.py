@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Worker snapshot excerpts use completed reports, never streaming commentary."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 from pathlib import Path
@@ -23,7 +25,7 @@ class WorkerOverviewContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.runtime = fixture.Runtime(self.root, fixture.FakeServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.FakeServer)
         self.lead = self.runtime.create({"name": "Lead", "cwd": str(self.root), "prompt": "Coordinate"}, defer=True)
         with self.runtime.lock, self.runtime.db() as db:
             self.lead.update(autoWake=True, status="waiting")

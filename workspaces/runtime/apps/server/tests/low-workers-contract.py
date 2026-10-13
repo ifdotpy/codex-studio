@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Low-worker alerts use durable events and never poll a model."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -137,13 +139,13 @@ class LowWorkersContract(unittest.TestCase):
         self.alert(lead, durationMinutes=1)
         self.tick(100)
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.WorkspaceServer)
         self.tick(900)
         self.assertEqual(self.events(lead, 'rule'), [])
         self.tick(961)
         self.assertEqual(len(self.events(lead, 'rule')), 1)
         self.runtime.close()
-        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        self.runtime = make_runtime(fixture.ControlledRuntime, self.state, fixture.WorkspaceServer)
         self.tick(2000)
         self.tick(3000)
         self.assertEqual(len(self.events(lead, 'rule')), 1)

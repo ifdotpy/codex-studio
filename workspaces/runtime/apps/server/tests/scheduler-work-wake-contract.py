@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Output wakes publish immediately without repeating whole-roster dispatch."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from contextlib import contextmanager
 import base64
@@ -204,7 +206,7 @@ class WorkWakeContract(unittest.TestCase):
         self.assertEqual(len(case.scans), 2)
 
     def test_committed_output_is_resource_only_but_terminal_state_is_work(self):
-        rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        rt = make_runtime(QuietRuntime, Path(self.directory.name), server_factory=object)
         self.addCleanup(rt.close)
         lead = rt.create({'name': 'Fixture', 'cwd': self.directory.name, 'prompt': 'Work'}, defer=True)
         with rt.lock, rt.db() as db:
@@ -225,7 +227,7 @@ class WorkWakeContract(unittest.TestCase):
         self.assertTrue(rt.changed.consume_dispatch())
 
     def test_rollback_does_not_promote_output_to_work(self):
-        rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        rt = make_runtime(QuietRuntime, Path(self.directory.name), server_factory=object)
         self.addCleanup(rt.close)
         lead = rt.create({'name': 'Fixture', 'cwd': self.directory.name, 'prompt': 'Work'}, defer=True)
         rt.changed.consume_dispatch()
@@ -239,7 +241,7 @@ class WorkWakeContract(unittest.TestCase):
         self.assertFalse(rt.changed.consume_dispatch())
 
     def test_direct_event_sql_wakes_work_only_after_commit(self):
-        rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        rt = make_runtime(QuietRuntime, Path(self.directory.name), server_factory=object)
         self.addCleanup(rt.close)
         lead = rt.create({'name': 'Fixture', 'cwd': self.directory.name, 'prompt': 'Work'}, defer=True)
         rt.changed.consume_dispatch()
@@ -253,7 +255,7 @@ class WorkWakeContract(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id='native-result'").fetchone()[0], 1)
 
     def test_real_monitor_output_keeps_work_clear_and_exit_wakes_once(self):
-        rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        rt = make_runtime(QuietRuntime, Path(self.directory.name), server_factory=object)
         self.addCleanup(rt.close)
         lead = rt.create({'name': 'Fixture', 'cwd': self.directory.name, 'prompt': 'Work'}, defer=True)
         with rt.lock, rt.db() as db:

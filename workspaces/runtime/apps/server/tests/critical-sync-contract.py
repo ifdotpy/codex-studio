@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Regression checks for draft identity and legacy Canvas delivery recovery."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import contextlib
 import json
@@ -210,7 +212,7 @@ class RealRuntimeDeliveryContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="critical-runtime-")
         self.root = Path(self.temp.name)
-        self.runtime = Runtime(self.root, runtime_fixture.FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, runtime_fixture.FakeServer)
         self.canvas = Canvas(self.root)
         self.canvas.runtime = self.runtime
         self.agent = self.runtime.create({

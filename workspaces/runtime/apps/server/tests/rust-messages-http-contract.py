@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import hashlib
 import importlib.util
 import json
@@ -13,9 +15,9 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -36,7 +38,7 @@ def seed_agent(backend, changes: dict[str, object] | None = None) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         agent = runtime.create({
             "name": "Coordination contract agent",
@@ -220,7 +222,7 @@ def python_direct_message(backend, agent_id: str, message_id: str, text: str, de
         class QuietRuntime(_fixture.Runtime):
             def schedule(self):
                 pass
-        runtime = QuietRuntime(state, _fixture.FakeServer)
+        runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
         try:
             result = runtime.send(agent_id, text, message_id, delivery=delivery)
             with runtime.db() as database:

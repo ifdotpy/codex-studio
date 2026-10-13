@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Monitor output preserves its log, byte count and bounded tail."""
 
+from test_isolation import isolate_supervisor_environment
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import base64
 import json
@@ -24,7 +26,7 @@ from codex_sync_entities import sync_monitor_window
 class MonitorOutputContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-monitor-output-")
-        self.runtime = Runtime(Path(self.temp.name), server_factory=lambda *_args: None)
+        self.runtime = make_runtime(Runtime, Path(self.temp.name), server_factory=lambda *_args: None)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.runtime.close)
         agent = self.runtime.create(

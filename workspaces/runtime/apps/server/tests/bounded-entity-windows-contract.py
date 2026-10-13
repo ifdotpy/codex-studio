@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Bounded runtime collections match their entity-sync materialization."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -52,7 +54,7 @@ def assert_state(runtime, db, stage):
 
 
 with tempfile.TemporaryDirectory(prefix="studio-entity-windows-") as tmp:
-    runtime = fixture.Runtime(Path(tmp) / "state", fixture.FakeServer)
+    runtime = make_runtime(fixture.Runtime, Path(tmp) / "state", fixture.FakeServer)
     rng = random.Random(20260929)
     try:
         agents = [f"agent-{index}" for index in range(5)]

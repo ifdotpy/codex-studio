@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Profile discovery and identity boundaries, without real credentials."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import base64
@@ -248,7 +250,8 @@ class AccountsContract(unittest.TestCase):
 
         root = self.root / "http-state"
         canvas = Canvas(root)
-        runtime = fixture.ControlledRuntime(root, fixture.AccountServer)
+        runtime = make_runtime(fixture.ControlledRuntime, root, fixture.AccountServer,
+                               environment_overrides={"CODEX_HOME": str(self.primary)})
         canvas.runtime = runtime
         server = make_server(canvas)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -339,7 +342,8 @@ class AccountsContract(unittest.TestCase):
             thread.join()
             runtime.close()
             canvas = Canvas(root)
-            runtime = fixture.ControlledRuntime(root, fixture.AccountServer)
+            runtime = make_runtime(fixture.ControlledRuntime, root, fixture.AccountServer,
+                               environment_overrides={"CODEX_HOME": str(self.primary)})
             canvas.runtime = runtime
             server = make_server(canvas)
             thread = threading.Thread(target=server.serve_forever, daemon=True)

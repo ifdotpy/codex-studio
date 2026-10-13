@@ -2,7 +2,9 @@
 """Image workspace caller state, permissions, recovery, and failure contracts."""
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import sys
 from pathlib import Path
@@ -53,7 +55,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.repo = self.root / 'repo'
         shutil.copytree(self.repo_template, self.repo)
         self.repo = self.repo.resolve()
-        self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+        self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
         self.addCleanup(patch.stopall)
         patch('codex_worker_workspace.platform.system', return_value='Darwin').start()
@@ -241,7 +243,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
 
         with patch.object(fixture.f.Runtime, 'start_image_base', autospec=True,
                           side_effect=start) as resumed:
-            self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+            self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
         self.assertCountEqual([call.args[1:] for call in resumed.call_args_list],
                               [(str(self.repo), worker) for worker in workers])
 
@@ -426,7 +428,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                     record.pop('imageWorkspaceNoticeSent', None)
                     self.rt.put(db, 'agents', record)
                 self.rt.close()
-                self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+                self.rt = make_runtime(fixture.ControlledRuntime, self.root / 'state', fixture.f.FakeServer)
                 self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
                 self.rt._send_image_workspace_notice(worker_id, 'changed callback text', ready_id)
                 self.rt.dispatch(worker_id)

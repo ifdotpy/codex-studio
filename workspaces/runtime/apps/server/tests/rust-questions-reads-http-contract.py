@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import json
 import os
 import sqlite3
@@ -12,10 +14,10 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
+from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
@@ -26,9 +28,11 @@ def seed_python_records(backend) -> None:
 import json, os, sys, time
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
+sys.path.insert(0, {str(source.parent / "tests")!r})
+from runtime_test_environment import make_runtime
 from codex_runtime import Runtime
 
-runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+runtime = make_runtime(Runtime, Path(os.environ["CODEX_AGENTS_STATE_DIR"]), environment=dict(os.environ))
 try:
     lead = {{
         "id": "questions-read-lead", "rootId": "questions-read-lead", "epoch": 0,
@@ -130,7 +134,7 @@ finally:
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=backend._environment(),
+        env=runtime_environment(backend),
         check=True,
         timeout=30,
     )

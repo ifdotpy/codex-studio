@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Lost native action replies cannot create another model operation."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -72,7 +74,7 @@ class ReceiptsContract(fixture.PrepareSteerContract):
         self.assertEqual(first['receipt'], retry['receipt'])
         self.assertEqual(self.count('review/start'), 1)
         self.runtime.close()
-        self.runtime = fixture.Runtime(self.root, fixture.DelayedServer)
+        self.runtime = make_runtime(fixture.Runtime, self.root, fixture.DelayedServer)
         retry = self.runtime.native_action(a['id'], 'review', 'restart-id')
         self.assertEqual(first['receipt'], retry['receipt'])
         self.assertFalse(any(method == 'review/start' for server in self.runtime.servers.values() for method, _ in server.calls))

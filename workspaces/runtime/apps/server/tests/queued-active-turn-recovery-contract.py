@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Restore an exact surviving turn behind a proven unsent local input wait."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -28,7 +30,7 @@ class QueuedActiveRecovery(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-queued-active-')
         self.addCleanup(self.temp.cleanup)
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.NativeHistoryServer)
+        self.runtime = make_runtime(fixture.Runtime, Path(self.temp.name), fixture.NativeHistoryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.supervisor_mode = True

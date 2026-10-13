@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """SQLite contention must not replay callbacks or acknowledge an uncommitted event."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import io
 import json
@@ -145,7 +147,7 @@ class QuietRuntime(Runtime):
 
 class SupervisorPersistenceRetry(unittest.TestCase):
     def runtime_fixture(self, directory):
-        runtime = QuietRuntime(Path(directory), server_factory=lambda *args: None)
+        runtime = make_runtime(QuietRuntime, Path(directory), server_factory=lambda *args: None)
         self.addCleanup(runtime.close)
         agent = runtime.create({'name': 'Worker', 'cwd': directory, 'prompt': ''},
                                draft=True, defer=True)
@@ -264,7 +266,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
 
     def test_real_sqlite_writer_releases_between_commit_retries(self):
         with tempfile.TemporaryDirectory(prefix='studio-supervisor-busy-') as directory:
-            runtime = QuietRuntime(Path(directory), server_factory=lambda *args: None)
+            runtime = make_runtime(QuietRuntime, Path(directory), server_factory=lambda *args: None)
             self.addCleanup(runtime.close)
             agent = runtime.create({'name': 'Worker', 'cwd': directory, 'prompt': ''},
                                    draft=True, defer=True)
@@ -340,7 +342,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
 
     def test_user_send_does_not_wait_for_stream_analytics_after_durable_commit(self):
         with tempfile.TemporaryDirectory(prefix='studio-stream-analytics-send-') as directory:
-            runtime = QuietRuntime(Path(directory), server_factory=lambda *args: None)
+            runtime = make_runtime(QuietRuntime, Path(directory), server_factory=lambda *args: None)
             self.addCleanup(runtime.close)
             runtime._fast_delivery_enabled = False
             stream_agent = runtime.create({'name': 'Stream worker', 'cwd': directory, 'prompt': ''},
@@ -515,7 +517,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
 
     def test_outer_runtime_lock_owner_does_not_wait_for_a_sqlite_writer(self):
         with tempfile.TemporaryDirectory(prefix='studio-nested-lifecycle-writer-') as directory:
-            runtime = QuietRuntime(Path(directory), server_factory=lambda *args: None)
+            runtime = make_runtime(QuietRuntime, Path(directory), server_factory=lambda *args: None)
             writer = sqlite3.connect(runtime.db_path)
             writer.execute('BEGIN IMMEDIATE')
             finished = threading.Event()

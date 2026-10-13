@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Workspace behavior contracts. All state, Git repositories, and providers are isolated."""
 
+from test_isolation import isolate_supervisor_environment
+from runtime_test_environment import make_runtime
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -22,7 +25,6 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 sys.dont_write_bytecode = True
@@ -130,7 +132,7 @@ class WorkspaceContract(unittest.TestCase):
             os.environ, {"CODEX_BOARD_STATE_DIR": str(self.root / "board")}
         )
         self.environment.start()
-        self.runtime = ControlledRuntime(self.state, WorkspaceServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, WorkspaceServer)
         # Platform-specific image behavior has dedicated runtime contracts.
         self.runtime.image_workspace_support = lambda _repo: (False, "disabled in protocol fixture")
 
@@ -1060,7 +1062,7 @@ class WorkspaceContract(unittest.TestCase):
             self.runtime.item(db, lead["id"], "mutable", "assistant", "newneedle")
         self.assertEqual(self.runtime.search_work("oldneedle")["results"], [])
         self.runtime.close()
-        self.runtime = ControlledRuntime(self.state, WorkspaceServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, WorkspaceServer)
         self.assertEqual(len(self.runtime.search_work("newneedle")["results"]), 1)
         self.assertEqual(self.runtime.search_work('" OR *')["results"], [])
 
@@ -1134,7 +1136,7 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different content"):
             self.runtime.send(lead["id"], "Read report", "message-asset", assets=[])
         self.runtime.close()
-        self.runtime = ControlledRuntime(self.state, WorkspaceServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, WorkspaceServer)
         self.runtime.dispatch()
         eventually(lambda: self.runtime.agent(lead["id"]).get("turnId"))
         turn = next(p for m, p in self.runtime.server.calls if m == "turn/start")
@@ -1348,7 +1350,7 @@ class WorkspaceContract(unittest.TestCase):
             rule.update(inFlight=True, nextAt=time.time() - 1)
             self.runtime.put(db, "rules", rule)
         self.runtime.close()
-        self.runtime = ControlledRuntime(self.state, WorkspaceServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, WorkspaceServer)
         self.runtime.rules_tick()
         recovered = self.rule_record(rule["id"])
         self.assertEqual(recovered["status"], "paused")

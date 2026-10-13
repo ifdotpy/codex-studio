@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """History worker liveness and recovery. Only local temporary files and SQLite."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
@@ -195,7 +197,7 @@ class WorkerTests(unittest.TestCase):
         wait_for_condition(lambda: len(self.f.captured()) == 1, wake_event=self.f.state_changed)
 
     def test_runtime_closes_after_thread_start_failure_without_another_retry(self):
-        runtime = Runtime(Path(self.temp.name) / 'runtime-state', server_factory=lambda *args: None)
+        runtime = make_runtime(Runtime, Path(self.temp.name) / 'runtime-state', server_factory=lambda *args: None)
         try:
             with patch('codex_analytics_history.threading.Thread.start', side_effect=RuntimeError('Fixture thread failure')):
                 self.assertFalse(runtime.analytics_history_start())

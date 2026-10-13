@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Scheduler wakes preserve dispatch without repeating due maintenance or DB setup."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from contextlib import contextmanager
 import json
@@ -151,7 +153,7 @@ class SchedulerConnection(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix='scheduler-connection-')
         self.addCleanup(self.directory.cleanup)
-        self.rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        self.rt = make_runtime(QuietRuntime, Path(self.directory.name), server_factory=object)
         self.addCleanup(self.rt.close)
 
     def configure_dispatch(self, dispatch, *, rules=lambda: None):

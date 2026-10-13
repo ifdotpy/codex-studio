@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Account isolation with colliding native identifiers. No paid model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import copy
@@ -84,15 +86,13 @@ class AccountContracts(unittest.TestCase):
             (home / "auth.json").write_text(
                 json.dumps({"tokens": {"account_id": key, "access_token": "fixture"}})
             )
-        self.env = patch.dict(os.environ, {"CODEX_HOME": str(self.home)})
-        self.env.start()
         self.state = self.root / "state"
-        self.runtime = ControlledRuntime(self.state, AccountServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, AccountServer,
+                                    environment_overrides={"CODEX_HOME": str(self.home)})
         self.other_key = self.runtime.accounts.register(str(self.other))
 
     def tearDown(self):
         self.runtime.close()
-        self.env.stop()
         self.tmp.cleanup()
 
     def lead(self, account="default"):
@@ -318,7 +318,8 @@ class AccountContracts(unittest.TestCase):
         self.assertEqual(cross_provider["accountKey"], "default")
         self.assertEqual(cross_provider["provider"], "codex")
         self.runtime.close()
-        self.runtime = ControlledRuntime(self.state, AccountServer)
+        self.runtime = make_runtime(ControlledRuntime, self.state, AccountServer,
+                                    environment_overrides={"CODEX_HOME": str(self.home)})
         self.assertEqual(self.runtime.agent(child["id"])["accountKey"], self.other_key)
         self.assertEqual(self.runtime.agent(cross_provider["id"])["accountKey"], "default")
         self.assertEqual(

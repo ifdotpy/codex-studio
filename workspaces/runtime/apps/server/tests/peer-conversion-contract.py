@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Idle peer conversion through the user action, with real runtime sync writes."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 import json
@@ -40,7 +42,7 @@ class Conversion(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name).resolve())
-        self.rt = QuietRuntime(Path(self.path), fixture.FakeServer)
+        self.rt = make_runtime(QuietRuntime, Path(self.path), fixture.FakeServer)
         self.addCleanup(self.rt.close)
         self.a = self.rt.create({'name': 'Source', 'cwd': self.path, 'prompt': 'Source task'}, defer=True)
         self.b = self.rt.create({'name': 'Peer', 'cwd': self.path, 'prompt': 'Peer task'}, defer=True)

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Cross-provider worker routing and atomic spawn receipts. No paid calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -35,9 +37,8 @@ class CrossProviderWorkers(unittest.TestCase):
         home.mkdir()
         (home / "auth.json").write_text(json.dumps({"tokens": {
             "account_id": "fixture-codex", "access_token": "fixture"}}))
-        self.env = patch.dict(os.environ, {"CODEX_HOME": str(home)})
-        self.env.start()
-        self.rt = f.ControlledRuntime(self.root / "state", f.f.FakeServer)
+        self.runtime_environment = {"CODEX_HOME": str(home)}
+        self.rt = make_runtime(f.ControlledRuntime, self.root / "state", f.f.FakeServer, environment_overrides=self.runtime_environment)
         self.rt.accounts.data["accounts"]["claude-fixture"] = {
             "id": "claude-fixture", "provider": "claude", "status": "ready",
             "home": str(self.root), "accountId": "fixture-claude"}
@@ -71,7 +72,6 @@ class CrossProviderWorkers(unittest.TestCase):
         self.rt.close()
         self.refresh_patch.stop()
         self.account_patch.stop()
-        self.env.stop()
         self.tmp.cleanup()
 
     def child(self, **values):

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Pipe-response isolation and ordered callbacks. No Codex process or model."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 import json
@@ -237,7 +239,7 @@ class ReaderContract(unittest.TestCase):
 
         runtime_root = self.root / "runtime"
         runtime_root.mkdir()
-        runtime = Runtime(runtime_root, server_factory=object)
+        runtime = make_runtime(Runtime, runtime_root, server_factory=object)
         self.addCleanup(runtime.close)
         connection_refs = []
         callback_done = threading.Event()

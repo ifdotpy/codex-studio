@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Assignment delivery ignores legacy modes and preserves exact receipts."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 from pathlib import Path
@@ -17,7 +19,7 @@ spec.loader.exec_module(f)
 class SendDefault(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = f.Runtime(Path(self.temp.name), f.FakeServer)
+        self.runtime = make_runtime(f.Runtime, Path(self.temp.name), f.FakeServer)
         self.lead = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Fixture'})
         f.eventually(lambda: self.runtime.agent(self.lead['id'])['status'] == 'running')
         self.lead = self.runtime.agent(self.lead['id'])

@@ -18,6 +18,8 @@ from collections import defaultdict
 from typing import Any, Iterator
 
 
+from runtime_test_environment import runtime_environment
+
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
 SPEC = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
@@ -587,10 +589,12 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
 import os, sys
 from pathlib import Path
 sys.path.insert(0, {str(source)!r})
+sys.path.insert(0, {str(TESTS)!r})
+from runtime_test_environment import make_runtime
 from codex_runtime import Runtime
 from codex_canvas import Canvas
 
-runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+runtime = make_runtime(Runtime, Path(os.environ["CODEX_AGENTS_STATE_DIR"]), environment=dict(os.environ))
 try:
     agent = {{
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
@@ -702,7 +706,7 @@ finally:
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=backend._environment(),
+        env=runtime_environment(backend),
         check=True,
         timeout=30,
     )
@@ -1045,12 +1049,12 @@ def seed_catalog_state(backend: Any) -> None:
     python = os.environ.get("CODEX_AGENTS_PYTHON")
     if not python:
         raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
-    environment = backend._environment()
+    environment = runtime_environment(backend)
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
-        str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
+        str(TESTS), str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
     )))
     subprocess.run(
-        [python, "-c", "from codex_runtime import Runtime; import sys; Runtime(sys.argv[1]).close()", str(backend.state)],
+        [python, "-c", "from runtime_test_environment import make_runtime; from codex_runtime import Runtime; import os, sys; make_runtime(Runtime, sys.argv[1], environment=dict(os.environ)).close()", str(backend.state)],
         check=True,
         env=environment,
         timeout=30,

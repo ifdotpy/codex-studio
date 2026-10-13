@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Behavioral orchestration tests. No model service, no user state."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -21,8 +23,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -217,7 +219,7 @@ class RuntimeContract(unittest.TestCase):
                 pass
 
         with tempfile.TemporaryDirectory() as directory:
-            runtime = QuietRuntime(Path(directory), FakeServer)
+            runtime = make_runtime(QuietRuntime, Path(directory), FakeServer)
             try:
                 agent = runtime.create({"name": "Lead", "cwd": directory, "prompt": "Coordinate"})
                 original_read_db = runtime.read_db
@@ -246,7 +248,7 @@ class RuntimeContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
 
     def test_budget_schema_is_ready_before_runtime_workers(self):
         from unittest.mock import patch
@@ -305,7 +307,7 @@ class RuntimeContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(Runtime, 'schedule', hold_scheduler):
-            runtime = Runtime(Path(directory), FakeServer)
+            runtime = make_runtime(Runtime, Path(directory), FakeServer)
             try:
                 self.assertTrue(started.wait(HANG_GUARD_SECONDS))
                 with runtime.db() as db:
@@ -396,7 +398,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual({a['id'] for a in results}, {first['id']})
         self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 1)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.runtime.new_lead(request)['id'], first['id'])
         self.runtime.send(first['id'], 'Start this task')
         second = self.runtime.new_lead({'previous': first['id']})
@@ -467,7 +469,7 @@ class RuntimeContract(unittest.TestCase):
             self.assertEqual(len(older['messages']), 5)
             self.assertIsNone(older['nextBefore'])
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(len(self.runtime.chat_read(room['id'], peer['id'])['messages']), 100)
 
     def test_broadcast_does_not_restart_inactive_assignments(self):
@@ -566,7 +568,7 @@ class RuntimeContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_chat_messages').fetchone()[0], 1)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.snapshot()['agents'], [])
 
     def test_delete_route_handles_broadcast_root_tombstone_order(self):
@@ -722,7 +724,7 @@ class RuntimeContract(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE agent=? AND kind='complaint_response'", (child['id'],)).fetchone()[0], 1)
         self.assertFalse(self.snapshot()['complaints'][0]['needsUserResponse'])
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.runtime.complaint_detail(c['id'])['status'], 'resolved')
 
     def test_complaint_wakes_finished_lead_and_blocks_false_completion(self):
@@ -793,7 +795,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.rate_limits['data']['rateLimitResetCredits']['availableCount'], 3)
         self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
 
     def test_rate_limit_notification_does_not_wait_for_unrelated_runtime_lock(self):
@@ -999,7 +1001,7 @@ class RuntimeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different settings'):
             self.runtime.new_lead({'id': key, 'model': 'gpt-5.6-sol'})
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertTrue(self.runtime.agent(key)['isLead'])
         self.assertEqual(self.runtime.agent(key)['status'], 'idle')
         self.assertIsNone(self.runtime.server)
@@ -1018,7 +1020,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(updated['status'], before['status'])
         self.assertEqual(updated.get('inFlight'), before.get('inFlight'))
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.runtime.agent(lead['id'])['excludedAccountKeys'], ['second'])
 
     def test_excluded_queued_worker_input_fails_without_requeue_or_interrupting_active_turn(self):
@@ -1227,7 +1229,7 @@ class RuntimeContract(unittest.TestCase):
         self.complete(a)
         b = self.runtime.create({'cwd': str(self.root), 'prompt': 'Review', 'role': 'reviewer'}, defer=True)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertTrue(self.runtime.agent(a['id'])['isLead'])
         self.assertFalse(self.runtime.agent(b['id'])['isLead'])
 
@@ -1550,7 +1552,7 @@ class RuntimeContract(unittest.TestCase):
             self.assertEqual(pending['status'], 'starting')
             self.assertFalse(pending['startAttempt']['submitted'])
             self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')
         self.assertIsNone(self.runtime.server)
         self.assertEqual(len([e for e in self.snapshot()['events'] if e['id'] == 'stable-event']), 1)
@@ -1560,7 +1562,7 @@ class RuntimeContract(unittest.TestCase):
 
     def test_only_one_runtime_owns_state(self):
         with self.assertRaisesRegex(RuntimeError, 'owns'):
-            Runtime(self.root, FakeServer)
+            make_runtime(Runtime, self.root, FakeServer)
 
     def test_command_requires_approval_and_stop_invalidates_it(self):
         lead = self.lead()
@@ -1875,7 +1877,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(payload['completedAtMs'], 3425)
         self.assertEqual(payload['durationMs'], 2425)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         restored = next(i for i in self.runtime.transcript(a['id'])['items'] if i['id'] == key)
         self.assertEqual(json.loads(restored['text'])['durationMs'], 2425)
 
@@ -1909,7 +1911,7 @@ class RuntimeContract(unittest.TestCase):
             task.update(status='running')
             self.runtime.put(db, 'tasks', task)
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.snapshot()['tasks'][0]['status'], 'lost')
 
     def test_cancel_pending_monitor_expires_approval_and_stops_clock(self):

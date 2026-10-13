@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Delayed configuration, native output, and response delivery use exact receipts."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import importlib.util
@@ -65,7 +67,7 @@ class HarnessResponseContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.runtime = Runtime(self.root, DelayedConfigurationServer)
+        self.runtime = make_runtime(Runtime, self.root, DelayedConfigurationServer)
         self.runtime.preparation_wait_seconds = .01
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Wait'})
         eventually(lambda: self.runtime.agent(a['id'])['status'] == 'running')

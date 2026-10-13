@@ -11,6 +11,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from uuid import uuid4
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
+from runtime_test_environment import make_runtime
+
 from codex_accounts import AccountStore
 from codex_runtime import Runtime
 from studio_api.generate_state_schemas import generated_schemas
@@ -64,7 +67,7 @@ class PersistedStateSchemaTests(unittest.TestCase):
 
             accounts.start_login(FailedLoginRuntime(), str(uuid4()))
 
-            runtime = Runtime(state)
+            runtime = make_runtime(Runtime, state)
             try:
                 runtime.set_rate_limits("default", {
                     "at": 1_800_000_000.0,

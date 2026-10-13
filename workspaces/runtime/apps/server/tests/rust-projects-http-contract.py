@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import os
 import hashlib
 import json
@@ -11,15 +13,14 @@ import sys
 import unittest
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
 
 SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SERVER_SRC))
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 
 class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -29,21 +30,20 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend.stop()
         from codex_runtime import Runtime
 
-        with patch.dict(os.environ, cls.backend._environment(), clear=True):
-            runtime = Runtime(cls.backend.state)
-            try:
-                project = {
-                    "id": str(cls.backend.cwd),
-                    "path": str(cls.backend.cwd),
-                    "name": "Python written project",
-                    "created": 10.0,
-                    "accountKey": "default",
-                    "accountRevision": 1,
-                }
-                with runtime.lock, runtime.db() as db:
-                    runtime.put(db, "projects", project)
-            finally:
-                runtime.close()
+        runtime = make_runtime(Runtime, cls.backend)
+        try:
+            project = {
+                "id": str(cls.backend.cwd),
+                "path": str(cls.backend.cwd),
+                "name": "Python written project",
+                "created": 10.0,
+                "accountKey": "default",
+                "accountRevision": 1,
+            }
+            with runtime.lock, runtime.db() as db:
+                runtime.put(db, "projects", project)
+        finally:
+            runtime.close()
         cls.backend.start()
 
     @property
@@ -171,16 +171,15 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         folder = self.backend.root / "account-keys"
         folder.mkdir()
         self.backend.stop()
-        with patch.dict(os.environ, self.backend._environment(), clear=True):
-            runtime = Runtime(self.backend.state)
-            try:
-                with runtime.lock, runtime.db() as db:
-                    runtime.put(db, "projects", {
-                        "id": str(folder), "path": str(folder), "name": "Accounts", "created": 10.0,
-                        "accountKey": "old", "accountKeys": ["old"], "accountRevision": 1,
-                    })
-            finally:
-                runtime.close()
+        runtime = make_runtime(Runtime, self.backend)
+        try:
+            with runtime.lock, runtime.db() as db:
+                runtime.put(db, "projects", {
+                    "id": str(folder), "path": str(folder), "name": "Accounts", "created": 10.0,
+                    "accountKey": "old", "accountKeys": ["old"], "accountRevision": 1,
+                })
+        finally:
+            runtime.close()
         self.backend.start()
         response = self.backend.request("POST", "/api/projects", body={
             "action": "set_account", "path": str(folder), "account_key": "default", "expected_revision": 1,
@@ -195,14 +194,13 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         folder = self.backend.root / "implicit-host"
         folder.mkdir()
         self.backend.stop()
-        with patch.dict(os.environ, self.backend._environment(), clear=True):
-            runtime = Runtime(self.backend.state)
-            try:
-                project = {"id": str(folder), "path": str(folder), "name": "Implicit host", "created": 10.0, "accountKey": "default", "accountRevision": 1}
-                with runtime.lock, runtime.db() as db:
-                    runtime.put(db, "projects", project)
-            finally:
-                runtime.close()
+        runtime = make_runtime(Runtime, self.backend)
+        try:
+            project = {"id": str(folder), "path": str(folder), "name": "Implicit host", "created": 10.0, "accountKey": "default", "accountRevision": 1}
+            with runtime.lock, runtime.db() as db:
+                runtime.put(db, "projects", project)
+        finally:
+            runtime.close()
         self.backend.start()
         body = {"action": "set_worker_environment", "path": str(folder), "environment": "host", "expected_revision": 0}
         before = self._project_record(str(folder))
@@ -273,25 +271,24 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         from codex_runtime import Runtime
 
         self.backend.stop()
-        with patch.dict(os.environ, self.backend._environment(), clear=True):
-            runtime = Runtime(self.backend.state)
-            try:
-                with runtime.lock, runtime.db() as db:
-                    for agent_id in ("project-peer-a", "project-peer-b"):
-                        runtime.put(db, "agents", {
-                            "id": agent_id,
-                            "rootId": agent_id,
-                            "epoch": 0,
-                            "status": "idle",
-                            "name": agent_id,
-                            "role": "orchestrator",
-                            "cwd": str(self.backend.cwd),
-                            "isLead": True,
-                            "autoWake": True,
-                            "approvalPolicy": "never",
-                        }, sync_rooms=False)
-            finally:
-                runtime.close()
+        runtime = make_runtime(Runtime, self.backend)
+        try:
+            with runtime.lock, runtime.db() as db:
+                for agent_id in ("project-peer-a", "project-peer-b"):
+                    runtime.put(db, "agents", {
+                        "id": agent_id,
+                        "rootId": agent_id,
+                        "epoch": 0,
+                        "status": "idle",
+                        "name": agent_id,
+                        "role": "orchestrator",
+                        "cwd": str(self.backend.cwd),
+                        "isLead": True,
+                        "autoWake": True,
+                        "approvalPolicy": "never",
+                    }, sync_rooms=False)
+        finally:
+            runtime.close()
         self.backend.start()
         response = self.backend.request("POST", "/api/peer-teams", body={
             "action": "save",

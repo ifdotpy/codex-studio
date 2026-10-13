@@ -1,12 +1,13 @@
 """Verify Python loads the shared environment scrub before contract startup."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import ast
@@ -135,6 +136,172 @@ class TestStartupIsolation(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(connected, [], "a test component connected to the decoy supervisor")
+
+
+class RuntimeEnvironmentSafety(unittest.TestCase):
+    def test_guard_blocks_file_metadata_and_execution_with_an_injected_home(self):
+        code = r'''import json, os, socket, subprocess, sys, tempfile
+from pathlib import Path
+from runtime_home_guard import HomeAccessGuard
+if True:
+    home = Path(sys.argv[1])
+    protected = home / ".codex"
+    protected.mkdir()
+    program = protected / "codex"
+    program.write_text("#!/bin/sh\nexit 93\n")
+    program.chmod(0o755)
+    (protected / "auth.json").write_text("marker")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "config.json").write_text("marker")
+    alias = home / "alias"
+    alias.symlink_to(protected, target_is_directory=True)
+    guard = HomeAccessGuard(home_resolver=lambda: str(home)).install()
+    operations = [
+        lambda: open(protected / "auth.json"),
+        lambda: open(home / ".claude" / "config.json"),
+        lambda: os.listdir(protected),
+        lambda: os.scandir(protected),
+        lambda: os.stat(protected / "auth.json"),
+        lambda: os.lstat(protected / "auth.json"),
+        lambda: os.access(protected / "auth.json", os.R_OK),
+        lambda: open(alias / "auth.json"),
+        lambda: subprocess.run([str(program)], check=True),
+        lambda: os.execv(str(program), [str(program)]),
+        lambda: socket.create_connection(("192.0.2.1", 443)),
+    ]
+    if hasattr(os, "posix_spawn"):
+        operations.append(lambda: os.posix_spawn(str(program), [str(program)], dict(os.environ)))
+    for operation in operations:
+        try:
+            operation()
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("protected operation was permitted")
+    # Legitimate reads and subprocesses still work outside the protected trees.
+    allowed = home / "allowed"
+    allowed.write_text("safe")
+    assert allowed.read_text() == "safe"
+    subprocess.run([sys.executable, "-c", "pass"], check=True)
+    print(json.dumps(guard.counters), flush=True)
+    # Audit hooks cannot be removed: let the OS reclaim this test subprocess's
+    # fixture; the parent TemporaryDirectory owns the surrounding scratch area.
+    os._exit(0)
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", code, folder],
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).parent)},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(json.loads(result.stdout)["blocked"], 9)
+
+    def test_runtime_disables_update_requests_and_restores_the_loopback_opener(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from unittest.mock import patch
+        import urllib.request
+        import codex_provider_upstream_releases as releases
+        from runtime_test_environment import make_runtime
+
+        class RuntimeFixture:
+            def __init__(self, root):
+                self.root = root
+
+            def close(self):
+                pass
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"loopback")
+
+            def log_message(self, *_args):
+                pass
+
+        with tempfile.TemporaryDirectory() as folder, HTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}/"
+                with patch.dict(os.environ, {}, clear=True), patch.object(urllib.request, "_opener", None), \
+                        patch.object(releases, "_registry_request", side_effect=AssertionError("network update attempted")) as request:
+                    runtime = make_runtime(RuntimeFixture, Path(folder))
+                    try:
+                        self.assertFalse(releases.updates_enabled(runtime))
+                        self.assertEqual(releases.tick(runtime), {})
+                        self.assertEqual(os.environ["HTTPS_PROXY"], "http://127.0.0.1:9")
+                        with urllib.request.urlopen(url) as response:
+                            self.assertEqual(response.read(), b"loopback")
+                        self.assertIsNotNone(urllib.request._opener)
+                    finally:
+                        runtime.close()
+                    self.assertIsNone(urllib.request._opener)
+                    with urllib.request.urlopen(url) as response:
+                        self.assertEqual(response.read(), b"loopback")
+                    request.assert_not_called()
+            finally:
+                server.shutdown()
+                thread.join()
+
+    def test_multiple_runtime_lifetimes_never_restore_inherited_environment_early(self):
+        from unittest.mock import patch
+        from runtime_test_environment import make_runtime
+
+        class Fixture:
+            def __init__(self, root):
+                self.home = os.environ["CODEX_HOME"]
+
+            def close(self):
+                pass
+
+        class FailedFixture:
+            def __init__(self, root):
+                raise ValueError("fixture startup failure")
+
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"CODEX_UNKNOWN_SELECTOR": "inherited"}):
+            original = dict(os.environ)
+            first = make_runtime(Fixture, Path(folder) / "first")
+            second = make_runtime(Fixture, Path(folder) / "second")
+            try:
+                first.close()
+                self.assertEqual(os.environ["CODEX_HOME"], second.home)
+                self.assertNotIn("CODEX_UNKNOWN_SELECTOR", os.environ)
+                with self.assertRaisesRegex(ValueError, "fixture startup failure"):
+                    make_runtime(FailedFixture, Path(folder) / "failed")
+                self.assertEqual(os.environ["CODEX_HOME"], second.home)
+            finally:
+                second.close()
+                first.close()
+            self.assertEqual(dict(os.environ), original)
+
+    def test_runtime_environment_strips_inherited_provider_settings(self):
+        from unittest.mock import patch
+        from runtime_test_environment import runtime_environment
+        from http_backend_harness import BackendProcess
+        with tempfile.TemporaryDirectory() as folder:
+            backend = BackendProcess(Path(folder))
+            try:
+                backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+                hostile = {
+                    "CODEX_UNKNOWN_SELECTOR": "hostile", "CLAUDE_UNKNOWN_SELECTOR": "hostile",
+                    "CODEX_BIN": "/decoy/codex", "STUDIO_CLAUDE_BIN": "/decoy/claude",
+                    "OPENAI_API_KEY": "hostile", "ANTHROPIC_AUTH_TOKEN": "hostile",
+                    "AWS_SECRET_ACCESS_KEY": "hostile", "PATH": "/decoy",
+                }
+                with patch.dict(os.environ, hostile):
+                    environment = runtime_environment(backend)
+                self.assertFalse(set(hostile) - {"CODEX_BIN", "PATH"} & set(environment))
+                self.assertEqual(environment["CODEX_BIN"], str(backend.root / "bin/codex"))
+                self.assertEqual(environment["CODEX_AGENTS_NATIVE_RUNTIME_PIN"], environment["CODEX_BIN"])
+                self.assertEqual(environment["PATH"].split(os.pathsep),
+                                 [str(backend.root / "bin"), *os.defpath.split(os.pathsep)])
+                for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME",
+                            "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+                    self.assertTrue(Path(environment[key]).is_relative_to(Path(folder)))
+            finally:
+                backend.close()
 
 
 if __name__ == "__main__":

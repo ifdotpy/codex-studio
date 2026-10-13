@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Question history, exact answer receipts and deferral without live model calls."""
 
+from test_isolation import isolate_supervisor_environment
+from runtime_test_environment import make_runtime
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import importlib.util
@@ -25,7 +27,7 @@ class QuestionHistoryContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.lead = self.runtime.create({"name": "Lead", "cwd": str(self.root), "prompt": "Coordinate"})
         eventually(lambda: self.runtime.agent(self.lead["id"])["status"] == "running")
         self.lead = self.runtime.agent(self.lead["id"])
@@ -123,7 +125,7 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertEqual(row["answeredBy"], "user")
         self.assertGreaterEqual(row["answeredAt"], row["createdAt"])
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.history()[0], row)
         self.assertTrue(self.runtime.answer(request["id"], body)["replayed"])
 
@@ -154,7 +156,7 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertEqual(self.history()[0]["status"], "uncertain")
         self.assertEqual(self.history()[0]["answerHistory"][0]["answer"], ["native.rs"])
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.history()[0]["status"], "uncertain")
 
     def test_process_loss_after_answer_commit_stays_uncertain(self):
@@ -169,7 +171,7 @@ class QuestionHistoryContract(unittest.TestCase):
             self.runtime.answer(request["id"], body)
         self.assertEqual(self.history()[0]["status"], "answering")
         self.runtime.close()
-        self.runtime = Runtime(self.root, FakeServer)
+        self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.assertEqual(self.history()[0]["status"], "uncertain")
         with self.assertRaisesRegex(ValueError, "uncertain"):
             self.runtime.answer(request["id"], body)

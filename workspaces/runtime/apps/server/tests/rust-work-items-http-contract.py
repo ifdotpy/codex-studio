@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import importlib.util
 import json
 import os
@@ -11,9 +13,9 @@ import sys
 import unittest
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -36,7 +38,7 @@ def seed_python_state(backend) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, _fixture.FakeServer)
     try:
         lead = runtime.create({
             "name": "Python work reader fixture",
@@ -84,7 +86,7 @@ def append_python_queue_item(state: Path, agent_id: str) -> None:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(state, _fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
     try:
         agent = runtime.agent(agent_id)
         with runtime.db() as database:

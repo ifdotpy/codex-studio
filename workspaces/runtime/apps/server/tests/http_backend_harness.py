@@ -78,7 +78,7 @@ class HTTPTransportError(RuntimeError):
 class BackendProcess:
     """Start the selected backend under isolated homes and a runner scratch root."""
 
-    def __init__(self, scratch_root: Path):
+    def __init__(self, scratch_root: Path, *, initialize_workspace: bool = True):
         self.scratch_root = scratch_root.resolve(strict=True)
         self.root = Path(tempfile.mkdtemp(prefix="http-boundary-", dir=self.scratch_root)).resolve(strict=True)
         if self.scratch_root not in self.root.parents:
@@ -94,8 +94,11 @@ class BackendProcess:
         self.xdg_cache.mkdir(exist_ok=True)
         self.xdg_config = self._directory("xdg-config")
         self.cwd = self._directory("workspace")
-        subprocess.run(["git", "init", "--quiet", "--initial-branch=main"],
-                       cwd=self.cwd, check=True, timeout=HANG_GUARD_SECONDS)
+        if initialize_workspace:
+            subprocess.run(["git", "init", "--quiet", "--initial-branch=main"],
+                           cwd=self.cwd, env={"PATH": os.defpath, "HOME": str(self.home),
+                                              "GIT_CONFIG_NOSYSTEM": "1"},
+                           check=True, timeout=HANG_GUARD_SECONDS)
         self.origin: str | None = None
         self.ready_seconds: float | None = None
         self.process_start_times: list[float] = []
@@ -157,7 +160,14 @@ class BackendProcess:
         return command
 
     def _environment(self) -> dict[str, str]:
-        environment = os.environ.copy()
+        # A positive allow-list also strips unknown future provider selectors and
+        # credentials. The caller environment is never a test Runtime boundary.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key in {"LANG", "LC_ALL", "SYSTEMROOT", "WINDIR",
+                       "STUDIO_TEST_FORBIDDEN_ROOTS", "STUDIO_TEST_GUARD_REPORT"}
+            or key.startswith("GIT_CONFIG_")
+        }
         # These settings select the Python test default. Never leak them to a
         # caller-supplied backend command.
         environment.pop("CODEX_AGENTS_PYTHON", None)
@@ -212,7 +222,7 @@ class BackendProcess:
             raise RuntimeError("The backend child PATH exposes a Claude executable")
         # The backend starts Node helpers (the Ed25519 service). Name the caller's
         # Node explicitly instead of exposing the caller's PATH.
-        node = os.environ.get("CODEX_NODE") or shutil.which("node")
+        node = shutil.which("node", path=os.defpath)
         if node:
             values["CODEX_NODE"] = node
         environment.update(values)

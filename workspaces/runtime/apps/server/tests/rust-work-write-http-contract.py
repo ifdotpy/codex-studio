@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import importlib.util
 import json
 import os
@@ -13,9 +15,9 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
@@ -30,7 +32,7 @@ def quiet_runtime(state):
     class QuietRuntime(_fixture.Runtime):
         def schedule(self):
             pass
-    return QuietRuntime(state, _fixture.FakeServer)
+    return make_runtime(QuietRuntime, state, _fixture.FakeServer)
 
 
 def seed_agents(backend) -> tuple[str, str]:

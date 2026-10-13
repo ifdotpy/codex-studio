@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Idle sends do not wait for the periodic scheduler to repair a stale label."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import importlib.util
 from pathlib import Path
@@ -22,7 +24,7 @@ spec.loader.exec_module(f)
 class IdleSendContract(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix='studio-idle-send-')
-        self.runtime = f.Runtime(Path(self.directory.name), f.FakeServer)
+        self.runtime = make_runtime(f.Runtime, Path(self.directory.name), f.FakeServer)
         self.runtime.closed = True
         self.runtime.changed.set()
         self.runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)

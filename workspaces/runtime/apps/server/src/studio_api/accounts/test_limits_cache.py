@@ -12,6 +12,10 @@ from types import SimpleNamespace
 from typing import Callable, cast
 from unittest.mock import Mock
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
+from runtime_test_environment import make_runtime
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -40,13 +44,13 @@ class LimitsCacheTests(unittest.TestCase):
         with TemporaryDirectory(prefix="studio-limits-cache-") as directory:
             snapshot = {"accountKey": "default", "at": 12.0, "readAt": 12.0,
                         "data": {"rateLimits": {"primary": {"usedPercent": 42}}}, "error": None}
-            runtime = Runtime(Path(directory))
+            runtime = make_runtime(Runtime, Path(directory))
             try:
                 runtime.set_rate_limits("default", snapshot)
                 runtime.set_rate_limits("default", {**snapshot, "at": 20.0, "readAt": 20.0})
             finally:
                 runtime.close()
-            restarted = Runtime(Path(directory))
+            restarted = make_runtime(Runtime, Path(directory))
             try:
                 restored = restarted.rate_limits_for("default")
                 self.assertEqual(restored["at"], 20.0)

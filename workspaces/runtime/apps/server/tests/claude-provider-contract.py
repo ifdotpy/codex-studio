@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Claude account selection, identity and delivery boundaries. No model calls."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import base64
 import importlib.util
@@ -45,10 +47,9 @@ class ClaudeProvider(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
-        self.env=patch.dict(os.environ,{'CODEX_HOME':str(self.root/'codex')});self.env.start();self.addCleanup(self.env.stop)
         self.auth=patch('codex_claude.auth_metadata',return_value=AUTH.copy());self.auth.start();self.addCleanup(self.auth.stop)
         self.installed=patch('codex_claude.installed',return_value='/fake/claude');self.installed.start();self.addCleanup(self.installed.stop)
-        self.runtime=f.ControlledRuntime(self.root/'state',MonitorServer);self.addCleanup(self.runtime.close)
+        self.runtime=make_runtime(f.ControlledRuntime, self.root/'state',MonitorServer);self.addCleanup(self.runtime.close)
         self.runtime.accounts.discover()
 
     def test_pinned_keychain_denial_uses_native_account_proof_before_input(self):

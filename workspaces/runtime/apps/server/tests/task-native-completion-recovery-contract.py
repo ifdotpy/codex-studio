@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Missed exact task results recover without another start or tool execution."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import concurrent.futures
 import copy
@@ -35,7 +37,7 @@ class NativeTaskRecovery(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
+        self.runtime = make_runtime(f.ControlledRuntime, self.root, f.f.FakeServer)
         self.addCleanup(self.runtime.close)
         self.agent = self.runtime.create({'name': 'Missed task completion',
             'cwd': str(self.root), 'prompt': 'Fixture'}, defer=True)

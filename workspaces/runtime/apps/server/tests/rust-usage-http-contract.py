@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import json
 import hashlib
 import os
@@ -12,11 +14,10 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from unittest.mock import patch
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
@@ -29,46 +30,44 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend.stop()
         from codex_runtime import Runtime
 
-        environment = cls.backend._environment()
-        with patch.dict(os.environ, environment, clear=True):
-            runtime = Runtime(cls.backend.state)
-            try:
-                now = time.time()
-                records = []
-                for name in ("cancel", "retry", "disable", "enable", "malformed"):
-                    agent_id = str(uuid.uuid4())
-                    agent = runtime.create(
-                        {"id": agent_id, "name": f"Usage {name}", "cwd": str(cls.backend.cwd), "prompt": ""},
-                        draft=True,
-                        defer=True,
-                    )
-                    retry = {
-                        "id": f"retry-{name}", "status": "scheduled", "dueAt": now + 600,
-                        "threadId": "thread", "turnId": "turn", "accountKey": "default",
-                        "epoch": agent["epoch"], "cause": "serverOverloaded", "attempt": 1,
-                        "maxAttempts": 3, "cwd": str(cls.backend.cwd), "settings": {},
-                        "taskClaims": [],
-                    }
-                    resume = {
-                        "id": f"resume-{name}", "status": "scheduled", "dueAt": now + 600,
-                        "threadId": "thread", "turnId": "turn", "accountKey": "default",
-                        "epoch": agent["epoch"], "cause": "usage_limit", "failedAt": now,
-                        "authAttempt": 0, "authRefreshMarker": None, "plannedAt": None,
-                        "resetAt": None, "reason": None,
-                    }
-                    agent["capacityRetry"] = retry
-                    with runtime.lock, runtime.db() as db:
-                        runtime.capacity_save(db, agent, retry)
-                        runtime.usage_resume_save(db, agent, resume)
-                        runtime.put(db, "agents", agent, sync_rooms=False)
-                    records.append((agent_id, retry["id"], resume["id"]))
-                cls.cancel_id, cls.cancel_retry, _ = records[0]
-                cls.retry_id, cls.retry_retry, _ = records[1]
-                cls.disable_id, _, cls.disable_resume = records[2]
-                cls.enable_id, _, cls.enable_resume = records[3]
-                cls.malformed_id, _, cls.malformed_resume = records[4]
-            finally:
-                runtime.close()
+        runtime = make_runtime(Runtime, cls.backend)
+        try:
+            now = time.time()
+            records = []
+            for name in ("cancel", "retry", "disable", "enable", "malformed"):
+                agent_id = str(uuid.uuid4())
+                agent = runtime.create(
+                    {"id": agent_id, "name": f"Usage {name}", "cwd": str(cls.backend.cwd), "prompt": ""},
+                    draft=True,
+                    defer=True,
+                )
+                retry = {
+                    "id": f"retry-{name}", "status": "scheduled", "dueAt": now + 600,
+                    "threadId": "thread", "turnId": "turn", "accountKey": "default",
+                    "epoch": agent["epoch"], "cause": "serverOverloaded", "attempt": 1,
+                    "maxAttempts": 3, "cwd": str(cls.backend.cwd), "settings": {},
+                    "taskClaims": [],
+                }
+                resume = {
+                    "id": f"resume-{name}", "status": "scheduled", "dueAt": now + 600,
+                    "threadId": "thread", "turnId": "turn", "accountKey": "default",
+                    "epoch": agent["epoch"], "cause": "usage_limit", "failedAt": now,
+                    "authAttempt": 0, "authRefreshMarker": None, "plannedAt": None,
+                    "resetAt": None, "reason": None,
+                }
+                agent["capacityRetry"] = retry
+                with runtime.lock, runtime.db() as db:
+                    runtime.capacity_save(db, agent, retry)
+                    runtime.usage_resume_save(db, agent, resume)
+                    runtime.put(db, "agents", agent, sync_rooms=False)
+                records.append((agent_id, retry["id"], resume["id"]))
+            cls.cancel_id, cls.cancel_retry, _ = records[0]
+            cls.retry_id, cls.retry_retry, _ = records[1]
+            cls.disable_id, _, cls.disable_resume = records[2]
+            cls.enable_id, _, cls.enable_resume = records[3]
+            cls.malformed_id, _, cls.malformed_resume = records[4]
+        finally:
+            runtime.close()
         home = cls.backend.codex_home.resolve()
         account_id = "usage-contract-account"
         registry = cls.backend.state / "accounts" / "registry.json"

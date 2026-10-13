@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+
 import base64
 import hashlib
 import importlib.util
@@ -17,9 +19,9 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
-from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
@@ -38,7 +40,7 @@ def seed_queue(backend: object) -> str:
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(backend.state, fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, backend, fixture.FakeServer)
     try:
         agent = runtime.create({
             "name": "Queue write contract",
@@ -165,7 +167,7 @@ def python_mutation(backend: object, agent_id: str, body: dict):
         def schedule(self):
             pass
 
-    runtime = QuietRuntime(root, fixture.FakeServer)
+    runtime = make_runtime(QuietRuntime, root, fixture.FakeServer)
     try:
         python_body = dict(body)
         if "expected_revision" in python_body:

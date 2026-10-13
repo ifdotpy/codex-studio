@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Runtime.lock metrics keep reentrancy, bounded samples, and Condition behavior."""
 
+from test_isolation import isolate_supervisor_environment, minimal_runtime_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -9,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment, minimal_runtime_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import os
 from pathlib import Path
@@ -101,15 +103,14 @@ class RuntimeLockMetricsContract(unittest.TestCase):
     def test_runtime_uses_metrics_lock_in_temp_state(self):
         with tempfile.TemporaryDirectory(prefix="studio-lock-metrics-") as folder:
             environment = minimal_runtime_environment(folder)
-            with patch.dict(os.environ, environment, clear=True):
-                runtime = Runtime(folder, server_factory=lambda *_args: None)
-                try:
-                    self.assertIsInstance(runtime.lock, MeasuredRLock)
-                    with runtime.lock:
-                        pass
-                    self.assertTrue(runtime.lock.runtime_lock_metrics())
-                finally:
-                    runtime.close()
+            runtime = make_runtime(Runtime, folder, server_factory=lambda *_args: None, environment_overrides=environment)
+            try:
+                self.assertIsInstance(runtime.lock, MeasuredRLock)
+                with runtime.lock:
+                    pass
+                self.assertTrue(runtime.lock.runtime_lock_metrics())
+            finally:
+                runtime.close()
 
 
 if __name__ == "__main__":

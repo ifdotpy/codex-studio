@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run one scenario against the Runtime of the checkout given as argv[1]; print room entities JSON."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -11,8 +13,8 @@ from codex_layout import SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 scenario = sys.argv[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_TESTS_ROOT))
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime as isolated_runtime
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from codex_canvas import Canvas
@@ -25,11 +27,11 @@ NOW = 1700000000.0
 
 def make_runtime(root):
     if scenario != "legacy-workspace-operation-recovery":
-        return Runtime(root, fixture.FakeServer)
+        return isolated_runtime(Runtime, root, fixture.FakeServer)
     schedule = Runtime.schedule
     Runtime.schedule = lambda self: None
     try:
-        runtime = Runtime(root, fixture.FakeServer)
+        runtime = isolated_runtime(Runtime, root, fixture.FakeServer)
     finally:
         Runtime.schedule = schedule
     # Preserve the accepted event as pending at the simulated restart

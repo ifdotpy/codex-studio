@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """An analytics writer cannot hold committed user state or its runtime lock."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 from contextlib import closing, contextmanager
 import json
@@ -44,7 +46,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.calls_before = NoNativeServer.calls
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
-            self.runtime = Runtime(self.root, NoNativeServer)
+            self.runtime = make_runtime(Runtime, self.root, NoNativeServer)
         self.addCleanup(self.runtime.close)
         self.agent = {'id': 'fixture-agent', 'name': 'Original name', 'rootId': 'fixture-agent',
             'isLead': True, 'parentId': None, 'threadId': 'fixture-thread', 'turnId': 'fixture-turn',

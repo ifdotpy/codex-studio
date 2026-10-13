@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Public worker lifecycle callers keep exact identities across backend restarts."""
 
+from test_isolation import isolate_supervisor_environment
+
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
@@ -8,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 from server_test_waits import HANG_GUARD_SECONDS
 
-from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+from runtime_test_environment import make_runtime
 
 import copy
 import importlib.util
@@ -49,7 +51,7 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         self.temp.cleanup()
 
     def open_runtime(self):
-        rt = fixture.ControlledRuntime(self.state, fixture.f.FakeServer)
+        rt = make_runtime(fixture.ControlledRuntime, self.state, fixture.f.FakeServer)
         base_get = rt.accounts.get
         for key in ('parent-account', 'default', 'worker-explicit'):
             rt.accounts.data['accounts'][key] = {
