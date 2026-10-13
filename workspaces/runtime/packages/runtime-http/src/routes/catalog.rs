@@ -3,7 +3,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::json;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -46,7 +45,7 @@ async fn accounts(
         )
         .map_err(|_| ())?;
         let mut snapshot = match account_driver {
-            Some(driver) => driver.snapshot().map_err(|_| ())?,
+            Some(driver) => driver.listing_snapshot().map_err(|_| ())?,
             None => account_policy.accounts(),
         };
         studio_runtime_services::account_policy::apply_authentication_recovery(
@@ -59,16 +58,7 @@ async fn accounts(
     .ok()
     .and_then(Result::ok);
     let snapshot = snapshot.ok_or_else(ApiError::internal)?;
-    let response = serde_json::from_value(json!({
-        "accounts": snapshot.accounts,
-        "archivedAccounts": snapshot.archived_accounts,
-        "defaultAccountKey": snapshot.default_account_key,
-        "logins": snapshot.logins,
-        "supportsDisconnect": true,
-        "supportsDelete": true,
-    }))
-    .map_err(|_| ApiError::internal())?;
-    Ok(Json(response))
+    super::accounts_response(snapshot)
 }
 
 async fn limits(

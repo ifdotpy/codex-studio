@@ -56,15 +56,6 @@ fn limits_violation(value: &Value) -> Result<Option<(String, String)>, ()> {
     }))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RegistryDocument {
-    default_account_key: String,
-    accounts: BTreeMap<String, Value>,
-    #[serde(default)]
-    logins: BTreeMap<String, Value>,
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct RegistryOrder {
     pub(crate) accounts: Vec<String>,
@@ -231,7 +222,7 @@ pub struct LimitsDiagnostic {
     pub keyword: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AccountsSnapshot {
     pub accounts: Vec<Value>,
     pub archived_accounts: Vec<Value>,
@@ -391,18 +382,30 @@ pub(crate) fn project_registry(
     };
     let (value, order) = decode_registry(bytes)
         .map_err(|(pointer, _reason)| registry_error(&pointer, "schema validation failed"))?;
-    let registry: RegistryDocument =
-        serde_json::from_value(value).map_err(|_| registry_error("/", "typed decoding failed"))?;
+    project_registry_value(&value, &order)
+}
+
+pub(crate) fn project_registry_value(
+    value: &Value,
+    order: &RegistryOrder,
+) -> Result<AccountsSnapshot, AccountPolicyError> {
+    let accounts_by_key = value
+        .get("accounts")
+        .and_then(Value::as_object)
+        .ok_or_else(|| registry_error("/accounts", "schema validation failed"))?;
+    let logins_by_key = value
+        .get("logins")
+        .and_then(Value::as_object)
+        .ok_or_else(|| registry_error("/logins", "schema validation failed"))?;
+    let default_account_key = value
+        .get("defaultAccountKey")
+        .and_then(Value::as_str)
+        .ok_or_else(|| registry_error("/defaultAccountKey", "schema validation failed"))?;
     let mut accounts = Vec::new();
     let mut archived = Vec::new();
     let mut known = HashSet::new();
-    for key in order.accounts {
-        let Some(mut row) = registry
-            .accounts
-            .get(&key)
-            .and_then(Value::as_object)
-            .cloned()
-        else {
+    for key in &order.accounts {
+        let Some(mut row) = accounts_by_key.get(key).and_then(Value::as_object).cloned() else {
             continue;
         };
         known.insert(key.clone());
@@ -412,28 +415,23 @@ pub(crate) fn project_registry(
         } else if !key.starts_with("login-")
             || row.get("status").and_then(Value::as_str) == Some("ready")
         {
-            if can_attempt_native_proof(registry.accounts.get(&key).and_then(Value::as_object)) {
+            if can_attempt_native_proof(accounts_by_key.get(key).and_then(Value::as_object)) {
                 row.insert("canAttemptNativeProof".into(), Value::Bool(true));
             }
             accounts.push(Value::Object(row));
         }
     }
     let mut logins = Vec::new();
-    for key in order.logins {
-        if let Some(mut receipt) = registry
-            .logins
-            .get(&key)
-            .and_then(Value::as_object)
-            .cloned()
-        {
-            receipt.insert("requestId".into(), Value::String(key));
+    for key in &order.logins {
+        if let Some(mut receipt) = logins_by_key.get(key).and_then(Value::as_object).cloned() {
+            receipt.insert("requestId".into(), Value::String(key.clone()));
             logins.push(Value::Object(receipt));
         }
     }
     Ok(AccountsSnapshot {
         accounts,
         archived_accounts: archived,
-        default_account_key: Value::String(registry.default_account_key),
+        default_account_key: Value::String(default_account_key.to_owned()),
         logins,
         known_account_keys: known,
     })

@@ -1,12 +1,14 @@
 //! Persisted account registry operations that do not start provider sessions.
 
+use super::accounts_response;
 use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::sync::Arc;
 use studio_runtime_services::account_driver::{
     AccountDriver, AccountDriverError, SystemProviderAuthReader,
 };
@@ -139,11 +141,7 @@ async fn set_name(
     ApiJson(body): ApiJson<AccountNameBody>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     run_mutation(state, move |driver| {
-        driver.set_name(
-            &body.account_key,
-            &body.label,
-            &body.request_id.to_ascii_lowercase(),
-        )
+        driver.set_name(&body.account_key, &body.label, &body.request_id)
     })
     .await
 }
@@ -153,7 +151,7 @@ async fn delete(
     ApiJson(body): ApiJson<DeleteAccountBody>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     run_mutation(state, move |driver| {
-        driver.delete(&body.account_key, &body.request_id.to_ascii_lowercase())
+        driver.delete(&body.account_key, &body.request_id)
     })
     .await
 }
@@ -189,35 +187,33 @@ async fn run_mutation(
     > + Send
     + 'static,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    let Some(driver) = state.account_driver else {
+    let Some(driver) = state.account_driver.clone() else {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires account-driver/unavailable",
         ));
     };
-    let wake = state.event_wake.clone();
-    let snapshot = tokio::task::spawn_blocking(move || mutation(&driver))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(account_error)?;
-    wake.notify_one();
-    accounts_response(snapshot)
+    accounts_response(run_account_operation(&state, driver, mutation).await?)
 }
 
-fn accounts_response(
-    snapshot: studio_runtime_services::account_policy::AccountsSnapshot,
-) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    let value = json!({
-        "accounts": snapshot.accounts,
-        "archivedAccounts": snapshot.archived_accounts,
-        "defaultAccountKey": snapshot.default_account_key,
-        "logins": snapshot.logins,
-        "supportsDisconnect": true,
-        "supportsDelete": true,
-    });
-    serde_json::from_value(value)
-        .map(Json)
-        .map_err(|_| ApiError::internal())
+async fn run_account_operation<T, F>(
+    state: &HttpState,
+    driver: Arc<AccountDriver>,
+    operation: F,
+) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&AccountDriver) -> Result<T, AccountDriverError> + Send + 'static,
+{
+    let before = driver.revision().map_err(account_error)?;
+    let operation_driver = driver.clone();
+    let result = tokio::task::spawn_blocking(move || operation(&operation_driver))
+        .await
+        .map_err(|_| ApiError::internal())?;
+    if driver.revision().map_err(account_error)? != before {
+        state.event_wake.notify_one();
+    }
+    result.map_err(account_error)
 }
 
 fn account_error(error: AccountDriverError) -> ApiError {
@@ -258,9 +254,6 @@ fn account_error(error: AccountDriverError) -> ApiError {
         AccountDriverError::UnknownLogin => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown sign-in request")
         }
-        AccountDriverError::ClaudeDiscoveryUnavailable => {
-            unavailable("POST", "/api/accounts/discover", &CLAUDE_DISCOVERY)
-        }
         AccountDriverError::LoginCancellationUnavailable => {
             unavailable("POST", "/api/accounts/login/cancel", &CODEX_LOGIN)
         }
@@ -275,17 +268,12 @@ fn account_error(error: AccountDriverError) -> ApiError {
 async fn discover(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    let Some(driver) = state.account_driver else {
+    let Some(driver) = state.account_driver.clone() else {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires account-driver/unavailable",
         ));
     };
-    let snapshot = tokio::task::spawn_blocking(move || driver.discover_codex())
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(account_error)?;
-    state.event_wake.notify_one();
     if AccountDriver::<SystemProviderAuthReader>::claude_discovery_available() {
         return Err(unavailable(
             "POST",
@@ -293,6 +281,7 @@ async fn discover(
             &CLAUDE_DISCOVERY,
         ));
     }
+    let snapshot = run_account_operation(&state, driver, |driver| driver.discover_codex()).await?;
     accounts_response(snapshot)
 }
 
@@ -304,17 +293,16 @@ async fn codex_login_cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<CancelLoginBody>,
 ) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
-    let Some(driver) = state.account_driver else {
+    let Some(driver) = state.account_driver.clone() else {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires account-driver/unavailable",
         ));
     };
-    let receipt =
-        tokio::task::spawn_blocking(move || driver.terminal_login_receipt(&body.login_id))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(account_error)?;
+    let receipt = run_account_operation(&state, driver, move |driver| {
+        driver.terminal_login_receipt(&body.login_id)
+    })
+    .await?;
     serde_json::from_value(receipt)
         .map(Json)
         .map_err(|_| ApiError::internal())
@@ -370,11 +358,15 @@ fn unavailable(method: &str, path: &str, dependencies: &[Dependency]) -> ApiErro
 
 #[cfg(test)]
 mod tests {
-    use super::run_mutation;
+    use super::{run_account_operation, run_mutation};
     use crate::router::HttpState;
     use axum::body::to_bytes;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
+    use studio_runtime_services::account_driver::AccountDriver;
 
     #[tokio::test]
     async fn missing_account_driver_has_named_501() {
@@ -400,5 +392,69 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
             "Not implemented: requires account-driver/unavailable"
         );
+    }
+
+    #[tokio::test]
+    async fn account_wake_follows_public_commit_and_ignores_internal_receipt() {
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                drop(std::fs::remove_dir_all(&self.0));
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "account-route-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory");
+        let _cleanup = Fixture(directory.clone());
+        let path = directory.join("registry.json");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Codex","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#,
+        )
+        .expect("fixture registry");
+        let driver = Arc::new(AccountDriver::open(path).expect("validated registry"));
+        let mut state = HttpState::new(
+            String::new(),
+            String::new(),
+            None,
+            String::new(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.account_driver = Some(driver.clone());
+        let wake = state.event_wake_handle();
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        run_account_operation(&state, driver.clone(), |driver| {
+            driver.set_name("default", "Codex", "same-visible-label")
+        })
+        .await
+        .expect("commit an internal replay receipt");
+        let mut notification = Box::pin(wake.notified());
+        assert!(matches!(
+            notification.as_mut().poll(&mut context),
+            Poll::Pending
+        ));
+        drop(notification);
+
+        run_account_operation(&state, driver, |driver| {
+            driver.set_name("default", "Renamed", "visible-label-change")
+        })
+        .await
+        .expect("commit a public account change");
+        let mut notification = Box::pin(wake.notified());
+        assert!(matches!(
+            notification.as_mut().poll(&mut context),
+            Poll::Ready(())
+        ));
     }
 }

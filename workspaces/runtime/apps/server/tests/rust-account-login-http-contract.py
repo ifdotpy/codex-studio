@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import unittest
 import uuid
@@ -78,7 +79,6 @@ class AccountLoginHTTPContract(unittest.TestCase):
             cls.accounts = AccountStore(cls.backend.state)
             cls.extra_key = cls.accounts.register(str(cls.backend.extra_home))
             rows = cls.accounts.data["accounts"]
-            rows["default"]["disconnected"] = True
             cls.accounts.data["accounts"] = {
                 "default": rows["default"],
                 "z-first": {
@@ -104,9 +104,28 @@ class AccountLoginHTTPContract(unittest.TestCase):
                 for request_id in [str(uuid.uuid5(uuid.NAMESPACE_DNS, f"terminal-{status}"))]
             }
             cls.live_login_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "live-login"))
+            cls.live_login_key = f"login-{cls.live_login_id}"
+            cls.live_login_home = cls.backend.state / "accounts" / cls.live_login_key
+            cls.accounts.data["accounts"][cls.live_login_key] = {
+                "id": cls.live_login_key, "home": str(cls.live_login_home),
+                "label": "New account", "source": "Codex Agents", "accountId": None,
+                "email": None, "plan": None, "status": "pending",
+            }
             cls.accounts.data["logins"][cls.live_login_id] = {
-                "requestId": cls.live_login_id, "accountKey": "default", "status": "pending",
+                "requestId": cls.live_login_id, "accountKey": cls.live_login_key, "status": "pending",
                 "createdAt": 1.0, "loginId": "fixture-live-login",
+            }
+            cls.completed_login_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "completed-local-login"))
+            cls.completed_login_key = f"login-{cls.completed_login_id}"
+            cls.completed_login_home = cls.backend.state / "accounts" / cls.completed_login_key
+            cls.accounts.data["accounts"][cls.completed_login_key] = {
+                "id": cls.completed_login_key, "home": str(cls.completed_login_home),
+                "label": "New account", "source": "Codex Agents", "accountId": None,
+                "email": None, "plan": None, "status": "pending",
+            }
+            cls.accounts.data["logins"][cls.completed_login_id] = {
+                "requestId": cls.completed_login_id, "accountKey": cls.completed_login_key,
+                "status": "pending", "createdAt": 1.0, "loginId": "fixture-completed-login",
             }
             cls.terminal_logins = {
                 request_id: receipt
@@ -165,6 +184,28 @@ class AccountLoginHTTPContract(unittest.TestCase):
         self.assertEqual(self.registry_path.read_bytes(), committed)
         write_auth(self.a_home, "fixture-account-a")
         write_auth(self.z_home, "fixture-account-z")
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_registry_replacement_preserves_file_mode(self) -> None:
+        self.registry_path.chmod(0o640)
+        before_directory_mode = stat.S_IMODE(self.registry_path.parent.stat().st_mode)
+        response = self.request(
+            "POST", "/api/accounts/name",
+            {"account_key": "z-first", "label": "permission check", "request_id": str(uuid.uuid4())},
+        )
+        assert_status(self, response, 200)
+        self.assertEqual(stat.S_IMODE(self.registry_path.stat().st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(self.registry_path.parent.stat().st_mode), before_directory_mode)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_refused_operation_does_not_change_directory_mode(self) -> None:
+        before = stat.S_IMODE(self.registry_path.parent.stat().st_mode)
+        response = self.request(
+            "POST", "/api/accounts/delete",
+            {"account_key": "missing-account", "request_id": str(uuid.uuid4())},
+        )
+        assert_status(self, response, 400)
+        self.assertEqual(stat.S_IMODE(self.registry_path.parent.stat().st_mode), before)
         restored = self.request("POST", "/api/accounts/register", {"home": str(self.a_home)})
         assert_status(self, restored, 200)
 
@@ -191,12 +232,40 @@ class AccountLoginHTTPContract(unittest.TestCase):
             {row.get("accountId") for row in response.json()["accounts"]},
         )
 
-    def test_insertion_order_selects_default_replacement(self) -> None:
-        response = self.request("POST", "/api/accounts/default", {"account_key": "z-first"})
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_discovery_claude_dependency_refusal_does_not_write_registry(self) -> None:
+        executable = self.backend.home / ".local" / "bin" / "claude"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o700)
+        before = self.registry_path.read_bytes()
+        response = self.request("POST", "/api/accounts/discover", {})
+        assert_status(self, response, 501)
+        self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/claude-discovery")
+        self.assertEqual(self.registry_path.read_bytes(), before)
+
+    def test_discovery_follows_disposable_symlink_and_respects_candidate_cap(self) -> None:
+        linked_home = self.backend.root / "linked-profile"
+        write_auth(linked_home, "fixture-account-linked")
+        projects = self.backend.home / "Projects"
+        projects.mkdir(exist_ok=True)
+        linked = projects / "linked" / ".codex-profile"
+        linked.parent.mkdir()
+        linked.symlink_to(linked_home, target_is_directory=True)
+        for index in range(1001):
+            candidate = projects / f"p{index:04d}" / ".codex-profile"
+            write_auth(candidate, f"fixture-account-cap-{index:04d}")
+        response = self.request("POST", "/api/accounts/discover", {})
         assert_status(self, response, 200)
-        disconnected = self.request("POST", "/api/accounts/disconnect", {"account_key": "z-first"})
+        account_ids = {row.get("accountId") for row in response.json()["accounts"]}
+        self.assertIn("fixture-account-linked", account_ids)
+        self.assertIn("fixture-account-cap-0000", account_ids)
+        self.assertNotIn("fixture-account-cap-1000", account_ids)
+
+    def test_insertion_order_selects_default_replacement(self) -> None:
+        disconnected = self.request("POST", "/api/accounts/disconnect", {"account_key": "default"})
         assert_status(self, disconnected, 200)
-        self.assertEqual(disconnected.json()["defaultAccountKey"], "a-second")
+        self.assertEqual(disconnected.json()["defaultAccountKey"], "z-first")
 
     def test_concurrent_name_mutations_both_commit(self) -> None:
         bodies = [
@@ -225,6 +294,26 @@ class AccountLoginHTTPContract(unittest.TestCase):
             assert_status(self, response, 200)
             self.assertEqual(response.json()["status"], receipt["status"])
         self.assertEqual(self.backend.provider_start_times(), starts_before)
+
+    def test_cancel_reconciles_completed_local_login_without_provider_call(self) -> None:
+        write_auth(self.completed_login_home, "fixture-account-completed-login")
+        starts_before = self.backend.provider_start_times()
+        response = self.request(
+            "POST", "/api/accounts/login/cancel", {"login_id": self.completed_login_id}
+        )
+        assert_status(self, response, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(self.backend.provider_start_times(), starts_before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_listing_refresh_reports_changed_auth_without_registry_write(self) -> None:
+        write_auth(self.z_home, "fixture-account-z-changed")
+        before = self.registry_path.read_bytes()
+        response = self.request("GET", "/api/accounts")
+        assert_status(self, response, 200)
+        account = next(row for row in response.json()["accounts"] if row["id"] == "z-first")
+        self.assertEqual(account["status"], "changed")
+        self.assertEqual(self.registry_path.read_bytes(), before)
 
     def test_name_request_replay_and_conflict(self) -> None:
         request_id = str(uuid.uuid4())
