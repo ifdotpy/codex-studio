@@ -8,8 +8,8 @@ const MAX_RECEIPTS: usize = 2;
 pub struct TaskRecoverySnapshot {
     agent: RecoverySnapshot,
     task: Value,
-    aliases: Vec<String>,
-    receipts: Vec<(String, Value)>,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) receipts: Vec<(String, Value)>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum TaskRecoveryDecision {
@@ -169,6 +169,14 @@ fn invalid(field: &str) -> InvalidRecoveryRecord {
 /// The worker supplies payload resolution and its canonical task completion
 /// writer. It rechecks owner scope, the raw task and aliases/receipts atomically.
 pub trait TaskRecoveryEffects {
+    fn apply_absence(
+        &mut self,
+        expected: &TaskRecoverySnapshot,
+        scope: &crate::recovery_history::ConnectionScope,
+        observation: &crate::recovery_absence::RecoveryObservation,
+        decision: crate::recovery_absence::TaskAbsenceDecision,
+    ) -> Result<bool, crate::recovery::RecoveryError>;
+
     fn resolve_receipt(&mut self, receipt: &Value)
     -> Result<Value, crate::recovery::RecoveryError>;
     fn complete(
@@ -180,7 +188,7 @@ pub trait TaskRecoveryEffects {
 }
 /// Recover one exact task without issuing provider mutations. The dispatcher
 /// groups at most 32 jobs per scan; each native history read has a five-second
-/// budget. Unavailable history and an absent process leave the outcome unknown.
+/// budget. Unavailable proof persists a named hold; absence never authorizes replay.
 pub fn recover_task(
     snapshot: &TaskRecoverySnapshot,
     scope: crate::recovery_history::ConnectionScope,
@@ -196,6 +204,12 @@ pub fn recover_task(
     {
         return Ok(false);
     }
+    if !snapshot.agent.eligibility().task_owner
+        || snapshot.task["status"] != "running"
+        || snapshot.task["agent"] != a["id"]
+    {
+        return Ok(false);
+    }
     let mut read = HistoryRead::new(
         reader,
         scope.clone(),
@@ -203,7 +217,15 @@ pub fn recover_task(
     );
     let decision = if snapshot.has_local_receipt() {
         let Some(receipt) = snapshot.terminal_receipt() else {
-            return Ok(false);
+            let observation = read.observation()?;
+            return effects.apply_absence(
+                snapshot,
+                &scope,
+                &observation,
+                crate::recovery_absence::TaskAbsenceDecision::Hold {
+                    reason: "local-outcome-unknown".into(),
+                },
+            );
         };
         let resolved = effects.resolve_receipt(receipt)?;
         snapshot.decide(&[], Some(&resolved))
@@ -214,15 +236,133 @@ pub fn recover_task(
         let turn = snapshot.task["turnId"]
             .as_str()
             .ok_or(HistoryError::Invalid("turnId"))?;
-        if snapshot.task["type"] == "commandExecution" {
-            read.barrier()?;
+        if snapshot.task["type"] == "commandExecution" && read.barrier().is_err() {
+            let observation = read.observation()?;
+            return effects.apply_absence(
+                snapshot,
+                &scope,
+                &observation,
+                crate::recovery_absence::TaskAbsenceDecision::Hold {
+                    reason: "native-event-barrier-unavailable".into(),
+                },
+            );
         }
-        let items = read.task_items(thread, turn)?;
-        read.barrier()?;
-        snapshot.decide(&items, None)
+        let items = match read.task_items(thread, turn) {
+            Ok(items) => items,
+            Err(HistoryError::Unsupported) => vec![],
+            Err(_) => {
+                let observation = read.observation()?;
+                return effects.apply_absence(
+                    snapshot,
+                    &scope,
+                    &observation,
+                    crate::recovery_absence::TaskAbsenceDecision::Hold {
+                        reason: "native-history-unavailable".into(),
+                    },
+                );
+            }
+        };
+        if read.barrier().is_err() {
+            let observation = read.observation()?;
+            return effects.apply_absence(
+                snapshot,
+                &scope,
+                &observation,
+                crate::recovery_absence::TaskAbsenceDecision::Hold {
+                    reason: "native-event-barrier-unavailable".into(),
+                },
+            );
+        }
+        let decision = snapshot.decide(&items, None);
+        if decision == TaskRecoveryDecision::Unconfirmed {
+            let observation = read.observation()?;
+            let matches: Vec<_> = items
+                .iter()
+                .filter(|i| i["id"] == snapshot.task["itemId"])
+                .collect();
+            let candidate = matches.is_empty()
+                || (matches.len() == 1
+                    && matches[0]["type"] == "commandExecution"
+                    && matches[0]["status"] == "inProgress"
+                    && process_identity(
+                        matches[0]
+                            .get("processId")
+                            .unwrap_or(&snapshot.task["processId"]),
+                    ) == process_identity(&snapshot.task["processId"]));
+            let absent = if snapshot.task["type"] == "commandExecution"
+                && candidate
+                && observation.quiet
+            {
+                match read.thread_state(thread) {
+                    Ok(state) if matches!(state["type"].as_str(), Some("idle" | "notLoaded")) => {
+                        read.background_terminals(thread).ok().map(|terminals| {
+                            terminals.iter().all(|t| {
+                                t["itemId"] != snapshot.task["itemId"]
+                                    && t["processId"].as_str()
+                                        != process_identity(&snapshot.task["processId"]).as_deref()
+                            })
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let barrier = read.barrier().is_ok();
+            let observation = read.observation()?;
+            let decision = snapshot.absence_decision(&observation, barrier && absent == Some(true));
+            return effects.apply_absence(snapshot, &scope, &observation, decision);
+        }
+        decision
     };
     match decision {
-        TaskRecoveryDecision::Unconfirmed => Ok(false),
+        TaskRecoveryDecision::Unconfirmed => {
+            let observation = read.observation()?;
+            effects.apply_absence(
+                snapshot,
+                &scope,
+                &observation,
+                crate::recovery_absence::TaskAbsenceDecision::Hold {
+                    reason: "task-outcome-unconfirmed".into(),
+                },
+            )
+        }
         TaskRecoveryDecision::Complete(item) => effects.complete(snapshot, &scope, item),
+    }
+}
+
+fn process_identity(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| (value.is_i64() || value.is_u64()).then(|| value.to_string()))
+}
+impl TaskRecoverySnapshot {
+    pub fn absence_decision(
+        &self,
+        observation: &crate::recovery_absence::RecoveryObservation,
+        absent_from_complete_terminals: bool,
+    ) -> crate::recovery_absence::TaskAbsenceDecision {
+        use crate::recovery_absence::{TaskAbsenceDecision, command_absence_source};
+        let completed = observation.completed_turn.as_deref()
+            == Some(&format!(
+                "{}:{}",
+                self.agent.record()["id"].as_str().unwrap_or_default(),
+                self.task["turnId"].as_str().unwrap_or_default()
+            ));
+        if !self.has_local_receipt()
+            && self.agent.eligibility().task_owner
+            && self.task["status"] == "running"
+            && self.task["agent"] == self.agent.record()["id"]
+            && observation.quiet
+            && absent_from_complete_terminals
+            && command_absence_source(&self.agent, &self.task, observation, completed)
+        {
+            TaskAbsenceDecision::Lost
+        } else {
+            TaskAbsenceDecision::Hold {
+                reason: "native-command-absence-unproved".into(),
+            }
+        }
     }
 }

@@ -6,6 +6,14 @@ from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from studio_api.models import ContractModel, JsonValue
 
 
+class RecoverySupervisorIdentity(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    stateDir: StrictStr | None = None
+    handle: StrictStr | None = None
+    generation: Annotated[StrictInt, Field(ge=0, le=9007199254740991)] | None = None
+
+
 class RecoveryFields(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -29,7 +37,8 @@ class RecoveryFields(ContractModel):
     agent: StrictStr | None = None
     newThreadId: StrictStr | None = None
     connectionId: StrictStr | None = None
-    supervisorIdentity: dict[str, JsonValue] | None = None
+    supervisorIdentity: RecoverySupervisorIdentity | None = None
+    created: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
     error: JsonValue = None
 
 
@@ -40,6 +49,8 @@ class RecoveryAgentRecord(RecoveryFields):
     status: StrictStr
     provider: StrictStr | None = None
     inFlight: StrictBool | None = None
+    activeTools: list[JsonValue] | None = None
+    accountHistory: list[dict[str, JsonValue]] | None = None
     nativeFailureHold: StrictBool | None = None
     turnEpoch: Annotated[StrictInt, Field(ge=0, le=9007199254740991)] | None = None
     startAttempt: RecoveryFields | None = None
@@ -62,6 +73,7 @@ class RecoveryTaskRecord(ContractModel):
     turnId: Annotated[StrictStr, Field(min_length=1)]
     type: StrictStr
     kind: StrictStr
+    processId: StrictStr | Annotated[StrictInt, Field(ge=-9007199254740991, le=9007199254740991)] | None = None
     status: StrictStr
     created: Annotated[float, Field(ge=0, allow_inf_nan=False)]
 

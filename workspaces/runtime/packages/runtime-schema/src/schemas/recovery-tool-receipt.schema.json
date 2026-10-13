@@ -72,6 +72,18 @@
           ],
           "title": "Connectionid"
         },
+        "created": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Created"
+        },
         "epoch": {
           "anyOf": [
             {
@@ -218,16 +230,12 @@
         "supervisorIdentity": {
           "anyOf": [
             {
-              "additionalProperties": {
-                "$ref": "#/$defs/JsonValue"
-              },
-              "type": "object"
+              "$ref": "#/$defs/RecoverySupervisorIdentity"
             },
             {
               "type": "null"
             }
-          ],
-          "title": "Supervisoridentity"
+          ]
         },
         "threadId": {
           "anyOf": [
@@ -253,6 +261,50 @@
         }
       },
       "title": "RecoveryFields",
+      "type": "object"
+    },
+    "RecoverySupervisorIdentity": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "generation": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Generation"
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Handle"
+        },
+        "stateDir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Statedir"
+        }
+      },
+      "title": "RecoverySupervisorIdentity",
       "type": "object"
     }
   },
@@ -322,6 +374,18 @@
         }
       ],
       "title": "Connectionid"
+    },
+    "created": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Created"
     },
     "epoch": {
       "anyOf": [
@@ -489,16 +553,12 @@
     "supervisorIdentity": {
       "anyOf": [
         {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
+          "$ref": "#/$defs/RecoverySupervisorIdentity"
         },
         {
           "type": "null"
         }
-      ],
-      "title": "Supervisoridentity"
+      ]
     },
     "threadId": {
       "anyOf": [

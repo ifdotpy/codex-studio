@@ -46,6 +46,11 @@ fn malformed_persisted_recovery_inputs_are_located() {
     let base = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running"});
     for (field, value) in [
         ("epoch", json!(-1)),
+        ("startAttempt", json!({"created":"not a clock"})),
+        (
+            "startAttempt",
+            json!({"supervisorIdentity":{"generation":true}}),
+        ),
         ("inFlight", json!("yes")),
         ("startAttempt", json!([])),
         ("threadId", json!(1)),
@@ -69,6 +74,26 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
     use studio_runtime_services::{recovery::RecoveryError, recovery_history::*, task_recovery::*};
     struct Reader;
     impl RecoveryReader for Reader {
+        fn observation(
+            &mut self,
+            scope: &ConnectionScope,
+        ) -> Result<studio_runtime_services::recovery_absence::RecoveryObservation, HistoryError>
+        {
+            Ok(
+                studio_runtime_services::recovery_absence::RecoveryObservation {
+                    scope: scope.clone(),
+                    at: 100.0,
+                    supervisor: None,
+                    quiet: false,
+                    journal_drained: false,
+                    account_reserved: false,
+                    tools_refreshing: false,
+                    preparation_pending: false,
+                    completed_turn: None,
+                },
+            )
+        }
+
         fn read(
             &mut self,
             _: &ConnectionScope,
@@ -87,6 +112,16 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
         completed: Vec<Value>,
     }
     impl TaskRecoveryEffects for Effects {
+        fn apply_absence(
+            &mut self,
+            _: &TaskRecoverySnapshot,
+            _: &ConnectionScope,
+            _: &studio_runtime_services::recovery_absence::RecoveryObservation,
+            _: studio_runtime_services::recovery_absence::TaskAbsenceDecision,
+        ) -> Result<bool, RecoveryError> {
+            Ok(false)
+        }
+
         fn resolve_receipt(&mut self, receipt: &Value) -> Result<Value, RecoveryError> {
             Ok(receipt.clone())
         }
@@ -147,6 +182,26 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
         barrier: bool,
     }
     impl RecoveryReader for Reader {
+        fn observation(
+            &mut self,
+            scope: &ConnectionScope,
+        ) -> Result<studio_runtime_services::recovery_absence::RecoveryObservation, HistoryError>
+        {
+            Ok(
+                studio_runtime_services::recovery_absence::RecoveryObservation {
+                    scope: scope.clone(),
+                    at: 100.0,
+                    supervisor: None,
+                    quiet: false,
+                    journal_drained: false,
+                    account_reserved: false,
+                    tools_refreshing: false,
+                    preparation_pending: false,
+                    completed_turn: None,
+                },
+            )
+        }
+
         fn read(
             &mut self,
             scope: &ConnectionScope,
@@ -173,6 +228,16 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
         completed: bool,
     }
     impl TaskRecoveryEffects for Effects {
+        fn apply_absence(
+            &mut self,
+            _: &TaskRecoverySnapshot,
+            _: &ConnectionScope,
+            _: &studio_runtime_services::recovery_absence::RecoveryObservation,
+            _: studio_runtime_services::recovery_absence::TaskAbsenceDecision,
+        ) -> Result<bool, RecoveryError> {
+            Ok(false)
+        }
+
         fn resolve_receipt(&mut self, _: &Value) -> Result<Value, RecoveryError> {
             panic!("no local receipt")
         }

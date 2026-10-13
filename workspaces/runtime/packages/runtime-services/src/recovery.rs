@@ -19,6 +19,11 @@ pub enum CompletionMode {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryAction {
+    StartAbsent {
+        observation: crate::recovery_absence::RecoveryObservation,
+        complete_history: bool,
+        idle_twice: bool,
+    },
     AcceptStart {
         turn: Value,
     },
@@ -88,12 +93,19 @@ pub fn recover_turn(
     }
     let eligible = snapshot.eligibility();
     if eligible.unconfirmed_start {
-        // A durable Rust request is recovered by the account worker. This path
-        // also accepts legacy Python starts when the original connection owns
-        // the exact client input receipt; absence never authorizes a resend.
         let attempt = &a["startAttempt"];
-        if attempt["connectionId"] != scope.connection {
-            return Ok(RecoveryOutcome::Unconfirmed);
+        let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
+        let observation = read.observation()?;
+        if attempt["connectionId"] != scope.connection && !observation.replaced_child(snapshot) {
+            return effects.apply(
+                snapshot,
+                &scope,
+                RecoveryAction::StartAbsent {
+                    observation,
+                    complete_history: false,
+                    idle_twice: false,
+                },
+            );
         }
         let thread = a["threadId"]
             .as_str()
@@ -103,13 +115,44 @@ pub fn recover_turn(
             .and_then(|items| items.first())
             .and_then(Value::as_str)
             .ok_or(HistoryError::Invalid("events"))?;
-        let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
-        let Some(turn) = read.exact_start(thread, message)? else {
-            return Ok(RecoveryOutcome::Unconfirmed);
-        };
-        read.barrier()?;
-        return effects.apply(snapshot, &scope, RecoveryAction::AcceptStart { turn });
+        match read.exact_start(thread, message) {
+            Ok(Some(turn)) => {
+                read.barrier()?;
+                return effects.apply(snapshot, &scope, RecoveryAction::AcceptStart { turn });
+            }
+            history => {
+                let complete_history = matches!(history, Ok(None));
+                let mut idle_twice = complete_history;
+                if complete_history {
+                    for _ in 0..2 {
+                        match read.thread_state(thread) {
+                            Ok(state)
+                                if idle(&state)
+                                    && !crate::event_write::truthy(state.get("activeFlags")) => {}
+                            _ => {
+                                idle_twice = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if read.barrier().is_err() {
+                    idle_twice = false;
+                }
+                let observation = read.observation()?;
+                return effects.apply(
+                    snapshot,
+                    &scope,
+                    RecoveryAction::StartAbsent {
+                        observation,
+                        complete_history,
+                        idle_twice,
+                    },
+                );
+            }
+        }
     }
+
     if !a["inFlight"].as_bool().unwrap_or(false) || crate::event_write::truthy(a.get("deletedAt")) {
         return Ok(RecoveryOutcome::Skipped);
     }
