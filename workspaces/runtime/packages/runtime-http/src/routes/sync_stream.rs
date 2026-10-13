@@ -15,9 +15,10 @@ use futures_util::stream;
 use serde_json::{Value, json};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
-use studio_runtime_services::resource_notify::{
-    ResourceNotifications, ResourceNotifyError, TokenRates,
-};
+use studio_runtime_services::resource_notify::{ResourceNotifications, ResourceNotifyError};
+#[cfg(test)]
+use studio_runtime_services::token_rate::TokenRateHub;
+use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
@@ -172,10 +173,8 @@ async fn sync_stream(
         Some(subscription_snapshot.revision),
         initial_event,
     ));
-    let rates = match state.resource_notifications.token_rates() {
-        Ok(rates) => rates,
-        Err(_) => return ApiError::internal().into_response(),
-    };
+    let mut token_rates = state.token_rates.subscribe();
+    let rates = token_rates.borrow_and_update().clone();
     initial.push_back(token_rate_event(
         &state.workspace_id,
         &subscription_snapshot,
@@ -192,7 +191,7 @@ async fn sync_stream(
         store: Some(store),
         changes,
         notifications: state.resource_notifications,
-        rates,
+        token_rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -308,7 +307,7 @@ struct ResourceStream {
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
-    rates: TokenRates,
+    token_rates: tokio::sync::watch::Receiver<TokenRates>,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -328,6 +327,13 @@ async fn next_frame(
                     return None;
                 }
                 state.changes.borrow_and_update().clone()
+            },
+            changed = state.token_rates.changed() => {
+                if changed.is_err() { return None; }
+                let rates = state.token_rates.borrow_and_update().clone();
+                let snapshot = state.changes.borrow().clone();
+                if snapshot.closed { return None; }
+                return Some((Ok(token_rate_event(&state.workspace_id, &snapshot, &rates)), state));
             },
             _ = state.heartbeat.tick() => state.changes.borrow().clone(),
         };
@@ -353,16 +359,6 @@ async fn next_frame(
             };
             state.last_revision = snapshot.revision;
             state.entity_sequence = entity_sequence;
-            let rates = match state.notifications.token_rates() {
-                Ok(rates) => rates,
-                Err(_) => return None,
-            };
-            if rates.value() != state.rates.value() {
-                state
-                    .initial
-                    .push_back(token_rate_event(&state.workspace_id, &snapshot, &rates));
-                state.rates = rates;
-            }
             let event = resource_event(
                 &state.workspace_id,
                 &state.epoch,
@@ -393,13 +389,14 @@ async fn next_frame(
 }
 
 fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &TokenRates) -> Event {
+    let rates = rates.to_value();
     sse_event(
         "token-rates",
         Some(snapshot.revision),
         json!({
             "protocol": 3, "workspaceId": workspace_id,
             "epoch": snapshot.epoch, "revision": snapshot.revision,
-            "rates": rates.value()["rates"], "teams": rates.value()["teams"],
+            "rates": rates["rates"], "teams": rates["teams"],
         }),
     )
 }
@@ -533,7 +530,7 @@ mod tests {
                     revision: 0,
                     closed: false,
                 },
-                &TokenRates::checked(case["rates"].clone()).expect("rates"),
+                &TokenRates::from_value(case["rates"].clone()).expect("rates"),
             );
             let body = axum::body::to_bytes(
                 Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
@@ -570,7 +567,7 @@ mod tests {
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
-            rates: TokenRates::checked(json!({"rates": {}, "teams": {}})).expect("empty rates"),
+            token_rates: TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -597,6 +594,10 @@ mod tests {
     async fn token_rate_burst_keeps_only_latest_snapshot_and_monotone_cursor() {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let token_hub = TokenRateHub::with_change_callback({
+            let hub = hub.clone();
+            Arc::new(move || hub.notify_one())
+        });
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
@@ -609,7 +610,7 @@ mod tests {
             store: None,
             changes,
             notifications: notifications.clone(),
-            rates: notifications.token_rates().expect("snapshot"),
+            token_rates: token_hub.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -617,12 +618,12 @@ mod tests {
             ),
         };
         for index in 0..=MAX_RESOURCE_COUNT {
-            notifications.publish_token_rates(TokenRates::checked(json!({
+            token_hub.publish(json!({
                 "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
-            })).expect("checked")).expect("publish");
+            })).expect("publish");
         }
         let (_, state) = next_frame(state).await.expect("resource frame");
-        assert_eq!(state.initial.len(), 1);
+        assert!(state.initial.is_empty());
         assert_eq!(state.last_revision, MAX_RESOURCE_COUNT as i64 + 1);
         let (event, state) = next_frame(state).await.expect("token frame");
         assert!(state.initial.is_empty());
@@ -638,10 +639,8 @@ mod tests {
         assert!(frame.contains("\"rate\":256"), "{frame}");
         drop(state); // Disconnect drops the only receiver; later publications remain bounded.
         assert!(
-            notifications
-                .publish_token_rates(
-                    TokenRates::checked(json!({"rates":{},"teams":{}})).expect("empty")
-                )
+            token_hub
+                .publish(json!({"rates":{},"teams":{}}))
                 .expect("publish disconnected")
         );
     }
@@ -678,7 +677,7 @@ mod tests {
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
-            rates: TokenRates::checked(json!({"rates": {}, "teams": {}})).expect("empty rates"),
+            token_rates: TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),

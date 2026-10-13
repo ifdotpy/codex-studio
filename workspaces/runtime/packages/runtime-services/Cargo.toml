@@ -21,6 +21,7 @@ rustls-pki-types = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
+serde_path_to_error = { workspace = true }
 mime_guess = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }

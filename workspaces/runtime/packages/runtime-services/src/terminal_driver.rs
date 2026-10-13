@@ -1,5 +1,10 @@
 //! Durable terminal state and the narrow AppServer session boundary.
 
+#[cfg(test)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../tests/support/prepared_python.rs"]
+mod prepared_python_test_support;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -767,13 +772,12 @@ mod tests {
             }
         }
         let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let output = Command::new("python3")
-            .arg(server_source.join("codex_python.py"))
-            .arg("--exec")
+        let output = Command::new(super::prepared_python_test_support::prepared_python(&server_source))
             .arg("-c")
             .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; from codex_terminals import TerminalManager; root = pathlib.Path(sys.argv[1]); Canvas(root); TerminalManager(root)")
             .arg(&root)
             .arg(&server_source)
+            .env("PYTHONPATH", &server_source)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .output()
             .expect("Canvas schema bootstrap starts");

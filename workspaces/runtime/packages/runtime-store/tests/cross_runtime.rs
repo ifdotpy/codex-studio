@@ -1,3 +1,5 @@
+#[path = "../../runtime-services/tests/support/prepared_python.rs"]
+mod prepared_python_support;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -881,44 +883,7 @@ fn python_executable() -> &'static Path {
 }
 
 fn resolve_python() -> PathBuf {
-    let selected = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .or_else(|| std::env::var_os("PYTHON"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let output = Command::new("python3")
-                .arg(server_source().join("codex_python.py"))
-                .output()
-                .expect("cross-runtime tests need python3 to resolve the managed server runtime");
-            assert!(
-                output.status.success(),
-                "cross-runtime tests require the prepared server Python runtime; run `python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir <test-bin>` first. Resolver error: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            PathBuf::from(
-                String::from_utf8(output.stdout)
-                    .expect("Python path is UTF-8")
-                    .trim(),
-            )
-        });
-
-    let probe = Command::new(&selected)
-        .arg("-c")
-        .arg("import sys; sys.path.insert(0, sys.argv[1]); import codex_runtime; import studio_operations_native")
-        .arg(server_source())
-        .output()
-        .unwrap_or_else(|error| {
-            panic!(
-                "cross-runtime tests require the prepared server Python interpreter at {}: {error}",
-                selected.display()
-            )
-        });
-    assert!(
-        probe.status.success(),
-        "cross-runtime tests require server requirements and the built studio_operations_native module; prepare them with `cargo build --release -p studio-operations-python` and `python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir <test-bin>`. Interpreter {} failed its import probe: {}",
-        selected.display(),
-        String::from_utf8_lossy(&probe.stderr)
-    );
-    selected
+    prepared_python_support::prepared_python(&server_source())
 }
 
 struct TemporaryState(PathBuf, tempfile::TempDir);

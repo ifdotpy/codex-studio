@@ -10,6 +10,24 @@
       "title": "Id",
       "type": "string"
     },
+    "owner": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Owner"
+    },
+    "releases": {
+      "items": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Releases",
+      "type": "array"
+    },
     "rootId": {
       "anyOf": [
         {
@@ -42,6 +60,12 @@
         }
       ],
       "title": "Title"
+    },
+    "version": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Version",
+      "type": "integer"
     }
   },
   "required": ["id"],

@@ -6,8 +6,9 @@ use std::sync::Arc;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::resource_notify::{
     MAX_NOTIFY_RECEIPTS, MAX_PUBLICATION_BYTES, ResourceNotifications, ResourceNotifyError,
-    TokenRates,
 };
+
+use studio_runtime_services::token_rate::{MAX_SNAPSHOT_BYTES, TokenRateHub};
 
 #[path = "support/prepared_python.rs"]
 mod python;
@@ -19,6 +20,11 @@ fn request(id: &str, resources: Value) -> Value {
 fn rates(index: usize) -> Value {
     let rate = json!({"turnId": "turn", "active": true, "estimated": false, "rate": index, "outputTokens": index});
     json!({"rates": {"agent": rate}, "teams": {"lead": {"agent": rate}}})
+}
+
+fn token_hub(changes: &Arc<ChangeNotificationHub>) -> TokenRateHub {
+    let changes = changes.clone();
+    TokenRateHub::with_change_callback(Arc::new(move || changes.notify_one()))
 }
 
 #[test]
@@ -105,15 +111,18 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
     assert_eq!(expected.len(), cases.len(), "oracle must return every case");
     let mut hub = Arc::new(ChangeNotificationHub::new());
     let mut publisher = ResourceNotifications::new(hub.clone());
+    let mut tokens = token_hub(&hub);
     for (index, (case, expected)) in cases.iter().zip(expected).enumerate() {
         let result = match case["op"].as_str().expect("operation") {
             "restart" => {
                 hub = Arc::new(ChangeNotificationHub::new());
                 publisher = ResourceNotifications::new(hub.clone());
+                tokens = token_hub(&hub);
                 Ok(true)
             }
-            "rates" => TokenRates::checked(case["body"].clone())
-                .and_then(|rates| publisher.publish_token_rates(rates)),
+            "rates" => tokens
+                .publish(case["body"].clone())
+                .map_err(|_| ResourceNotifyError::Invalid),
             _ => publisher.publish_once(&case["body"]),
         };
         let result = match result {
@@ -122,7 +131,7 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
             Err(ResourceNotifyError::Invalid) => json!(400),
             Err(error) => panic!("{error}"),
         };
-        let actual = json!({"result":result,"revision":hub.snapshot().revision,"rates":publisher.token_rates().expect("rates").value()});
+        let actual = json!({"result":result,"revision":hub.snapshot().revision,"rates":tokens.snapshot().to_value()});
         assert_eq!(actual, expected, "case {index}: {case}");
     }
 }
@@ -191,15 +200,7 @@ fn closed_publisher_and_invalid_input_never_advance_cursor() {
         publisher.publish_once(&request("first", json!([{"kind":"accounts"}]))),
         Err(ResourceNotifyError::Unavailable)
     );
-    assert_eq!(
-        publisher.publish_token_rates(TokenRates::checked(rates(1)).expect("valid")),
-        Err(ResourceNotifyError::Unavailable)
-    );
     assert_eq!(hub.snapshot().revision, 0);
-    assert_eq!(
-        publisher.token_rates().expect("snapshot").value(),
-        &json!({"rates":{},"teams":{}})
-    );
 }
 
 #[test]
@@ -226,26 +227,33 @@ fn external_state_reset_and_receipt_share_the_publication_boundary() {
 
 #[test]
 fn token_snapshot_byte_bound_is_checked_before_replacing_the_last_value() {
-    let hub = Arc::new(ChangeNotificationHub::new());
-    let publisher = ResourceNotifications::new(hub.clone());
+    let changes = Arc::new(ChangeNotificationHub::new());
+    let publisher = token_hub(&changes);
     let value = rates(1)["rates"]["agent"].clone();
-    let fixed_bytes = json!({"rates":{"":value},"teams":{}}).to_string().len();
-    let key = "x".repeat(MAX_PUBLICATION_BYTES - fixed_bytes);
-    let at_bound = json!({"rates":{key.clone():value},"teams":{}});
-    assert_eq!(at_bound.to_string().len(), MAX_PUBLICATION_BYTES);
+    let count = 1024;
+    let map = (0..count)
+        .map(|index| (format!("a{index:04}"), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let remaining = MAX_SNAPSHOT_BYTES - json!({"rates":map,"teams":{}}).to_string().len();
+    let map = (0..count)
+        .map(|index| {
+            let padding = remaining / count + usize::from(index < remaining % count);
+            (format!("a{index:04}{}", "x".repeat(padding)), value.clone())
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let at_bound = json!({"rates":map,"teams":{}});
+    assert_eq!(at_bound.to_string().len(), MAX_SNAPSHOT_BYTES);
     assert!(
         publisher
-            .publish_token_rates(TokenRates::checked(at_bound.clone()).expect("exact byte bound"))
-            .expect("publish")
+            .publish(at_bound.clone())
+            .expect("exact byte bound")
     );
-    let above_bound = json!({"rates":{format!("{key}x"):value},"teams":{}});
-    assert!(matches!(
-        TokenRates::checked(above_bound),
-        Err(ResourceNotifyError::Invalid)
-    ));
-    assert_eq!(
-        publisher.token_rates().expect("retained").value(),
-        &at_bound
-    );
-    assert_eq!(hub.snapshot().revision, 1);
+    let mut above_bound = at_bound.clone();
+    let entries = above_bound["rates"].as_object_mut().expect("rates");
+    let key = entries.keys().next().expect("key").clone();
+    let value = entries.remove(&key).expect("entry");
+    entries.insert(format!("{key}x"), value);
+    assert!(publisher.publish(above_bound).is_err());
+    assert_eq!(publisher.snapshot().to_value(), at_bound);
+    assert_eq!(changes.snapshot().revision, 1);
 }
