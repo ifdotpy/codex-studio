@@ -146,6 +146,8 @@ async fn post_message(
             &body.room,
         )
         .map_err(coordination_error)?;
+        #[cfg(test)]
+        ingress_tests::support::after_preparation(&body.room);
         let admission = state.message_admission.as_deref().unwrap_or(&prepared);
         let posted = store
             .transaction_with_error(|transaction| {
@@ -165,7 +167,7 @@ async fn post_message(
         let value = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
             posted.receipt.clone(),
         )?;
-        posted.notify_committed(&wake);
+        posted.notify_committed(|| wake.notify_one());
         Ok::<Value, ApiError>(value)
     })
     .await
@@ -301,3 +303,7 @@ inventory::submit! {
         ],
     }
 }
+
+#[cfg(test)]
+#[path = "../../../runtime-services/tests/wave7_p03_gate_tests/http.rs"]
+mod ingress_tests;

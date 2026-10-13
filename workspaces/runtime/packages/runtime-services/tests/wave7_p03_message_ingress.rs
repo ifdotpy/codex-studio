@@ -331,21 +331,15 @@ fn ingress_crash_child() {
     }
     // The host wake carries no provider input. The durable event is the only
     // source for a restarted consumer, even if this in-memory signal is lost.
-    let wake = tokio::sync::Notify::new();
+    let wakes = std::cell::Cell::new(0);
     assert!(posted.event_inserted);
-    posted.notify_committed(&wake);
+    posted.notify_committed(|| wakes.set(wakes.get() + 1));
     let replay = send(&store, &json!({})).expect("committed replay before handoff");
-    replay.notify_committed(&wake);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("runtime");
-    runtime.block_on(wake.notified());
-    use std::future::Future;
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    assert!(
-        std::pin::pin!(wake.notified())
-            .poll(&mut context)
-            .is_pending()
+    replay.notify_committed(|| wakes.set(wakes.get() + 1));
+    assert_eq!(
+        wakes.get(),
+        1,
+        "each wake callback must be counted, without coalescing"
     );
     std::process::exit(73);
 }
@@ -620,4 +614,65 @@ fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
             .contains("runtime_workspace_operations/operation")
     );
     assert_eq!(snapshot(&store), before);
+}
+
+#[test]
+fn late_operation_paths_use_the_prepared_canonical_relation() {
+    use studio_runtime_store::AgentRepository;
+    let mut oracle = Oracle::new();
+    for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
+        let (root, _) = oracle.seed(scenario, &json!({"steps":[]}));
+        let store = RuntimeStore::open(Some(&root)).expect("store");
+        let mut other = AgentRepository::get(&store.read().expect("read"), &"agent".into())
+            .expect("get")
+            .expect("agent");
+        other.id = "other".into();
+        let path = if scenario == "known_unrelated" {
+            root.clone()
+        } else {
+            let alias = root.join("workspace-alias");
+            std::os::unix::fs::symlink(other.extra["cwd"].as_str().expect("cwd"), &alias)
+                .expect("workspace alias");
+            alias
+        };
+        other.extra.insert("cwd".into(), json!(path));
+        if scenario != "unknown_alias" {
+            store
+                .transaction(|tx| AgentRepository::put(tx, &other))
+                .expect("idle other");
+        }
+        let prepared =
+            PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare");
+        other
+            .extra
+            .insert("workspaceOperation".into(), json!("capture"));
+        store
+            .transaction(|tx| AgentRepository::put(tx, &other))
+            .expect("late operation");
+        let before = snapshot(&store);
+        let result = store.transaction_with_error(|tx| post(tx, &json!({}), &prepared));
+        if scenario == "unknown_alias" {
+            // A new cwd may alias this workspace: raw string inequality cannot
+            // establish independence. Python resolves it under its runtime lock;
+            // this adapter requires a fresh host snapshot outside the writer.
+            assert!(matches!(
+                result,
+                Err(coordination::CoordinationError::RequiresDependency(
+                    "workspace-policy/message-admission"
+                ))
+            ));
+            assert_eq!(snapshot(&store), before);
+        } else {
+            let receipt = result.expect("known relation permits admission").receipt;
+            assert_eq!(receipt["status"], "queued");
+            if scenario == "known_alias" {
+                assert_eq!(
+                    receipt["waitingFor"],
+                    json!([{"agentId":"other","operation":"capture"}])
+                );
+            } else {
+                assert!(receipt.get("waitingFor").is_none());
+            }
+        }
+    }
 }

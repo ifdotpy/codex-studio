@@ -256,6 +256,8 @@ pub fn submit(
     }
 
     let admission = crate::message_admission::PreparedAdmission::load(&store.read()?, agent_id)?;
+    #[cfg(test)]
+    ingress_tests::support::after_preparation(agent_id);
     store.transaction_with_error(|transaction| {
         checked_agent(transaction, agent_id)?;
         let input_records = serde_json::to_string(record_ids)?;
@@ -612,3 +614,7 @@ fn invalid(object: &'static str, id: &str) -> VoiceError {
         id: id.to_owned(),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/wave7_p03_gate_tests/voice.rs"]
+mod ingress_tests;

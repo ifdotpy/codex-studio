@@ -145,9 +145,9 @@ pub struct PostMessageResult {
 impl PostMessageResult {
     /// Call only after the accepting transaction commits. Replays carry no new
     /// work and must not signal the consumer again.
-    pub fn notify_committed(&self, wake: &tokio::sync::Notify) {
+    pub fn notify_committed(&self, wake: impl FnOnce()) {
         if self.event_inserted {
-            wake.notify_one();
+            wake();
         }
     }
 }

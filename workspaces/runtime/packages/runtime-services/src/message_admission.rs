@@ -28,8 +28,9 @@ pub trait MessageAdmission: Send + Sync {
 }
 
 /// Default host adapter. Resolve workspace paths before entering the writer
-/// transaction. A path changed since preparation is refused, never admitted on
-/// the basis of an obsolete snapshot. Budget history needs the host's P09 port.
+/// transaction, including idle agents: they may start operations before admission.
+/// A newly encountered cwd is refused when its canonical relation cannot be
+/// determined from this snapshot. Budget history needs the host's P09 port.
 #[derive(Default)]
 pub struct PreparedAdmission {
     paths: BTreeMap<String, PathBuf>,
@@ -40,11 +41,8 @@ impl PreparedAdmission {
         if AgentRepository::get(connection, &AgentId::from(recipient))?.is_none() {
             return Ok(Self::default());
         }
-        let mut query = connection.prepare(
-            "SELECT id FROM runtime_agents WHERE id=?1 OR \
-             json_extract(record,'$.workspaceOperation') IS NOT NULL",
-        )?;
-        let ids = query.query_map([recipient], |row| row.get::<_, String>(0))?;
+        let mut query = connection.prepare("SELECT id FROM runtime_agents")?;
+        let ids = query.query_map([], |row| row.get::<_, String>(0))?;
         let mut paths = BTreeMap::new();
         for id in ids {
             let id = id?;
