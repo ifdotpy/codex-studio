@@ -244,7 +244,7 @@ fn python_location_and_move_corpus_through_consumers() {
                 let operation = &case["operation"];
                 let key = text(operation, "id");
                 let ticket = identity(&[key, "status", "50"]);
-                store.transaction(|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",params![ticket,json!({"requestId":ticket,"action":"move_status","payload":{"move":key}}).to_string(),json!({"requestId":ticket,"outcome":"applied","value":case["targetReceipt"]}).to_string()])?;Ok(())}).expect("saved status proof");
+                store.transaction(|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",params![ticket,json!({"requestId":ticket,"action":"move_status","payload":{"move":key,"reconciliationGeneration":agent_move::MoveSnapshot::from_record(operation).expect("checked source").reconciliation_generation()}}).to_string(),json!({"requestId":ticket,"outcome":"applied","value":case["targetReceipt"]}).to_string()])?;Ok(())}).expect("saved status proof");
                 assert_eq!(
                     agent_move::release_untransferred(&store, key, &ticket, now)
                         .expect("reconcile"),
@@ -775,4 +775,73 @@ fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
             assert_eq!(snapshot(&store), before);
         }
     }
+}
+
+#[test]
+fn move_status_ticket_rejects_stale_generation_and_replay() {
+    let fixture = Fixture::new();
+    let case = fixture.data["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|case| case["name"] == "release-waiting-not-started")
+        .expect("release case");
+    let (path, store) = fixture.store("status-generation");
+    fixture.seed(&store, case);
+    let now = fixture.data["now"].as_f64().expect("clock");
+    let key = text(&case["operation"], "id");
+    let old_generation = agent_move::MoveSnapshot::from_record(&case["operation"])
+        .expect("Python-written source")
+        .reconciliation_generation();
+    let save_ticket = |store: &RuntimeStore, ticket: &str, generation: Value| {
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,'peer',?2,'complete',?3)",
+                params![ticket, json!({"requestId":ticket,"action":"move_status","payload":{"move":key,"reconciliationGeneration":generation}}).to_string(),
+                    json!({"requestId":ticket,"outcome":"applied","value":case["targetReceipt"]}).to_string()])?;
+            Ok(())
+        }).expect("save durable status ticket");
+    };
+    save_ticket(&store, "old-ticket", json!(old_generation));
+    // A newer source status arrived after this target observation. Both states
+    // could release on not_started, so only generation binding refuses the old proof.
+    let mut current = case["operation"].clone();
+    current["uncertainPhase"] = json!("exported");
+    store
+        .transaction(|tx| AgentMoveRepository::save(tx, &current))
+        .expect("advance source status");
+    let before = snapshot(&store);
+    assert!(agent_move::release_untransferred(&store, key, "old-ticket", now).is_err());
+    assert_eq!(snapshot(&store), before);
+    drop(store);
+    let store = RuntimeStore::open(Some(&path)).expect("restart preserves source generation");
+    assert!(agent_move::release_untransferred(&store, key, "old-ticket", now).is_err());
+    assert_eq!(snapshot(&store), before);
+    let generation = agent_move::MoveSnapshot::from_record(&current)
+        .expect("current snapshot")
+        .reconciliation_generation();
+    assert_ne!(generation, old_generation);
+    for (index, malformed) in [Value::Null, json!(true), json!(0), json!({})]
+        .into_iter()
+        .enumerate()
+    {
+        let ticket = format!("malformed-{index}");
+        save_ticket(&store, &ticket, malformed);
+        let before = snapshot(&store);
+        assert!(agent_move::release_untransferred(&store, key, &ticket, now).is_err());
+        assert_eq!(snapshot(&store), before);
+    }
+    save_ticket(&store, "current-ticket", json!(generation));
+    assert!(
+        agent_move::release_untransferred(&store, key, "current-ticket", now)
+            .expect("fresh proof releases")
+    );
+    let committed = snapshot(&store);
+    drop(store);
+    let store = RuntimeStore::open(Some(&path)).expect("restart after release");
+    assert!(agent_move::release_untransferred(&store, key, "current-ticket", now + 1.0).is_err());
+    assert_eq!(
+        snapshot(&store),
+        committed,
+        "replayed proof cannot write twice"
+    );
 }
