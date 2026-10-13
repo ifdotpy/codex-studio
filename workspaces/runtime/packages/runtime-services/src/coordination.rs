@@ -219,15 +219,7 @@ fn teams(transaction: &Transaction<'_>) -> Result<AgentDirectory, CoordinationEr
     let mut graph_agents = BTreeSet::new();
     let mut managed_threads = BTreeSet::new();
     let mut invalid_agents = BTreeSet::new();
-    for (id, raw, is_graph) in CoordinationRepository::agents(transaction)? {
-        let Ok(mut value) = serde_json::from_str::<Value>(&raw) else {
-            invalid_agents.insert(id);
-            continue;
-        };
-        if value.get("id").and_then(Value::as_str) != Some(id.as_str()) || !value.is_object() {
-            invalid_agents.insert(id);
-            continue;
-        }
+    for (id, mut value, is_graph) in CoordinationRepository::agents(transaction)? {
         if is_graph {
             graph_agents.insert(id.clone());
             value["source"] = Value::String("registered".to_owned());
