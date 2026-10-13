@@ -39,6 +39,10 @@ const GRAPH_AGENT_RECORD_URI: &str =
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
 
+const CONTINUATION_URI: &str =
+    "https://codex-studio.invalid/persisted-continuation-snapshot.schema.json";
+const CONTINUATION: &[u8] = include_bytes!("schemas/persisted-continuation-snapshot.schema.json");
+
 const OPENAPI: &[u8] = include_bytes!("../../runtime-http/openapi.json");
 const ACCOUNT_REGISTRY: &[u8] = include_bytes!("schemas/account-registry.schema.json");
 const USAGE_LIMITS: &[u8] = include_bytes!("schemas/workspace-usage-limits.schema.json");
@@ -63,6 +67,7 @@ const GRAPH_AGENT_RECORD: &[u8] =
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (CONTINUATION_URI, CONTINUATION),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
     (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
@@ -137,6 +142,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_checkpoints" => "PersistedCheckpointRecord",
         "runtime_monitors" => "PersistedMonitorRecord",
         "user_terminals" => "PersistedTerminalRecord",
+        "runtime_capacity_retries" => "continuation/CapacityContinuation",
         "runtime_usage_resumes" => "PersistedUsageResumeRecord",
         "runtime_work" => "PersistedWorkItemRecord",
         "runtime_rules" => "PersistedRuleRecord",
@@ -248,6 +254,15 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         USAGE_LIMITS_URI,
         "workspace-usage-limits",
         &usage_limits,
+        &mut validators,
+    )?;
+    let continuation: Value =
+        serde_json::from_slice(CONTINUATION).map_err(|error| error.to_string())?;
+    compile_definitions(
+        &registry,
+        CONTINUATION_URI,
+        "continuation",
+        &continuation,
         &mut validators,
     )?;
     Ok(CompiledSchemas { validators })
