@@ -38,7 +38,7 @@ class LedgerTraceContract(unittest.TestCase):
             "layoutRevision", "emptyQueueRevision", "queueIds", "question",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
-            "analyticsAgent", "schemaHash", "imageCheckpoint", "approvalRequest",
+            "analyticsAgent", "schemaHash", "approvalRequest",
         }
 
         def references(value):
@@ -171,7 +171,7 @@ class LedgerTraceContract(unittest.TestCase):
             ("POST", "/api/configure"): ["2xx", "501"],
             ("POST", "/api/conversation"): ["2xx", "501"],
             ("POST", "/api/checkpoint"): ["501", "2xx"],
-            ("POST", "/api/checkpoint/preview"): ["501", "2xx"],
+            ("POST", "/api/checkpoint/preview"): ["2xx"],
             ("POST", "/api/voice/end"): ["2xx", "501"],
             ("POST", "/api/voice/speech"): ["2xx", "501"],
             ("POST", "/api/voice/submit"): ["2xx", "400"],

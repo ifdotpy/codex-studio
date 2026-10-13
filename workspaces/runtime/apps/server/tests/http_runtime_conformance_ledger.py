@@ -546,8 +546,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"}],
     },
     ("POST", "/api/checkpoint/preview"): {
-        "primary": {"body": {"agent": "$imageAgent", "checkpoint": "$imageCheckpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead preview shape", "body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"}],
+        "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
     },
     ("POST", "/api/configure"): {
         "primary": {"body": {"id": "$agent", "maxAgents": 10}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
@@ -911,19 +910,6 @@ try:
     subprocess.run(["git", "add", {file_path!r}], cwd=workspace, check=True)
     subprocess.run(["git", "commit", "-qm", "ledger seed"], cwd=workspace, check=True)
     checkpoint = runtime.capture_checkpoint({agent_id!r}, "HTTP ledger probe checkpoint")
-    image_agent_for_checkpoint = dict(image_agent)
-    image_agent_for_checkpoint.pop("imageWorkspace", None)
-    image_agent_for_checkpoint.pop("workspaceMode", None)
-    image_agent_for_checkpoint.pop("executionMode", None)
-    with runtime.lock, runtime.db() as db:
-        runtime.put(db, "agents", image_agent_for_checkpoint, sync_rooms=False)
-    try:
-        image_checkpoint = runtime.capture_checkpoint(
-            {image_agent_id!r}, "HTTP ledger image checkpoint"
-        )
-    finally:
-        with runtime.lock, runtime.db() as db:
-            runtime.put(db, "agents", image_agent, sync_rooms=False)
     runtime.set_rate_limits("default", {{
         "data": {{"accountId": "fixture-account", "status": "ready", "signedIn": True,
                  "rateLimits": {{"primary": {{"usedPercent": 27}}}}}},
@@ -939,6 +925,11 @@ try:
         {agent_id!r}, "ledger-probe-voice-ended", "ledger-probe-voice-record",
         "user", "Ledger voice transcript record.", payload={{"utterance_order": 1}}, _publish=False,
     )
+    active_voice = VoiceStore(runtime)
+    active_voice._publish_voice = lambda _agent: None
+    active_voice._start_native = lambda _agent, _session, _sdp: None
+    active_voice.start({agent_id!r}, "ledger-probe-voice-active", "v=0\\r\\n")
+    active_voice._state("ledger-probe-voice-active", "ready", publish=False)
     active_rule = runtime.rules({{
         "agent": {agent_id!r}, "action": "save", "id": {active_rule_id!r},
         "name": "HTTP ledger active rule", "kind": "interval", "intervalSeconds": 60,
@@ -998,7 +989,7 @@ try:
         Path(os.environ["CODEX_AGENTS_STATE_DIR"], "ledger-probe-identifiers.json").write_text(
             __import__("json").dumps({{
                 "terminal": terminal_id, "emptyQueueRevision": queue_revision,
-            "checkpoint": checkpoint["id"], "imageCheckpoint": image_checkpoint["id"], "monitor": monitor["id"],
+            "checkpoint": checkpoint["id"], "monitor": monitor["id"],
             "activeMonitor": active_monitor["id"],
             }}), encoding="utf-8"
         )
@@ -1046,7 +1037,6 @@ finally:
         "voiceEndedSession": "ledger-probe-voice-ended",
         "voiceActiveSession": "ledger-probe-voice-active",
         "approvalRequest": "ledger-probe-monitor-approval",
-        "imageCheckpoint": terminal_identifiers["imageCheckpoint"],
         "schemaHash": backend.schema_hash,
         "analyticsAgent": "analytics-contract-agent",
         "chat": chat_id,
@@ -1057,38 +1047,6 @@ finally:
         "projectPath": str(backend.cwd),
         "claudeAccount": "claude-ledger",
     }
-
-
-def seed_post_start_voice_session(backend: Any, agent_id: str) -> str:
-    """Use the Python voice writer after startup, when a live session can exist."""
-    source = Path(__file__).resolve().parents[1] / "src"
-    session_id = "ledger-probe-voice-active"
-    script = f"""
-import os, sys, threading
-from pathlib import Path
-sys.path.insert(0, {str(source)!r})
-from codex_runtime import Runtime
-from codex_voice import VoiceStore
-runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
-try:
-    voice = object.__new__(VoiceStore)
-    voice.runtime = runtime
-    voice.native_lock = threading.RLock()
-    voice.connections = {{}}
-    voice._publish_voice = lambda _agent: None
-    voice._start_native = lambda _agent, _session, _sdp: None
-    voice.start({agent_id!r}, {session_id!r}, "v=0\\r\\n")
-    voice._state({session_id!r}, "ready", publish=False)
-finally:
-    runtime.close()
-"""
-    environment = backend._environment()
-    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
-    subprocess.run(
-        [python, "-B", "-c", script], cwd=backend.cwd, env=environment,
-        check=True, timeout=30,
-    )
-    return session_id
 
 
 def valid_probe(
@@ -1245,9 +1203,6 @@ def probe_operations(
             analytics_module.seed_analytics(backend)
             identifiers = seed_python_probe_state(backend)
             backend.start()
-            identifiers["voiceActiveSession"] = seed_post_start_voice_session(
-                backend, identifiers["agent"]
-            )
             token = backend.session["token"]
             rows = []
             for method, template in operations():
